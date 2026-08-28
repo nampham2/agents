@@ -94,8 +94,8 @@ def manage() -> int:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
-    parser.error(f"unknown command: {args.command}")
-    return 2
+    parser.error(f"unknown command: {args.command}")  # pragma: no cover
+    return 2  # pragma: no cover
 
 
 def validate() -> int:
@@ -132,5 +132,5 @@ def validate() -> int:
     return 0
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     raise SystemExit(manage())
