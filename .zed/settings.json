@@ -1,0 +1,37 @@
+{
+  "terminal": {
+    "shell": {
+      "program": "/bin/zsh"
+    },
+    "working_directory": "current_project_directory",
+    "detect_venv": {
+      "on": {
+        "directories": [".venv"],
+        "activate_script": "default"
+      }
+    }
+  },
+  "languages": {
+    "Python": {
+      "language_servers": ["ty", "ruff", "!basedpyright"],
+      "formatter": {
+        "language_server": {
+          "name": "ruff"
+        }
+      },
+      "code_actions_on_format": {
+        "source.organizeImports.ruff": true
+      },
+      "format_on_save": "on",
+      "preferred_line_length": 120,
+      "tab_size": 4,
+      "hard_tabs": false
+    },
+    "YAML": {
+      "tab_size": 2
+    },
+    "JSON": {
+      "tab_size": 2
+    }
+  }
+}

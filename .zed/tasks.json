@@ -1,0 +1,42 @@
+[
+  {
+    "label": "uv sync",
+    "command": "uv",
+    "args": ["sync"]
+  },
+  {
+    "label": "pytest: all",
+    "command": "uv",
+    "args": ["run", "pytest"]
+  },
+  {
+    "label": "pytest: current file",
+    "command": "uv",
+    "args": ["run", "pytest", "$ZED_FILE"]
+  },
+  {
+    "label": "ruff: check",
+    "command": "uv",
+    "args": ["run", "ruff", "check", "."]
+  },
+  {
+    "label": "ruff: check and fix",
+    "command": "uv",
+    "args": ["run", "ruff", "check", "--fix", "."]
+  },
+  {
+    "label": "ruff: format",
+    "command": "uv",
+    "args": ["run", "ruff", "format", "."]
+  },
+  {
+    "label": "ty: check",
+    "command": "uv",
+    "args": ["run", "ty", "check"]
+  },
+  {
+    "label": "uv build",
+    "command": "uv",
+    "args": ["build"]
+  }
+]
