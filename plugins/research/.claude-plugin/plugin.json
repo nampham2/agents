@@ -1,0 +1,8 @@
+{
+  "name": "research",
+  "description": "Developer productivity skills for Claude Code — workbench persistent workspace management",
+  "author": { "name": "Nam Pham" },
+  "skills": [
+    { "name": "workbench", "source": "./skills/workbench" }
+  ]
+}
