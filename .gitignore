@@ -9,3 +9,4 @@ dist/
 .ty_cache/
 *.log
 coverage.json
+.claude/settings.local.json

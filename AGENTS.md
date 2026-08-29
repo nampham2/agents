@@ -9,24 +9,77 @@ Personal toolkit of Claude agent skills, plugins, and supporting Python utilitie
 ## Structure
 
 ```
-plugins/    Claude plugins; each subdirectory is one installable plugin
-src/agents/ Shared Python library (importable package)
-tests/      pytest test suite mirroring the plugins/ layout
-bin/        Helper shell scripts
+.claude-plugin/  marketplace.json — this repo root is a Claude Code directory marketplace
+plugins/         Claude plugins; each subdirectory is one installable plugin
+tests/           pytest test suite mirroring the plugins/ layout
+bin/             Helper shell scripts
 ```
+
+Plugin code is the only source of truth: there is no importable `agents` package and
+nothing to build. Skill scripts live beside their skill (e.g.
+`plugins/research/skills/workbench/scripts/`) and are imported by tests as top-level
+modules via `tests/conftest.py`, the same way Claude runs them.
 
 ## Development
 
 ```bash
 uv sync --dev          # install all dependencies
 uv run pytest          # run tests
-uv run ruff check .    # lint
-uv run ty check        # type-check
+uv run ruff check .    # lint (whole repo — keep it unscoped, see below)
+uv run ty check .      # type-check (whole repo, tests included)
 ```
 
 ## Conventions
 
-- Python ≥ 3.11, type hints on all public functions
+- **Two Python floors.** The dev toolchain requires ≥ 3.11 (`requires-python` in
+  `pyproject.toml`). The *shipped plugin scripts* must additionally keep working on
+  **3.9**, because `SKILL.md` invokes them with plain `python3`, which is 3.9 on stock
+  macOS. Keep them stdlib-only, and put 3.10+ typing imports behind `if TYPE_CHECKING:`
+  so `from __future__ import annotations` defers them. CI's `python39-compat` job
+  enforces this.
+- Lint and type-check the whole repo, tests included — never a subdirectory. Scoping
+  these narrowly is what previously let two copies of the workspace library drift apart
+  unnoticed. Both `ruff check .` and `ty check .` are clean; keep them that way rather
+  than adding ignores.
+- Tests resolve the plugin scripts as top-level modules. Two places encode that: the
+  `sys.path` insert in `tests/conftest.py` (runtime) and `[tool.ty.environment]
+  extra-paths` in `pyproject.toml` (type checker and editors). Update both together.
+- Project state is `dict[str, Any]`, not `dict[str, object]` — test helpers that build
+  state must match, or the nested subscripts they do will not type-check.
+- **Plugins are registered through the marketplace, never by directory placement.** A symlink
+  into `~/.claude/plugins/` registers nothing. `.claude-plugin/marketplace.json` publishes each
+  plugin; `bin/install-plugin.sh` validates both manifests and installs through the `claude` CLI.
+  A new plugin must be added to the marketplace or it is uninstallable.
+- **`plugin.json` has no `skills` key.** Skills are discovered by convention from
+  `skills/<name>/SKILL.md`; declaring them makes `claude plugin validate` fail outright. Run
+  `claude plugin validate --strict .` and `--strict plugins/<plugin>` after touching a manifest —
+  the installer does this for you, and CI cannot (no `claude` CLI there).
+- **Migration must never manufacture consent.** Legacy authorization markers are coarse and
+  project-wide; v3 authorization is per-action. Only a `DONE` task carries its marker forward:
+  `SKILL.md` sets a task `RUNNING` *before* performing the action, so `RUNNING` does not prove the
+  effect happened. A `RUNNING` external task migrates to `BLOCKED` with a `block_reason` and
+  `pending` authorization — parked for reconciliation, because leaving it `RUNNING` with `pending`
+  would fail v3 validation and make a valid v2 project unmigratable.
+- **Validation code must not raise on malformed input.** Checks that run before
+  `validate_v3_state` see arbitrary JSON, so they must degrade to "nothing to say" rather than
+  throw; the CLIs only translate `WorkspaceError`. Read text through `read_text()`, which folds
+  `UnicodeDecodeError` (a `ValueError`, not an `OSError`) into `WorkspaceError`.
+- **`project.json` is the commit point.** Write it last in any multi-step mutation — `init` and
+  `migrate` both build the skeleton first — so an interrupted run leaves a state a plain re-run can
+  finish. The index rebuild that follows a commit takes a *workspace*-wide lock and can fail on its
+  own; route it through `_rebuild_index_after_commit` so the error says the write landed and names
+  `rebuild-index`, instead of reading as a failed commit and sending the caller into a retry that
+  reports a conflict or an impasse. `rebuild_index` normalizes `OSError` into `WorkspaceError`
+  for the same reason: a read-only workspace fails in the lock's own `mkdir`, and a raw
+  traceback out of a CLI that only translates `WorkspaceError` is what makes a committed write
+  look unfinished.
+- **Installed plugins are cached by version.** `claude plugin install` copies the plugin into
+  `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`; `marketplace update` refreshes the
+  listing, never that copy. Any plugin change that must reach an installed copy needs a `version`
+  bump in `plugin.json` followed by `claude plugin update`. Use `claude --plugin-dir
+  plugins/<plugin>` for live development. Do not drop `version` to get commit-based versioning —
+  `claude plugin validate --strict` fails without it.
+- Type hints on all public functions
 - ruff line-length 120, same lint rules as metasearch-ai
 - Tests live under `tests/plugins/<plugin>/<skill>/`
 - Plugin skills live under `plugins/<plugin>/skills/<skill>/`

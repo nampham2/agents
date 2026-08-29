@@ -32,11 +32,6 @@
   {
     "label": "ty: check",
     "command": "uv",
-    "args": ["run", "ty", "check"]
-  },
-  {
-    "label": "uv build",
-    "command": "uv",
-    "args": ["build"]
+    "args": ["run", "ty", "check", "."]
   }
 ]

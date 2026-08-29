@@ -12,9 +12,11 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+if TYPE_CHECKING:  # TypeGuard is 3.10+; the scripts must still import on system python 3.9.
+    from typing import TypeGuard
 
 PROJECT_STATUSES = {"ALIGNING", "PLANNING", "EXECUTING", "REVIEW", "BLOCKED", "DONE", "CANCELLED"}
 TASK_STATUSES = {"TODO", "RUNNING", "DONE", "BLOCKED", "SKIPPED"}
@@ -100,11 +102,11 @@ def now_iso() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
-def _non_empty_string(value: object) -> bool:
+def _non_empty_string(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _enum_string(value: object, choices: set[str]) -> bool:
+def _enum_string(value: object, choices: set[str]) -> TypeGuard[str]:
     return isinstance(value, str) and value in choices
 
 
@@ -121,16 +123,35 @@ def _is_timestamp(value: object) -> bool:
 def is_external_reference(value: str) -> bool:
     if any(character.isspace() for character in value):
         return False
-    parsed = urlparse(value)
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        # urllib rejects malformed bracketed hosts (for example ``http://[``) by raising rather
+        # than returning a parse result. References are untrusted workspace data, so malformed
+        # URLs are validation failures, not exceptions that may escape the CLI.
+        return False
     if parsed.scheme in {"http", "https"}:
         return bool(parsed.netloc)
     return bool(re.fullmatch(r"(?:receipt|deployment|message|purchase|publish):\S+", value))
 
 
+def read_text(path: Path) -> str:
+    """Read UTF-8 text, turning both I/O and decode failures into WorkspaceError.
+
+    `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so a file holding invalid UTF-8
+    bytes slips straight through an `except OSError` guard. Every text read in this module goes
+    through here so a corrupt file is reported, not raised as a traceback at the caller.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise WorkspaceError(f"cannot read {path}: {error}") from error
+
+
 def load_json(path: Path) -> dict[str, Any]:
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as error:
+        raw = json.loads(read_text(path))
+    except json.JSONDecodeError as error:
         raise WorkspaceError(f"cannot read {path}: {error}") from error
     if not isinstance(raw, dict):
         raise WorkspaceError(f"{path} must contain a JSON object")
@@ -159,6 +180,9 @@ def atomic_write_text(path: Path, content: str) -> None:
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
         _fsync_directory(path.parent)
+    except UnicodeEncodeError as error:
+        temporary_path.unlink(missing_ok=True)
+        raise WorkspaceError(f"cannot write {path} as UTF-8: {error}") from error
     except BaseException:
         temporary_path.unlink(missing_ok=True)
         raise
@@ -206,7 +230,12 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
             try:
                 self.path.rmdir()
             except OSError as error:
-                raise WorkspaceError(f"cannot release workspace lock {self.path}: {error}") from error
+                # Never mask an exception raised inside the `with` body: that error is what
+                # the caller needs to see, and it is often the reason the lock directory is
+                # not empty in the first place.
+                if exc_type is None:
+                    raise WorkspaceError(f"cannot release workspace lock {self.path}: {error}") from error
+                return
             self.acquired = False
 
 
@@ -222,7 +251,9 @@ def _missing_fields(value: dict[str, Any], required: set[str], label: str, repor
         report.errors.append(f"{label}: missing fields: {', '.join(missing)}")
 
 
-def _resolve_local_reference(project_dir: Path, working_directory: Path, root: str, path: str) -> tuple[Path | None, str | None]:
+def _resolve_local_reference(
+    project_dir: Path, working_directory: Path, root: str, path: str
+) -> tuple[Path | None, str | None]:
     relative = Path(path)
     if relative.is_absolute() or ".." in relative.parts:
         return None, "local reference paths must be relative and cannot contain '..'"
@@ -376,9 +407,7 @@ def _validate_receipt(value: object, label: str, report: ValidationReport) -> No
             report.errors.append(f"{label}: {field_name} must be a non-empty string")
     receipt_value = value.get("value")
     if _non_empty_string(receipt_value) and not is_external_reference(receipt_value):
-        report.errors.append(
-            f"{label}: value must be a valid URL or a durable prefixed identifier"
-        )
+        report.errors.append(f"{label}: value must be a valid URL or a durable prefixed identifier")
     if not _is_timestamp(value.get("timestamp")):
         report.errors.append(f"{label}: timestamp must be timezone-aware ISO-8601")
 
@@ -431,8 +460,8 @@ def _check_dependencies(tasks_by_id: dict[str, dict[str, Any]], report: Validati
 
 def _read_nonempty(path: Path, label: str, report: ValidationReport) -> str:
     try:
-        content = path.read_text(encoding="utf-8")
-    except OSError as error:
+        content = read_text(path)
+    except WorkspaceError as error:
         report.errors.append(f"cannot read {label}: {error}")
         return ""
     if not content.strip():
@@ -473,7 +502,11 @@ def validate_v3_state(
     for field_name in ("created", "updated"):
         if not _is_timestamp(state.get(field_name)):
             report.errors.append(f"project: {field_name} must be timezone-aware ISO-8601")
-    if not isinstance(state.get("revision"), int) or isinstance(state.get("revision"), bool) or state.get("revision", -1) < 0:
+    if (
+        not isinstance(state.get("revision"), int)
+        or isinstance(state.get("revision"), bool)
+        or state.get("revision", -1) < 0
+    ):
         report.errors.append("project: revision must be a non-negative integer")
 
     status = state.get("status")
@@ -662,7 +695,9 @@ def validate_v3_state(
             _read_nonempty(project_dir / "evidence.md", "evidence.md", report)
             _read_nonempty(project_dir / "reflection.md", "reflection.md", report)
             for cycle in range(1, review_cycle + 1):
-                _read_nonempty(project_dir / "reviews" / f"review_{cycle:02d}.md", f"reviews/review_{cycle:02d}.md", report)
+                _read_nonempty(
+                    project_dir / "reviews" / f"review_{cycle:02d}.md", f"reviews/review_{cycle:02d}.md", report
+                )
 
     return report
 
@@ -671,7 +706,9 @@ def validate_v2_state(
     state: dict[str, Any], project_dir: Path, *, close: bool = False, check_files: bool = True
 ) -> ValidationReport:
     """Validate the documented v2 shape without claiming v3 guarantees."""
-    report = ValidationReport(warnings=["schema v2 has limited concurrency and authorization guarantees; migrate to v3"])
+    report = ValidationReport(
+        warnings=["schema v2 has limited concurrency and authorization guarantees; migrate to v3"]
+    )
     required_project_fields = {
         "schema_version",
         "project",
@@ -692,7 +729,11 @@ def validate_v2_state(
             report.errors.append(f"project: {field_name} must be a non-empty string")
     if not _enum_string(state.get("status"), PROJECT_STATUSES):
         report.errors.append(f"project: invalid status {state.get('status')!r}")
-    if not isinstance(state.get("review_cycle"), int) or isinstance(state.get("review_cycle"), bool) or state.get("review_cycle", -1) < 0:
+    if (
+        not isinstance(state.get("review_cycle"), int)
+        or isinstance(state.get("review_cycle"), bool)
+        or state.get("review_cycle", -1) < 0
+    ):
         report.errors.append("project: review_cycle must be a non-negative integer")
 
     tasks = state.get("tasks")
@@ -773,7 +814,9 @@ def validate_v2_state(
             for filename in ("spec.md", "evidence.md", "reflection.md"):
                 _read_nonempty(project_dir / filename, filename, report)
             working_directory_value = state.get("working_directory")
-            working_directory = Path(working_directory_value) if isinstance(working_directory_value, str) else project_dir
+            working_directory = (
+                Path(working_directory_value) if isinstance(working_directory_value, str) else project_dir
+            )
             for task_id, task in tasks_by_id.items():
                 if task.get("status") != "DONE":
                     continue
@@ -793,14 +836,23 @@ def validate_v2_state(
     return report
 
 
+def _has_readable_content(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        return bool(read_text(path).strip())
+    except WorkspaceError:
+        return False
+
+
 def validate_legacy_v1(project_dir: Path, *, close: bool, allow_legacy_close: bool) -> ValidationReport:
     report = ValidationReport(
         warnings=["legacy schema v1 has no canonical machine-readable task state; validation is necessarily limited"]
     )
     required = [project_dir / "00_meta.yaml", project_dir / "02_task_plan.md"]
     for path in required:
-        if not path.is_file() or not path.read_text(encoding="utf-8").strip():
-            report.errors.append(f"legacy workspace is missing required content: {path.name}")
+        if not _has_readable_content(path):
+            report.errors.append(f"legacy workspace is missing readable content: {path.name}")
     if close and not allow_legacy_close:
         report.errors.append(
             "legacy v1 closure requires either explicit migration to v3 or --allow-legacy-close "
@@ -808,8 +860,8 @@ def validate_legacy_v1(project_dir: Path, *, close: bool, allow_legacy_close: bo
         )
     if close and allow_legacy_close:
         reflection = project_dir / "reflection.md"
-        if not reflection.is_file() or not reflection.read_text(encoding="utf-8").strip():
-            report.errors.append("legacy closure requires a non-empty reflection.md")
+        if not _has_readable_content(reflection):
+            report.errors.append("legacy closure requires a non-empty, readable reflection.md")
     return report
 
 
@@ -852,9 +904,13 @@ def validate_project(
     if check_index and version in {2, 3}:
         expected = render_index(project_dir.parent)
         index_path = project_dir.parent / "INDEX.md"
-        actual = index_path.read_text(encoding="utf-8") if index_path.is_file() else ""
-        if actual != expected:
-            report.errors.append(f"derived index is stale: {index_path}")
+        try:
+            actual = read_text(index_path) if index_path.is_file() else ""
+        except WorkspaceError as error:
+            report.errors.append(f"derived index is unreadable: {error}")
+        else:
+            if actual != expected:
+                report.errors.append(f"derived index is stale: {index_path}")
     return report
 
 
@@ -866,9 +922,9 @@ def _legacy_title(project_dir: Path) -> str:
     plan_path = project_dir / "02_task_plan.md"
     try:
         first_heading = next(
-            line.lstrip("# ").strip() for line in plan_path.read_text(encoding="utf-8").splitlines() if line.startswith("#")
+            line.lstrip("# ").strip() for line in read_text(plan_path).splitlines() if line.startswith("#")
         )
-    except (OSError, StopIteration):
+    except (WorkspaceError, StopIteration):
         return project_dir.name
     return first_heading.removeprefix("Task Plan — ").removeprefix("Task Plan - ")
 
@@ -910,13 +966,57 @@ def render_index(workspace_root: Path) -> str:
     return header + body
 
 
+def _rebuild_index_after_commit(workspace_root: Path, committed: str, lock_timeout: float) -> None:
+    """Rebuild the index, making clear that a failure here did not undo the committed write.
+
+    The index rebuild happens after the state file lands and takes a *workspace*-wide lock, so a
+    concurrent rebuild is enough to fail it. Reporting that as a bare lock conflict made a
+    committed migration look like a failed one, and the obvious retry then refused because the
+    project was already v3. Say what actually happened and name the command that finishes it.
+
+    Filesystem failures arrive as WorkspaceError because rebuild_index normalises them at the
+    source; that matters most here, after a commit, where a bare OSError traceback out of the CLI
+    would invite a retry of work that already landed.
+    """
+    try:
+        rebuild_index(workspace_root, lock_timeout=lock_timeout)
+    except WorkspaceError as error:
+        raise WorkspaceError(
+            f"{committed}, but INDEX.md was not rebuilt: {error}\n"
+            f"nothing is lost and nothing needs redoing: finish with "
+            f"'manage_workspace.py rebuild-index {workspace_root}'"
+        ) from error
+
+
 def rebuild_index(workspace_root: Path, *, lock_timeout: float = 5.0) -> Path:
-    workspace_root = workspace_root.resolve()
-    workspace_root.mkdir(parents=True, exist_ok=True)
-    with DirectoryLock(workspace_root / ".index.lock", timeout=lock_timeout):
+    # Filesystem failures are normalised here rather than at the call sites, because the CLIs
+    # translate WorkspaceError alone and this is both the step every commit ends with and the
+    # command the post-commit error tells the operator to run. A read-only workspace root fails in
+    # the lock's own mkdir, before any write, so the whole body is covered, not just the write.
+    try:
+        workspace_root = workspace_root.resolve()
         index_path = workspace_root / "INDEX.md"
-        atomic_write_text(index_path, render_index(workspace_root))
-    return index_path
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        with DirectoryLock(workspace_root / ".index.lock", timeout=lock_timeout):
+            atomic_write_text(index_path, render_index(workspace_root))
+        return index_path
+    except OSError as error:
+        raise WorkspaceError(f"cannot rebuild {workspace_root / 'INDEX.md'}: {error}") from error
+
+
+def _task_index(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index a state's tasks by id, skipping anything that is not a task with a usable id.
+
+    `candidate` reaches check_state_transition *before* validate_v3_state has vetted it, so its
+    task ids are arbitrary JSON. Keying a dict on them directly crashed on an unhashable id
+    (`"id": []` raised TypeError), and the CLIs only translate WorkspaceError — so the user saw
+    a traceback instead of a validation error. A task with no usable id has no counterpart to
+    compare against anyway; skip it here and let validation report the real problem.
+    """
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        return {}
+    return {task["id"]: task for task in tasks if isinstance(task, dict) and _non_empty_string(task.get("id"))}
 
 
 def check_state_transition(previous: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
@@ -929,8 +1029,8 @@ def check_state_transition(previous: dict[str, Any], candidate: dict[str, Any]) 
         and not _enum_string(candidate_status, PROJECT_TRANSITIONS[previous_status])
     ):
         errors.append(f"invalid project transition: {previous_status} -> {candidate_status}")
-    previous_tasks = {task.get("id"): task for task in previous.get("tasks", []) if isinstance(task, dict)}
-    candidate_tasks = {task.get("id"): task for task in candidate.get("tasks", []) if isinstance(task, dict)}
+    previous_tasks = _task_index(previous)
+    candidate_tasks = _task_index(candidate)
     removed = sorted(task_id for task_id in previous_tasks if task_id not in candidate_tasks)
     if removed:
         errors.append(f"tasks cannot be removed: {', '.join(removed)}")
@@ -990,7 +1090,9 @@ def commit_candidate(
         if report.errors:
             raise WorkspaceError("candidate validation failed:\n- " + "\n- ".join(report.errors))
         atomic_write_json(project_dir / "project.json", candidate)
-    rebuild_index(project_dir.parent, lock_timeout=lock_timeout)
+    # The commit already landed; a failed index rebuild must not read as a failed commit, or the
+    # retry reloads and reports a revision conflict against the write that actually succeeded.
+    _rebuild_index_after_commit(project_dir.parent, f"revision {candidate['revision']} is committed", lock_timeout)
     return candidate
 
 
@@ -1035,7 +1137,9 @@ def allocate_project(
             "cancellation_reason": None,
             "tasks": [],
         }
-        atomic_write_json(project_dir / "project.json", state)
+        # project.json is the commit point: write the skeleton first so an interrupted init leaves
+        # an inert directory that detect_schema does not recognise and render_index skips, rather
+        # than a project that reports schema v3 while missing the files v3 requires.
         atomic_write_text(
             project_dir / "spec.md",
             f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n"
@@ -1044,7 +1148,8 @@ def allocate_project(
         atomic_write_text(project_dir / "evidence.md", "# Evidence\n\nNo task evidence recorded yet.\n")
         if not (workspace_root / "reflection.md").exists():
             atomic_write_text(workspace_root / "reflection.md", "# Cross-project reflection\n")
-        rebuild_index(workspace_root, lock_timeout=lock_timeout)
+        atomic_write_json(project_dir / "project.json", state)
+        _rebuild_index_after_commit(workspace_root, f"project {project_dir} is initialized", lock_timeout)
     except BaseException:
         # The newly allocated directory is private to this failed initialization. Leave it intact
         # for inspection instead of performing a potentially broad cleanup.
@@ -1059,9 +1164,10 @@ def _reference_from_v2(
     *,
     evidence: bool,
 ) -> dict[str, Any]:
-    path_value, separator, anchor = value.partition("#") if evidence else (value, "", "")
+    path_value, _separator, anchor = value.partition("#") if evidence else (value, "", "")
+    result: dict[str, Any]
     if is_external_reference(value):
-        result: dict[str, Any] = {"root": "external", "path": value}
+        result = {"root": "external", "path": value}
     else:
         old_path = Path(path_value).expanduser()
         if old_path.is_absolute():
@@ -1074,11 +1180,15 @@ def _reference_from_v2(
                     relative = resolved.relative_to(working_directory.resolve())
                     result = {"root": "target", "path": str(relative)}
                 except ValueError as error:
-                    raise WorkspaceError(f"cannot migrate output outside workspace and target roots: {value}") from error
+                    raise WorkspaceError(
+                        f"cannot migrate output outside workspace and target roots: {value}"
+                    ) from error
         else:
             workspace_candidate = project_dir / old_path
             target_candidate = working_directory / old_path
-            if project_dir.resolve() == working_directory.resolve() or workspace_candidate.exists() and not target_candidate.exists():
+            if project_dir.resolve() == working_directory.resolve() or (
+                workspace_candidate.exists() and not target_candidate.exists()
+            ):
                 root = "workspace"
             elif target_candidate.exists() and not workspace_candidate.exists():
                 root = "target"
@@ -1103,14 +1213,46 @@ def _reference_from_v2(
 def migrate_v2_state(state: dict[str, Any], project_dir: Path) -> dict[str, Any]:
     working_directory = Path(state.get("working_directory", project_dir)).expanduser().resolve()
     migrated_tasks: list[dict[str, Any]] = []
+    reconciled_running: list[Any] = []
     for task in state.get("tasks", []):
         if not isinstance(task, dict):
             raise WorkspaceError("cannot migrate non-object task")
         external = task.get("external_effect") is True
-        authorization_status = "explicit" if external and task.get("authorization") == "explicit" else "pending" if external else "not_required"
+        # v2's `authorization: "explicit"` was a single coarse marker; v3 authorization is
+        # per-action, carrying a scope, a source and a timestamp. Replaying that marker onto a
+        # task whose external effect has NOT run yet would hand it pre-granted, action-shaped
+        # consent for something nobody approved in v3 terms — and v3 validation would report no
+        # problem at all. SKILL.md commits a task to RUNNING *before* performing its action, so
+        # RUNNING says nothing about whether the effect happened; only DONE does, and v2 already
+        # refused to call a task DONE without the marker. A RUNNING external task therefore parks
+        # as BLOCKED for reconciliation: that avoids both fabricating consent and — because v3
+        # requires explicit authorization on RUNNING tasks — making a valid v2 project
+        # unmigratable, which is what leaving it RUNNING with `pending` would do.
+        legacy_marker = task.get("authorization") == "explicit"
+        completed = task.get("status") == "DONE"
+        if not external:
+            authorization_status = "not_required"
+        elif legacy_marker and completed:
+            authorization_status = "explicit"
+        else:
+            authorization_status = "pending"
+        task_status = task.get("status")
+        if external and task_status == "RUNNING":
+            task_status = "BLOCKED"
+            block_reason = (
+                "Migrated from schema v2 while RUNNING: v2 recorded no per-action authorization, so "
+                "confirm whether the external effect already ran, then re-authorize before resuming."
+            )
+            reconciled_running.append(task.get("id"))
+        elif task_status == "BLOCKED":
+            block_reason = "Migrated blocked task; reconcile the original blocker."
+        else:
+            block_reason = None
         external_outputs = [output for output in task.get("outputs", []) if is_external_reference(output)]
         has_local_outputs = any(not is_external_reference(output) for output in task.get("outputs", []))
-        authorized_at = state.get("updated") if authorization_status == "explicit" and _is_timestamp(state.get("updated")) else None
+        authorized_at = (
+            state.get("updated") if authorization_status == "explicit" and _is_timestamp(state.get("updated")) else None
+        )
         receipts = []
         if external and task.get("status") == "DONE":
             for output in external_outputs:
@@ -1126,7 +1268,7 @@ def migrate_v2_state(state: dict[str, Any], project_dir: Path) -> dict[str, Any]
             {
                 "id": task.get("id"),
                 "name": task.get("name"),
-                "status": task.get("status"),
+                "status": task_status,
                 "depends_on": list(task.get("depends_on", [])),
                 "outputs": [
                     _reference_from_v2(output, project_dir, working_directory, evidence=False)
@@ -1151,15 +1293,13 @@ def migrate_v2_state(state: dict[str, Any], project_dir: Path) -> dict[str, Any]
                 },
                 "receipts": receipts,
                 "skip_reason": task.get("skip_reason"),
-                "block_reason": "Migrated blocked task; reconcile the original blocker." if task.get("status") == "BLOCKED" else None,
+                "block_reason": block_reason,
             }
         )
     review_cycle = state.get("review_cycle", 0)
     review_evidence = []
     if isinstance(review_cycle, int) and review_cycle > 0:
-        review_evidence.append(
-            {"root": "workspace", "path": f"reviews/review_{review_cycle:02d}.md", "anchor": None}
-        )
+        review_evidence.append({"root": "workspace", "path": f"reviews/review_{review_cycle:02d}.md", "anchor": None})
     current = state.get("current_task")
     if current is None:
         current_tasks: list[str] = []
@@ -1169,6 +1309,9 @@ def migrate_v2_state(state: dict[str, Any], project_dir: Path) -> dict[str, Any]
         current_tasks = current
     else:
         raise WorkspaceError("cannot migrate malformed current_task")
+    # A task parked for authorization reconciliation is no longer RUNNING, and current_tasks must
+    # match the RUNNING set exactly or v3 validation rejects the candidate.
+    current_tasks = [task_id for task_id in current_tasks if task_id not in reconciled_running]
     created = state.get("created")
     if not _is_timestamp(created):
         try:
@@ -1192,7 +1335,9 @@ def migrate_v2_state(state: dict[str, Any], project_dir: Path) -> dict[str, Any]
             "status": "recorded" if review_cycle else "not_required",
             "evidence": review_evidence,
         },
-        "cancellation_reason": "Migrated cancelled project; original reason unavailable." if state.get("status") == "CANCELLED" else None,
+        "cancellation_reason": "Migrated cancelled project; original reason unavailable."
+        if state.get("status") == "CANCELLED"
+        else None,
         "tasks": migrated_tasks,
     }
 
@@ -1203,8 +1348,8 @@ def _legacy_value(meta: str, key: str) -> str | None:
 
 
 def migrate_v1_state(project_dir: Path) -> dict[str, Any]:
-    meta = (project_dir / "00_meta.yaml").read_text(encoding="utf-8")
-    plan = (project_dir / "02_task_plan.md").read_text(encoding="utf-8")
+    meta = read_text(project_dir / "00_meta.yaml")
+    plan = read_text(project_dir / "02_task_plan.md")
     title = _legacy_title(project_dir)
     task_matches = list(re.finditer(r"^##\s+Task\s+(\d+)\s+[—-]\s+(.+?)\s*$", plan, re.MULTILINE))
     tasks: list[dict[str, Any]] = []
@@ -1222,10 +1367,10 @@ def migrate_v1_state(project_dir: Path) -> dict[str, Any]:
                 "name": match.group(2).strip(),
                 "status": "TODO",
                 "depends_on": [],
-                "outputs": [
-                    {"root": "workspace", "path": output, "required": True} for output in output_values
-                ],
-                "success_criteria": success_match.group(1).strip() if success_match else "Reconcile legacy success criteria.",
+                "outputs": [{"root": "workspace", "path": output, "required": True} for output in output_values],
+                "success_criteria": success_match.group(1).strip()
+                if success_match
+                else "Reconcile legacy success criteria.",
                 "verification": "Define verification after reconciling the legacy task state.",
                 "evidence": [],
                 "effect": {"kind": "none", "description": None},
@@ -1279,22 +1424,23 @@ def migration_candidate(project_dir: Path) -> dict[str, Any]:
 
 def apply_migration(project_dir: Path, *, lock_timeout: float = 5.0) -> Path:
     project_dir = project_dir.resolve()
+    state_path = project_dir / "project.json"
     with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
         version = detect_schema(project_dir)
         candidate = migration_candidate(project_dir)
         report = validate_v3_state(candidate, project_dir, close=candidate.get("status") == "DONE", check_files=True)
         if report.errors:
             raise WorkspaceError("migration candidate is not valid:\n- " + "\n- ".join(report.errors))
-        state_path = project_dir / "project.json"
-        if version == 2:
-            backup_path = project_dir / "project.v2.json"
-            if backup_path.exists():
-                raise WorkspaceError(f"migration backup already exists: {backup_path}")
-            atomic_write_text(backup_path, state_path.read_text(encoding="utf-8"))
-        atomic_write_json(state_path, candidate)
+        # Order matters. Everything below is idempotent or existence-guarded, and the v3 state
+        # file is written LAST: until that write lands, detect_schema still reports the old
+        # version, so a failure part-way through leaves a project a plain re-run can migrate.
+        # Writing the state first stranded the project at v3 without its v3 files, and the
+        # retry then refused with "project already uses schema v3" — unrecoverable by hand.
         if version == 1 and not (project_dir / "spec.md").exists():
             problem_path = project_dir / "01_problem_statement.md"
-            problem = problem_path.read_text(encoding="utf-8").strip() if problem_path.is_file() else "Reconcile the legacy problem statement."
+            problem = (
+                read_text(problem_path).strip() if problem_path.is_file() else "Reconcile the legacy problem statement."
+            )
             atomic_write_text(
                 project_dir / "spec.md",
                 f"# {candidate['title']}\n\n## Current specification\n\n{problem}\n\n"
@@ -1305,5 +1451,14 @@ def apply_migration(project_dir: Path, *, lock_timeout: float = 5.0) -> Path:
         (project_dir / "tasks").mkdir(exist_ok=True)
         (project_dir / "artifacts").mkdir(exist_ok=True)
         (project_dir / "reviews").mkdir(exist_ok=True)
-    rebuild_index(project_dir.parent, lock_timeout=lock_timeout)
+        if version == 2:
+            backup_path = project_dir / "project.v2.json"
+            legacy_state = read_text(state_path)
+            # A backup already holding this exact still-unmigrated state is our own interrupted
+            # run, so a retry may proceed. Any other content is a file we must not clobber.
+            if backup_path.exists() and read_text(backup_path) != legacy_state:
+                raise WorkspaceError(f"migration backup already exists: {backup_path}")
+            atomic_write_text(backup_path, legacy_state)
+        atomic_write_json(state_path, candidate)
+    _rebuild_index_after_commit(project_dir.parent, "migration is committed", lock_timeout)
     return state_path

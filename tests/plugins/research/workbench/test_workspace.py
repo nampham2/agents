@@ -7,8 +7,9 @@ import tempfile
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import Any
 
-from agents.workspace.lib import (
+from workspace_lib import (
     DirectoryLock,
     WorkspaceConflict,
     commit_candidate,
@@ -42,7 +43,7 @@ class WorkspaceFixture:
         (self.project_dir / "reflection.md").write_text("# Reflection\n\nThe task completed.\n", encoding="utf-8")
         (self.target_dir / "out.txt").write_text("result\n", encoding="utf-8")
 
-    def task(self, task_id: str = "T01", status: str = "DONE") -> dict[str, object]:
+    def task(self, task_id: str = "T01", status: str = "DONE") -> dict[str, Any]:
         return {
             "id": task_id,
             "name": "Produce output",
@@ -65,7 +66,7 @@ class WorkspaceFixture:
             "block_reason": None,
         }
 
-    def state(self, status: str = "DONE") -> dict[str, object]:
+    def state(self, status: str = "DONE") -> dict[str, Any]:
         return {
             "schema_version": 3,
             "project": self.project_dir.name,
@@ -142,9 +143,7 @@ class ValidationTests(unittest.TestCase):
             "source": "User message",
             "authorized_at": TIMESTAMP,
         }
-        task["receipts"] = [
-            {"kind": "publish", "value": "ok", "destination": "example", "timestamp": TIMESTAMP}
-        ]
+        task["receipts"] = [{"kind": "publish", "value": "ok", "destination": "example", "timestamp": TIMESTAMP}]
         report = validate_v3_state(state, self.fixture.project_dir, close=True)
         self.assertTrue(any("durable prefixed identifier" in error for error in report.errors))
 

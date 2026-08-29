@@ -18,11 +18,35 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      # Lint and type-check everything, tests included: the shipped code lives under
+      # plugins/, and scoping these narrower than the repo is what let two copies of
+      # the library drift apart unnoticed.
       - name: Lint
-        run: uv run ruff check src tests
+        run: uv run ruff check .
 
       - name: Type check
-        run: uv run ty check src
+        run: uv run ty check .
 
       - name: Test
         run: uv run pytest
+
+  python39-compat:
+    # SKILL.md tells Claude to run the scripts with plain `python3`, which on many
+    # machines is still 3.9. The dev toolchain needs >=3.11, but the shipped scripts
+    # must keep importing and running on 3.9 — this job is what enforces that.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+
+      - name: Smoke-test the shipped scripts on Python 3.9
+        working-directory: plugins/research/skills/workbench/scripts
+        run: |
+          python -c "import workspace_lib"
+          workdir="$(mktemp -d)"
+          project="$(python manage_workspace.py init "$workdir/ws" \
+            --title "CI smoke" --working-directory "$workdir")"
+          python validate_workspace.py "$project"

@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 MANAGER = REPO_ROOT / "plugins/research/skills/workbench/scripts/manage_workspace.py"
@@ -26,7 +27,7 @@ class CliIntegrationTests(unittest.TestCase):
         return subprocess.run(command, check=check, capture_output=True, text=True)
 
     @staticmethod
-    def task(status: str) -> dict[str, object]:
+    def task(status: str) -> dict[str, Any]:
         return {
             "id": "T01",
             "name": "Create output",
@@ -49,7 +50,7 @@ class CliIntegrationTests(unittest.TestCase):
             "block_reason": None,
         }
 
-    def commit(self, project_dir: Path, state: dict[str, object], expected_revision: int) -> dict[str, object]:
+    def commit(self, project_dir: Path, state: dict[str, Any], expected_revision: int) -> dict[str, Any]:
         candidate = self.root / f"candidate-{expected_revision}.json"
         candidate.write_text(json.dumps(state), encoding="utf-8")
         self.run_cli(MANAGER, "commit", project_dir, candidate, "--expected-revision", expected_revision)

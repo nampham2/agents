@@ -6,13 +6,6 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = []
 
-[build-system]
-requires = ["uv-build>=0.12.6,<0.13"]
-build-backend = "uv_build"
-
-[tool.uv.build-backend]
-module-name = ["agents"]
-
 [dependency-groups]
 dev = [
     "pytest>=9,<10",
@@ -24,15 +17,21 @@ dev = [
 
 [tool.uv]
 default-groups = ["dev"]
+# No importable package here: the shipped code is the plugin scripts, run directly by Claude.
+package = false
+
+[tool.ty.environment]
+# Mirrors the sys.path insert in tests/conftest.py, so the type checker and editors
+# resolve the plugin scripts the same way Claude and the tests do.
+extra-paths = ["plugins/research/skills/workbench/scripts"]
 
 [tool.ruff]
 line-length = 120
 target-version = "py311"
 
 [tool.ruff.lint.per-file-ignores]
-# lib.py is kept in sync with the standalone skill script; long lines and the
-# established WorkspaceConflict name are intentional.
-"src/agents/workspace/lib.py" = ["E501", "N818"]
+# workspace_lib.py has long lines and the established WorkspaceConflict name.
+"plugins/research/skills/workbench/scripts/workspace_lib.py" = ["E501", "N818"]
 
 [tool.ruff.lint]
 select = [
@@ -50,8 +49,7 @@ select = [
 addopts = """
     --durations=10
     --strict-markers
-    --basetemp=/tmp/_agents_tests
-    --cov=src/agents
+    --cov=plugins/research/skills/workbench/scripts
     --cov-report=term-missing
 """
 testpaths = ["tests"]

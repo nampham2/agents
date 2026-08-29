@@ -1,0 +1,12 @@
+{
+  "name": "agents",
+  "description": "Personal Claude agent skills and plugins",
+  "owner": { "name": "Nam Pham" },
+  "plugins": [
+    {
+      "name": "research",
+      "source": "./plugins/research",
+      "description": "workbench — persistent, transactional workspace management for long-running work"
+    }
+  ]
+}

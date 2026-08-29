@@ -1,4 +1,5 @@
-"""Tests for src/agents/workspace/cli.py — achieves 100% line coverage."""
+"""Tests for the workbench manage/validate entrypoint scripts — achieves 100% line coverage."""
+
 from __future__ import annotations
 
 import copy
@@ -10,21 +11,23 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agents.workspace import cli
-from agents.workspace.lib import WorkspaceError, allocate_project
+import manage_workspace
+import validate_workspace
+from workspace_lib import WorkspaceError, allocate_project
 
 TIMESTAMP = "2026-08-28T10:00:00+02:00"
 REPO_ROOT = Path(__file__).resolve().parents[4]
+MANAGER = REPO_ROOT / "plugins/research/skills/workbench/scripts/manage_workspace.py"
 
 
 def _call_manage(args: list[str]) -> int:
     with patch.object(sys, "argv", ["manage", *args]):
-        return cli.manage()
+        return manage_workspace.main()
 
 
 def _call_validate(args: list[str]) -> int:
     with patch.object(sys, "argv", ["validate", *args]):
-        return cli.validate()
+        return validate_workspace.main()
 
 
 class ManageCLIInitTests(unittest.TestCase):
@@ -37,22 +40,32 @@ class ManageCLIInitTests(unittest.TestCase):
         self.target.mkdir()
 
     def test_init_creates_project(self) -> None:
-        result = _call_manage([
-            "init", str(self.workspace),
-            "--title", "Test Project",
-            "--working-directory", str(self.target),
-        ])
+        result = _call_manage(
+            [
+                "init",
+                str(self.workspace),
+                "--title",
+                "Test Project",
+                "--working-directory",
+                str(self.target),
+            ]
+        )
         self.assertEqual(0, result)
         dirs = [d for d in self.workspace.iterdir() if d.is_dir() and not d.name.startswith(".")]
         self.assertEqual(1, len(dirs))
 
     def test_init_workspace_error_returns_1(self) -> None:
-        with patch("agents.workspace.cli.allocate_project", side_effect=WorkspaceError("bad title")):
-            result = _call_manage([
-                "init", str(self.workspace),
-                "--title", "",
-                "--working-directory", str(self.target),
-            ])
+        with patch("manage_workspace.allocate_project", side_effect=WorkspaceError("bad title")):
+            result = _call_manage(
+                [
+                    "init",
+                    str(self.workspace),
+                    "--title",
+                    "",
+                    "--working-directory",
+                    str(self.target),
+                ]
+            )
         self.assertEqual(1, result)
 
 
@@ -72,18 +85,28 @@ class ManageCLICommitTests(unittest.TestCase):
         candidate["title"] = "Updated"
         candidate_path = self.root / "candidate.json"
         candidate_path.write_text(json.dumps(candidate), encoding="utf-8")
-        result = _call_manage([
-            "commit", str(self.project_dir), str(candidate_path),
-            "--expected-revision", "0",
-        ])
+        result = _call_manage(
+            [
+                "commit",
+                str(self.project_dir),
+                str(candidate_path),
+                "--expected-revision",
+                "0",
+            ]
+        )
         self.assertEqual(0, result)
 
     def test_commit_workspace_error_returns_1(self) -> None:
-        with patch("agents.workspace.cli.commit_candidate", side_effect=WorkspaceError("conflict")):
-            result = _call_manage([
-                "commit", str(self.project_dir), str(self.root / "c.json"),
-                "--expected-revision", "0",
-            ])
+        with patch("manage_workspace.commit_candidate", side_effect=WorkspaceError("conflict")):
+            result = _call_manage(
+                [
+                    "commit",
+                    str(self.project_dir),
+                    str(self.root / "c.json"),
+                    "--expected-revision",
+                    "0",
+                ]
+            )
         self.assertEqual(1, result)
 
 
@@ -99,7 +122,7 @@ class ManageCLIRebuildIndexTests(unittest.TestCase):
         self.assertEqual(0, result)
 
     def test_rebuild_index_workspace_error_returns_1(self) -> None:
-        with patch("agents.workspace.cli.rebuild_index", side_effect=WorkspaceError("locked")):
+        with patch("manage_workspace.rebuild_index", side_effect=WorkspaceError("locked")):
             result = _call_manage(["rebuild-index", str(self.workspace)])
         self.assertEqual(1, result)
 
@@ -116,9 +139,16 @@ class ManageCLIMigrateTests(unittest.TestCase):
         project_dir = self.root / "ws" / "project"
         project_dir.mkdir(parents=True)
         state = {
-            "schema_version": 2, "project": "project", "title": "T",
-            "status": status, "created": "2026-01-01", "updated": TIMESTAMP,
-            "working_directory": str(self.target), "current_task": None, "review_cycle": 0, "tasks": [],
+            "schema_version": 2,
+            "project": "project",
+            "title": "T",
+            "status": status,
+            "created": "2026-01-01",
+            "updated": TIMESTAMP,
+            "working_directory": str(self.target),
+            "current_task": None,
+            "review_cycle": 0,
+            "tasks": [],
         }
         (project_dir / "project.json").write_text(json.dumps(state), encoding="utf-8")
         return project_dir
@@ -141,13 +171,13 @@ class ManageCLIMigrateTests(unittest.TestCase):
 
     def test_migrate_workspace_error_returns_1(self) -> None:
         project_dir = self._write_v2_project()
-        with patch("agents.workspace.cli.apply_migration", side_effect=WorkspaceError("locked")):
+        with patch("manage_workspace.apply_migration", side_effect=WorkspaceError("locked")):
             result = _call_manage(["migrate", str(project_dir), "--apply"])
         self.assertEqual(1, result)
 
     def test_migrate_candidate_workspace_error_returns_1(self) -> None:
         project_dir = self._write_v2_project()
-        with patch("agents.workspace.cli.migration_candidate", side_effect=WorkspaceError("no v2")):
+        with patch("manage_workspace.migration_candidate", side_effect=WorkspaceError("no v2")):
             result = _call_manage(["migrate", str(project_dir)])
         self.assertEqual(1, result)
 
@@ -176,9 +206,16 @@ class ValidateCLITests(unittest.TestCase):
         project_dir = self.root / "v2proj"
         project_dir.mkdir()
         state = {
-            "schema_version": 2, "project": "v2proj", "title": "T",
-            "status": "PLANNING", "created": "2026-01-01", "updated": TIMESTAMP,
-            "working_directory": str(self.target), "current_task": None, "review_cycle": 0, "tasks": [],
+            "schema_version": 2,
+            "project": "v2proj",
+            "title": "T",
+            "status": "PLANNING",
+            "created": "2026-01-01",
+            "updated": TIMESTAMP,
+            "working_directory": str(self.target),
+            "current_task": None,
+            "review_cycle": 0,
+            "tasks": [],
         }
         (project_dir / "project.json").write_text(json.dumps(state), encoding="utf-8")
         result = _call_validate([str(project_dir)])
@@ -205,27 +242,30 @@ class ValidateCLITests(unittest.TestCase):
 
 
 class CLIMainBlockTest(unittest.TestCase):
-    """Covers lines 135-136: if __name__ == '__main__': raise SystemExit(manage())."""
+    """The script runs standalone the way SKILL.md invokes it: `python3 manage_workspace.py ...`."""
 
-    def test_module_runs_as_main_via_subprocess(self) -> None:
+    def test_script_runs_as_main_via_subprocess(self) -> None:
         workspace = Path(tempfile.mkdtemp())
         target = Path(tempfile.mkdtemp())
         try:
             result = subprocess.run(
                 [
-                    sys.executable, "-m", "agents.workspace.cli",
-                    "init", str(workspace),
-                    "--title", "SubprocessTest",
-                    "--working-directory", str(target),
+                    sys.executable,
+                    str(MANAGER),
+                    "init",
+                    str(workspace),
+                    "--title",
+                    "SubprocessTest",
+                    "--working-directory",
+                    str(target),
                 ],
                 capture_output=True,
                 text=True,
-                cwd=str(REPO_ROOT),
-                env={**__import__("os").environ, "PYTHONPATH": str(REPO_ROOT / "src")},
             )
             self.assertEqual(0, result.returncode)
         finally:
             import shutil
+
             shutil.rmtree(str(workspace), ignore_errors=True)
             shutil.rmtree(str(target), ignore_errors=True)
 

@@ -1,4 +1,5 @@
-"""Additional tests to achieve 100% coverage for src/agents/workspace/lib.py."""
+"""Additional tests to achieve 100% coverage for the workbench workspace_lib module."""
+
 from __future__ import annotations
 
 import copy
@@ -8,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from agents.workspace.lib import (
+from workspace_lib import (
     DirectoryLock,
     ValidationReport,
     WorkspaceError,
@@ -144,6 +145,10 @@ class UtilityTests(unittest.TestCase):
         self.assertFalse(is_external_reference("https://example.com/ path"))
         self.assertFalse(is_external_reference("receipt:abc def"))
 
+    def test_is_external_reference_rejects_malformed_bracketed_host(self) -> None:
+        self.assertFalse(is_external_reference("http://["))
+        self.assertFalse(is_external_reference("https://[::1"))
+
     # load_json error paths
     def test_load_json_raises_on_missing_file(self) -> None:
         with self.assertRaises(WorkspaceError):
@@ -161,7 +166,7 @@ class UtilityTests(unittest.TestCase):
 
     # _fsync_directory OSError path
     def test_fsync_directory_ignores_oserror(self) -> None:
-        _fsync_directory(Path("/nonexistent_dir_for_fsync_test"))  # should not raise
+        self.assertIsNone(_fsync_directory(Path("/nonexistent_dir_for_fsync_test")))  # must not raise
 
     # atomic_write_text exception cleanup
     def test_atomic_write_text_cleans_up_temp_on_failure(self) -> None:
@@ -173,6 +178,15 @@ class UtilityTests(unittest.TestCase):
             leftover = list(Path(tmp).glob(".out.txt.*.tmp"))
             self.assertEqual([], leftover)
 
+    def test_atomic_write_text_normalizes_unicode_encode_error_and_cleans_up(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "out.txt"
+            with self.assertRaises(WorkspaceError) as caught:
+                atomic_write_text(path, "unpaired surrogate: \udcff")
+            self.assertIn("cannot write", str(caught.exception))
+            self.assertFalse(path.exists())
+            self.assertEqual([], list(Path(tmp).glob(".out.txt.*.tmp")))
+
     # _unexpected_fields non-empty extras
     def test_unexpected_fields_reports_extras(self) -> None:
         report = ValidationReport()
@@ -183,12 +197,14 @@ class UtilityTests(unittest.TestCase):
     def test_resolve_local_reference_rejects_absolute_path(self) -> None:
         resolved, error = _resolve_local_reference(Path("/tmp/ws"), Path("/tmp/tgt"), "workspace", "/absolute")
         self.assertIsNone(resolved)
-        self.assertIn("must be relative", error)
+        self.assertIsNotNone(error)
+        self.assertIn("must be relative", error or "")
 
     def test_resolve_local_reference_rejects_dotdot(self) -> None:
         resolved, error = _resolve_local_reference(Path("/tmp/ws"), Path("/tmp/tgt"), "workspace", "../escape")
         self.assertIsNone(resolved)
-        self.assertIn("must be relative", error)
+        self.assertIsNotNone(error)
+        self.assertIn("must be relative", error or "")
 
 
 # ===========================================================================
@@ -204,7 +220,7 @@ class DirectoryLockErrorTests(unittest.TestCase):
 
     def test_owner_json_write_failure_releases_lock_dir(self) -> None:
         lock_path = self.root / ".lock"
-        with patch("agents.workspace.lib.atomic_write_json", side_effect=OSError("write failed")):
+        with patch("workspace_lib.atomic_write_json", side_effect=OSError("write failed")):
             with self.assertRaises(OSError):
                 with DirectoryLock(lock_path):
                     pass
@@ -218,6 +234,16 @@ class DirectoryLockErrorTests(unittest.TestCase):
         lock.acquired = True
         with self.assertRaises(WorkspaceError):
             lock.__exit__(None, None, None)
+
+    def test_exit_does_not_mask_in_flight_exception_when_rmdir_fails(self) -> None:
+        lock_path = self.root / ".lock"
+
+        with self.assertRaises(ZeroDivisionError):
+            with DirectoryLock(lock_path):
+                # Leave the lock directory non-empty so release fails too; the body's
+                # exception is the one that must reach the caller.
+                (lock_path / "unexpected").write_text("blocking rmdir", encoding="utf-8")
+                raise ZeroDivisionError("failure inside the guarded block")
 
 
 # ===========================================================================
@@ -696,7 +722,9 @@ class ValidateV3StateBranchTests(unittest.TestCase):
     def test_review_evidence_item_is_validated(self) -> None:
         state = self._state()
         state["review"] = {
-            "cycle": 1, "required": False, "status": "accepted",
+            "cycle": 1,
+            "required": False,
+            "status": "accepted",
             "evidence": [{"root": "workspace", "path": "../escape.md", "anchor": None}],
         }
         report = validate_v3_state(state, self.project_dir)
@@ -791,80 +819,136 @@ class ValidateV2StateTests(unittest.TestCase):
 
     def test_invalid_task_id(self) -> None:
         task = {
-            "id": None, "name": "T", "status": "TODO",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": None,
+            "name": "T",
+            "status": "TODO",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task]), self.project_dir)
         self.assertTrue(any("id must be a non-empty string" in e for e in report.errors))
 
     def test_duplicate_task_id_rejected(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "TODO",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "TODO",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task, dict(task)]), self.project_dir)
         self.assertTrue(any("duplicate task ID" in e for e in report.errors))
 
     def test_invalid_external_effect_type(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "TODO",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": "yes",
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "TODO",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": "yes",
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task]), self.project_dir)
         self.assertTrue(any("external_effect must be a boolean" in e for e in report.errors))
 
     def test_invalid_depends_on_type(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "TODO",
-            "depends_on": "not_list", "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "TODO",
+            "depends_on": "not_list",
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task]), self.project_dir)
         self.assertTrue(any("must be a list of non-empty strings" in e for e in report.errors))
 
     def test_done_task_requires_evidence(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "DONE",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task], status="DONE"), self.project_dir, check_files=False)
         self.assertTrue(any("DONE task requires evidence" in e for e in report.errors))
 
     def test_external_effect_done_without_explicit_auth(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "DONE",
-            "depends_on": [], "outputs": ["https://example.com/r"], "success_criteria": "x",
-            "verification": "x", "evidence": ["evidence.md#T01"], "external_effect": True,
-            "authorization": "pending", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": ["https://example.com/r"],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": ["evidence.md#T01"],
+            "external_effect": True,
+            "authorization": "pending",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task], current_task=None), self.project_dir, check_files=False)
         self.assertTrue(any("lacks explicit authorization" in e for e in report.errors))
 
     def test_skipped_task_requires_skip_reason(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "SKIPPED",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "SKIPPED",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task]), self.project_dir)
         self.assertTrue(any("SKIPPED task requires skip_reason" in e for e in report.errors))
 
     def test_close_with_non_terminal_tasks(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "TODO",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "TODO",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(
             self._v2(tasks=[task], status="DONE"), self.project_dir, close=True, check_files=False
@@ -873,10 +957,17 @@ class ValidateV2StateTests(unittest.TestCase):
 
     def test_done_task_output_file_checked(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "DONE",
-            "depends_on": [], "outputs": ["out.txt"], "success_criteria": "x",
-            "verification": "x", "evidence": ["evidence.md#T01"], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": ["out.txt"],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": ["evidence.md#T01"],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         state = self._v2(tasks=[task], status="DONE")
         report = validate_v2_state(state, self.project_dir, close=True, check_files=True)
@@ -884,10 +975,17 @@ class ValidateV2StateTests(unittest.TestCase):
 
     def test_done_task_missing_output_file(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "DONE",
-            "depends_on": [], "outputs": ["missing.txt"], "success_criteria": "x",
-            "verification": "x", "evidence": ["evidence.md#T01"], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": ["missing.txt"],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": ["evidence.md#T01"],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         state = self._v2(tasks=[task], status="DONE")
         report = validate_v2_state(state, self.project_dir, close=True, check_files=True)
@@ -895,20 +993,34 @@ class ValidateV2StateTests(unittest.TestCase):
 
     def test_invalid_task_status(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "BOGUS",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "BOGUS",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task]), self.project_dir)
         self.assertTrue(any("invalid status" in e for e in report.errors))
 
     def test_task_name_empty_rejected(self) -> None:
         task = {
-            "id": "T01", "name": "", "status": "TODO",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "",
+            "status": "TODO",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         report = validate_v2_state(self._v2(tasks=[task]), self.project_dir)
         self.assertTrue(any("name must be a non-empty string" in e for e in report.errors))
@@ -919,16 +1031,30 @@ class ValidateV2StateTests(unittest.TestCase):
 
     def test_non_done_task_skipped_in_close_file_loop(self) -> None:
         skipped = {
-            "id": "T01", "name": "T", "status": "SKIPPED",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": [], "external_effect": False,
-            "authorization": "not_required", "skip_reason": "Not needed",
+            "id": "T01",
+            "name": "T",
+            "status": "SKIPPED",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": "Not needed",
         }
         done = {
-            "id": "T02", "name": "T", "status": "DONE",
-            "depends_on": [], "outputs": [], "success_criteria": "x",
-            "verification": "x", "evidence": ["evidence.md#T02"], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T02",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": ["evidence.md#T02"],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         state = self._v2(tasks=[skipped, done], status="DONE")
         report = validate_v2_state(state, self.project_dir, close=True)
@@ -936,10 +1062,17 @@ class ValidateV2StateTests(unittest.TestCase):
 
     def test_non_list_outputs_skipped_in_close_file_loop(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "DONE",
-            "depends_on": [], "outputs": 42, "success_criteria": "x",
-            "verification": "x", "evidence": ["evidence.md#T01"], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": 42,
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": ["evidence.md#T01"],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         state = self._v2(tasks=[task], status="DONE")
         report = validate_v2_state(state, self.project_dir, close=True)
@@ -947,10 +1080,17 @@ class ValidateV2StateTests(unittest.TestCase):
 
     def test_external_output_skipped_in_close_file_loop(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "DONE",
-            "depends_on": [], "outputs": ["https://example.com/pub"], "success_criteria": "x",
-            "verification": "x", "evidence": ["evidence.md#T01"], "external_effect": True,
-            "authorization": "explicit", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": ["https://example.com/pub"],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": ["evidence.md#T01"],
+            "external_effect": True,
+            "authorization": "explicit",
+            "skip_reason": None,
         }
         state = self._v2(tasks=[task], status="DONE")
         report = validate_v2_state(state, self.project_dir, close=True)
@@ -959,10 +1099,17 @@ class ValidateV2StateTests(unittest.TestCase):
     def test_absolute_output_path_in_close_file_loop(self) -> None:
         abs_output = self.project_dir / "spec.md"
         task = {
-            "id": "T01", "name": "T", "status": "DONE",
-            "depends_on": [], "outputs": [str(abs_output)], "success_criteria": "x",
-            "verification": "x", "evidence": ["evidence.md#T01"], "external_effect": False,
-            "authorization": "not_required", "skip_reason": None,
+            "id": "T01",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": [str(abs_output)],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": ["evidence.md#T01"],
+            "external_effect": False,
+            "authorization": "not_required",
+            "skip_reason": None,
         }
         state = self._v2(tasks=[task], status="DONE")
         report = validate_v2_state(state, self.project_dir, close=True)
@@ -1069,9 +1216,16 @@ class ValidateProjectTests(unittest.TestCase):
         project_dir = self.root / "v2"
         project_dir.mkdir()
         state = {
-            "schema_version": 2, "project": project_dir.name, "title": "T",
-            "status": "PLANNING", "created": "2026-01-01", "updated": TIMESTAMP,
-            "working_directory": str(self.root), "current_task": None, "review_cycle": 0, "tasks": [],
+            "schema_version": 2,
+            "project": project_dir.name,
+            "title": "T",
+            "status": "PLANNING",
+            "created": "2026-01-01",
+            "updated": TIMESTAMP,
+            "working_directory": str(self.root),
+            "current_task": None,
+            "review_cycle": 0,
+            "tasks": [],
         }
         (project_dir / "project.json").write_text(json.dumps(state), encoding="utf-8")
         report = validate_project(project_dir)
@@ -1095,9 +1249,16 @@ class ValidateProjectTests(unittest.TestCase):
         project_dir = self.root / "v2inner"
         project_dir.mkdir()
         state = {
-            "schema_version": 2, "project": project_dir.name, "title": "T",
-            "status": "PLANNING", "created": "2026-01-01", "updated": TIMESTAMP,
-            "working_directory": str(self.root), "current_task": None, "review_cycle": 0, "tasks": [],
+            "schema_version": 2,
+            "project": project_dir.name,
+            "title": "T",
+            "status": "PLANNING",
+            "created": "2026-01-01",
+            "updated": TIMESTAMP,
+            "working_directory": str(self.root),
+            "current_task": None,
+            "review_cycle": 0,
+            "tasks": [],
         }
         (project_dir / "project.json").write_text(json.dumps(state), encoding="utf-8")
         call_count = [0]
@@ -1109,7 +1270,7 @@ class ValidateProjectTests(unittest.TestCase):
                 raise WorkspaceError("simulated load error")
             return original(path)
 
-        with patch("agents.workspace.lib.load_json", side_effect=raise_on_second):
+        with patch("workspace_lib.load_json", side_effect=raise_on_second):
             report = validate_project(project_dir)
         self.assertTrue(any("simulated load error" in e for e in report.errors))
 
@@ -1175,13 +1336,25 @@ class RenderIndexTests(unittest.TestCase):
 class CheckStateTransitionTests(unittest.TestCase):
     def _task(self, task_id: str, status: str = "TODO") -> dict:
         return {
-            "id": task_id, "name": "T", "status": status, "depends_on": [],
-            "outputs": [], "success_criteria": "x", "verification": "x", "evidence": [],
+            "id": task_id,
+            "name": "T",
+            "status": status,
+            "depends_on": [],
+            "outputs": [],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": [],
             "effect": {"kind": "none", "description": None},
             "authorization": {
-                "required": False, "status": "not_required", "scope": None, "source": None, "authorized_at": None
+                "required": False,
+                "status": "not_required",
+                "scope": None,
+                "source": None,
+                "authorized_at": None,
             },
-            "receipts": [], "skip_reason": None, "block_reason": None,
+            "receipts": [],
+            "skip_reason": None,
+            "block_reason": None,
         }
 
     def test_removed_task_rejected(self) -> None:
@@ -1311,7 +1484,7 @@ class AllocateProjectTests(unittest.TestCase):
             allocate_project(self.workspace, title="T", working_directory=Path("/nonexistent"))
 
     def test_base_exception_during_allocation_propagates(self) -> None:
-        with patch("agents.workspace.lib.rebuild_index", side_effect=KeyboardInterrupt):
+        with patch("workspace_lib.rebuild_index", side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 allocate_project(self.workspace, title="Test", working_directory=self.target)
 
@@ -1410,9 +1583,16 @@ class MigrateV2StateTests(unittest.TestCase):
 
     def _v2(self, **overrides) -> dict:
         base = {
-            "schema_version": 2, "project": self.project_dir.name, "title": "Legacy",
-            "status": "PLANNING", "created": "2026-01-01", "updated": TIMESTAMP,
-            "working_directory": str(self.target_dir), "current_task": None, "review_cycle": 0, "tasks": [],
+            "schema_version": 2,
+            "project": self.project_dir.name,
+            "title": "Legacy",
+            "status": "PLANNING",
+            "created": "2026-01-01",
+            "updated": TIMESTAMP,
+            "working_directory": str(self.target_dir),
+            "current_task": None,
+            "review_cycle": 0,
+            "tasks": [],
         }
         base.update(overrides)
         return base
@@ -1447,9 +1627,16 @@ class MigrateV2StateTests(unittest.TestCase):
 
     def test_external_done_task_gets_receipt(self) -> None:
         task = {
-            "id": "T01", "name": "T", "status": "DONE", "depends_on": [],
-            "outputs": ["https://example.com/r"], "success_criteria": "x", "verification": "x",
-            "evidence": ["evidence.md#T01"], "external_effect": True, "authorization": "explicit",
+            "id": "T01",
+            "name": "T",
+            "status": "DONE",
+            "depends_on": [],
+            "outputs": ["https://example.com/r"],
+            "success_criteria": "x",
+            "verification": "x",
+            "evidence": ["evidence.md#T01"],
+            "external_effect": True,
+            "authorization": "explicit",
             "skip_reason": None,
         }
         result = migrate_v2_state(self._v2(tasks=[task], current_task=None, status="DONE"), self.project_dir)
@@ -1529,9 +1716,16 @@ class MigrationCandidateTests(unittest.TestCase):
 
     def test_v2_candidate(self) -> None:
         state = {
-            "schema_version": 2, "project": "project", "title": "T",
-            "status": "PLANNING", "created": "2026-01-01", "updated": TIMESTAMP,
-            "working_directory": str(self.project_dir), "current_task": None, "review_cycle": 0, "tasks": [],
+            "schema_version": 2,
+            "project": "project",
+            "title": "T",
+            "status": "PLANNING",
+            "created": "2026-01-01",
+            "updated": TIMESTAMP,
+            "working_directory": str(self.project_dir),
+            "current_task": None,
+            "review_cycle": 0,
+            "tasks": [],
         }
         (self.project_dir / "project.json").write_text(json.dumps(state), encoding="utf-8")
         self.assertEqual(3, migration_candidate(self.project_dir)["schema_version"])
@@ -1571,9 +1765,16 @@ class ApplyMigrationTests(unittest.TestCase):
 
     def _v2_state(self) -> dict:
         return {
-            "schema_version": 2, "project": "project", "title": "T",
-            "status": "PLANNING", "created": "2026-01-01", "updated": TIMESTAMP,
-            "working_directory": str(self.target), "current_task": None, "review_cycle": 0, "tasks": [],
+            "schema_version": 2,
+            "project": "project",
+            "title": "T",
+            "status": "PLANNING",
+            "created": "2026-01-01",
+            "updated": TIMESTAMP,
+            "working_directory": str(self.target),
+            "current_task": None,
+            "review_cycle": 0,
+            "tasks": [],
         }
 
     def test_apply_v2_migration(self) -> None:
