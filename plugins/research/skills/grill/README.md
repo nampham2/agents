@@ -5,8 +5,8 @@ genuinely shared, then stops. It exists because the expensive failure in agent w
 it is an agent that was confidently building the wrong thing, and a plan you nodded at rather than
 decided.
 
-Use it through prompts with `/grill`. `project` also runs it during alignment and when review
-feedback changes a requirement.
+Use it through prompts with `/research:grill`. `project` also runs it during alignment and when
+review feedback changes a requirement.
 
 ## How a session runs
 
@@ -26,11 +26,11 @@ yours, and the session waits for them.
 ## Starting a session
 
 ```text
-/grill I want to add a caching layer to the API but I have not worked out where it belongs.
+/research:grill I want to add a caching layer to the API but I have not worked out where it belongs.
 
-/grill Stress-test this migration plan before I commit to it: <plan>
+/research:grill Stress-test this migration plan before I commit to it: <plan>
 
-/grill Should this be one plugin or three? I keep going back and forth.
+/research:grill Should this be one plugin or three? I keep going back and forth.
 ```
 
 Start from a loose idea. Not knowing what the work involves is the normal starting condition, and
@@ -55,10 +55,10 @@ it, come back and answer in a line.
 
 ## Standalone and inside the project skill
 
-Standalone, `/grill` is stateless: no workspace, no files, nothing left on disk. The result is a
-sharper idea and a confirmed understanding in the conversation. If the subject turns out to deserve a
-persistent project, hand the same conversation to `/research:project` — most of the frontier is already
-settled, so alignment there is short.
+Standalone, `/research:grill` is stateless: no workspace, no files, nothing left on disk. The result
+is a sharper idea and a confirmed understanding in the conversation. If the subject turns out to
+deserve a persistent project, hand the same conversation to `/research:project` — most of the
+frontier is already settled, so alignment there is short.
 
 Inside `project`, the consensus is recorded rather than remembered: the agreed specification is
 written to the project's `spec.md`, each settled branch becomes a dated decision, and the project

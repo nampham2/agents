@@ -236,14 +236,21 @@ are doing so: unsettled decisions first, one recommended answer per question, no
 the same explicit confirmation before `PLANNING`. What must not happen is an improvised interview
 that drifts into planning without the user ever agreeing to the goal.
 
-Grill writes `spec.md` with a non-empty `## Current specification` containing:
+Grill writes `spec.md` with a non-empty `## Current specification` holding exactly these seven
+`###` sections, which `research-validate` warns about one by one when they are missing:
 
-- objective and audience;
-- in-scope and out-of-scope work;
-- constraints and important assumptions;
-- success and verification criteria;
-- deliverables and their `target`, `workspace`, or `external` roots;
-- destructive and external actions, each with its authorization state.
+```markdown
+### Objective and audience
+### In scope
+### Out of scope
+### Constraints and important assumptions
+### Success and verification criteria
+### Deliverables and roots
+### Destructive and external actions
+```
+
+Deliverables name their `target`, `workspace`, or `external` root; destructive and external actions
+name their authorization state.
 
 Keep a non-empty `## Decision history` below it. When accepted feedback changes a requirement,
 update the current specification immediately and append a dated decision. History is append-only;

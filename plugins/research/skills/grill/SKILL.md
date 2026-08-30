@@ -1,15 +1,15 @@
 ---
 name: grill
 description: >
-  Use when the user explicitly requests /grill, asks to be grilled or interviewed about a plan,
-  or asks to stress-test an idea, and when the project skill needs alignment or a requirement-changing
-  review agreed rather than assumed. Interviews the user in rounds until the goal is genuinely
-  shared, then stops. Do not invoke to ask an ordinary clarifying question.
+  Use when the user explicitly requests /research:grill, asks to be grilled or interviewed about a
+  plan, or asks to stress-test an idea, and when the project skill needs alignment or a
+  requirement-changing review agreed rather than assumed. Interviews the user in rounds until the
+  goal is genuinely shared, then stops. Do not invoke to ask an ordinary clarifying question.
 ---
 
 # Grill
 
-Invoke with `/grill [idea, plan, or decision]`.
+Invoke with `/research:grill [idea, plan, or decision]`.
 
 Interview the user until the goal is shared rather than assumed, then stop and hand back. The
 subject need not be code: a plan, a design, a piece of writing, or a business call all grill.
@@ -116,17 +116,31 @@ one confirmation.
 
 ## Two modes
 
-**Standalone.** `/grill` on its own writes nothing and leaves nothing behind. No workspace, no
-notes, no file. What it produces is a sharper idea and a confirmed understanding in the
-conversation. If the subject turns out to deserve a persistent project, hand the same conversation
-to `/research:project`: most of its frontier is already settled.
+**Standalone.** `/research:grill` on its own writes nothing and leaves nothing behind. No
+workspace, no notes, no file. What it produces is a sharper idea and a confirmed understanding in
+the conversation. If the subject turns out to deserve a persistent project, hand the same
+conversation to `/research:project`: most of its frontier is already settled.
 
-**Inside the project skill.** When invoked from `project`, the consensus is state, not conversation, and
-recording it is part of the session:
+**Inside the project skill.** When invoked from `project`, the consensus is state, not
+conversation, and recording it is part of the session:
 
-- Write the agreed objective, audience, scope, constraints, assumptions, success and verification
-  criteria, deliverable roots, and authorization states into the project's `spec.md` under
-  `## Current specification`.
+- Write the consensus into the project's `spec.md` under `## Current specification`, as exactly
+  these seven `###` sections. `research-validate` warns for each one it cannot find, so the names
+  are a contract rather than a suggestion:
+
+  ```markdown
+  ### Objective and audience
+  ### In scope
+  ### Out of scope
+  ### Constraints and important assumptions
+  ### Success and verification criteria
+  ### Deliverables and roots
+  ### Destructive and external actions
+  ```
+
+  Deliverables carry their `target`, `workspace`, or `external` root; destructive and external
+  actions carry their authorization state. A section with nothing in it is a section you have not
+  grilled yet — say so there rather than deleting the heading.
 - Append one dated entry to `## Decision history` per settled branch, plus one recording the user's
   confirmation and what it covered. History is append-only; the current specification is maintained
   in place.
