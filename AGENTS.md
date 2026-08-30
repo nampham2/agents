@@ -25,6 +25,7 @@ modules via `tests/conftest.py`, the same way Claude runs them.
 ```bash
 uv sync --dev          # install all dependencies
 uv run pytest          # run tests
+uv run pytest -q       # the suite enforces 100% coverage of the shipped scripts
 uv run ruff check .    # lint (whole repo — keep it unscoped, see below)
 uv run ty check .      # type-check (whole repo, tests included)
 ```
@@ -33,10 +34,9 @@ uv run ty check .      # type-check (whole repo, tests included)
 
 - **Two Python floors.** The dev toolchain requires ≥ 3.11 (`requires-python` in
   `pyproject.toml`). The *shipped plugin scripts* must additionally keep working on
-  **3.9**, because `SKILL.md` invokes them with plain `python3`, which is 3.9 on stock
-  macOS. Keep them stdlib-only, and put 3.10+ typing imports behind `if TYPE_CHECKING:`
-  so `from __future__ import annotations` defers them. CI's `python39-compat` job
-  enforces this.
+  **3.9**, because the `bin/` wrappers `exec python3`, which is 3.9.6 on stock macOS. Keep
+  them stdlib-only, and put 3.10+ typing imports behind `if TYPE_CHECKING:` so
+  `from __future__ import annotations` defers them. CI's `python39-compat` job enforces this.
 - Lint and type-check the whole repo, tests included — never a subdirectory. Scoping
   these narrowly is what previously let two copies of the workspace library drift apart
   unnoticed. Both `ruff check .` and `ty check .` are clean; keep them that way rather
@@ -73,6 +73,26 @@ uv run ty check .      # type-check (whole repo, tests included)
   for the same reason: a read-only workspace fails in the lock's own `mkdir`, and a raw
   traceback out of a CLI that only translates `WorkspaceError` is what makes a committed write
   look unfinished.
+- **The plugin's command surface is `plugins/<plugin>/bin/`.** Claude Code puts that directory on
+  `PATH` for every registered plugin, so `research-project` and `research-validate` are invoked by
+  name — in `SKILL.md`, in the reference docs, and in a session. Never document or construct a path
+  to `scripts/*.py`: the placeholder that used to stand in for one made every session re-derive it,
+  and derive it differently. The wrappers resolve through symlinks from `BASH_SOURCE[0]` and fail
+  with a clear message when their script or `python3` is missing;
+  `tests/plugins/research/project/test_bin_wrappers.py` covers both.
+- **`CLAUDE_PLUGIN_ROOT` is not set in the Bash tool environment.** It is available to hooks and MCP
+  server commands, not to commands a session runs, so nothing in a skill may depend on it. This was
+  verified, not assumed — it is why the `bin/`-on-`PATH` surface exists rather than a
+  `$CLAUDE_PLUGIN_ROOT/scripts/...` convention.
+- **Task evidence is recorded by running the command, never by describing it.**
+  `research-project record-evidence <project-dir> --task <id> -- <command>` runs the command with no
+  shell and appends its real exit code and output tail to `evidence.md`; it exits non-zero and
+  refuses to call a failure a pass. Hand-written prose belongs in a separate `### <id> — notes`
+  section below the recorded entry, never inside it.
+- **The coverage gate is 100%.** `[tool.coverage.report] fail_under = 100` over
+  `plugins/research/skills/project/scripts`, so a new branch arrives with its test or the suite
+  fails. Delete unreachable code rather than excluding it — an `OSError` guard around a call that
+  cannot raise was the first thing this gate found.
 - **Installed plugins are cached by version.** `claude plugin install` copies the plugin into
   `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`; `marketplace update` refreshes the
   listing, never that copy. Any plugin change that must reach an installed copy needs a `version`
