@@ -59,3 +59,9 @@ log_cli_format = "[%(asctime)s] %(levelname)s [%(name)s.%(funcName)s:%(lineno)d]
 log_cli_date_format = "%H:%M:%S"
 log_level = "INFO"
 asyncio_mode = "auto"
+
+[tool.coverage.report]
+# The suite has covered every shipped statement since commit 7c31331; the gate is what defends the
+# claim. Without it a commit can assert full coverage while the number quietly falls.
+fail_under = 100
+show_missing = true
