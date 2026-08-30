@@ -1,4 +1,4 @@
-"""Additional tests to achieve 100% coverage for the workbench workspace_lib module."""
+"""Additional tests to achieve 100% coverage for the project skill workspace_lib module."""
 
 from __future__ import annotations
 
@@ -1448,6 +1448,7 @@ class AllocateProjectTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.workspace = Path(self.tmp.name) / "ws"
+        self.workspace.mkdir()
         self.target = Path(self.tmp.name) / "target"
         self.target.mkdir()
 
@@ -1470,7 +1471,6 @@ class AllocateProjectTests(unittest.TestCase):
         self.assertTrue((self.workspace / "reflection.md").is_file())
 
     def test_does_not_overwrite_existing_reflection(self) -> None:
-        self.workspace.mkdir(parents=True)
         (self.workspace / "reflection.md").write_text("# Existing\n\nOld.\n", encoding="utf-8")
         allocate_project(self.workspace, title="Test", working_directory=self.target)
         self.assertIn("Old", (self.workspace / "reflection.md").read_text(encoding="utf-8"))

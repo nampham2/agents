@@ -17,7 +17,7 @@ bin/             Helper shell scripts
 
 Plugin code is the only source of truth: there is no importable `agents` package and
 nothing to build. Skill scripts live beside their skill (e.g.
-`plugins/research/skills/workbench/scripts/`) and are imported by tests as top-level
+`plugins/research/skills/project/scripts/`) and are imported by tests as top-level
 modules via `tests/conftest.py`, the same way Claude runs them.
 
 ## Development

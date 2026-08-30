@@ -6,7 +6,7 @@
     {
       "name": "research",
       "source": "./plugins/research",
-      "description": "workbench — persistent, transactional workspace management for long-running work"
+      "description": "project — persistent, transactional workspace management for long-running work; grill — round-based interviews that reach explicit consensus on a goal before work starts"
     }
   ]
 }

@@ -20,7 +20,7 @@ Symlinking a plugin into `~/.claude/plugins/` does *not* register anything — `
 still reports `No plugins installed`.
 
 Skills are discovered from `skills/<name>/SKILL.md` and addressed as `<plugin>:<skill>` — for
-example `research:workbench`.
+example `research:project`.
 
 ## Working on an installed plugin
 

@@ -9,12 +9,14 @@ import sys
 from pathlib import Path
 
 from workspace_lib import (
+    WORKSPACE_ROOT_ENV_VAR,
     WorkspaceError,
     allocate_project,
     apply_migration,
     commit_candidate,
     migration_candidate,
     rebuild_index,
+    resolve_workspace_root,
     validate_v3_state,
 )
 
@@ -24,9 +26,19 @@ def _build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     initialize = subparsers.add_parser("init", help="Atomically allocate and initialize a v3 project")
-    initialize.add_argument("workspace_root", type=Path)
+    initialize.add_argument(
+        "workspace_root",
+        nargs="?",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
     initialize.add_argument("--title", required=True)
     initialize.add_argument("--working-directory", required=True, type=Path)
+    initialize.add_argument(
+        "--create-root",
+        action="store_true",
+        help="create the workspace root when it does not exist; without this a missing root is an error",
+    )
     initialize.add_argument("--lock-timeout", type=float, default=5.0)
 
     commit = subparsers.add_parser("commit", help="Commit a complete candidate project.json transactionally")
@@ -36,7 +48,12 @@ def _build_parser() -> argparse.ArgumentParser:
     commit.add_argument("--lock-timeout", type=float, default=5.0)
 
     index = subparsers.add_parser("rebuild-index", help="Regenerate INDEX.md from canonical state")
-    index.add_argument("workspace_root", type=Path)
+    index.add_argument(
+        "workspace_root",
+        nargs="?",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
     index.add_argument("--lock-timeout", type=float, default=5.0)
 
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
@@ -53,10 +70,11 @@ def main() -> int:
     try:
         if args.command == "init":
             project_dir = allocate_project(
-                args.workspace_root,
+                resolve_workspace_root(args.workspace_root),
                 title=args.title,
                 working_directory=args.working_directory,
                 lock_timeout=args.lock_timeout,
+                create_root=args.create_root,
             )
             print(project_dir)
             return 0
@@ -72,7 +90,12 @@ def main() -> int:
             return 0
 
         if args.command == "rebuild-index":
-            print(rebuild_index(args.workspace_root, lock_timeout=args.lock_timeout))
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            # An index for a workspace that does not exist is never what the caller wanted, and
+            # building one would leave a stray root behind exactly as a mistyped init does.
+            if not workspace_root.is_dir():
+                raise WorkspaceError(f"workspace root does not exist: {workspace_root}")
+            print(rebuild_index(workspace_root, lock_timeout=args.lock_timeout))
             return 0
 
         if args.command == "migrate":

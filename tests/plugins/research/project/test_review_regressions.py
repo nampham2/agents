@@ -31,8 +31,8 @@ from workspace_lib import (
 
 TIMESTAMP = "2026-08-28T10:00:00+02:00"
 REPO_ROOT = Path(__file__).resolve().parents[4]
-MANAGER = REPO_ROOT / "plugins/research/skills/workbench/scripts/manage_workspace.py"
-VALIDATOR = REPO_ROOT / "plugins/research/skills/workbench/scripts/validate_workspace.py"
+MANAGER = REPO_ROOT / "plugins/research/skills/project/scripts/manage_workspace.py"
+VALIDATOR = REPO_ROOT / "plugins/research/skills/project/scripts/validate_workspace.py"
 
 
 class MigrationAuthorizationTests(unittest.TestCase):
@@ -332,6 +332,7 @@ class MalformedExternalReferenceTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.workspace = self.root / "ws"
+        self.workspace.mkdir()
         self.project_dir = workspace_lib.allocate_project(
             self.workspace, title="Malformed URL", working_directory=self.root
         )
@@ -431,6 +432,7 @@ class MigrationIndexRecoveryTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.workspace = self.root / "ws"
+        self.workspace.mkdir()
         self.project_dir = self.workspace / "project"
         self.project_dir.mkdir(parents=True)
         (self.project_dir / "project.json").write_text(
@@ -493,6 +495,7 @@ class InitializationOrderTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.workspace = self.root / "ws"
+        self.workspace.mkdir()
 
     def _allocate(self) -> Path:
         return workspace_lib.allocate_project(self.workspace, title="Ordered", working_directory=self.root)
@@ -530,7 +533,6 @@ class InitializationOrderTests(unittest.TestCase):
                 self.assertTrue((project_dir / name).is_file())
 
     def test_index_lock_failure_names_the_created_project(self) -> None:
-        self.workspace.mkdir(parents=True)
         (self.workspace / ".index.lock").mkdir()
         with self.assertRaises(WorkspaceError) as caught:
             workspace_lib.allocate_project(
@@ -554,6 +556,7 @@ class PostCommitFilesystemFailureTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.workspace = self.root / "ws"
+        self.workspace.mkdir()
 
     def _fail_on_index(self) -> Any:
         real = workspace_lib.atomic_write_text
@@ -622,7 +625,6 @@ class PostCommitFilesystemFailureTests(unittest.TestCase):
     def test_the_recovery_command_itself_reports_filesystem_failures(self) -> None:
         # rebuild-index is the command the post-commit error names, so it must not be the one
         # command that answers a filesystem failure with a traceback.
-        self.workspace.mkdir(parents=True)
         with self._fail_on_index(), self.assertRaises(WorkspaceError) as caught:
             workspace_lib.rebuild_index(self.workspace)
         message = str(caught.exception)

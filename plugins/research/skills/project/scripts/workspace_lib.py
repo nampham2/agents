@@ -26,6 +26,13 @@ AUTHORIZATION_STATUSES = {"not_required", "pending", "explicit", "denied", "defe
 REVIEW_STATUSES = {"not_required", "pending", "accepted", "recorded"}
 REFERENCE_ROOTS = {"workspace", "target", "external"}
 
+# Project directories are allocated as YYYY-MM-DD-NNN. A directory that does not match was made by
+# hand or by an older tool: `project` must equal the directory name, so a malformed name becomes a
+# malformed canonical ID that no amount of committing can rename.
+PROJECT_ID_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{3}$")
+
+WORKSPACE_ROOT_ENV_VAR = "RESEARCH_WORKSPACE"
+
 PROJECT_TRANSITIONS = {
     "ALIGNING": {"ALIGNING", "PLANNING", "BLOCKED", "CANCELLED"},
     "PLANNING": {"PLANNING", "EXECUTING", "BLOCKED", "CANCELLED"},
@@ -88,6 +95,29 @@ class ValidationReport:
     def extend(self, other: "ValidationReport") -> None:
         self.errors.extend(other.errors)
         self.warnings.extend(other.warnings)
+
+
+def is_canonical_project_id(name: str) -> bool:
+    """Report whether a project directory name is a canonical YYYY-MM-DD-NNN identifier."""
+    return bool(PROJECT_ID_PATTERN.match(name))
+
+
+def resolve_workspace_root(explicit: "Path | None") -> Path:
+    """Resolve the workspace root from an explicit path, else the environment.
+
+    Deliberately has no third fallback: inferring a root from the current working directory is what
+    produced two workspaces holding divergent copies of the same project. When neither source is
+    present the caller must ask.
+    """
+    if explicit is not None:
+        return explicit.expanduser()
+    configured = os.environ.get(WORKSPACE_ROOT_ENV_VAR, "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    raise WorkspaceError(
+        "no workspace root: pass it as an argument or set "
+        f"{WORKSPACE_ROOT_ENV_VAR}; the current working directory is never assumed"
+    )
 
 
 class WorkspaceError(RuntimeError):
@@ -497,6 +527,10 @@ def validate_v3_state(
             report.errors.append(f"project: {field_name} must be a non-empty string")
     if _non_empty_string(state.get("project")) and state.get("project") != project_dir.name:
         report.errors.append("project field must match the project directory name")
+    if not is_canonical_project_id(project_dir.name):
+        report.warnings.append(
+            f"project directory name is not a canonical YYYY-MM-DD-NNN identifier: {project_dir.name}"
+        )
     if "predecessor" in state and not _non_empty_string(state.get("predecessor")):
         report.errors.append("project: predecessor must be a non-empty project ID when present")
     for field_name in ("created", "updated"):
@@ -1102,18 +1136,33 @@ def allocate_project(
     title: str,
     working_directory: Path,
     lock_timeout: float = 5.0,
+    create_root: bool = False,
 ) -> Path:
-    workspace_root = workspace_root.resolve()
-    working_directory = working_directory.resolve()
+    workspace_root = workspace_root.expanduser()
     if not _non_empty_string(title):
         raise WorkspaceError("title must be non-empty")
+    working_directory = working_directory.resolve()
     if not working_directory.is_dir():
         raise WorkspaceError(f"working directory does not exist: {working_directory}")
-    workspace_root.mkdir(parents=True, exist_ok=True)
+    # Creating the root on demand is how a typo, or a guess, silently becomes a second workspace
+    # holding a divergent copy of a project that already exists elsewhere.
+    if workspace_root.exists() and not workspace_root.is_dir():
+        raise WorkspaceError(f"workspace root is not a directory: {workspace_root}")
+    if not workspace_root.exists():
+        if not create_root:
+            raise WorkspaceError(
+                f"workspace root does not exist: {workspace_root}; pass --create-root to create it, "
+                "or point at the existing workspace"
+            )
+        workspace_root.mkdir(parents=True, exist_ok=True)
+    workspace_root = workspace_root.resolve()
     date_prefix = datetime.now().astimezone().date().isoformat()
     sequence = 1
     while True:
-        project_dir = workspace_root / f"{date_prefix}-{sequence:03d}"
+        candidate_id = f"{date_prefix}-{sequence:03d}"
+        if not is_canonical_project_id(candidate_id):
+            raise WorkspaceError(f"refusing to create a non-canonical project ID: {candidate_id}")
+        project_dir = workspace_root / candidate_id
         try:
             project_dir.mkdir()
             break

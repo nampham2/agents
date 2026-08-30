@@ -43,10 +43,13 @@ jobs:
           python-version: "3.9"
 
       - name: Smoke-test the shipped scripts on Python 3.9
-        working-directory: plugins/research/skills/workbench/scripts
+        working-directory: plugins/research/skills/project/scripts
         run: |
           python -c "import workspace_lib"
           workdir="$(mktemp -d)"
-          project="$(python manage_workspace.py init "$workdir/ws" \
+          # init refuses to create a workspace root implicitly, so a fresh root is explicit here and
+          # resolution from the environment is exercised in the same breath.
+          project="$(python manage_workspace.py init "$workdir/ws" --create-root \
             --title "CI smoke" --working-directory "$workdir")"
           python validate_workspace.py "$project"
+          RESEARCH_WORKSPACE="$workdir/ws" python manage_workspace.py rebuild-index

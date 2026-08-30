@@ -69,7 +69,7 @@ Installed $PLUGIN@$MARKETPLACE from this working tree. Verify with:
   claude plugin list
 
 Skills are discovered from skills/<name>/SKILL.md and are addressed as <plugin>:<skill> — for
-example $PLUGIN:workbench.
+example $PLUGIN:project.
 
 Installing copied the plugin into a version-keyed cache, so later edits to this working tree do
 NOT reach it. 'claude plugin marketplace update' refreshes the listing only, not the cache.

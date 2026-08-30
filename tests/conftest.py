@@ -10,6 +10,6 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-WORKBENCH_SCRIPTS = Path(__file__).resolve().parents[1] / "plugins/research/skills/workbench/scripts"
-if str(WORKBENCH_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(WORKBENCH_SCRIPTS))
+SKILL_SCRIPTS = Path(__file__).resolve().parents[1] / "plugins/research/skills/project/scripts"
+if str(SKILL_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SKILL_SCRIPTS))

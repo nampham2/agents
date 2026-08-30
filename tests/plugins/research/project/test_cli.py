@@ -9,8 +9,8 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-MANAGER = REPO_ROOT / "plugins/research/skills/workbench/scripts/manage_workspace.py"
-VALIDATOR = REPO_ROOT / "plugins/research/skills/workbench/scripts/validate_workspace.py"
+MANAGER = REPO_ROOT / "plugins/research/skills/project/scripts/manage_workspace.py"
+VALIDATOR = REPO_ROOT / "plugins/research/skills/project/scripts/validate_workspace.py"
 
 
 class CliIntegrationTests(unittest.TestCase):
@@ -19,6 +19,7 @@ class CliIntegrationTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.workspace_root = self.root / "workspace"
+        self.workspace_root.mkdir()
         self.target = self.root / "target"
         self.target.mkdir()
 

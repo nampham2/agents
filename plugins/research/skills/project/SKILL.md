@@ -1,15 +1,20 @@
 ---
-name: workbench
+name: project
 description: >
-  Use when the user explicitly requests /workbench or asks for a persistent,
-  file-backed workspace for a complex or multi-session project. Provides resumable planning,
-  execution, verification, review, delivery, and reflection. Do not invoke for ordinary
-  one-turn coding tasks, small edits, or reviews unless the user asks for this workflow.
+  Use when the user explicitly requests /research:project, or asks to start, resume, review, or
+  close a persistent, file-backed project workspace for complex or multi-session work. Provides
+  resumable alignment, planning, execution, verification, review, delivery, and reflection. Do not
+  invoke for ordinary one-turn coding tasks, small edits, or reviews unless the user asks for this
+  workflow.
 ---
 
-# Workbench
+# Project
 
-Invoke with `/workbench [problem statement]`.
+Invoke with `/research:project [problem statement]`.
+
+One entry point covers the whole lifecycle: starting new work, resuming an active project,
+reopening a completed one for maintenance, recording a review, and closing out. Say which you want
+in the prompt; recorded state decides what is actually possible.
 
 Use a persistent workspace to make complex work resumable and auditable without turning
 bookkeeping into the work itself. Apply checkpoints according to ambiguity and risk. Preserve the
@@ -31,6 +36,34 @@ destructive actions, publishing, deployment, messages, purchases, or other exter
   reversible assumptions and record important ones in the current specification.
 - Destructive and external actions require action-specific authorization immediately before
   execution unless the current user already authorized that exact action and scope.
+
+## Resolve the workspace root first
+
+Every command below takes a workspace root. Resolve it before discovery, in this order, and never
+skip a step:
+
+1. a path the user gave in this request or earlier in this conversation;
+2. `$RESEARCH_WORKSPACE`;
+3. ask the user, and wait.
+
+Never infer the root from the current working directory, the repository you are editing, the
+location of this skill, or a `workspace/` directory you happen to find. Never create a root that
+does not exist without saying so: `init` refuses unless `--create-root` is passed, and that flag
+needs the user behind it. A guessed root is how one project ends up duplicated across two workspaces
+with divergent status, which no later validation can reconcile.
+
+Once resolved, state the root you are using before you write anything, and use it for every command
+in the session. Multiple roots on one machine are a defect, not a feature: if you find a second one
+holding the same project, report it rather than picking one.
+
+Passing the root explicitly and setting the variable are equally supported; an explicit path always
+wins. `manage_workspace.py` reads the variable itself, so a command with no root argument fails with
+an actionable error instead of inventing a location:
+
+```sh
+export RESEARCH_WORKSPACE=/path/to/workspace
+python3 <skill-directory>/scripts/manage_workspace.py rebuild-index
+```
 
 ## Project layout and tools
 
@@ -56,6 +89,8 @@ resuming, migrating, or closing a project.
 Use the bundled scripts rather than hand-editing canonical state or the index:
 
 ```sh
+# <workspace-root> is optional: omitted, it comes from $RESEARCH_WORKSPACE. Add --create-root only
+# when the user has asked for a new workspace.
 python3 <skill-directory>/scripts/manage_workspace.py init <workspace-root> \
   --title "<title>" --working-directory <target-directory>
 python3 <skill-directory>/scripts/manage_workspace.py commit <project-directory> <candidate.json> \
@@ -90,15 +125,19 @@ validate it before continuing.
 
 ## 1. Discover, resume, or initialize
 
-1. Inspect `workspace/INDEX.md`, candidate project directories, and the user's request. Regenerate a
-   missing or stale index from canonical state.
+Resolve the workspace root before this step, as described above. Discovery is scoped to that one
+root; do not search elsewhere for projects.
+
+1. Inspect the resolved root's `INDEX.md`, its candidate project directories, and the user's
+   request. Regenerate a missing or stale index from canonical state.
 2. Validate any matching project's recorded state against the filesystem before relying on it.
    Report contradictions; correct false history only through an explicit, dated correction.
 3. If one active project clearly matches the same objective and deliverable ownership, resume it.
 4. If a completed project owns the maintained deliverable, reopen it as described below.
 5. If multiple projects might match, ask which one to resume. Do not silently create a duplicate.
 6. If no project matches, initialize one with `manage_workspace.py init`; it atomically allocates the
-   next unused directory and creates the v3 skeleton.
+   next unused directory and creates the v3 skeleton. It refuses a workspace root that does not
+   exist unless `--create-root` is passed, which requires the user having asked for a new workspace.
 7. Read relevant entries from `workspace/reflection.md` as dated advice.
 
 Use the objective, audience, deliverable roots, and ownership—not title similarity alone—to identify
@@ -154,8 +193,25 @@ For v3 maintenance:
 
 ## 2. Align and specify
 
-Perform safe, read-only discovery before asking questions when local context can answer them. Write
-`spec.md` with a non-empty `## Current specification` containing:
+Perform safe, read-only discovery before asking questions when local context can answer them. Facts
+you can look up are never questions for the user.
+
+Then invoke the `grill` skill to reach an agreed objective rather than an assumed one. Grill owns the
+interview: it works a design tree of unsettled decisions in rounds, offers a recommended answer per
+question, and closes by stating its understanding and asking the user to confirm it. Pass it the
+project directory so it writes into this project's `spec.md`.
+
+The project may not leave `ALIGNING` until `spec.md` records that confirmation as a dated decision.
+Running out of questions is not consent, and neither is a plan the user has not disagreed with. When
+the request is unambiguous the interview can be a single round, but the confirmation is never
+skipped.
+
+If the `grill` skill does not load, run the interview inline to the same standard and say that you
+are doing so: unsettled decisions first, one recommended answer per question, no question caps, and
+the same explicit confirmation before `PLANNING`. What must not happen is an improvised interview
+that drifts into planning without the user ever agreeing to the goal.
+
+Grill writes `spec.md` with a non-empty `## Current specification` containing:
 
 - objective and audience;
 - in-scope and out-of-scope work;
@@ -168,8 +224,9 @@ Keep a non-empty `## Decision history` below it. When accepted feedback changes 
 update the current specification immediately and append a dated decision. History is append-only;
 the current specification is not.
 
-Pause for alignment only when unresolved choices materially affect scope, cost, risk, architecture,
-authorization, or the deliverable's shape. Otherwise summarize the interpretation and continue.
+Later pauses are a different judgement: once the goal is agreed, stop again only when an unresolved
+choice materially affects scope, cost, risk, architecture, authorization, or the deliverable's
+shape. Otherwise summarize the interpretation and continue.
 
 ## 3. Plan
 
@@ -229,6 +286,12 @@ For feedback:
 4. Mark a required review `accepted` only with durable evidence of acceptance.
 5. Immediately before delivery, reconfirm authorization, perform the external task, and record its
    receipt. A prior task's authorization never carries to a new external action.
+
+Feedback that changes a requirement — not merely how something is implemented — needs the same
+agreement the original objective did. Invoke `grill` again for it, scoped to the branch the feedback
+affects: settled branches stay settled, and re-interviewing them wastes the user's time and invites
+churn. The resulting dated decision cites the review file it came from. Feedback that only corrects
+an implementation detail needs no interview; record it and continue.
 
 ## 6. Cancel, block, or close
 

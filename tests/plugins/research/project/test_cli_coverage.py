@@ -1,4 +1,4 @@
-"""Tests for the workbench manage/validate entrypoint scripts — achieves 100% line coverage."""
+"""Tests for the project skill manage/validate entrypoint scripts — achieves 100% line coverage."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from workspace_lib import WorkspaceError, allocate_project
 
 TIMESTAMP = "2026-08-28T10:00:00+02:00"
 REPO_ROOT = Path(__file__).resolve().parents[4]
-MANAGER = REPO_ROOT / "plugins/research/skills/workbench/scripts/manage_workspace.py"
+MANAGER = REPO_ROOT / "plugins/research/skills/project/scripts/manage_workspace.py"
 
 
 def _call_manage(args: list[str]) -> int:
@@ -36,6 +36,7 @@ class ManageCLIInitTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.workspace = self.root / "ws"
+        self.workspace.mkdir()
         self.target = self.root / "target"
         self.target.mkdir()
 
@@ -75,6 +76,7 @@ class ManageCLICommitTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.workspace = self.root / "ws"
+        self.workspace.mkdir()
         self.target = self.root / "target"
         self.target.mkdir()
         self.project_dir = allocate_project(self.workspace, title="T", working_directory=self.target)
@@ -188,6 +190,7 @@ class ValidateCLITests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         self.workspace = self.root / "ws"
+        self.workspace.mkdir()
         self.target = self.root / "target"
         self.target.mkdir()
 
