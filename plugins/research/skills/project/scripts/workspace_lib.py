@@ -1038,6 +1038,51 @@ def detect_schema(project_dir: Path) -> int:
     raise WorkspaceError(f"cannot detect workspace schema in {project_dir}")
 
 
+# Advisory memory is only useful if it is read, and a file that keeps growing gets skimmed instead.
+# Twenty entries is a judgement, not a measurement: it is the scale at which the file stopped fitting
+# on a screen, which is when merging and retiring needs to happen rather than one more append.
+REFLECTION_MAX_ENTRIES = 20
+REFLECTION_ENTRY_PATTERN = re.compile(r"^- \[(?P<meta>[^\]]*)\]", re.MULTILINE)
+
+
+def reflection_warnings(workspace_root: Path) -> "list[str]":
+    """Warn about a cross-project reflection that has outgrown its readers or cites what is gone.
+
+    Two failure modes, both advisory. A file long enough to skim stops being memory, and an entry
+    whose source project is no longer in the workspace cannot be checked against the evidence that
+    produced it — its provenance has to be repaired or the entry retired.
+    """
+    reflection_path = workspace_root / "reflection.md"
+    if not reflection_path.is_file():
+        return []
+    try:
+        content = read_text(reflection_path)
+    except WorkspaceError:
+        # An unreadable reflection is not a reason to fail a project's validation.
+        return []
+
+    warnings: list[str] = []
+    entries = REFLECTION_ENTRY_PATTERN.findall(content)
+    if len(entries) > REFLECTION_MAX_ENTRIES:
+        warnings.append(
+            f"{reflection_path} holds {len(entries)} entries, above the {REFLECTION_MAX_ENTRIES} "
+            "this file stays readable at; merge or retire entries rather than appending"
+        )
+
+    try:
+        present = {child.name for child in workspace_root.iterdir() if child.is_dir()}
+    except OSError:
+        return warnings
+    cited = {project_id for meta in entries for project_id in re.findall(r"\d{4}-\d{2}-\d{2}-\d{3}", meta)}
+    dangling = sorted(cited - present)
+    if dangling:
+        warnings.append(
+            f"{reflection_path} cites source projects absent from the workspace: "
+            f"{', '.join(dangling)}; repair the provenance or retire those entries"
+        )
+    return warnings
+
+
 def validate_project(
     project_dir: Path,
     *,
@@ -1061,6 +1106,7 @@ def validate_project(
             report = ValidationReport(errors=[f"unsupported schema_version: {version}"])
     except WorkspaceError as error:
         return ValidationReport(errors=[str(error)])
+    report.warnings.extend(reflection_warnings(project_dir.parent))
     if check_index and version in {2, 3}:
         expected = render_index(project_dir.parent)
         index_path = project_dir.parent / "INDEX.md"
