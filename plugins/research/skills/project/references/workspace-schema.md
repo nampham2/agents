@@ -10,7 +10,7 @@ specification, evidence, reviews, and notes but must not duplicate canonical sta
 
 One coordinator is the sole writer of `project.json`, shared Markdown records, and `INDEX.md`.
 Workers own only assigned non-overlapping output paths and return results to the coordinator. State
-updates use `manage_workspace.py commit` with an expected revision; direct edits are unsupported.
+updates use `research-project commit` with an expected revision; direct edits are unsupported.
 
 `INDEX.md` is a deterministic cache generated from canonical state. A stale index is an error at
 close but does not supersede `project.json`.
@@ -236,17 +236,35 @@ deliverables, and authorization state.
 
 Current requirements are maintained in place; decision history is append-only.
 
-`evidence.md` records concise milestone evidence:
+`evidence.md` records concise milestone evidence. Entries for commands are written by
+`research-project record-evidence <project-directory> --task <id> -- <command>`, which runs the
+command with no shell and appends what it observed:
 
-```markdown
+~~~markdown
 # Evidence
 
-## T01 — Task name
+## T01 — uv run pytest -q
 
-- Verification: `command` passed on YYYY-MM-DD.
-- Outputs: `target:path/to/output`
-- Notes: Any limitation relevant to the success criteria.
+- Recorded: YYYY-MM-DDTHH:MM:SS+00:00
+- Working directory: /path/from/project.json
+- Exit code: 0 (passed)
+
+stdout (tail):
+
 ```
+[N earlier line(s) elided]
+...the last lines of output...
+```
+~~~
+
+The exit code in the file is the process's real exit code, and a non-zero one is written down as
+`FAILED`; the command itself exits non-zero and says it is not recording a pass. Prose belongs in a
+separate `### T01 — notes` section below the recorded entry — outputs, limitations, why a failure
+was expected — so that what a command did and what a coordinator concluded from it stay
+distinguishable.
+Never edit a recorded entry to make it agree with a conclusion.
+
+Only evidence that no command produced, such as an external delivery receipt, is written by hand.
 
 Redact credentials, tokens, private data, and unnecessary command output from every workspace file.
 
@@ -256,7 +274,7 @@ Do not write `project.json` directly. Starting from revision `R`, construct a co
 run:
 
 ```sh
-python3 <skill-directory>/scripts/manage_workspace.py commit <project-dir> <candidate.json> \
+research-project commit <project-dir> <candidate.json> \
   --expected-revision R
 ```
 
@@ -308,7 +326,7 @@ A v3 project may be `DONE` only when:
 Run both close and index validation after the transactional `DONE` commit:
 
 ```sh
-python3 <skill-directory>/scripts/validate_workspace.py <project-dir> --close --check-index
+research-validate <project-dir> --close --check-index
 ```
 
 The validator checks structural state, local files, references, and index derivation. The coordinator

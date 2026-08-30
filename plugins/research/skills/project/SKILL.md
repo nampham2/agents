@@ -44,25 +44,38 @@ skip a step:
 
 1. a path the user gave in this request or earlier in this conversation;
 2. `$RESEARCH_WORKSPACE`;
-3. ask the user, and wait.
+3. `research-project find-roots`, which looks for an already-established root instead of leaving you
+   to imagine one;
+4. ask the user, naming exactly what the search found, and wait for an answer.
+
+Searching is not guessing; adopting what the search returns would be. `find-roots` exits 0 only
+when it finds exactly one root, and even then that root becomes the session's root only once the
+user says so — one hit is evidence to present, not a decision already made. Zero hits and several
+hits carry the same instruction: ask. Offering a menu of plausible roots without having searched is
+guessing with extra steps, which is why the search comes before the question rather than instead of
+it.
 
 Never infer the root from the current working directory, the repository you are editing, the
-location of this skill, or a `workspace/` directory you happen to find. Never create a root that
-does not exist without saying so: `init` refuses unless `--create-root` is passed, and that flag
-needs the user behind it. A guessed root is how one project ends up duplicated across two workspaces
-with divergent status, which no later validation can reconcile.
+location of this skill, or a `workspace/` directory you happen to be looking at. `find-roots` is
+the only sanctioned way to look, and its output is a report to the user, never a decision. Never
+create a root that does not exist without saying so: `init` refuses unless `--create-root` is
+passed, and that flag needs the user behind it. A guessed root is how one project ends up
+duplicated across two workspaces with divergent status, which no later validation can reconcile.
 
 Once resolved, state the root you are using before you write anything, and use it for every command
 in the session. Multiple roots on one machine are a defect, not a feature: if you find a second one
 holding the same project, report it rather than picking one.
 
 Passing the root explicitly and setting the variable are equally supported; an explicit path always
-wins. `manage_workspace.py` reads the variable itself, so a command with no root argument fails with
+wins. `research-project` reads the variable itself, so a command with no root argument fails with
 an actionable error instead of inventing a location:
 
 ```sh
 export RESEARCH_WORKSPACE=/path/to/workspace
-python3 <skill-directory>/scripts/manage_workspace.py rebuild-index
+research-project rebuild-index
+
+# Search $HOME to a bounded depth for an established root. Report what it prints; do not adopt it.
+research-project find-roots
 ```
 
 ## Project layout and tools
@@ -86,17 +99,29 @@ workspace/
 Read [references/workspace-schema.md](references/workspace-schema.md) before initializing,
 resuming, migrating, or closing a project.
 
-Use the bundled scripts rather than hand-editing canonical state or the index:
+`init` and `research-validate` warn when the workspace root is not under version control, because a
+workspace is the record of the work and an unversioned record has no history to recover. Report the
+warning and let the user decide: never run `git init`, commit, or otherwise put a workspace under
+version control on your own initiative. Repository work of that kind is a planned, authorized task,
+not a side effect of validation.
+
+Use the bundled commands rather than hand-editing canonical state or the index. `research-project`
+and `research-validate` ship in this plugin's `bin/` directory, which is on `PATH` for every
+registered plugin, so invoke them by name and never by a constructed path. If the shell cannot find
+them, the plugin is not installed correctly: report that so the user can fix the installation,
+rather than guessing at a script path — a guessed path is how a session ends up running a stale copy
+of the tools against live state.
 
 ```sh
 # <workspace-root> is optional: omitted, it comes from $RESEARCH_WORKSPACE. Add --create-root only
 # when the user has asked for a new workspace.
-python3 <skill-directory>/scripts/manage_workspace.py init <workspace-root> \
+research-project init <workspace-root> \
   --title "<title>" --working-directory <target-directory>
-python3 <skill-directory>/scripts/manage_workspace.py commit <project-directory> <candidate.json> \
+research-project commit <project-directory> <candidate.json> \
   --expected-revision <revision>
-python3 <skill-directory>/scripts/manage_workspace.py rebuild-index <workspace-root>
-python3 <skill-directory>/scripts/validate_workspace.py <project-directory>
+research-project rebuild-index <workspace-root>
+research-project record-evidence <project-directory> --task <id> -- <command>
+research-validate <project-directory>
 ```
 
 Generated code and files intended for an existing repository belong in their requested target
@@ -114,7 +139,7 @@ To change project state:
 1. Read the current `project.json` and note its `revision`.
 2. Build a complete candidate JSON from that exact revision in a temporary file. Preserve terminal
    task history and immutable project identity fields.
-3. Commit it with `manage_workspace.py commit --expected-revision <revision>`.
+3. Commit it with `research-project commit --expected-revision <revision>`.
 4. If the commit reports a revision conflict, reload current state, reconcile both changes, and
    retry. Never overwrite the newer state.
 
@@ -135,7 +160,7 @@ root; do not search elsewhere for projects.
 3. If one active project clearly matches the same objective and deliverable ownership, resume it.
 4. If a completed project owns the maintained deliverable, reopen it as described below.
 5. If multiple projects might match, ask which one to resume. Do not silently create a duplicate.
-6. If no project matches, initialize one with `manage_workspace.py init`; it atomically allocates the
+6. If no project matches, initialize one with `research-project init`; it atomically allocates the
    next unused directory and creates the v3 skeleton. It refuses a workspace root that does not
    exist unless `--create-root` is passed, which requires the user having asked for a new workspace.
 7. Read relevant entries from `workspace/reflection.md` as dated advice.
@@ -156,13 +181,13 @@ Detect the schema before mutation:
 Never migrate silently. Preview migration first:
 
 ```sh
-python3 <skill-directory>/scripts/manage_workspace.py migrate <project-directory>
+research-project migrate <project-directory>
 ```
 
 Apply only with explicit user approval:
 
 ```sh
-python3 <skill-directory>/scripts/manage_workspace.py migrate <project-directory> --apply
+research-project migrate <project-directory> --apply
 ```
 
 The v2 migration creates `project.v2.json` as a recovery copy. A pure v1 migration preserves legacy
@@ -170,7 +195,7 @@ files, creates v3 state in `ALIGNING`, and marks imported tasks `TODO` because h
 cannot be inferred safely. Reconcile the migration preview before applying it.
 
 If the user declines migration, continue under the legacy format's limitations. Legacy v1 closure
-requires explicit acknowledgement with `validate_workspace.py --close --allow-legacy-close`; report
+requires explicit acknowledgement with `research-validate --close --allow-legacy-close`; report
 that this provides weaker guarantees.
 
 ### Reopening a completed project
@@ -242,6 +267,11 @@ verification, effect classification, authorization, receipts, and block/skip rea
 - Classify effects as `none`, `local_write`, `destructive`, or `external`. Destructive and external
   tasks must declare that authorization is required before execution.
 - Include delivery and publishing as explicit external tasks when they are part of the outcome.
+- Plan integration whenever a deliverable lives in a version-controlled repository. Branching,
+  committing, landing on the default branch, and any push or release are tasks in their own right,
+  each carrying its own effect classification: landing on a shared branch is `destructive`, and
+  pushing or publishing is `external`. Work that is finished but never integrated has not been
+  delivered, and closing time is too late to notice that no task ever said so.
 - Add verification to each task rather than relying on a vague final review.
 - Set project-level review requirements before execution when the user requested review, the output
   is subjective, or risky/external work depends on acceptance.
@@ -259,11 +289,19 @@ the task to `RUNNING` before performing it.
 - Do the work in the actual target location.
 - Keep detailed notes under `tasks/` only when decisions, investigations, failures, or handoff notes
   would be useful. Do not duplicate canonical status there.
-- Record concise verification and delivery evidence in `evidence.md`; add rooted references to the
-  task before marking it `DONE`.
+- Record verification evidence by running the verification command through
+  `research-project record-evidence <project-directory> --task <id> -- <command>`, which appends the
+  command's real exit code and output tail to `evidence.md`. Do not hand-write an evidence entry for
+  a command you ran separately: an entry has to be a record of what happened, not a claim about it.
+  Add rooted references to the task before marking it `DONE`, and put any prose that the recorded
+  output needs — a limitation, an expected failure, why the tail looks the way it does — in a note
+  below the machine-written entry rather than in place of it.
 - Record external delivery in a structured receipt with kind, durable identifier, destination, and
-  timezone-aware timestamp.
-- Mark a task `DONE` only after its success criteria and verification pass.
+  timezone-aware timestamp; where a command produced the delivery evidence, record that command with
+  `record-evidence` too.
+- Mark a task `DONE` only after its success criteria and verification pass. `record-evidence` exits
+  non-zero when the command did, and it says in the file that it is not recording a pass; a task
+  whose latest recorded exit code is non-zero is not `DONE` until a passing run is recorded.
 - Use `SKIPPED` only with a reason compatible with the current specification. Update or skip tasks
   that depended on it; a skip is not a satisfied dependency.
 - On failure, try safe alternatives while meaningful progress remains. Use task and project
@@ -305,12 +343,12 @@ Before successful closure:
 2. Write non-empty project `reflection.md` content covering what worked, what did not, technical
    notes, and open work.
 3. Validate the not-yet-closed candidate state and local evidence.
-4. Commit the project status to `DONE` through `manage_workspace.py commit`; the commit enforces
+4. Commit the project status to `DONE` through `research-project commit`; the commit enforces
    close invariants and rebuilds the index.
 5. Run:
 
    ```sh
-   python3 <skill-directory>/scripts/validate_workspace.py <project-directory> --close --check-index
+   research-validate <project-directory> --close --check-index
    ```
 
 6. Fix every failure. Confirm the project path, completed outcome, verification, review evidence,
@@ -323,3 +361,8 @@ include its date, source project, and scope. Distinguish user preferences, envir
 and tentative strategies. Do not promote a single successful tactic into a universal rule, and do
 not store secrets or project-specific operational details unless they genuinely apply across future
 projects. Merge or retire stale entries without erasing provenance.
+
+`research-validate` warns once the file passes twenty entries, and warns for any source project it
+cites that no longer exists in the root. Both are prompts to consolidate — merge the entries that
+have converged on one lesson, and correct or retire a citation that leads nowhere — not errors to
+suppress. A reflection file too long to be read in full stops being memory and becomes an archive.
