@@ -7,6 +7,7 @@ against a test that says why the behaviour matters rather than merely that it ch
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -739,6 +740,121 @@ class PluginManifestTests(unittest.TestCase):
             with self.subTest(plugin=name):
                 self.assertEqual(f"./plugins/{name}", source)
                 self.assertTrue((REPO_ROOT / source[2:] / ".claude-plugin/plugin.json").is_file())
+
+
+class InstallerRefreshTests(unittest.TestCase):
+    """The installer used to run `plugin install` unconditionally, which no-ops on an installed plugin.
+
+    A stubbed `claude` on PATH records the exact command sequence, because the sequence is the
+    behaviour: which of install, marketplace update, and plugin update runs decides whether the
+    installed copy actually changes, and the previous script reported success either way.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.stub_dir = Path(self.tmp.name)
+        self.log = self.stub_dir / "commands.log"
+        self.listing = self.stub_dir / "listing.json"
+        stub = self.stub_dir / "claude"
+        stub.write_text(
+            "#!/usr/bin/env bash\n"
+            'printf "%s\\n" "$*" >> "$CLAUDE_STUB_LOG"\n'
+            'if [[ "$1 $2 $3" == "plugin list --json" ]]; then\n'
+            '  cat "$CLAUDE_STUB_LISTING"\n'
+            '  exit "${CLAUDE_STUB_LIST_STATUS:-0}"\n'
+            "fi\n"
+            "exit 0\n",
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+        self.manifest_version = json.loads(
+            (REPO_ROOT / "plugins/research/.claude-plugin/plugin.json").read_text(encoding="utf-8")
+        )["version"]
+
+    def _run(self, listing: str, *, list_status: int = 0) -> "tuple[subprocess.CompletedProcess[str], list[str]]":
+        self.listing.write_text(listing, encoding="utf-8")
+        environment = dict(os.environ)
+        environment["PATH"] = f"{self.stub_dir}{os.pathsep}{environment['PATH']}"
+        environment["CLAUDE_STUB_LOG"] = str(self.log)
+        environment["CLAUDE_STUB_LISTING"] = str(self.listing)
+        environment["CLAUDE_STUB_LIST_STATUS"] = str(list_status)
+        completed = subprocess.run(
+            ["bash", str(REPO_ROOT / "bin/install-plugin.sh"), "research"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+        recorded = self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+        return completed, recorded
+
+    def _entry(self, version: str) -> str:
+        return json.dumps([{"id": "research@agents", "version": version, "enabled": True}])
+
+    def test_a_plugin_that_is_not_installed_is_installed(self) -> None:
+        completed, recorded = self._run("[]")
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            [
+                f"plugin validate --strict {REPO_ROOT}",
+                f"plugin validate --strict {REPO_ROOT}/plugins/research",
+                f"plugin marketplace add {REPO_ROOT}",
+                "plugin list --json",
+                "plugin install research@agents",
+            ],
+            recorded,
+        )
+        self.assertIn("is not installed", completed.stdout)
+
+    def test_an_installed_older_version_is_refreshed_not_reinstalled(self) -> None:
+        completed, recorded = self._run(self._entry("0.0.1"))
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(
+            [
+                "plugin marketplace update agents",
+                "plugin update research@agents",
+            ],
+            recorded[-2:],
+        )
+        self.assertNotIn("plugin install research@agents", recorded)
+        self.assertIn(f"refreshing to {self.manifest_version}", completed.stdout)
+
+    def test_the_same_version_is_refused_rather_than_reported_as_a_refresh(self) -> None:
+        # The install cache is keyed on the version, so an update here copies nothing. Exiting 0
+        # with a success message is the exact defect this replaces.
+        completed, recorded = self._run(self._entry(self.manifest_version))
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("already installed", completed.stderr)
+        self.assertIn('bump "version"', completed.stderr)
+        self.assertIn("--plugin-dir", completed.stderr)
+        self.assertNotIn("plugin install research@agents", recorded)
+        self.assertNotIn("plugin update research@agents", recorded)
+
+    def test_an_unreadable_listing_is_treated_as_not_installed(self) -> None:
+        for listing, status in (("not json at all", 0), ("[]", 1), ('{"unexpected": true}', 0)):
+            with self.subTest(listing=listing, status=status):
+                self.log.unlink(missing_ok=True)
+                completed, recorded = self._run(listing, list_status=status)
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertIn("plugin install research@agents", recorded)
+
+    def test_an_unknown_plugin_never_reaches_the_cli(self) -> None:
+        self.listing.write_text("[]", encoding="utf-8")
+        environment = dict(os.environ)
+        environment["PATH"] = f"{self.stub_dir}{os.pathsep}{environment['PATH']}"
+        environment["CLAUDE_STUB_LOG"] = str(self.log)
+        environment["CLAUDE_STUB_LISTING"] = str(self.listing)
+        completed = subprocess.run(
+            ["bash", str(REPO_ROOT / "bin/install-plugin.sh"), "nosuchplugin"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("not published by this marketplace", completed.stderr)
+        self.assertFalse(self.log.exists(), "the CLI ran for a plugin the marketplace does not publish")
 
 
 class InstallerArgumentTests(unittest.TestCase):

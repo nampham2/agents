@@ -7,7 +7,11 @@
 # `claude plugin list` still reports "No plugins installed" — which is how the previous version
 # of this script managed to print success while installing nothing.
 #
-# Both CLI steps are idempotent, so re-running this is safe.
+# Re-running is safe, and on an already-installed plugin it refreshes rather than no-ops: the
+# previous version always ran `plugin install`, which the CLI treats as satisfied when the plugin is
+# present, so editing this tree and re-running printed success while the installed copy stayed as it
+# was. Installs are copied into a cache keyed on the plugin's version, so a refresh only reaches that
+# copy when the version in plugin.json has changed — this script refuses rather than pretend.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -54,29 +58,78 @@ if ! MARKETPLACE=$(read_manifest); then
   exit 1
 fi
 
+# The version in the plugin manifest is what the install cache is keyed on, so it decides whether a
+# refresh can reach the installed copy at all.
+manifest_version() {
+  python3 -c 'import json, sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["version"])' "$1"
+}
+
+# Ask the CLI what is installed rather than guessing from the filesystem: the cache layout is the
+# CLI's business, and `plugin list --json` is the interface it offers for exactly this question.
+installed_version() {
+  local listing
+  listing=$(claude plugin list --json 2>/dev/null) || return 0
+  python3 -c '
+import json, sys
+try:
+    entries = json.loads(sys.argv[1])
+except ValueError:
+    sys.exit(0)
+for entry in entries if isinstance(entries, list) else []:
+    if isinstance(entry, dict) and entry.get("id") == sys.argv[2]:
+        print(entry.get("version", ""))
+        break
+' "$listing" "$1"
+}
+
+PLUGIN_MANIFEST="$REPO_ROOT/plugins/$PLUGIN/.claude-plugin/plugin.json"
+if ! VERSION=$(manifest_version "$PLUGIN_MANIFEST"); then
+  echo "error: $PLUGIN_MANIFEST has no readable \"version\"; the install cache is keyed on it" >&2
+  exit 1
+fi
+
 # Validate here rather than in CI: this is the one place the CLI is guaranteed present, and an
 # invalid manifest is exactly what previously shipped unnoticed.
 claude plugin validate --strict "$REPO_ROOT"
 claude plugin validate --strict "$REPO_ROOT/plugins/$PLUGIN"
 
 claude plugin marketplace add "$REPO_ROOT"
-claude plugin install "$PLUGIN@$MARKETPLACE"
+
+INSTALLED=$(installed_version "$PLUGIN@$MARKETPLACE")
+
+if [[ -z $INSTALLED ]]; then
+  echo "==> $PLUGIN@$MARKETPLACE is not installed; installing version $VERSION"
+  claude plugin install "$PLUGIN@$MARKETPLACE"
+  ACTION="installed version $VERSION"
+elif [[ $INSTALLED == "$VERSION" ]]; then
+  cat >&2 <<STALE
+error: $PLUGIN@$MARKETPLACE is already installed at version $VERSION, and the install cache is keyed
+       on that version, so refreshing it would copy nothing and report success. Pick one:
+
+  - bump "version" in plugins/$PLUGIN/.claude-plugin/plugin.json, then re-run this script;
+  - or work straight from this tree, no install involved:
+      claude --plugin-dir $REPO_ROOT/plugins/$PLUGIN
+STALE
+  exit 1
+else
+  echo "==> $PLUGIN@$MARKETPLACE is installed at version $INSTALLED; refreshing to $VERSION"
+  claude plugin marketplace update "$MARKETPLACE"
+  claude plugin update "$PLUGIN@$MARKETPLACE"
+  ACTION="refreshed $INSTALLED -> $VERSION"
+fi
 
 cat <<NOTE
 
-Installed $PLUGIN@$MARKETPLACE from this working tree. Verify with:
+$PLUGIN@$MARKETPLACE: $ACTION, from this working tree. Verify with:
 
   claude plugin list
 
 Skills are discovered from skills/<name>/SKILL.md and are addressed as <plugin>:<skill> — for
-example $PLUGIN:project.
+example $PLUGIN:project. A restart is required before the change is live.
 
-Installing copied the plugin into a version-keyed cache, so later edits to this working tree do
-NOT reach it. 'claude plugin marketplace update' refreshes the listing only, not the cache.
+Installing copies the plugin into a version-keyed cache, so later edits to this working tree do NOT
+reach it, and 'claude plugin marketplace update' refreshes the listing only, not the cache. To keep
+editing without reinstalling:
 
-  - live development, straight from this tree:  claude --plugin-dir $REPO_ROOT/plugins/$PLUGIN
-  - publish a change to this installed copy:    bump "version" in
-                                                plugins/$PLUGIN/.claude-plugin/plugin.json, then
-                                                claude plugin marketplace update $MARKETPLACE
-                                                claude plugin update $PLUGIN@$MARKETPLACE
+  claude --plugin-dir $REPO_ROOT/plugins/$PLUGIN
 NOTE
