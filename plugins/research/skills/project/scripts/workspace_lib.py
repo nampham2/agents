@@ -6,6 +6,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
+import subprocess
 import tempfile
 import time
 from contextlib import AbstractContextManager
@@ -16,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:  # TypeGuard is 3.10+; the scripts must still import on system python 3.9.
+    from collections.abc import Sequence
     from typing import TypeGuard
 
 PROJECT_STATUSES = {"ALIGNING", "PLANNING", "EXECUTING", "REVIEW", "BLOCKED", "DONE", "CANCELLED"}
@@ -1022,6 +1025,105 @@ def _rebuild_index_after_commit(workspace_root: Path, committed: str, lock_timeo
         ) from error
 
 
+EVIDENCE_TAIL_LINES = 20
+EVIDENCE_PLACEHOLDER = "No task evidence recorded yet.\n"
+
+
+def _format_output_tail(stream: str, label: str, tail_lines: int) -> list[str]:
+    text = stream.strip("\n")
+    if not text:
+        return []
+    lines = text.split("\n")
+    elided = len(lines) - tail_lines
+    kept = lines[-tail_lines:] if elided > 0 else lines
+    body = [f"{label}:", "", "```"]
+    if elided > 0:
+        body.append(f"[{elided} earlier line(s) elided]")
+    body.extend(kept)
+    body.extend(["```", ""])
+    return body
+
+
+def record_evidence(
+    project_dir: Path,
+    task_id: str,
+    command: Sequence[str],
+    *,
+    tail_lines: int = EVIDENCE_TAIL_LINES,
+    timeout: float | None = None,
+) -> int:
+    """Run `command`, append what it actually did to `evidence.md`, and return its exit code.
+
+    The point of this function is that the recorded result cannot disagree with the run. Evidence
+    written from recollection is how a project came to claim that `git log --follow` had reached
+    pre-rename history when the command had in fact returned nothing. So the entry is composed from
+    the completed process: its real exit code, and a tail of its real output.
+
+    The command is executed exactly as given, with no shell, so nothing here can expand, quote, or
+    compose it. A non-zero exit is still recorded — a failure is evidence too — but it is recorded
+    as a failure and returned as one, so a caller cannot mark a task done on the strength of it.
+    Canonical state is never touched: transitions stay with `commit_candidate` and its revision check.
+    """
+    project_dir = project_dir.resolve()
+    if not command:
+        raise WorkspaceError("record-evidence requires a command to run after '--'")
+
+    state = load_json(project_dir / "project.json")
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        raise WorkspaceError(f"{project_dir / 'project.json'} has no task list to record against")
+    if not any(isinstance(task, dict) and task.get("id") == task_id for task in tasks):
+        known = ", ".join(str(task.get("id")) for task in tasks if isinstance(task, dict) and task.get("id"))
+        raise WorkspaceError(f"unknown task {task_id!r}; this project has: {known or '(none)'}")
+
+    working_directory = state.get("working_directory")
+    if not _non_empty_string(working_directory) or not Path(working_directory).is_dir():
+        raise WorkspaceError(f"working_directory is not an existing directory: {working_directory!r}")
+
+    try:
+        completed = subprocess.run(
+            list(command),
+            cwd=working_directory,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            shell=False,
+        )
+    except FileNotFoundError as error:
+        raise WorkspaceError(f"cannot run {command[0]!r}: {error}") from error
+    except OSError as error:
+        raise WorkspaceError(f"cannot run {shlex.join(command)}: {error}") from error
+    except subprocess.TimeoutExpired as error:
+        raise WorkspaceError(f"command timed out after {timeout}s: {shlex.join(command)}") from error
+
+    outcome = "passed" if completed.returncode == 0 else "FAILED"
+    lines = [
+        "",
+        f"## {task_id} — {shlex.join(command)}",
+        "",
+        f"- Recorded: {now_iso()}",
+        f"- Working directory: {working_directory}",
+        f"- Exit code: {completed.returncode} ({outcome})",
+        "",
+    ]
+    lines.extend(_format_output_tail(completed.stdout, "stdout (tail)", tail_lines))
+    lines.extend(_format_output_tail(completed.stderr, "stderr (tail)", tail_lines))
+    if not completed.stdout.strip() and not completed.stderr.strip():
+        lines.extend(["No output.", ""])
+
+    evidence_path = project_dir / "evidence.md"
+    existing = read_text(evidence_path) if evidence_path.exists() else "# Evidence\n"
+    # The skeleton's placeholder would otherwise sit above real entries, saying the opposite of
+    # what the file now holds.
+    existing = existing.replace(EVIDENCE_PLACEHOLDER, "")
+    try:
+        evidence_path.write_text(existing.rstrip("\n") + "\n" + "\n".join(lines), encoding="utf-8")
+    except OSError as error:
+        raise WorkspaceError(f"cannot write {evidence_path}: {error}") from error
+
+    return completed.returncode
+
+
 def rebuild_index(workspace_root: Path, *, lock_timeout: float = 5.0) -> Path:
     # Filesystem failures are normalised here rather than at the call sites, because the CLIs
     # translate WorkspaceError alone and this is both the step every commit ends with and the
@@ -1194,7 +1296,7 @@ def allocate_project(
             f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n"
             "## Decision history\n\n- Project initialized; requirements pending alignment.\n",
         )
-        atomic_write_text(project_dir / "evidence.md", "# Evidence\n\nNo task evidence recorded yet.\n")
+        atomic_write_text(project_dir / "evidence.md", f"# Evidence\n\n{EVIDENCE_PLACEHOLDER}")
         if not (workspace_root / "reflection.md").exists():
             atomic_write_text(workspace_root / "reflection.md", "# Cross-project reflection\n")
         atomic_write_json(project_dir / "project.json", state)

@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from workspace_lib import (
+    EVIDENCE_TAIL_LINES,
     WORKSPACE_ROOT_ENV_VAR,
     WorkspaceError,
     allocate_project,
@@ -16,6 +17,7 @@ from workspace_lib import (
     commit_candidate,
     migration_candidate,
     rebuild_index,
+    record_evidence,
     resolve_workspace_root,
     validate_v3_state,
 )
@@ -56,6 +58,20 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     index.add_argument("--lock-timeout", type=float, default=5.0)
 
+    record = subparsers.add_parser(
+        "record-evidence",
+        help="Run a command and append its real exit code and output tail to evidence.md",
+        usage="manage_workspace.py record-evidence <project-directory> --task <id> -- <command>",
+        epilog=(
+            "The command after '--' is executed verbatim with no shell. The separator is required: "
+            "without it a command's own flags are indistinguishable from this script's."
+        ),
+    )
+    record.add_argument("project_directory", type=Path)
+    record.add_argument("--task", required=True, help="task ID the evidence belongs to")
+    record.add_argument("--tail-lines", type=int, default=EVIDENCE_TAIL_LINES)
+    record.add_argument("--timeout", type=float, default=None, help="seconds before the command is abandoned")
+
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
     migrate.add_argument("project_directory", type=Path)
     migrate.add_argument("--apply", action="store_true", help="Apply the migration; default is a read-only preview")
@@ -64,9 +80,23 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _split_at_separator(raw: list[str]) -> tuple[list[str], list[str]]:
+    """Cut the argument list at the first bare `--`, returning (options, command).
+
+    argparse cannot be trusted with this. `nargs=REMAINDER` swallows `--task` along with the
+    command, and `nargs="*"` rejects a command that itself contains a bare `--` on Python 3.9,
+    which is the floor the shipped scripts run on. Splitting first keeps the command verbatim.
+    """
+    if "--" not in raw:
+        return raw, []
+    separator = raw.index("--")
+    return raw[:separator], raw[separator + 1 :]
+
+
 def main() -> int:
     parser = _build_parser()
-    args = parser.parse_args()
+    options, command_argv = _split_at_separator(list(sys.argv[1:]))
+    args = parser.parse_args(options)
     try:
         if args.command == "init":
             project_dir = allocate_project(
@@ -97,6 +127,33 @@ def main() -> int:
                 raise WorkspaceError(f"workspace root does not exist: {workspace_root}")
             print(rebuild_index(workspace_root, lock_timeout=args.lock_timeout))
             return 0
+
+        if args.command == "record-evidence":
+            if not command_argv:
+                print(
+                    "ERROR: record-evidence needs the command after '--', for example: "
+                    "record-evidence <project-directory> --task T01 -- uv run pytest",
+                    file=sys.stderr,
+                )
+                return 1
+            exit_code = record_evidence(
+                args.project_directory,
+                args.task,
+                command_argv,
+                tail_lines=args.tail_lines,
+                timeout=args.timeout,
+            )
+            evidence_path = args.project_directory.resolve() / "evidence.md"
+            if exit_code == 0:
+                print(f"Recorded a passing result for {args.task} in {evidence_path}")
+                return 0
+            # The failure is written down, but it is never written down as a pass: a caller that
+            # marks the task done from here has to do so against a non-zero exit it can see.
+            print(
+                f"Recorded exit code {exit_code} for {args.task} in {evidence_path}; not recording it as a pass",
+                file=sys.stderr,
+            )
+            return 1
 
         if args.command == "migrate":
             if args.apply:
