@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Thin wrapper for validate_workspace.py.
+#
+# Claude Code puts <plugin-root>/bin on PATH for every registered plugin, so this is how a command
+# is invoked without anyone having to know where the plugin was installed. The skill used to spell
+# its commands with a <skill-directory> placeholder, which every session had to resolve by hand and
+# which $CLAUDE_PLUGIN_ROOT does not help with — that variable is not present in the tool
+# environment.
+#
+# The script path is resolved from this file's own location, never the caller's directory, and
+# through any symlinks, so the wrapper works from anywhere and when linked onto PATH by hand.
+set -euo pipefail
+
+source=${BASH_SOURCE[0]}
+while [[ -L $source ]]; do
+  directory=$(cd -P "$(dirname "$source")" && pwd)
+  source=$(readlink "$source")
+  [[ $source != /* ]] && source=$directory/$source
+done
+here=$(cd -P "$(dirname "$source")" && pwd)
+script=$here/../skills/project/scripts/validate_workspace.py
+
+if [[ ! -f $script ]]; then
+  echo "error: $script is missing; this wrapper must stay beside the plugin's skills directory" >&2
+  exit 1
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "error: python3 is not on PATH; it is what runs validate_workspace.py" >&2
+  exit 1
+fi
+
+# The scripts stay directly invocable, so CI and the test suite are unaffected by this wrapper.
+exec python3 "$script" "$@"
