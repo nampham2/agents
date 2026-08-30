@@ -1045,6 +1045,33 @@ REFLECTION_MAX_ENTRIES = 20
 REFLECTION_ENTRY_PATTERN = re.compile(r"^- \[(?P<meta>[^\]]*)\]", re.MULTILINE)
 
 
+# `.git` is a file, not a directory, inside a worktree or submodule, so presence is what is checked.
+VCS_MARKERS = (".git", ".hg", ".jj", ".svn")
+
+
+def vcs_warnings(workspace_root: Path) -> "list[str]":
+    """Warn when nothing above the workspace root is under version control.
+
+    The workspace is the record of what was decided and verified, and a mistaken delete or a bad
+    hand-edit of `project.json` has no recovery path without history. This only reports: no
+    repository is created here, and nothing outside a project's own directory is written.
+    """
+    root = workspace_root.expanduser()
+    try:
+        root = root.resolve()
+        if not root.is_dir():
+            return []
+    except OSError:
+        return []
+    for directory in (root, *root.parents):
+        if any((directory / marker).exists() for marker in VCS_MARKERS):
+            return []
+    return [
+        f"{root} is not under version control; a mistaken delete or hand-edit of project.json has "
+        "no recovery path. Consider running 'git init' there yourself — these tools will not."
+    ]
+
+
 def reflection_warnings(workspace_root: Path) -> "list[str]":
     """Warn about a cross-project reflection that has outgrown its readers or cites what is gone.
 
@@ -1107,6 +1134,7 @@ def validate_project(
     except WorkspaceError as error:
         return ValidationReport(errors=[str(error)])
     report.warnings.extend(reflection_warnings(project_dir.parent))
+    report.warnings.extend(vcs_warnings(project_dir.parent))
     if check_index and version in {2, 3}:
         expected = render_index(project_dir.parent)
         index_path = project_dir.parent / "INDEX.md"

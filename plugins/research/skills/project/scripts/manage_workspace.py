@@ -22,6 +22,7 @@ from workspace_lib import (
     record_evidence,
     resolve_workspace_root,
     validate_v3_state,
+    vcs_warnings,
 )
 
 
@@ -122,13 +123,19 @@ def main() -> int:
     args = parser.parse_args(options)
     try:
         if args.command == "init":
+            workspace_root = resolve_workspace_root(args.workspace_root)
             project_dir = allocate_project(
-                resolve_workspace_root(args.workspace_root),
+                workspace_root,
                 title=args.title,
                 working_directory=args.working_directory,
                 lock_timeout=args.lock_timeout,
                 create_root=args.create_root,
             )
+            # Warned at init as well as at validation, because this is the moment someone chooses
+            # where the record of the work will live. Checked after allocation, since --create-root
+            # means the directory to check may not have existed a moment ago.
+            for warning in vcs_warnings(workspace_root):
+                print(f"WARNING: {warning}", file=sys.stderr)
             print(project_dir)
             return 0
 
