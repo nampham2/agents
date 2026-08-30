@@ -245,10 +245,26 @@ class EvidenceHeadingTests(_ProjectFixture):
     def test_a_command_containing_a_fence_does_not_end_the_block_early(self) -> None:
         record_evidence(self.project_dir, "T01", [sys.executable, "-c", "print('```')\n# " + "z" * 200])
         text = self.evidence.read_text(encoding="utf-8")
-        body = text.split("Command:", 1)[1]
+        # Scoped to the command block: the recorded output contains the same fence, and since T20
+        # its block is sized too, so counting across the whole entry would count both.
+        body = text.split("Command:", 1)[1].split("stdout (tail):", 1)[0]
         fence = body.split("\n")[2]
         self.assertGreaterEqual(len(fence), 4, "the fence must be longer than the backticks inside it")
         self.assertEqual(body.count(fence), 2, "the block must open and close on the sized fence")
+
+    def test_output_containing_a_fence_does_not_close_its_block_early(self) -> None:
+        record_evidence(self.project_dir, "T01", [sys.executable, "-c", "print('```')\nprint('after')"])
+        text = self.evidence.read_text(encoding="utf-8")
+        block = text.split("stdout (tail):", 1)[1]
+        fence = block.split("\n")[2]
+        self.assertEqual(fence, "````", "the fence must outgrow the backticks in the output")
+        self.assertEqual(block.count(fence), 2, "the block must open and close on the sized fence")
+        self.assertIn("after", block.split(fence)[1], "output after the fence stays inside the block")
+
+    def test_output_without_a_fence_is_written_as_before(self) -> None:
+        record_evidence(self.project_dir, "T01", [sys.executable, "-c", "print('plain')"])
+        block = self.evidence.read_text(encoding="utf-8").split("stdout (tail):", 1)[1]
+        self.assertEqual(block.split("\n")[2], "```")
 
 
 class RecordEvidenceCliTests(_ProjectFixture):

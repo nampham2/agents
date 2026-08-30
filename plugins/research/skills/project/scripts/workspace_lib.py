@@ -1265,11 +1265,15 @@ def _format_output_tail(stream: str, label: str, tail_lines: int) -> list[str]:
     lines = text.split("\n")
     elided = len(lines) - tail_lines
     kept = lines[-tail_lines:] if elided > 0 else lines
-    body = [f"{label}:", "", "```"]
+    # Sized for the same reason the command block is: a command that prints a fence would
+    # otherwise close this block early, and everything below it in the entry — the exit code of the
+    # next entry included — would render as prose.
+    fence = _fence_for(text)
+    body = [f"{label}:", "", fence]
     if elided > 0:
         body.append(f"[{elided} earlier line(s) elided]")
     body.extend(kept)
-    body.extend(["```", ""])
+    body.extend([fence, ""])
     return body
 
 
