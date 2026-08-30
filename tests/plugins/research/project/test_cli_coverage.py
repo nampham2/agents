@@ -15,9 +15,9 @@ import manage_workspace
 import validate_workspace
 from workspace_lib import WorkspaceError, allocate_project
 
+from tests.conftest import MANAGER
+
 TIMESTAMP = "2026-08-28T10:00:00+02:00"
-REPO_ROOT = Path(__file__).resolve().parents[4]
-MANAGER = REPO_ROOT / "plugins/research/skills/project/scripts/manage_workspace.py"
 
 
 def _call_manage(args: list[str]) -> int:

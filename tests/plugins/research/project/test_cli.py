@@ -8,9 +8,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[4]
-MANAGER = REPO_ROOT / "plugins/research/skills/project/scripts/manage_workspace.py"
-VALIDATOR = REPO_ROOT / "plugins/research/skills/project/scripts/validate_workspace.py"
+from tests.conftest import MANAGER, VALIDATOR
 
 
 class CliIntegrationTests(unittest.TestCase):

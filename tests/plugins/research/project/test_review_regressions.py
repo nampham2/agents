@@ -29,10 +29,9 @@ from workspace_lib import (
     validate_v3_state,
 )
 
+from tests.conftest import MANAGER, REPO_ROOT, VALIDATOR
+
 TIMESTAMP = "2026-08-28T10:00:00+02:00"
-REPO_ROOT = Path(__file__).resolve().parents[4]
-MANAGER = REPO_ROOT / "plugins/research/skills/project/scripts/manage_workspace.py"
-VALIDATOR = REPO_ROOT / "plugins/research/skills/project/scripts/validate_workspace.py"
 
 
 class MigrationAuthorizationTests(unittest.TestCase):
