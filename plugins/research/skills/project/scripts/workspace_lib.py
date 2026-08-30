@@ -1224,6 +1224,38 @@ def _rebuild_index_after_commit(workspace_root: Path, committed: str, lock_timeo
 
 EVIDENCE_TAIL_LINES = 20
 EVIDENCE_PLACEHOLDER = "No task evidence recorded yet.\n"
+EVIDENCE_HEADING_MAX_CHARS = 100
+
+
+def _fence_for(text: str) -> str:
+    """Return a backtick fence long enough to contain `text`.
+
+    A command or an output tail may itself contain a fence. CommonMark closes a fenced block on the
+    first line whose fence is at least as long as the opening one, so a three-backtick fence around
+    text containing three backticks ends the block early and lets the rest of the entry render as
+    prose. The fence has to be longer than anything inside it.
+    """
+    longest = 0
+    run = 0
+    for character in text:
+        run = run + 1 if character == "`" else 0
+        longest = max(longest, run)
+    return "`" * max(3, longest + 1)
+
+
+def _evidence_heading_command(joined: str) -> str:
+    """Reduce a command to one short line for a Markdown heading.
+
+    A heading is a single line by construction, so a command containing newlines — a `python3 -c`
+    script, a shell one-liner with a `for` loop — silently spills its remainder into the document as
+    prose. Long commands are no better: a 400-character heading is unreadable in a rendered file and
+    in a table of contents. Collapse whitespace, then truncate. The full command is written into the
+    entry body whenever this changes it, so nothing is lost.
+    """
+    collapsed = " ".join(joined.split())
+    if len(collapsed) <= EVIDENCE_HEADING_MAX_CHARS:
+        return collapsed
+    return collapsed[: EVIDENCE_HEADING_MAX_CHARS - 1].rstrip() + "\u2026"
 
 
 def _format_output_tail(stream: str, label: str, tail_lines: int) -> list[str]:
@@ -1294,15 +1326,22 @@ def record_evidence(
         raise WorkspaceError(f"command timed out after {timeout}s: {shlex.join(command)}") from error
 
     outcome = "passed" if completed.returncode == 0 else "FAILED"
+    joined = shlex.join(command)
+    heading = _evidence_heading_command(joined)
     lines = [
         "",
-        f"## {task_id} — {shlex.join(command)}",
+        f"## {task_id} — {heading}",
         "",
         f"- Recorded: {now_iso()}",
         f"- Working directory: {working_directory}",
         f"- Exit code: {completed.returncode} ({outcome})",
         "",
     ]
+    if heading != joined:
+        # The heading is now a summary rather than the command, so the command itself has to appear
+        # somewhere a reader can copy it from.
+        fence = _fence_for(joined)
+        lines.extend(["Command:", "", fence, joined, fence, ""])
     lines.extend(_format_output_tail(completed.stdout, "stdout (tail)", tail_lines))
     lines.extend(_format_output_tail(completed.stderr, "stderr (tail)", tail_lines))
     if not completed.stdout.strip() and not completed.stderr.strip():

@@ -8,6 +8,7 @@ derived from the completed process, and a failing command can never be recorded 
 from __future__ import annotations
 
 import json
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,12 @@ from typing import Any
 from unittest.mock import patch
 
 import manage_workspace
-from workspace_lib import WorkspaceError, allocate_project, record_evidence
+from workspace_lib import (
+    EVIDENCE_HEADING_MAX_CHARS,
+    WorkspaceError,
+    allocate_project,
+    record_evidence,
+)
 
 from tests.conftest import MANAGER
 
@@ -193,6 +199,56 @@ class RecordEvidenceTests(_ProjectFixture):
             with self.assertRaises(WorkspaceError) as caught:
                 record_evidence(self.project_dir, "T01", ["/bin/sh"])
         self.assertIn("exec format error", str(caught.exception))
+
+
+class EvidenceHeadingTests(_ProjectFixture):
+    """A Markdown heading is one line; a command is not obliged to be."""
+
+    def _heading(self) -> str:
+        headings = [
+            line for line in self.evidence.read_text(encoding="utf-8").splitlines() if line.startswith("## T01")
+        ]
+        self.assertEqual(len(headings), 1, "expected exactly one recorded entry")
+        return headings[0]
+
+    def test_a_single_line_command_is_left_exactly_as_it_was(self) -> None:
+        record_evidence(self.project_dir, "T01", [sys.executable, "-c", "print(1)"])
+        self.assertEqual(self._heading(), f"## T01 — {shlex.join([sys.executable, '-c', 'print(1)'])}")
+        # Nothing was collapsed or cut, so there is no reason to repeat the command in the body.
+        self.assertNotIn("Command:", self.evidence.read_text(encoding="utf-8"))
+
+    def test_a_multi_line_command_becomes_one_heading_line(self) -> None:
+        script = "import sys\nfor value in (1, 2):\n    print(value)\n"
+        record_evidence(self.project_dir, "T01", [sys.executable, "-c", script])
+        text = self.evidence.read_text(encoding="utf-8")
+        heading = self._heading()
+        self.assertNotIn("\n", heading)
+        self.assertIn("for value in (1, 2):", heading)
+        # The script's own lines must not have escaped the heading into the document.
+        self.assertNotIn("\n    print(value)\n", text.split("- Recorded:")[0])
+        self.assertIn("Command:", text)
+        self.assertIn(shlex.join([sys.executable, "-c", script]), text)
+
+    def test_a_long_command_is_truncated_with_an_ellipsis(self) -> None:
+        record_evidence(self.project_dir, "T01", [sys.executable, "-c", "print('x')  #" + " y" * 300])
+        heading = self._heading()
+        self.assertTrue(heading.endswith("\u2026"), heading)
+        self.assertLessEqual(len(heading) - len("## T01 — "), EVIDENCE_HEADING_MAX_CHARS)
+
+    def test_a_command_at_the_limit_is_not_truncated(self) -> None:
+        padding = "#" * (EVIDENCE_HEADING_MAX_CHARS - len(shlex.join([sys.executable, "-c", ""])))
+        command = [sys.executable, "-c", padding]
+        self.assertEqual(len(shlex.join(command)), EVIDENCE_HEADING_MAX_CHARS)
+        record_evidence(self.project_dir, "T01", command)
+        self.assertEqual(self._heading(), f"## T01 — {shlex.join(command)}")
+
+    def test_a_command_containing_a_fence_does_not_end_the_block_early(self) -> None:
+        record_evidence(self.project_dir, "T01", [sys.executable, "-c", "print('```')\n# " + "z" * 200])
+        text = self.evidence.read_text(encoding="utf-8")
+        body = text.split("Command:", 1)[1]
+        fence = body.split("\n")[2]
+        self.assertGreaterEqual(len(fence), 4, "the fence must be longer than the backticks inside it")
+        self.assertEqual(body.count(fence), 2, "the block must open and close on the sized fence")
 
 
 class RecordEvidenceCliTests(_ProjectFixture):
