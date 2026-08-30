@@ -387,6 +387,8 @@ def _validate_output_reference(
     working_directory: Path,
     require_exists: bool,
     report: ValidationReport,
+    *,
+    missing_is_error: bool = True,
 ) -> None:
     if not isinstance(value, dict):
         report.errors.append(f"{label}: output must be an object")
@@ -413,7 +415,18 @@ def _validate_output_reference(
     if error:
         report.errors.append(f"{label}: {error}: {path}")
     elif require_exists and required and resolved is not None and not resolved.exists():
-        report.errors.append(f"{label}: required output does not exist: {root}:{path}")
+        missing = f"required output does not exist: {root}:{path}"
+        if missing_is_error:
+            report.errors.append(f"{label}: {missing}")
+        else:
+            # The task was already terminal before this commit, so the record is not claiming
+            # something untrue — the deliverable has moved or gone since. Erroring here would make
+            # the project uncommittable, and the dated correction the skill prescribes for exactly
+            # this situation is itself a commit.
+            report.warnings.append(
+                f"{label}: {missing}; the task was already terminal, so this is history that has "
+                "moved rather than an unfinished task. Record where it went in a dated correction."
+            )
 
 
 def _validate_evidence_reference(
@@ -634,7 +647,18 @@ def validate_v3_state(
     *,
     close: bool = False,
     check_files: bool = True,
+    already_done: set[str] | None = None,
 ) -> ValidationReport:
+    """Validate a v3 candidate. `already_done` names tasks that were DONE before this candidate.
+
+    A missing required output means two different things depending on when the task finished. For a
+    task going DONE now it means the work is not done, and that must fail. For a task that finished
+    long ago it usually means the deliverable was renamed — and failing there makes the project
+    permanently uncommittable, including the dated correction that would explain the rename. So
+    callers holding the previous state pass it; callers without one (the standalone validator, the
+    migration preview) pass nothing and every DONE task is held to the stricter rule, which keeps
+    their reports unchanged.
+    """
     report = ValidationReport()
     _missing_fields(state, PROJECT_FIELDS - {"predecessor"}, "project", report)
     _unexpected_fields(state, PROJECT_FIELDS, "project", report)
@@ -767,6 +791,7 @@ def validate_v3_state(
                 working_directory,
                 require_exists=check_files and task_status == "DONE",
                 report=report,
+                missing_is_error=already_done is None or task_id not in already_done,
             )
 
         evidence = task.get("evidence")
@@ -1427,6 +1452,18 @@ def check_state_transition(previous: dict[str, Any], candidate: dict[str, Any]) 
     return errors
 
 
+def _done_task_ids(state: dict[str, Any]) -> set[str]:
+    """IDs of tasks already DONE in `state`, tolerating malformed entries."""
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        return set()
+    return {
+        task["id"]
+        for task in tasks
+        if isinstance(task, dict) and task.get("status") == "DONE" and _non_empty_string(task.get("id"))
+    }
+
+
 def commit_candidate(
     project_dir: Path,
     candidate_path: Path,
@@ -1462,6 +1499,7 @@ def commit_candidate(
             project_dir,
             close=candidate.get("status") == "DONE",
             check_files=True,
+            already_done=_done_task_ids(current),
         )
         if report.errors:
             raise WorkspaceError("candidate validation failed:\n- " + "\n- ".join(report.errors))
