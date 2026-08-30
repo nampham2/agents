@@ -105,6 +105,86 @@ def is_canonical_project_id(name: str) -> bool:
     return bool(PROJECT_ID_PATTERN.match(name))
 
 
+ROOT_SEARCH_MAX_DEPTH = 4
+# Directories that never hold a workspace root and are expensive to walk. Pruning them is what
+# keeps a $HOME search a second rather than a minute.
+ROOT_SEARCH_PRUNED_NAMES = frozenset(
+    {
+        "Applications",
+        "Library",
+        "Movies",
+        "Music",
+        "Pictures",
+        "__pycache__",
+        "node_modules",
+        "site-packages",
+        "target",
+        "venv",
+    }
+)
+
+
+def _is_workspace_root(candidate: Path) -> bool:
+    """A root holds INDEX.md and at least one canonically named project directory.
+
+    Both conditions matter. `INDEX.md` alone matches any documentation directory, and a
+    date-named directory alone matches dated notes that were never a workspace.
+    """
+    try:
+        if not (candidate / "INDEX.md").is_file():
+            return False
+        return any(child.is_dir() and is_canonical_project_id(child.name) for child in candidate.iterdir())
+    except OSError:
+        # A $HOME search crosses directories it cannot read; one of them must not end the search.
+        # `is_file` itself raises here on Python 3.12, not only `iterdir`.
+        return False
+
+
+def find_workspace_roots(
+    search_paths: "Sequence[Path] | None" = None,
+    *,
+    max_depth: int = ROOT_SEARCH_MAX_DEPTH,
+) -> "list[Path]":
+    """Search for established workspace roots, deepest-bounded and breadth-first.
+
+    `resolve_workspace_root` deliberately refuses to guess, which leaves the caller asking the user
+    for a path they have already used. This finds the established root instead. Offering a menu of
+    plausible roots is itself a form of guessing, so the search reports what exists — including the
+    fact that two roots exist, which is a defect to resolve and not a choice to make silently.
+    """
+    if search_paths is None:
+        search_paths = [Path.home()]
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for search_path in search_paths:
+        # `resolve` is non-strict, so a search path that does not exist needs no guard here: it
+        # matches nothing and its `iterdir` is skipped below like any unreadable directory.
+        frontier = [(search_path.expanduser().resolve(), 0)]
+        while frontier:
+            directory, depth = frontier.pop(0)
+            if directory in seen:
+                continue
+            seen.add(directory)
+            if _is_workspace_root(directory):
+                found.append(directory)
+                # A root's own project directories cannot contain another root.
+                continue
+            if depth >= max_depth:
+                continue
+            try:
+                children = sorted(directory.iterdir())
+            except OSError:
+                # An unreadable directory is skipped, not fatal: a $HOME search crosses plenty.
+                continue
+            for child in children:
+                if child.name.startswith(".") or child.name in ROOT_SEARCH_PRUNED_NAMES:
+                    continue
+                if child.is_symlink() or not child.is_dir():
+                    continue
+                frontier.append((child, depth + 1))
+    return found
+
+
 def resolve_workspace_root(explicit: "Path | None") -> Path:
     """Resolve the workspace root from an explicit path, else the environment.
 

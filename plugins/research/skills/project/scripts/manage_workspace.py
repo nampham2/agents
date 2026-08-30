@@ -10,11 +10,13 @@ from pathlib import Path
 
 from workspace_lib import (
     EVIDENCE_TAIL_LINES,
+    ROOT_SEARCH_MAX_DEPTH,
     WORKSPACE_ROOT_ENV_VAR,
     WorkspaceError,
     allocate_project,
     apply_migration,
     commit_candidate,
+    find_workspace_roots,
     migration_candidate,
     rebuild_index,
     record_evidence,
@@ -71,6 +73,27 @@ def _build_parser() -> argparse.ArgumentParser:
     record.add_argument("--task", required=True, help="task ID the evidence belongs to")
     record.add_argument("--tail-lines", type=int, default=EVIDENCE_TAIL_LINES)
     record.add_argument("--timeout", type=float, default=None, help="seconds before the command is abandoned")
+
+    roots = subparsers.add_parser(
+        "find-roots",
+        help="Search for established workspace roots instead of guessing one",
+        epilog=(
+            "Exits 0 only when exactly one root is found. Zero and several both mean the caller "
+            "must ask the user, which is what the resolution order already requires."
+        ),
+    )
+    roots.add_argument(
+        "search_paths",
+        nargs="*",
+        type=Path,
+        help="directories to search; defaults to $HOME",
+    )
+    roots.add_argument(
+        "--max-depth",
+        type=int,
+        default=ROOT_SEARCH_MAX_DEPTH,
+        help=f"how deep to descend below each search path (default {ROOT_SEARCH_MAX_DEPTH})",
+    )
 
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
     migrate.add_argument("project_directory", type=Path)
@@ -154,6 +177,27 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+
+        if args.command == "find-roots":
+            found = find_workspace_roots(args.search_paths or None, max_depth=args.max_depth)
+            for root in found:
+                print(root)
+            if not found:
+                where = ", ".join(str(path) for path in args.search_paths) or "$HOME"
+                print(
+                    f"ERROR: no workspace root found under {where}; ask the user for the path "
+                    "rather than creating or assuming one",
+                    file=sys.stderr,
+                )
+                return 1
+            if len(found) > 1:
+                print(
+                    f"ERROR: {len(found)} workspace roots found; that is a defect to resolve, "
+                    "not a choice to make silently. Ask the user which one is current.",
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
 
         if args.command == "migrate":
             if args.apply:
