@@ -582,6 +582,42 @@ def _read_nonempty(path: Path, label: str, report: ValidationReport) -> str:
     return content
 
 
+# The specification sections the skill asks for, each with the wordings already in use across
+# existing projects. Three closed projects spell these three different ways, so a strict heading
+# check would fail history that was correct when it was written: the check warns, and the canonical
+# name in the first element is what it names. A recogniser matches, so "Scope" satisfies both scope
+# sections and "Deliverables and authorization" satisfies deliverables and authorization alike.
+SPEC_CANONICAL_SECTIONS: "tuple[tuple[str, str], ...]" = (
+    ("Objective and audience", r"objective"),
+    ("In scope", r"in scope|^scope\b"),
+    ("Out of scope", r"out of scope|^scope\b"),
+    ("Constraints and important assumptions", r"constraint|assumption"),
+    ("Success and verification criteria", r"success|verification"),
+    ("Deliverables and roots", r"deliverable"),
+    ("Destructive and external actions", r"destructive|external|authoriz"),
+)
+
+
+def spec_section_warnings(spec_markdown: str) -> "list[str]":
+    """Name each canonical specification section the spec does not appear to cover.
+
+    Warnings only. The skill states what `## Current specification` must contain and nothing
+    checked, so a project could leave `ALIGNING` with no recorded constraints or authorization
+    states at all. Wording is not the subject here — a missing section is.
+    """
+    specification = _section_content(spec_markdown, "Current specification")
+    if specification is None:
+        return ["spec.md has no '## Current specification' section"]
+    headings = [heading.strip() for heading in re.findall(r"^#{3,}\s+(.+)$", specification, re.MULTILINE)]
+    if not headings:
+        return ["spec.md '## Current specification' has no '###' sections to check"]
+    return [
+        f"spec.md '## Current specification' appears to have no '### {canonical}' section"
+        for canonical, recogniser in SPEC_CANONICAL_SECTIONS
+        if not any(re.search(recogniser, heading, re.IGNORECASE) for heading in headings)
+    ]
+
+
 def _section_content(markdown: str, heading: str) -> str | None:
     pattern = re.compile(rf"^##\s+{re.escape(heading)}\s*$", re.MULTILINE | re.IGNORECASE)
     match = pattern.search(markdown)
@@ -792,6 +828,13 @@ def validate_v3_state(
         report.errors.append(f"{status} project cannot have RUNNING tasks")
     if status == "BLOCKED" and not any(task.get("status") == "BLOCKED" for task in tasks_by_id.values()):
         report.errors.append("BLOCKED project must contain at least one BLOCKED task")
+
+    # A specification is meant to be complete before the project leaves ALIGNING, where it is still
+    # the skeleton `init` wrote, so the section check starts once it has left.
+    if check_files and status != "ALIGNING":
+        spec_path = project_dir / "spec.md"
+        if spec_path.exists():
+            report.warnings.extend(spec_section_warnings(read_text(spec_path)))
 
     if close or status == "DONE":
         incomplete = sorted(
