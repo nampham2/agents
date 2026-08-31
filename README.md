@@ -22,6 +22,24 @@ still reports `No plugins installed`.
 Skills are discovered from `skills/<name>/SKILL.md` and addressed as `<plugin>:<skill>` — for
 example `research:project`.
 
+## Install from GitHub
+
+The marketplace also resolves straight from the remote, which is how to reach it from a machine with
+no clone of this repo:
+
+```bash
+claude plugin marketplace add nampham2/agents
+claude plugin install research@agents
+```
+
+`marketplace add` accepts a URL, a local path, or an `owner/repo` GitHub reference. This
+repository is **private**, so git needs credentials that can read it — the same ones `git clone`
+would use. When they are missing, the failure surfaces as a git authentication error rather than
+as a marketplace error, which is worth knowing before you go hunting for a problem in the manifest.
+
+This installs whatever is on the default branch, not your working tree. To work against the tree
+instead, see the next section.
+
 ## Working on an installed plugin
 
 Installing **copies** the plugin into a version-keyed cache
