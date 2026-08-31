@@ -17,9 +17,44 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MANIFEST="$REPO_ROOT/.claude-plugin/marketplace.json"
 
-PLUGIN=${1-}
+usage() {
+  cat <<'USAGE'
+usage: install-plugin.sh [--force] <plugin-name>
+
+  --force  Register this clone as the marketplace even when that name is already declared with a
+           different source. Without it the script refuses, rather than let Claude Code replace the
+           existing declaration silently.
+USAGE
+}
+
+PLUGIN=""
+FORCE=0
+while (($#)); do
+  case $1 in
+    --force) FORCE=1 ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    -*)
+      echo "error: unknown option '$1'" >&2
+      usage >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n $PLUGIN ]]; then
+        echo "error: unexpected argument '$1'" >&2
+        usage >&2
+        exit 2
+      fi
+      PLUGIN=$1
+      ;;
+  esac
+  shift
+done
+
 if [[ -z $PLUGIN ]]; then
-  echo "usage: install-plugin.sh <plugin-name>" >&2
+  usage >&2
   exit 2
 fi
 
@@ -92,6 +127,65 @@ fi
 # invalid manifest is exactly what previously shipped unnoticed.
 claude plugin validate --strict "$REPO_ROOT"
 claude plugin validate --strict "$REPO_ROOT/plugins/$PLUGIN"
+
+# Marketplaces are keyed by name, so the one name this manifest declares holds exactly one source.
+# Adding a directory source over a GitHub declaration is the direction the CLI does *not* guard: it
+# succeeds and replaces the declaration without saying so, silently repointing anyone who installed
+# from GitHub at this clone. Ask what is declared and refuse instead.
+#
+# Read it from the CLI, not from ~/.claude/settings.json: the settings layout is private, and --json
+# is the interface offered for this question. It fails open — a failed call, a listing that will not
+# parse, or an entry with no source at all prints nothing and the install proceeds — so a future
+# format change costs this guard rather than every install. A source kind not known here is a
+# different matter: it plainly is not this clone, so it is reported and refused.
+conflicting_source() {
+  local listing
+  listing=$(claude plugin marketplace list --json 2>/dev/null) || return 0
+  python3 - "$listing" "$MARKETPLACE" "$REPO_ROOT" <<'JSON'
+import json, os, sys
+
+try:
+    entries = json.loads(sys.argv[1])
+except ValueError:
+    sys.exit(0)
+
+name, root = sys.argv[2], sys.argv[3]
+for entry in entries if isinstance(entries, list) else []:
+    if not isinstance(entry, dict) or entry.get("name") != name:
+        continue
+    kind = entry.get("source")
+    if kind == "directory":
+        path = entry.get("path") or ""
+        try:
+            # samefile, so a symlinked or /private-prefixed clone is not read as a different one.
+            same = os.path.samefile(path, root)
+        except OSError:
+            same = os.path.realpath(path) == os.path.realpath(root)
+        if not same:
+            print("a different directory (" + path + ")")
+    elif kind == "github":
+        print("GitHub (" + (entry.get("repo") or "unknown repository") + ")")
+    elif kind:
+        print(kind + " (" + (entry.get("url") or entry.get("path") or "unknown target") + ")")
+    break
+JSON
+}
+
+if DECLARED=$(conflicting_source) && [[ -n $DECLARED ]]; then
+  if ((FORCE)); then
+    echo "warning: replacing the '$MARKETPLACE' marketplace declaration ($DECLARED) with this clone" >&2
+  else
+    cat >&2 <<CONFLICT
+error: marketplace '$MARKETPLACE' is already declared as $DECLARED. Pointing it at this clone would
+       replace that declaration, and Claude Code does it silently. Pick one:
+
+  - re-run with --force to replace it deliberately;
+  - or work straight from this tree, which declares nothing:
+      claude --plugin-dir $REPO_ROOT/plugins/$PLUGIN
+CONFLICT
+    exit 1
+  fi
+fi
 
 claude plugin marketplace add "$REPO_ROOT"
 

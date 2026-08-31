@@ -742,6 +742,32 @@ class PluginManifestTests(unittest.TestCase):
                 self.assertTrue((REPO_ROOT / source[2:] / ".claude-plugin/plugin.json").is_file())
 
 
+def _write_claude_stub(directory: Path) -> None:
+    """A `claude` that logs every invocation and answers the two listings the installer reads.
+
+    `plugin marketplace list --json` answers from CLAUDE_STUB_MARKETPLACES when it is set and
+    otherwise prints nothing, which the installer treats as an unreadable listing and proceeds —
+    the fail-open path, and the default so tests that do not care about the source guard are
+    unaffected by it.
+    """
+    stub = directory / "claude"
+    stub.write_text(
+        "#!/usr/bin/env bash\n"
+        'printf "%s\\n" "$*" >> "$CLAUDE_STUB_LOG"\n'
+        'if [[ "$1 $2 $3" == "plugin list --json" ]]; then\n'
+        '  cat "$CLAUDE_STUB_LISTING"\n'
+        '  exit "${CLAUDE_STUB_LIST_STATUS:-0}"\n'
+        "fi\n"
+        'if [[ "$1 $2 $3" == "plugin marketplace list" ]]; then\n'
+        '  [[ -n ${CLAUDE_STUB_MARKETPLACES:-} ]] && printf "%s" "$CLAUDE_STUB_MARKETPLACES"\n'
+        '  exit "${CLAUDE_STUB_MARKETPLACE_STATUS:-0}"\n'
+        "fi\n"
+        "exit 0\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+
+
 class InstallerRefreshTests(unittest.TestCase):
     """The installer used to run `plugin install` unconditionally, which no-ops on an installed plugin.
 
@@ -756,18 +782,7 @@ class InstallerRefreshTests(unittest.TestCase):
         self.stub_dir = Path(self.tmp.name)
         self.log = self.stub_dir / "commands.log"
         self.listing = self.stub_dir / "listing.json"
-        stub = self.stub_dir / "claude"
-        stub.write_text(
-            "#!/usr/bin/env bash\n"
-            'printf "%s\\n" "$*" >> "$CLAUDE_STUB_LOG"\n'
-            'if [[ "$1 $2 $3" == "plugin list --json" ]]; then\n'
-            '  cat "$CLAUDE_STUB_LISTING"\n'
-            '  exit "${CLAUDE_STUB_LIST_STATUS:-0}"\n'
-            "fi\n"
-            "exit 0\n",
-            encoding="utf-8",
-        )
-        stub.chmod(0o755)
+        _write_claude_stub(self.stub_dir)
         self.manifest_version = json.loads(
             (REPO_ROOT / "plugins/research/.claude-plugin/plugin.json").read_text(encoding="utf-8")
         )["version"]
@@ -799,6 +814,7 @@ class InstallerRefreshTests(unittest.TestCase):
             [
                 f"plugin validate --strict {REPO_ROOT}",
                 f"plugin validate --strict {REPO_ROOT}/plugins/research",
+                "plugin marketplace list --json",
                 f"plugin marketplace add {REPO_ROOT}",
                 "plugin list --json",
                 "plugin install research@agents",
@@ -879,6 +895,144 @@ class InstallerArgumentTests(unittest.TestCase):
         result = self._run()
         self.assertEqual(2, result.returncode)
         self.assertIn("usage:", result.stderr)
+
+    def test_unknown_options_are_rejected(self) -> None:
+        # The option loop must not fall through to treating a flag as the plugin name.
+        result = self._run("--nope", "research")
+        self.assertEqual(2, result.returncode)
+        self.assertIn("unknown option", result.stderr)
+
+    def test_a_second_operand_is_rejected(self) -> None:
+        result = self._run("research", "extra")
+        self.assertEqual(2, result.returncode)
+        self.assertIn("unexpected argument", result.stderr)
+
+    def test_help_is_available_and_advertises_force(self) -> None:
+        # --force changes the owner's marketplace declaration, so it has to be discoverable.
+        result = self._run("--help")
+        self.assertEqual(0, result.returncode)
+        self.assertIn("--force", result.stdout)
+
+
+class MarketplaceGuardTests(unittest.TestCase):
+    """The CLI does not guard a directory source landing on a GitHub declaration: it replaces it.
+
+    Adding a *network* source over a differing declaration fails loudly; adding a *directory* source
+    over a GitHub one succeeds and silently repoints everyone installing from GitHub at this clone.
+    The installer therefore checks for itself, and these tests drive that check through the same
+    stubbed `claude` the refresh tests use, so the behaviour is verified where CI can run it.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.stub_dir = Path(self.tmp.name)
+        self.log = self.stub_dir / "commands.log"
+        self.listing = self.stub_dir / "listing.json"
+        self.listing.write_text("[]", encoding="utf-8")
+        _write_claude_stub(self.stub_dir)
+
+    def _run(
+        self, marketplaces: str, *args: str, status: int = 0
+    ) -> "tuple[subprocess.CompletedProcess[str], list[str]]":
+        environment = dict(os.environ)
+        environment["PATH"] = f"{self.stub_dir}{os.pathsep}{environment['PATH']}"
+        environment["CLAUDE_STUB_LOG"] = str(self.log)
+        environment["CLAUDE_STUB_LISTING"] = str(self.listing)
+        environment["CLAUDE_STUB_MARKETPLACES"] = marketplaces
+        environment["CLAUDE_STUB_MARKETPLACE_STATUS"] = str(status)
+        completed = subprocess.run(
+            ["bash", str(REPO_ROOT / "bin/install-plugin.sh"), *args, "research"],
+            capture_output=True,
+            text=True,
+            check=False,
+            env=environment,
+        )
+        recorded = self.log.read_text(encoding="utf-8").splitlines() if self.log.exists() else []
+        return completed, recorded
+
+    @staticmethod
+    def _declared(**fields: str) -> str:
+        return json.dumps([{"name": "agents", **fields}])
+
+    def test_a_github_declaration_is_refused_rather_than_replaced(self) -> None:
+        completed, recorded = self._run(self._declared(source="github", repo="nampham2/agents"))
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("already declared as GitHub (nampham2/agents)", completed.stderr)
+        self.assertIn("--force", completed.stderr)
+        # The point of refusing is that nothing is written, so the write must not have been attempted.
+        self.assertNotIn(f"plugin marketplace add {REPO_ROOT}", recorded)
+
+    def test_force_replaces_the_declaration_and_says_so(self) -> None:
+        completed, recorded = self._run(
+            self._declared(source="github", repo="nampham2/agents"), "--force"
+        )
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertIn("replacing the 'agents' marketplace declaration", completed.stderr)
+        self.assertIn(f"plugin marketplace add {REPO_ROOT}", recorded)
+
+    def test_a_declaration_of_this_clone_is_not_a_conflict(self) -> None:
+        # The normal case: re-running the installer on the machine it already configured.
+        completed, _ = self._run(self._declared(source="directory", path=str(REPO_ROOT)))
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertNotIn("already declared as", completed.stderr)
+
+    def test_a_declaration_of_another_directory_is_refused(self) -> None:
+        completed, _ = self._run(self._declared(source="directory", path="/somewhere/else"))
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("a different directory (/somewhere/else)", completed.stderr)
+
+    def test_an_undeclared_marketplace_is_not_a_conflict(self) -> None:
+        completed, _ = self._run(json.dumps([{"name": "unrelated", "source": "github", "repo": "x/y"}]))
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertNotIn("already declared as", completed.stderr)
+
+    def test_an_unrecognisable_listing_fails_open(self) -> None:
+        # A future format change must cost this guard, not every install. Each of these proceeds.
+        cases = (("not json at all", 0), ('{"unexpected": true}', 0), ("[]", 3), ("", 0))
+        for marketplaces, status in cases:
+            with self.subTest(marketplaces=marketplaces, status=status):
+                self.log.unlink(missing_ok=True)
+                completed, recorded = self._run(marketplaces, status=status)
+                self.assertEqual(0, completed.returncode, completed.stderr)
+                self.assertNotIn("already declared as", completed.stderr)
+                self.assertIn(f"plugin marketplace add {REPO_ROOT}", recorded)
+
+    def test_an_unknown_source_kind_is_reported_and_refused(self) -> None:
+        # A kind this script has never heard of is still plainly not this clone, so it is a conflict.
+        # Fail-open covers listings it cannot read, not declarations it can read and does not like.
+        completed, _ = self._run(self._declared(source="somethingnew", url="https://example.invalid"))
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("somethingnew (https://example.invalid)", completed.stderr)
+
+    def test_an_entry_with_no_source_fails_open(self) -> None:
+        completed, _ = self._run(json.dumps([{"name": "agents"}]))
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertNotIn("already declared as", completed.stderr)
+
+
+class MarketplaceCollisionTests(unittest.TestCase):
+    """A marketplace name holds exactly one source, so the two install routes are exclusive."""
+
+    def _read(self, relative: str) -> str:
+        return (REPO_ROOT / relative).read_text(encoding="utf-8")
+
+    def test_the_docs_document_the_marketplace_name_collision(self) -> None:
+        # Following the local-install section and then the GitHub one fails outright. The remedy is
+        # the part a reader actually needs, and the remove step cascades into an uninstall, so both
+        # halves of the sequence are pinned here.
+        text = self._read("README.md")
+        self.assertIn("marketplace remove agents", text)
+        self.assertIn("marketplace add nampham2/agents", text)
+        self.assertIn("plugin install research@agents", text)
+
+    def test_the_installer_refuses_a_silent_source_switch(self) -> None:
+        # The CLI does not guard this direction: a directory source replaces a GitHub declaration
+        # and reports success. The script has to check for itself, and only --force may override.
+        script = self._read("bin/install-plugin.sh")
+        self.assertIn("marketplace list --json", script)
+        self.assertIn("already declared as", script)
+        self.assertIn("--force", script)
 
 
 if __name__ == "__main__":  # pragma: no cover
