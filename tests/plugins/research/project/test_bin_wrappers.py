@@ -109,7 +109,14 @@ class WrapperExecutionTests(unittest.TestCase):
         self.assertIn("usage:", result.stdout)
 
     def test_the_wrapper_runs_when_python3_is_the_system_interpreter(self) -> None:
-        # The shipped scripts must run on /usr/bin/python3, which is 3.9 on this platform.
+        # The scenario is a PATH whose python3 is the platform interpreter rather than the dev
+        # virtualenv's, which is how a Claude session actually reaches these scripts.
+        #
+        # The interpreter's version is deliberately not asserted here. It used to require "Python
+        # 3.9" — true of /usr/bin/python3 on macOS, but ubuntu-latest ships 3.12, so the assertion
+        # described the machine the suite happened to run on rather than anything the wrapper does.
+        # The 3.9 floor for the shipped scripts is enforced where it can be enforced honestly: the
+        # python39-compat CI job, which runs them under a real 3.9.
         system_python = Path("/usr/bin/python3")
         if not system_python.exists():  # pragma: no cover - platform without a system python
             self.skipTest("no /usr/bin/python3")
@@ -119,8 +126,7 @@ class WrapperExecutionTests(unittest.TestCase):
         environment = dict(os.environ, PATH=f"{path_directory}:{os.defpath}")
         result = _run([str(BIN / "research-project"), "--help"], env=environment)
         self.assertEqual(result.returncode, 0, result.stderr)
-        version = _run([str(path_directory / "python3"), "-V"]).stdout.strip()
-        self.assertTrue(version.startswith("Python 3.9"), version)
+        self.assertIn("usage:", result.stdout)
 
     def test_a_wrapper_without_its_script_fails_with_a_clear_message(self) -> None:
         orphan_bin = self.root / "plugin" / "bin"
