@@ -9,9 +9,11 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      # Pinned to an exact version, unlike the actions above: astral-sh stopped publishing moving
+      # major tags after v7, so `@v10` does not resolve to anything and only `@v10.0.1` does.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: "latest"
 
@@ -36,9 +38,9 @@ jobs:
     # must keep importing and running on 3.9 — this job is what enforces that.
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.9"
 
