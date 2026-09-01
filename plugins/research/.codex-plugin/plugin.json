@@ -1,0 +1,24 @@
+{
+  "name": "research",
+  "version": "0.4.1",
+  "description": "Persistent workspace management and goal-alignment interview skills for research projects.",
+  "author": {
+    "name": "Nam Pham"
+  },
+  "license": "MIT",
+  "keywords": ["research", "projects", "workspace", "planning"],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Research",
+    "shortDescription": "Manage research projects and align goals.",
+    "longDescription": "Persistent, transactional workspace management and round-based goal-alignment interviews for long-running research work.",
+    "developerName": "Nam Pham",
+    "category": "Productivity",
+    "capabilities": ["Plan", "Organize", "Write"],
+    "defaultPrompt": [
+      "Set up a persistent research project.",
+      "Validate the current research workspace.",
+      "Interview me to clarify this research goal."
+    ]
+  }
+}
