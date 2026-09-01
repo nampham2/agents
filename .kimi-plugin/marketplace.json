@@ -1,0 +1,10 @@
+{
+  "version": "2",
+  "plugins": [
+    {
+      "id": "research",
+      "displayName": "Research",
+      "source": "../plugins/research"
+    }
+  ]
+}
