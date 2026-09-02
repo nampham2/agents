@@ -1,14 +1,8 @@
 #!/usr/bin/env bash
-# Thin wrapper for manage_workspace.py.
+# Claude Code PATH entry point for the host-neutral project launcher.
 #
-# Claude Code puts <plugin-root>/bin on PATH for every registered plugin, so this is how a command
-# is invoked without anyone having to know where the plugin was installed. The skill used to spell
-# its commands with a <skill-directory> placeholder, which every session had to resolve by hand and
-# which $CLAUDE_PLUGIN_ROOT does not help with — that variable is not present in the tool
-# environment.
-#
-# The script path is resolved from this file's own location, never the caller's directory, and
-# through any symlinks, so the wrapper works from anywhere and when linked onto PATH by hand.
+# Claude Code puts <plugin-root>/bin on PATH. Codex does not, so the implementation lives beside
+# the skill and this wrapper delegates to it. Both routes therefore execute the same launcher.
 set -euo pipefail
 
 source=${BASH_SOURCE[0]}
@@ -18,17 +12,11 @@ while [[ -L $source ]]; do
   [[ $source != /* ]] && source=$directory/$source
 done
 here=$(cd -P "$(dirname "$source")" && pwd)
-script=$here/../skills/project/scripts/manage_workspace.py
+launcher=$here/../skills/project/scripts/research-project
 
-if [[ ! -f $script ]]; then
-  echo "error: $script is missing; this wrapper must stay beside the plugin's skills directory" >&2
+if [[ ! -x $launcher ]]; then
+  echo "error: $launcher is missing or not executable; this wrapper must stay beside the plugin's skills directory" >&2
   exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "error: python3 is not on PATH; it is what runs manage_workspace.py" >&2
-  exit 1
-fi
-
-# The scripts stay directly invocable, so CI and the test suite are unaffected by this wrapper.
-exec python3 "$script" "$@"
+exec "$launcher" "$@"

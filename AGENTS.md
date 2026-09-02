@@ -73,13 +73,14 @@ uv run ty check .      # type-check (whole repo, tests included)
   for the same reason: a read-only workspace fails in the lock's own `mkdir`, and a raw
   traceback out of a CLI that only translates `WorkspaceError` is what makes a committed write
   look unfinished.
-- **The plugin's command surface is `plugins/<plugin>/bin/`.** Claude Code puts that directory on
-  `PATH` for every registered plugin, so `research-project` and `research-validate` are invoked by
-  name — in `SKILL.md`, in the reference docs, and in a session. Never document or construct a path
-  to `scripts/*.py`: the placeholder that used to stand in for one made every session re-derive it,
-  and derive it differently. The wrappers resolve through symlinks from `BASH_SOURCE[0]` and fail
-  with a clear message when their script or `python3` is missing;
-  `tests/plugins/research/project/test_bin_wrappers.py` covers both.
+- **The plugin has two host entry surfaces over one launcher implementation.** Claude Code puts
+  `plugins/<plugin>/bin/` on `PATH`, so it invokes `research-project` and `research-validate` by
+  name. Codex does not add that directory to `PATH`; it invokes the same-named launchers resolved
+  relative to the exact loaded `skills/project/SKILL.md`. The top-level wrappers delegate to those
+  skill-local launchers. Never search caches, infer a plugin root from the current repository, or
+  invoke `manage_workspace.py` / `validate_workspace.py` directly from skill instructions. Both
+  launcher routes resolve through symlinks from `BASH_SOURCE[0]` and fail clearly when their script
+  or `python3` is missing; `tests/plugins/research/project/test_bin_wrappers.py` covers both.
 - **`CLAUDE_PLUGIN_ROOT` is not set in the Bash tool environment.** It is available to hooks and MCP
   server commands, not to commands a session runs, so nothing in a skill may depend on it. This was
   verified, not assumed — it is why the `bin/`-on-`PATH` surface exists rather than a
