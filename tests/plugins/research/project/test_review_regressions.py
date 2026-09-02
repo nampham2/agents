@@ -709,7 +709,7 @@ class PluginCacheTests(unittest.TestCase):
 
 
 class PluginManifestTests(unittest.TestCase):
-    """Findings #2 and #3: the manifests are what Claude Code actually reads."""
+    """Findings #2 and #3: host-specific manifests must expose the same plugin correctly."""
 
     def test_plugin_manifest_declares_no_skills_key(self) -> None:
         # Skills are discovered from skills/<name>/SKILL.md. A `skills` key is not part of the
@@ -717,6 +717,12 @@ class PluginManifestTests(unittest.TestCase):
         manifest = json.loads((REPO_ROOT / "plugins/research/.claude-plugin/plugin.json").read_text(encoding="utf-8"))
         self.assertNotIn("skills", manifest)
         self.assertEqual("research", manifest["name"])
+        self.assertIn("version", manifest)
+
+    def test_kimi_manifest_exposes_the_shared_skills_directory(self) -> None:
+        manifest = json.loads((REPO_ROOT / "plugins/research/.kimi-plugin/plugin.json").read_text(encoding="utf-8"))
+        self.assertEqual("research", manifest["name"])
+        self.assertEqual("./skills", manifest["skills"])
         self.assertIn("version", manifest)
 
     def test_every_skill_directory_carries_a_skill_md(self) -> None:

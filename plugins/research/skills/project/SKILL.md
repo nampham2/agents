@@ -105,12 +105,22 @@ warning and let the user decide: never run `git init`, commit, or otherwise put 
 version control on your own initiative. Repository work of that kind is a planned, authorized task,
 not a side effect of validation.
 
-Use the bundled commands rather than hand-editing canonical state or the index. `research-project`
-and `research-validate` ship in this plugin's `bin/` directory, which is on `PATH` for every
-registered plugin, so invoke them by name and never by a constructed path. If the shell cannot find
-them, the plugin is not installed correctly: report that so the user can fix the installation,
-rather than guessing at a script path — a guessed path is how a session ends up running a stale copy
-of the tools against live state.
+Use the bundled launchers rather than hand-editing canonical state or the index. Resolve the command
+surface once before the first project operation:
+
+1. If both `research-project` and `research-validate` are on `PATH`, invoke them by name. Claude Code
+   exposes the plugin's top-level `bin/` directory this way.
+2. Otherwise, when this `SKILL.md` was loaded from a concrete filesystem path, resolve
+   `scripts/research-project` and `scripts/research-validate` relative to the directory containing
+   that exact file and invoke those launchers. Codex exposes the active skill location instead of
+   adding plugin `bin/` directories to `PATH`.
+3. If neither complete pair is available, report that the plugin command surface is unavailable and
+   stop before mutating project state.
+
+The skill-relative route is host-provided resolution, not filesystem discovery. Never search plugin
+caches, infer a plugin root from the current repository, or invoke `manage_workspace.py` or
+`validate_workspace.py` directly. Those guesses can select a stale copy of the tools against live
+state.
 
 ```sh
 # <workspace-root> is optional: omitted, it comes from $RESEARCH_WORKSPACE. Add --create-root only
