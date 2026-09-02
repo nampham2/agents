@@ -79,6 +79,13 @@ uv run ty check .      # type-check (whole repo, tests included)
   Codex uses `.codex-plugin/plugin.json`, and Kimi Code uses `.kimi-plugin/plugin.json` and copies
   local installations into `$KIMI_CODE_HOME/plugins/managed/<plugin-id>/`. Test changed shared
   skills and scripts through every affected host surface.
+- **`pyproject.toml` owns the release version.** Its `[project].version` must exactly equal the
+  `agents` entry in `uv.lock`, the Claude and Codex manifests under `plugins/research/`, the Kimi
+  manifest there, and the repository-root `kimi.plugin.json` used for direct GitHub installation.
+  Committed release manifests use the plain SemVer value — never leave a Codex development
+  cachebuster in them. A version bump updates every location, runs `uv lock`, and passes
+  `uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py`; CI runs the same
+  focused check as the separately named `Version consistency` step.
 - **The plugin has three host entry surfaces over one launcher implementation.** Claude Code puts
   `plugins/<plugin>/bin/` on `PATH`, so it invokes `research-project` and `research-validate` by
   name. Codex and Kimi Code do not add that directory to `PATH`; both invoke the same-named
@@ -104,10 +111,10 @@ uv run ty check .      # type-check (whole repo, tests included)
   cannot raise was the first thing this gate found.
 - **Installed plugins are cached by version.** `claude plugin install` copies the plugin into
   `~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`; `marketplace update` refreshes the
-  listing, never that copy. Any plugin change that must reach an installed copy needs a `version`
-  bump in `plugin.json` followed by `claude plugin update`. Use `claude --plugin-dir
-  plugins/<plugin>` for live development. Do not drop `version` to get commit-based versioning —
-  `claude plugin validate --strict` fails without it.
+  listing, never that copy. Any plugin change that must reach an installed copy needs a canonical
+  project version bump propagated to every host manifest, followed by `claude plugin update` for a
+  Claude installation. Use `claude --plugin-dir plugins/<plugin>` for live development. Do not drop
+  `version` to get commit-based versioning — `claude plugin validate --strict` fails without it.
 - Type hints on all public functions
 - ruff line-length 120, same lint rules as metasearch-ai
 - Tests live under `tests/plugins/<plugin>/<skill>/`
