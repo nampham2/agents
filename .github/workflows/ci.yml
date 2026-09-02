@@ -20,6 +20,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      # Keep the repository release and every host-specific plugin manifest in lockstep. Run this
+      # separately so version drift has a named, immediate failure instead of hiding in the suite.
+      - name: Version consistency
+        run: uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py
+
       # Lint and type-check everything, tests included: the shipped code lives under
       # plugins/, and scoping these narrower than the repo is what let two copies of
       # the library drift apart unnoticed.

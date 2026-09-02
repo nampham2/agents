@@ -1,104 +1,103 @@
 # agents
 
-Personal toolkit of Claude agent skills and plugins.
+Cross-host research skills and plugin tooling for Claude Code, Codex, and Kimi Code.
 
-## Install a plugin
+## Install directly from GitHub (recommended)
 
-```bash
-bin/install-plugin.sh research
-```
+You do not need to clone this repository. Install the `research` plugin from GitHub using the
+instructions for your agent host.
 
-Claude Code registers plugins through a **marketplace**, not by directory placement. This repo
-root is a directory marketplace (`.claude-plugin/marketplace.json`), so the script validates the
-manifests, registers the marketplace, and installs the plugin from it. Confirm with:
-
-```bash
-claude plugin list
-```
-
-This declares `agents` as a *directory* marketplace pointing at this clone. If `agents` is already
-declared as a GitHub marketplace, Claude Code replaces that declaration without warning, so the
-script refuses the switch unless you pass `--force` (see below).
-
-Symlinking a plugin into `~/.claude/plugins/` does *not* register anything — `claude plugin list`
-still reports `No plugins installed`.
-
-Skills are discovered from `skills/<name>/SKILL.md` and addressed as `<plugin>:<skill>` — for
-example `research:project`.
-
-## Install from GitHub
-
-The marketplace also resolves straight from the remote, which is how to reach it from a machine with
-no clone of this repo:
+### Claude Code
 
 ```bash
 claude plugin marketplace add nampham2/agents
 claude plugin install research@agents
 ```
 
-`marketplace add` accepts a URL, a local path, or an `owner/repo` GitHub reference. This
-repository is **private**, so git needs credentials that can read it — the same ones `git clone`
-would use. When they are missing, the failure surfaces as a git authentication error rather than
-as a marketplace error, which is worth knowing before you go hunting for a problem in the manifest.
+Confirm the installation with `claude plugin list`. Skills are addressed as
+`research:project` and `research:grill`.
 
-This installs whatever is on the default branch, not your working tree. To work against the tree
-instead, see [Working on an installed plugin](#working-on-an-installed-plugin).
-
-### Only one of the two routes at a time
-
-`.claude-plugin/marketplace.json` names this marketplace `agents`, and Claude Code keys marketplaces
-by name, so the name holds exactly one source. Both routes above claim it: the local one declares
-`agents` as a directory, the GitHub one as `nampham2/agents`. They are mutually exclusive, and
-following this section after the one above it fails:
-
-```text
-✘ Failed to add marketplace: Cannot add marketplace "agents": its network source differs from the
-  one declared for it in settings
-```
-
-Switch by dropping the declaration first:
+### Codex
 
 ```bash
-claude plugin marketplace remove agents     # also uninstalls research@agents
-claude plugin marketplace add nampham2/agents
-claude plugin install research@agents       # reinstall — the remove above cascaded
+codex plugin marketplace add nampham2/agents --ref main
+codex plugin add research@agents
 ```
 
-The reinstall is not optional: removing a marketplace uninstalls the plugins that came from it.
+Confirm the installation with `codex plugin list`.
 
-The guard only fires in this direction. Adding the *directory* source over a GitHub declaration
-succeeds silently and replaces it, which is why `bin/install-plugin.sh` checks for itself and refuses
-without `--force`.
+### Kimi Code
 
-## Working on an installed plugin
+Run these commands inside Kimi Code:
 
-Installing **copies** the plugin into a version-keyed cache
-(`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/`). Editing this working tree does not
-change that copy, and `claude plugin marketplace update` does not either: it refreshes the
-marketplace listing only, reports success, and leaves the cached plugin exactly as it was. With
-`version` unchanged, `claude plugin update` then reports the installed version as already current.
+```text
+/plugins install https://github.com/nampham2/agents/tree/main
+/reload
+```
 
-For live development, load the plugin straight from disk instead — no install, no cache:
+The repository-root `kimi.plugin.json` exposes the research skills when Kimi installs directly
+from GitHub. Run `/plugins` and check the Installed tab to confirm the installation.
+
+These commands install the default branch, not a local working tree. Each host may cache or copy
+the installed plugin, so update it through that host after a new release rather than editing its
+managed files.
+
+## Development from a clone
+
+Clone the repository when you want to change or test the plugin itself:
+
+```bash
+git clone https://github.com/nampham2/agents.git
+cd agents
+uv sync --dev
+```
+
+For Claude Code, the repository helper validates both manifests, registers this clone as a local
+directory marketplace, and installs the plugin:
+
+```bash
+bin/install-plugin.sh research
+```
+
+For live Claude development without an installed cache, load the plugin straight from disk:
 
 ```bash
 claude --plugin-dir plugins/research
 ```
 
-To push a change into an *installed* copy, bump `version` in
-`plugins/<plugin>/.claude-plugin/plugin.json`, then:
+The marketplace name is `agents`. Claude Code allows only one source for a marketplace name, so a
+local directory marketplace and the GitHub marketplace cannot be active at the same time. Switch
+back to GitHub with:
+
+```bash
+claude plugin marketplace remove agents
+claude plugin marketplace add nampham2/agents
+claude plugin install research@agents
+```
+
+Removing a Claude marketplace also removes plugins installed from it. Symlinking a plugin into
+`~/.claude/plugins/` does not register it.
+
+## Releasing a plugin change
+
+`pyproject.toml` is the source of truth for the release version. The lockfile and the Claude,
+Codex, and Kimi manifests must all use exactly that version. CI enforces this rule.
+
+Claude Code stores installed plugins in a version-keyed cache. After publishing a version bump,
+refresh an existing Claude installation with:
 
 ```bash
 claude plugin marketplace update agents
-claude plugin update research@agents      # restart Claude Code to apply
+claude plugin update research@agents
 ```
 
-The version bump is what invalidates the cache; without it the update is a no-op.
+Restart Claude Code to apply the update.
 
-## Development
+## Checks
 
 ```bash
-uv sync --dev          # install deps
-uv run pytest          # tests (100% coverage of the shipped scripts)
-uv run ruff check .    # lint
-uv run ty check .      # type-check
+uv run pytest
+uv run ruff check .
+uv run ty check .
+uv lock --check
 ```
