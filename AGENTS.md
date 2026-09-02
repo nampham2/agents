@@ -1,16 +1,16 @@
 # AGENTS.md
 
-Instructions for Claude and other AI agents working in this repository.
+Instructions for Claude Code, Codex, Kimi Code, and other AI agents working in this repository.
 
 ## Repository purpose
 
-Personal toolkit of Claude agent skills, plugins, and supporting Python utilities.
+Personal toolkit of cross-host agent skills, plugins, and supporting Python utilities.
 
 ## Structure
 
 ```
 .claude-plugin/  marketplace.json — this repo root is a Claude Code directory marketplace
-plugins/         Claude plugins; each subdirectory is one installable plugin
+plugins/         Cross-host plugins; each subdirectory is one installable plugin
 tests/           pytest test suite mirroring the plugins/ layout
 bin/             Helper shell scripts
 ```
@@ -73,14 +73,22 @@ uv run ty check .      # type-check (whole repo, tests included)
   for the same reason: a read-only workspace fails in the lock's own `mkdir`, and a raw
   traceback out of a CLI that only translates `WorkspaceError` is what makes a committed write
   look unfinished.
-- **The plugin has two host entry surfaces over one launcher implementation.** Claude Code puts
+- **Plugin changes must work in Claude Code, Codex, and Kimi Code.** Keep each host's manifest and
+  supported command-resolution surface valid; do not infer that behavior proven in one host carries
+  to the others. Claude Code discovers skills by convention from `.claude-plugin/plugin.json`,
+  Codex uses `.codex-plugin/plugin.json`, and Kimi Code uses `.kimi-plugin/plugin.json` and copies
+  local installations into `$KIMI_CODE_HOME/plugins/managed/<plugin-id>/`. Test changed shared
+  skills and scripts through every affected host surface.
+- **The plugin has three host entry surfaces over one launcher implementation.** Claude Code puts
   `plugins/<plugin>/bin/` on `PATH`, so it invokes `research-project` and `research-validate` by
-  name. Codex does not add that directory to `PATH`; it invokes the same-named launchers resolved
-  relative to the exact loaded `skills/project/SKILL.md`. The top-level wrappers delegate to those
-  skill-local launchers. Never search caches, infer a plugin root from the current repository, or
-  invoke `manage_workspace.py` / `validate_workspace.py` directly from skill instructions. Both
-  launcher routes resolve through symlinks from `BASH_SOURCE[0]` and fail clearly when their script
-  or `python3` is missing; `tests/plugins/research/project/test_bin_wrappers.py` covers both.
+  name. Codex and Kimi Code do not add that directory to `PATH`; both invoke the same-named
+  launchers resolved relative to the exact loaded `skills/project/SKILL.md`. Kimi's managed copy
+  must preserve their executable modes. The top-level wrappers delegate to those skill-local
+  launchers. Never search caches, infer a plugin root from the current repository, or invoke
+  `manage_workspace.py` / `validate_workspace.py` directly from skill instructions. All launcher
+  routes resolve through symlinks from `BASH_SOURCE[0]` and fail clearly when their script or
+  `python3` is missing; `tests/plugins/research/project/test_bin_wrappers.py` covers the shared
+  launcher behavior.
 - **`CLAUDE_PLUGIN_ROOT` is not set in the Bash tool environment.** It is available to hooks and MCP
   server commands, not to commands a session runs, so nothing in a skill may depend on it. This was
   verified, not assumed — it is why the `bin/`-on-`PATH` surface exists rather than a
