@@ -1,6 +1,6 @@
 {
   "name": "research",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Persistent, transactional workspace management and consensus interviews for long-running work",
   "skills": "./skills",
   "interface": {

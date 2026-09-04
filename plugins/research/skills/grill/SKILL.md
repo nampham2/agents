@@ -124,6 +124,13 @@ conversation to `/research:project`: most of its frontier is already settled.
 **Inside the project skill.** When invoked from `project`, the consensus is state, not
 conversation, and recording it is part of the session:
 
+- Read `briefing.md` first. The briefing step recorded the user's stated requirements, the facts it
+  verified with their sources, the assumptions it had to correct, and the background the user was
+  missing. Those facts are settled: restate them as facts if a round needs them, but do not spend a
+  question or a second lookup re-establishing them. Its `## Open questions for grill` section is your
+  starting frontier — the questions the briefing could not settle are exactly the ones that need the
+  user. A fact the interview later contradicts is a correction to make out loud and to record as a
+  dated decision in `spec.md`; `briefing.md` is not yours to rewrite.
 - Write the consensus into the project's `spec.md` under `## Current specification`, as exactly
   these seven `###` sections. `research-validate` warns for each one it cannot find, so the names
   are a contract rather than a suggestion:

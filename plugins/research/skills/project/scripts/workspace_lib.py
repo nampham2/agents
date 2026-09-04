@@ -611,6 +611,89 @@ SPEC_CANONICAL_SECTIONS: "tuple[tuple[str, str], ...]" = (
 )
 
 
+# The briefing sections the skill asks for, in the order `init` writes them. Unlike the
+# specification table below, no historical project predates this contract, so the recognisers exist
+# to tolerate a reworded heading rather than to excuse one already in use.
+BRIEFING_CANONICAL_SECTIONS: "tuple[tuple[str, str], ...]" = (
+    ("Stated requirements", r"stated requirement|requirement"),
+    ("Verified facts", r"verified|fact"),
+    ("Corrected assumptions", r"corrected|assumption"),
+    ("Background", r"background|context"),
+    ("Open questions for grill", r"open question|question"),
+)
+
+# Each skeleton body is one line beginning with this marker, so an untouched briefing is
+# distinguishable from a written one. A section whose every line still starts here has no content,
+# which is the whole failure the briefing step exists to prevent: a file that looks structured and
+# says nothing.
+BRIEFING_PLACEHOLDER_PREFIX = "_Not yet written"
+
+# What each skeleton section prompts for. Keyed by canonical name so a heading and its prompt cannot
+# drift apart, and rendered by `_briefing_skeleton` in the order the contract declares.
+BRIEFING_SECTION_PROMPTS = {
+    "Stated requirements": "the user's requirements in their own words, recorded before anything is checked",
+    "Verified facts": "each claim that was checked, with the source that establishes it",
+    "Corrected assumptions": "what was assumed, what is actually true, and the source that settles it",
+    "Background": "how the affected system works today, for context the user may not have",
+    "Open questions for grill": "what the briefing could not settle, which becomes grill's first frontier",
+}
+
+
+def _briefing_skeleton(title: str) -> str:
+    """The briefing every new project starts from: the contract's headings, none of them written.
+
+    Writing the headings rather than an empty file makes the step's shape discoverable from the
+    file itself, and the placeholder prefix is what lets validation tell this apart from a briefing
+    somebody actually wrote.
+    """
+    sections = "".join(
+        f"## {canonical}\n\n{BRIEFING_PLACEHOLDER_PREFIX}: {BRIEFING_SECTION_PROMPTS[canonical]}._\n\n"
+        for canonical, _ in BRIEFING_CANONICAL_SECTIONS
+    )
+    return f"# {title} \u2014 briefing\n\n{sections}"
+
+
+
+def _level_two_sections(markdown: str) -> "list[tuple[str, str]]":
+    r"""Every `##` heading in document order, paired with the body that follows it.
+
+    `###` and deeper do not match, because `\s` cannot consume the third `#`.
+    """
+    headings = list(re.finditer(r"^##\s+(.+?)\s*$", markdown, re.MULTILINE))
+    sections = []
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+        sections.append((heading.group(1).strip(), markdown[heading.end() : end].strip()))
+    return sections
+
+
+def _is_unwritten(body: str) -> bool:
+    """Whether a section body is still nothing but skeleton placeholder lines."""
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    return not lines or all(line.startswith(BRIEFING_PLACEHOLDER_PREFIX) for line in lines)
+
+
+def briefing_section_warnings(briefing_markdown: str) -> "list[str]":
+    """Name each canonical briefing section the file does not cover, or leaves unwritten.
+
+    Warnings only, and never errors: `briefing.md` postdates every project already in a workspace,
+    so a missing one must not retroactively invalidate history or block a reopened project. An
+    empty body warns as well as a missing heading, because the skeleton `init` writes already has
+    every heading.
+    """
+    sections = _level_two_sections(briefing_markdown)
+    if not sections:
+        return ["briefing.md has no '##' sections to check"]
+    warnings = []
+    for canonical, recogniser in BRIEFING_CANONICAL_SECTIONS:
+        matched = [body for heading, body in sections if re.search(recogniser, heading, re.IGNORECASE)]
+        if not matched:
+            warnings.append(f"briefing.md appears to have no '## {canonical}' section")
+        elif all(_is_unwritten(body) for body in matched):
+            warnings.append(f"briefing.md section '## {canonical}' is still unwritten")
+    return warnings
+
+
 def spec_section_warnings(spec_markdown: str) -> "list[str]":
     """Name each canonical specification section the spec does not appear to cover.
 
@@ -855,11 +938,17 @@ def validate_v3_state(
         report.errors.append("BLOCKED project must contain at least one BLOCKED task")
 
     # A specification is meant to be complete before the project leaves ALIGNING, where it is still
-    # the skeleton `init` wrote, so the section check starts once it has left.
+    # the skeleton `init` wrote, so the section check starts once it has left. The briefing is
+    # written in the same phase and is checked on the same trigger, but only ever as warnings, and
+    # only when the file exists: every project created before the briefing step lacks one, and a
+    # closed project must stay valid and stay reopenable.
     if check_files and status != "ALIGNING":
         spec_path = project_dir / "spec.md"
         if spec_path.exists():
             report.warnings.extend(spec_section_warnings(read_text(spec_path)))
+        briefing_path = project_dir / "briefing.md"
+        if briefing_path.exists():
+            report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
 
     if close or status == "DONE":
         incomplete = sorted(
@@ -1574,6 +1663,7 @@ def allocate_project(
             f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n"
             "## Decision history\n\n- Project initialized; requirements pending alignment.\n",
         )
+        atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))
         atomic_write_text(project_dir / "evidence.md", f"# Evidence\n\n{EVIDENCE_PLACEHOLDER}")
         if not (workspace_root / "reflection.md").exists():
             atomic_write_text(workspace_root / "reflection.md", "# Cross-project reflection\n")
