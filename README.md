@@ -16,7 +16,8 @@ claude plugin marketplace add nampham2/agents
 claude plugin install research@agents
 ```
 
-Confirm with `claude plugin list`. Skills are named `research:project` and `research:grill`.
+Confirm with `claude plugin list`. The plugin installs one user-facing skill,
+`research:project`.
 
 ### Codex
 

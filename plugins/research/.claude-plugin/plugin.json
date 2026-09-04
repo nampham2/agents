@@ -1,8 +1,8 @@
 {
   "name": "research",
-  "description": "Developer productivity skills for Claude Code — project persistent workspace management and grill goal-alignment interviews",
+  "description": "Developer productivity skills for Claude Code — the project skill runs long-running work from goal alignment through verified delivery in a persistent workspace",
   "author": {
     "name": "Nam Pham"
   },
-  "version": "0.4.3"
+  "version": "0.4.4"
 }

@@ -6,6 +6,13 @@ grill skill told users to invoke it as `/grill` when a plugin skill is only reac
 headings the validator looks for. Both are contracts between two files, so both belong in a test
 rather than in a reviewer's memory.
 
+A third followed from hiding `grill`: the frontmatter reader below only matched `[a-z_]+` keys, so a
+hyphenated key like `user-invocable` was not merely ignored, it was folded into the preceding key's
+value. `name: grill` followed by `user-invocable: false` parsed as the name
+`'grill user-invocable: false'`. A skill that is deliberately not user-invocable must also not claim
+an invocation users cannot type, so the invocation rule is conditional on that key rather than
+unconditional.
+
 The checks are functions over a directory of plugins, so the same code runs against the real tree
 and against a deliberately broken fixture. A consistency test that cannot be made to fail proves
 nothing.
@@ -37,7 +44,9 @@ def parse_frontmatter(text: str) -> "dict[str, str]":
     """Read the top-level scalar keys of a skill's YAML frontmatter.
 
     Deliberately not a YAML parser: the repository ships no runtime dependencies, and the only
-    structure asserted here is `key: value` with optional folded continuation lines.
+    structure asserted here is `key: value` with optional folded continuation lines. Keys may contain
+    hyphens: `user-invocable` and `allowed-tools` are real skill frontmatter fields, and a reader
+    that cannot see them silently appends them to the value above instead.
     """
     match = FRONTMATTER_PATTERN.match(text)
     if not match:
@@ -45,7 +54,7 @@ def parse_frontmatter(text: str) -> "dict[str, str]":
     fields: "dict[str, str]" = {}
     key: "str | None" = None
     for line in match.group(1).splitlines():
-        header = re.match(r"^([a-z_]+):\s*(.*)$", line)
+        header = re.match(r"^([a-z][a-z0-9_-]*):\s*(.*)$", line)
         if header:
             key = header.group(1)
             value = header.group(2).strip()
@@ -87,8 +96,17 @@ def documentation_problems(plugins_dir: Path) -> "list[str]":
         if fields.get("name") not in (None, skill_name):
             problems.append(f"{relative} frontmatter name {fields['name']!r} is not its directory name {skill_name!r}")
 
+        # `user-invocable: false` hides the slash command from users while leaving the skill
+        # available to the model, so such a skill must not tell anyone to type one.
+        user_invocable = fields.get("user-invocable", "true").strip().lower() != "false"
         invocation = INVOCATION_PATTERN.search(text)
-        if not invocation:
+        if not user_invocable:
+            if invocation:
+                problems.append(
+                    f"{relative} is not user-invocable but says "
+                    f"'Invoke with `{invocation.group('invocation')}`'"
+                )
+        elif not invocation:
             problems.append(f"{relative} has no 'Invoke with `/...`' line")
         elif not invocation.group("invocation").startswith(expected):
             problems.append(f"{relative} says {invocation.group('invocation')!r}, not {expected!r}")
@@ -143,20 +161,27 @@ class BrokenFixtureTests(unittest.TestCase):
         return documentation_problems(self.plugins)
 
     def _document(
-        self, *, invocation: str = "/demo:widget", name: str = "widget", sections: "list[str] | None" = None
+        self,
+        *,
+        invocation: "str | None" = "/demo:widget",
+        name: str = "widget",
+        sections: "list[str] | None" = None,
+        user_invocable: "bool | None" = None,
     ) -> str:
         listing = "".join(f"### {section}\n" for section in (sections or [name for name, _ in SPEC_CANONICAL_SECTIONS]))
+        flag = "" if user_invocable is None else f"user-invocable: {str(user_invocable).lower()}\n"
+        invoke = "" if invocation is None else f"Invoke with `{invocation} [subject]`.\n\n"
         return (
             "---\n"
             f"name: {name}\n"
+            f"{flag}"
             "description: >\n"
             "  Use when a fixture is needed.\n"
             "---\n"
             "\n"
             "# Widget\n"
             "\n"
-            f"Invoke with `{invocation} [subject]`.\n"
-            "\n"
+            f"{invoke}"
             "```markdown\n"
             f"{listing}"
             "```\n"
@@ -201,6 +226,28 @@ class BrokenFixtureTests(unittest.TestCase):
         sections = list(reversed([name for name, _ in SPEC_CANONICAL_SECTIONS]))
         problems = self._write(self._document(sections=sections))
         self.assertTrue(any("documents specification sections" in problem for problem in problems), problems)
+
+    def test_a_hidden_skill_that_still_claims_an_invocation_is_caught(self) -> None:
+        problems = self._write(self._document(user_invocable=False))
+        self.assertIn(
+            "demo/skills/widget/SKILL.md is not user-invocable but says 'Invoke with `/demo:widget`'",
+            problems,
+        )
+
+    def test_a_hidden_skill_with_no_invocation_line_reports_nothing(self) -> None:
+        # The inverse of the rule above has to hold, or hiding a skill would be impossible.
+        self.assertEqual([], self._write(self._document(invocation=None, user_invocable=False)))
+
+    def test_a_visible_skill_still_needs_its_invocation_line(self) -> None:
+        problems = self._write(self._document(invocation=None, user_invocable=True))
+        self.assertIn("demo/skills/widget/SKILL.md has no 'Invoke with `/...`' line", problems)
+
+    def test_a_hyphenated_key_does_not_corrupt_the_key_above_it(self) -> None:
+        # The bug this guards: `[a-z_]+` did not match `user-invocable`, so the line was treated as a
+        # folded continuation of `name` and the parsed name became "widget user-invocable: false".
+        fields = parse_frontmatter(self._document(invocation=None, user_invocable=False))
+        self.assertEqual("widget", fields["name"])
+        self.assertEqual("false", fields["user-invocable"])
 
     def test_a_document_without_a_section_listing_is_not_forced_to_have_one(self) -> None:
         # Only a skill that documents the headings has to document them correctly; a future skill
