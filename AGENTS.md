@@ -53,6 +53,15 @@ placement. Keep these surfaces aligned:
 - Claude discovers `skills/<name>/SKILL.md` by convention; its `plugin.json` must not contain a
   `skills` key. After manifest changes, run `claude plugin validate --strict .` and
   `claude plugin validate --strict plugins/research`.
+- Skill frontmatter is not portable. `user-invocable: false` — which hides a skill's slash command
+  while leaving it reachable by the model through the Skill tool — is honoured by Claude Code only.
+  Codex parses only `name`, `description`, and `disable-model-invocation`, so a skill hidden this way
+  still appears as a Codex slash command; Kimi Code's handling is unverified and assumed to ignore
+  the key. `skills/grill` relies on this: it is plugin-internal in Claude Code and still typable in
+  Codex, which is accepted drift rather than a bug to fix. Narrow such a skill's `description` too,
+  since the flag hides the command without stopping a plain-English request from reaching it. Never
+  reach for `disable-model-invocation` instead: it is the opposite lever, it would break the skill
+  that invokes the hidden one, and Codex rejects any value but `false`.
 - `pyproject.toml` `[project].version` is canonical. It must exactly match the `agents` package in
   `uv.lock` and the Claude, Codex, and Kimi plugin manifests. Committed manifests use plain SemVer,
   without a Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:

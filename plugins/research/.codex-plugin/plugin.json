@@ -1,7 +1,7 @@
 {
   "name": "research",
-  "version": "0.4.3",
-  "description": "Persistent workspace management and goal-alignment interview skills for research projects.",
+  "version": "0.4.4",
+  "description": "Persistent workspace management for research projects, with goal alignment built into the project lifecycle.",
   "author": {
     "name": "Nam Pham"
   },
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "Research",
     "shortDescription": "Manage research projects and align goals.",
-    "longDescription": "Persistent, transactional workspace management and round-based goal-alignment interviews for long-running research work.",
+    "longDescription": "Persistent, transactional workspace management for long-running research work, with a round-based goal-alignment interview at the start of every project.",
     "developerName": "Nam Pham",
     "category": "Productivity",
     "capabilities": [
@@ -27,7 +27,7 @@
     "defaultPrompt": [
       "Set up a persistent research project.",
       "Validate the current research workspace.",
-      "Interview me to clarify this research goal."
+      "Resume my research project and plan the next steps."
     ]
   }
 }

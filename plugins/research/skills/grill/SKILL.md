@@ -1,15 +1,18 @@
 ---
 name: grill
+user-invocable: false
 description: >
-  Use when the user explicitly requests /research:grill, asks to be grilled or interviewed about a
-  plan, or asks to stress-test an idea, and when the project skill needs alignment or a
-  requirement-changing review agreed rather than assumed. Interviews the user in rounds until the
-  goal is genuinely shared, then stops. Do not invoke to ask an ordinary clarifying question.
+  Use when the project skill reaches its alignment step and needs an agreed objective rather than an
+  assumed one, or when review feedback changes a requirement and the change needs agreeing rather
+  than assuming. Interviews the user in rounds until the goal is genuinely shared, then stops. This
+  is an internal component of the project lifecycle: do not invoke it to ask an ordinary clarifying
+  question, and do not invoke it outside a project.
 ---
 
 # Grill
 
-Invoke with `/research:grill [idea, plan, or decision]`.
+A component of the `project` skill, not a command. `project` invokes it at its alignment step and
+again when review feedback changes a requirement; there is no user-facing entry point.
 
 Interview the user until the goal is shared rather than assumed, then stop and hand back. The
 subject need not be code: a plan, a design, a piece of writing, or a business call all grill.
@@ -114,15 +117,9 @@ confirmation. Confirmation is always required; the number of rounds it takes to 
 how much was unsettled, so a subject with nothing material open gets zero rounds, one summary, and
 one confirmation.
 
-## Two modes
+## Recording the consensus
 
-**Standalone.** `/research:grill` on its own writes nothing and leaves nothing behind. No
-workspace, no notes, no file. What it produces is a sharper idea and a confirmed understanding in
-the conversation. If the subject turns out to deserve a persistent project, hand the same
-conversation to `/research:project`: most of its frontier is already settled.
-
-**Inside the project skill.** When invoked from `project`, the consensus is state, not
-conversation, and recording it is part of the session:
+The consensus is state, not conversation, and recording it is part of the session:
 
 - Read `briefing.md` first. The briefing step recorded the user's stated requirements, the facts it
   verified with their sources, the assumptions it had to correct, and the background the user was
