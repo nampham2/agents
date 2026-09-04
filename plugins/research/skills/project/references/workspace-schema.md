@@ -217,7 +217,35 @@ required, a project cannot close until status is `accepted`.
 Every cycle from 1 through the current cycle has a non-empty, sanitized review file. Update the
 current specification for all accepted requirement changes.
 
-## Specification and evidence files
+## Briefing, specification, and evidence files
+
+`briefing.md` records the briefing step: what the user asked for, and what checking it established.
+It holds these five `##` sections, in this order, which `init` writes as a skeleton:
+
+```markdown
+# Project title — briefing
+
+## Stated requirements
+## Verified facts
+## Corrected assumptions
+## Background
+## Open questions for grill
+```
+
+Each skeleton body is one line beginning `_Not yet written`, which is how a briefing nobody has
+written is distinguishable from one that is deliberately brief. From the moment a project leaves
+`ALIGNING`, validation warns once per section it cannot find and once per section still holding only
+that placeholder. Reworded headings are tolerated by a recogniser per section, as with the
+specification headings.
+
+These are warnings and never errors, at close as well as during execution, and a missing
+`briefing.md` produces neither: the file postdates every project created before the briefing step, so
+requiring it would invalidate valid history and block reopening a closed project for maintenance.
+`briefing.md` is not in the list of files required non-empty at close.
+
+The briefing is append-only in spirit: when the grill interview contradicts a fact it verified, the
+correction is recorded as a dated decision in `spec.md` rather than by rewriting the briefing. Grill
+reads it and does not write it.
 
 `spec.md` has two non-empty sections:
 
@@ -319,7 +347,8 @@ A v3 project may be `DONE` only when:
 - every required review is accepted with evidence;
 - every authorization-required completed task has scoped explicit authorization;
 - every completed external task has a durable receipt;
-- `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty;
+- `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty (`briefing.md` is
+  deliberately not required, and warns at most);
 - required specification sections and numbered review files exist;
 - canonical state, local files, and generated `INDEX.md` agree.
 

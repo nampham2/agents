@@ -51,6 +51,14 @@ a verification step.
 The skill discovers the relevant context, agrees the goal with you, creates a persistent project,
 establishes its specification and plan, performs the work, and records verification evidence.
 
+Before the interview, the skill briefs the problem. You state your requirements; it then reads the
+code and the environment and writes down what it found: the claims it could confirm and where, the
+assumptions of yours that turned out to be wrong, and the background you may not have had. Not
+knowing the background of a problem you want solved is the normal case, and the corrections are the
+point of the step. All of it goes into the project's `briefing.md`, so the reasoning survives the
+session rather than living in a transcript, and the questions it could not settle become the
+interview's opening round.
+
 Agreement is a real step, not a formality. The skill hands alignment to the [`grill`](../grill/)
 skill, which interviews you in rounds about the decisions that are actually unsettled, recommends an
 answer to each one, and then states its understanding back and asks you to confirm it. Nothing
@@ -69,6 +77,7 @@ workspace/
 ├── reflection.md
 └── YYYY-MM-DD-NNN/
     ├── project.json
+    ├── briefing.md
     ├── spec.md
     ├── evidence.md
     ├── tasks/
@@ -77,7 +86,8 @@ workspace/
     └── reflection.md
 ```
 
-`project.json` is the canonical source for project and task status. `INDEX.md` is generated from
+`briefing.md` holds the briefing; `project.json` is the canonical source for project and task
+status. `INDEX.md` is generated from
 that state and must not be edited by hand.
 
 ## Find, navigate, and resume projects

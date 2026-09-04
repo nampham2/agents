@@ -88,6 +88,7 @@ workspace/
 ├── reflection.md            # Short, sourced cross-project lessons
 └── YYYY-MM-DD-NNN/
     ├── project.json         # Canonical project and task state
+    ├── briefing.md          # Stated requirements, verified facts, corrected assumptions
     ├── spec.md              # Current specification plus decision history
     ├── evidence.md          # Verification and delivery evidence
     ├── tasks/               # Optional detailed notes; never duplicate task status here
@@ -226,12 +227,57 @@ For v3 maintenance:
 6. Add a new delivery task when a maintained published representation must be synchronized. Earlier
    authorization does not authorize republishing.
 
-## 2. Align and specify
+## 2. Brief: state requirements, then verify them
 
-Perform safe, read-only discovery before asking questions when local context can answer them. Facts
-you can look up are never questions for the user.
+Alignment starts from the user's requirements, not from your reading of them, and the interview that
+follows is only as good as the facts it starts with. This step produces those facts and writes them
+down.
 
-Then invoke the `grill` skill to reach an agreed objective rather than an assumed one. Grill owns the
+1. Record the user's requirements in their own words, before checking anything. Paraphrasing here is
+   how a requirement quietly becomes your interpretation of it.
+2. Establish what you can establish yourself, read-only: read the code, the configuration, the
+   history, the documentation, and run read-only commands. Cite a source for every fact — a
+   `file:line`, a command, a document — so a wrong one can be corrected rather than inherited.
+3. Say plainly where the user's assumptions were wrong. A user who does not know the background of
+   the problem they are describing is the normal case, not a failure, and the correction is the most
+   valuable thing this step produces. Never soften a correction into a question.
+4. Supply the background the user is missing: how the affected system works today, and what
+   constrains a change to it.
+5. Name what the briefing could not settle. These become the grill interview's first frontier.
+
+Write all five into `briefing.md`, which `init` has already created with the headings:
+
+```markdown
+## Stated requirements
+## Verified facts
+## Corrected assumptions
+## Background
+## Open questions for grill
+```
+
+`research-validate` warns for each heading it cannot find, and again for each one still holding only
+its `_Not yet written…_` placeholder, from the moment the project leaves `ALIGNING`. The warnings are
+never errors and a missing `briefing.md` is never one either: projects created before this step
+exists must stay valid and stay reopenable.
+
+The step always runs, and its depth follows the ambiguity. A request whose background is already
+clear gets a short briefing that records the requirements, the facts checked, and that no correction
+was needed — writing that down costs a paragraph and is what makes the absence of corrections a
+finding rather than a silence. What is not acceptable is skipping to the interview because the
+request looked obvious.
+
+Do not settle decisions here. This step establishes facts and surfaces questions; the user settles
+the questions in the next step. Verifying an assumption is not permission to act on the conclusion.
+
+## 3. Align and specify
+
+The briefing has already done the read-only discovery and written down what it established, so do
+not repeat it here. Facts you can look up are never questions for the user, and facts the briefing
+already looked up are not questions for a second lookup either.
+
+Invoke the `grill` skill to reach an agreed objective rather than an assumed one, and point it at
+`briefing.md`: its verified facts are settled, and its open questions are the interview's starting
+frontier. Grill owns the
 interview: it works a design tree of unsettled decisions in rounds, offers a recommended answer per
 question, and closes by stating its understanding and asking the user to confirm it. Pass it the
 project directory so it writes into this project's `spec.md`.
@@ -270,7 +316,7 @@ Later pauses are a different judgement: once the goal is agreed, stop again only
 choice materially affects scope, cost, risk, architecture, authorization, or the deliverable's
 shape. Otherwise summarize the interpretation and continue.
 
-## 3. Plan
+## 4. Plan
 
 Represent every task exactly once in `project.json`. Each task needs all fields defined by the v3
 schema, including dependencies, rooted outputs and evidence, observable success criteria,
@@ -297,7 +343,7 @@ verification, effect classification, authorization, receipts, and block/skip rea
 
 Use project status `PLANNING` while forming the plan and `EXECUTING` when work starts.
 
-## 4. Execute and verify
+## 5. Execute and verify
 
 Before starting a task, confirm its dependencies are `DONE`. For authorization-required work,
 confirm the stored authorization is explicit, current, and scoped to the exact action. Then commit
@@ -327,7 +373,7 @@ the task to `RUNNING` before performing it.
 - Keep the user informed during long work, while ensuring the workspace remains sufficient for
   resumption without chat history.
 
-## 5. Review, revise, and deliver
+## 6. Review, revise, and deliver
 
 Set the project to `REVIEW` when a meaningful reviewable milestone is ready. Record whether review
 is required, its cycle, status, and rooted evidence. Every numbered cycle must have a non-empty
@@ -348,7 +394,7 @@ affects: settled branches stay settled, and re-interviewing them wastes the user
 churn. The resulting dated decision cites the review file it came from. Feedback that only corrects
 an implementation detail needs no interview; record it and continue.
 
-## 6. Cancel, block, or close
+## 7. Cancel, block, or close
 
 For cancellation, stop running tasks, set a non-empty `cancellation_reason`, preserve existing work,
 and transition the project to `CANCELLED`. Do not present cancellation as successful completion.
