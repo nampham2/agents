@@ -15,6 +15,7 @@ from workspace_lib import (
     WorkspaceError,
     allocate_project,
     apply_migration,
+    check_candidate,
     commit_candidate,
     find_workspace_roots,
     migration_candidate,
@@ -49,7 +50,15 @@ def _build_parser() -> argparse.ArgumentParser:
     commit = subparsers.add_parser("commit", help="Commit a complete candidate project.json transactionally")
     commit.add_argument("project_directory", type=Path)
     commit.add_argument("candidate_json", type=Path)
-    commit.add_argument("--expected-revision", required=True, type=int)
+    # Required for a real commit, because the revision a caller claims to have read is what lets
+    # the transaction detect a concurrent write. A dry run claims nothing and changes nothing, so
+    # it may default to whatever the project currently holds.
+    commit.add_argument("--expected-revision", type=int)
+    commit.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="report every problem the commit would hit and change nothing; takes no lock",
+    )
     commit.add_argument("--lock-timeout", type=float, default=5.0)
 
     index = subparsers.add_parser("rebuild-index", help="Regenerate INDEX.md from canonical state")
@@ -140,6 +149,23 @@ def main() -> int:
             return 0
 
         if args.command == "commit":
+            if args.dry_run:
+                report = check_candidate(
+                    args.project_directory,
+                    args.candidate_json,
+                    expected_revision=args.expected_revision,
+                )
+                for warning in report.warnings:
+                    print(f"WARNING: {warning}", file=sys.stderr)
+                if report.errors:
+                    print("Dry run: the commit would fail:", file=sys.stderr)
+                    for error in report.errors:
+                        print(f"- {error}", file=sys.stderr)
+                    return 1
+                print(f"Dry run: the candidate would commit cleanly; {args.project_directory.resolve()} is unchanged")
+                return 0
+            if args.expected_revision is None:
+                raise WorkspaceError("commit requires --expected-revision; pass --dry-run to check without committing")
             state = commit_candidate(
                 args.project_directory,
                 args.candidate_json,

@@ -22,6 +22,7 @@ from workspace_lib import (
     allocate_project,
     apply_migration,
     atomic_write_text,
+    check_candidate,
     check_state_transition,
     commit_candidate,
     detect_schema,
@@ -206,6 +207,14 @@ class UtilityTests(unittest.TestCase):
         self.assertIsNotNone(error)
         self.assertIn("must be relative", error or "")
 
+    def test_resolve_local_reference_refuses_an_unknown_root(self) -> None:
+        # Validators gate on REFERENCE_ROOTS before calling this, so nothing reaches the branch
+        # today. It exists because the previous code resolved every unrecognised root against the
+        # target directory, which is how a fourth root would have silently pointed at the wrong tree.
+        resolved, error = _resolve_local_reference(Path("/tmp/ws"), Path("/tmp/tgt"), "invented", "file.txt")
+        self.assertIsNone(resolved)
+        self.assertIn("unknown local reference root 'invented'", error or "")
+
 
 # ===========================================================================
 # DirectoryLock error paths
@@ -321,7 +330,7 @@ class ValidateV3StateBranchTests(unittest.TestCase):
         state = self._state()
         state["review"] = {"cycle": 0, "required": False, "status": "BOGUS", "evidence": []}
         report = validate_v3_state(state, self.project_dir)
-        self.assertTrue(any("invalid status" in e for e in report.errors))
+        self.assertTrue(any("invalid" in e and "allowed:" in e for e in report.errors))
 
     def test_required_review_cannot_be_not_required(self) -> None:
         state = self._state()
@@ -373,7 +382,7 @@ class ValidateV3StateBranchTests(unittest.TestCase):
         state = self._state()
         state["tasks"][0]["status"] = "BOGUS"
         report = validate_v3_state(state, self.project_dir)
-        self.assertTrue(any("invalid status" in e for e in report.errors))
+        self.assertTrue(any("invalid" in e and "allowed:" in e for e in report.errors))
 
     def test_empty_task_name_rejected(self) -> None:
         state = self._state()
@@ -477,7 +486,7 @@ class ValidateV3StateBranchTests(unittest.TestCase):
         state = self._state()
         state["tasks"][0]["authorization"]["status"] = "BOGUS"
         report = validate_v3_state(state, self.project_dir)
-        self.assertTrue(any("invalid status" in e for e in report.errors))
+        self.assertTrue(any("invalid" in e and "allowed:" in e for e in report.errors))
 
     def test_not_required_authorization_must_use_not_required_status(self) -> None:
         state = self._state()
@@ -557,7 +566,7 @@ class ValidateV3StateBranchTests(unittest.TestCase):
             {"kind": "publish", "value": "not-a-url", "destination": "dest", "timestamp": TIMESTAMP}
         ]
         report = validate_v3_state(state, self.project_dir)
-        self.assertTrue(any("durable prefixed identifier" in e for e in report.errors))
+        self.assertTrue(any("publish:" in e for e in report.errors))
 
     def test_receipt_missing_timestamp_rejected(self) -> None:
         state = self._state()
@@ -1386,7 +1395,7 @@ class CheckStateTransitionTests(unittest.TestCase):
 # ===========================================================================
 
 
-class CommitCandidateErrorTests(unittest.TestCase):
+class _CommitFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -1413,6 +1422,8 @@ class CommitCandidateErrorTests(unittest.TestCase):
         path.write_text(json.dumps(state, indent=2), encoding="utf-8")
         return path
 
+
+class CommitCandidateErrorTests(_CommitFixture):
     def test_non_v3_project_raises(self) -> None:
         v2_state = dict(self.state, schema_version=2)
         (self.project_dir / "project.json").write_text(json.dumps(v2_state), encoding="utf-8")
@@ -1436,6 +1447,49 @@ class CommitCandidateErrorTests(unittest.TestCase):
         cand["status"] = "DONE"  # DONE with no tasks fails
         with self.assertRaises(WorkspaceError):
             commit_candidate(self.project_dir, self._candidate(cand), expected_revision=0)
+
+
+class CheckCandidateTests(_CommitFixture):
+    """The dry run reports what the commit would raise, all of it, and changes nothing."""
+
+    def test_every_category_of_problem_arrives_together(self) -> None:
+        candidate = copy.deepcopy(self.state)
+        candidate["created"] = "2020-01-01T00:00:00+00:00"
+        candidate["status"] = "REVIEW"  # not reachable from PLANNING
+        candidate["title"] = ""  # and invalid on the candidate's own terms
+        candidate["revision"] = 7
+
+        report = check_candidate(self.project_dir, self._candidate(candidate), expected_revision=0)
+
+        self.assertFalse(report.valid)
+        joined = "\n".join(report.errors)
+        self.assertIn("candidate was built from revision 7", joined)
+        self.assertIn("immutable field: created", joined)
+        self.assertIn("invalid project transition: PLANNING -> REVIEW", joined)
+        self.assertIn("title", joined)
+        self.assertEqual(0, json.loads((self.project_dir / "project.json").read_text(encoding="utf-8"))["revision"])
+
+    def test_a_committable_candidate_reports_clean(self) -> None:
+        candidate = copy.deepcopy(self.state)
+        candidate["title"] = "Renamed"
+
+        self.assertEqual([], check_candidate(self.project_dir, self._candidate(candidate)).errors)
+
+    def test_a_non_v3_project_is_reported_rather_than_checked(self) -> None:
+        (self.project_dir / "project.json").write_text(json.dumps(dict(self.state, schema_version=2)), encoding="utf-8")
+
+        report = check_candidate(self.project_dir, self._candidate(self.state))
+
+        self.assertEqual(["transactional commits require schema v3; migrate the project first"], report.errors)
+
+    def test_an_unusable_recorded_revision_cannot_be_defaulted_from(self) -> None:
+        # Only the default path can hit this: a caller who passes --expected-revision gets the
+        # ordinary conflict message instead.
+        (self.project_dir / "project.json").write_text(json.dumps(dict(self.state, revision="one")), encoding="utf-8")
+
+        report = check_candidate(self.project_dir, self._candidate(self.state))
+
+        self.assertEqual(["project.json holds an unusable revision: 'one'"], report.errors)
 
 
 # ===========================================================================

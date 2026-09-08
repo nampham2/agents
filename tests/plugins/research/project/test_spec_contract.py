@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 import validate_workspace
 from workspace_lib import (
+    BRIEFING_PLACEHOLDER_PREFIX,
     SPEC_CANONICAL_SECTIONS,
     allocate_project,
     spec_section_warnings,
@@ -80,6 +81,76 @@ class SpecSectionWarningTests(unittest.TestCase):
         self.assertEqual(spec_section_warnings(spec), [])
 
 
+class UnwrittenSectionTests(unittest.TestCase):
+    """A heading with nothing under it says exactly as much as a missing heading.
+
+    The original check only looked for the headings, and the skill tells the writer to record that a
+    branch is ungrilled *in* its section rather than delete the heading — so the empty section is the
+    shape this failure actually takes. Detection reuses `briefing.md`'s placeholder mechanism rather
+    than growing a second one.
+    """
+
+    def test_an_empty_section_body_is_warned_about_once(self) -> None:
+        spec = CANONICAL_SPEC.replace("### Out of scope\n\nSettled.\n", "### Out of scope\n")
+
+        warnings = spec_section_warnings(spec)
+
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("'### Out of scope' is still unwritten", warnings[0])
+
+    def test_a_placeholder_body_is_warned_about(self) -> None:
+        spec = CANONICAL_SPEC.replace(
+            "### Constraints and important assumptions\n\nSettled.\n",
+            f"### Constraints and important assumptions\n\n{BRIEFING_PLACEHOLDER_PREFIX}: the constraints._\n",
+        )
+
+        warnings = spec_section_warnings(spec)
+
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("Constraints and important assumptions", warnings[0])
+        self.assertIn("still unwritten", warnings[0])
+
+    def test_every_empty_section_is_named_separately(self) -> None:
+        spec = (
+            "# Title\n\n## Current specification\n\n"
+            + "".join(f"### {canonical}\n\n" for canonical, _ in SPEC_CANONICAL_SECTIONS)
+            + "## Decision history\n\n- Decided.\n"
+        )
+
+        warnings = spec_section_warnings(spec)
+
+        self.assertEqual(len(warnings), len(SPEC_CANONICAL_SECTIONS), warnings)
+        self.assertTrue(all("still unwritten" in warning for warning in warnings))
+
+    def test_a_written_section_is_not_warned_about(self) -> None:
+        # The negative control the wording matters for: recording that a branch is not yet grilled is
+        # content, and warning about it would train the writer to delete the heading instead.
+        spec = CANONICAL_SPEC.replace(
+            "### Out of scope\n\nSettled.\n",
+            "### Out of scope\n\nNot grilled yet; the user has not decided.\n",
+        )
+
+        self.assertEqual(spec_section_warnings(spec), [])
+
+    def test_a_missing_section_is_named_as_missing_not_as_unwritten(self) -> None:
+        spec = CANONICAL_SPEC.replace("### Deliverables and roots\n\nSettled.\n\n", "")
+
+        warnings = spec_section_warnings(spec)
+
+        self.assertEqual(len(warnings), 1, warnings)
+        self.assertIn("appears to have no", warnings[0])
+
+    def test_one_written_wording_satisfies_the_sections_it_covers(self) -> None:
+        # "Scope" matches both scope recognisers; written once, neither may warn.
+        self.assertEqual(spec_section_warnings(LEGACY_SPEC), [])
+        emptied = LEGACY_SPEC.replace("### Scope\n\nx\n", "### Scope\n")
+
+        warnings = spec_section_warnings(emptied)
+
+        self.assertEqual(len(warnings), 2, warnings)
+        self.assertTrue(all("still unwritten" in warning for warning in warnings))
+
+
 class SpecSectionValidationTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -121,6 +192,83 @@ class SpecSectionValidationTests(unittest.TestCase):
 
     def test_the_warning_reaches_the_cli_without_failing_it(self) -> None:
         with patch.object(sys, "argv", ["validate", str(self.project_dir)]):
+            self.assertEqual(validate_workspace.main(), 0)
+
+
+class UnwrittenSectionClosureTests(unittest.TestCase):
+    """The check must stay a warning at close, for the same reason it is one during execution.
+
+    Every project closed before this check existed would otherwise become uncloseable and, worse,
+    unreopenable. Erroring here would also make the recorded honesty of an ungrilled branch the thing
+    that blocks the project.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.workspace = self.root / "ws"
+        self.workspace.mkdir()
+        self.target = self.root / "target"
+        self.target.mkdir()
+        self.project_dir = allocate_project(self.workspace, title="Spec", working_directory=self.target)
+        (self.project_dir / "reflection.md").write_text("# Reflection\n\nWent fine.\n", encoding="utf-8")
+
+    def _closeable_state(self) -> dict[str, Any]:
+        state = json.loads((self.project_dir / "project.json").read_text(encoding="utf-8"))
+        state["status"] = "DONE"
+        state["tasks"] = [
+            {
+                "id": "T01",
+                "name": "Work",
+                "status": "DONE",
+                "depends_on": [],
+                "outputs": [],
+                "success_criteria": "Done",
+                "verification": "Checked",
+                "evidence": [{"root": "workspace", "path": "evidence.md", "anchor": None}],
+                "effect": {"kind": "none", "description": None},
+                "authorization": {
+                    "required": False,
+                    "status": "not_required",
+                    "scope": None,
+                    "source": None,
+                    "authorized_at": None,
+                },
+                "receipts": [],
+                "skip_reason": None,
+                "block_reason": None,
+            }
+        ]
+        return state
+
+    def test_an_unwritten_section_is_reported_at_close_without_failing_it(self) -> None:
+        (self.project_dir / "spec.md").write_text(
+            CANONICAL_SPEC.replace("### Out of scope\n\nSettled.\n", "### Out of scope\n"), encoding="utf-8"
+        )
+
+        report = validate_v3_state(self._closeable_state(), self.project_dir, close=True)
+
+        self.assertTrue(report.valid, report.errors)
+        self.assertEqual([error for error in report.errors if "unwritten" in error], [])
+        self.assertTrue([warning for warning in report.warnings if "Out of scope" in warning], report.warnings)
+
+    def test_a_complete_spec_closes_with_no_section_warning(self) -> None:
+        (self.project_dir / "spec.md").write_text(CANONICAL_SPEC, encoding="utf-8")
+
+        report = validate_v3_state(self._closeable_state(), self.project_dir, close=True)
+
+        self.assertTrue(report.valid, report.errors)
+        self.assertEqual([warning for warning in report.warnings if "spec.md" in warning], [])
+
+    def test_the_close_warning_reaches_the_cli_without_failing_it(self) -> None:
+        state = self._closeable_state()
+        (self.project_dir / "spec.md").write_text(
+            CANONICAL_SPEC.replace("### Out of scope\n\nSettled.\n", "### Out of scope\n"), encoding="utf-8"
+        )
+        (self.project_dir / "project.json").write_text(json.dumps(state), encoding="utf-8")
+
+        with patch.object(sys, "argv", ["validate", str(self.project_dir), "--close"]):
             self.assertEqual(validate_workspace.main(), 0)
 
 

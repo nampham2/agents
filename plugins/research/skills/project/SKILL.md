@@ -123,6 +123,17 @@ caches, infer a plugin root from the current repository, or invoke `manage_works
 `validate_workspace.py` directly. Those guesses can select a stale copy of the tools against live
 state.
 
+One exception, and only one: when the project's own deliverable is a change to these scripts, invoke
+the launchers in the working copy being changed, under
+`<working-directory>/plugins/research/skills/project/scripts/`. Hosts install this plugin into a
+version-keyed cache, so the copy on `PATH` is frozen at its installed version: an edit that does not
+raise the version is never served, and a verification run through `PATH` would be evidence about the
+old code while appearing to be evidence about the change. `init` and `research-validate` warn when the working directory contains
+this module and the running tools come from elsewhere, which is the same fact arriving where it is
+needed. This exception is about which copy of the launchers runs and nothing else: it never
+licenses invoking `manage_workspace.py` or `validate_workspace.py`, and never licenses searching
+for a copy rather than using the one under the working directory.
+
 ```sh
 # <workspace-root> is optional: omitted, it comes from $RESEARCH_WORKSPACE. Add --create-root only
 # when the user has asked for a new workspace.
@@ -130,14 +141,21 @@ research-project init <workspace-root> \
   --title "<title>" --working-directory <target-directory>
 research-project commit <project-directory> <candidate.json> \
   --expected-revision <revision>
+# Same checks, no lock and no write: use it to find a rejected candidate before it costs a revision.
+research-project commit <project-directory> <candidate.json> \
+  --expected-revision <revision> --dry-run
 research-project rebuild-index <workspace-root>
 research-project record-evidence <project-directory> --task <id> -- <command>
 research-validate <project-directory>
 ```
 
 Generated code and files intended for an existing repository belong in their requested target
-paths, not in `artifacts/`. Record outputs with an explicit `target`, `workspace`, or `external`
-root so validation cannot accept a same-named file from the wrong location.
+paths, not in `artifacts/`. Record outputs with an explicit `target`, `workspace`, `workspace_root`,
+or `external` root so validation cannot accept a same-named file from the wrong location.
+`workspace_root` is the directory holding every project, and it is how a task declares a shared
+record it rewrites — `reflection.md`, most often. Without it such a task either misdeclares its
+output as `workspace` or leaves it undeclared, and an undeclared output is one validation cannot
+check at all.
 
 ## Canonical-state ownership
 
@@ -158,6 +176,19 @@ The commit command locks the project, checks transitions, validates the candidat
 revision, atomically replaces `project.json`, and regenerates the index under its own lock. A stale
 index after interruption is recoverable because `project.json` remains authoritative; rebuild and
 validate it before continuing.
+
+One commit may advance as many tasks as the candidate advances: nothing requires a commit per task.
+The invariant is that a task is `RUNNING` before it is performed, not that it is the only task in
+its commit, so finishing one task and starting the next is one commit rather than two, and a plan of
+`N` tasks costs about `N + 1` commits rather than `2N`. Batching that way is correct only where the
+statuses are true when they are written: a candidate that marks two tasks `DONE` must be built
+after both were actually done, and marking work `RUNNING` that has not started yet, or `DONE` that
+has not finished, is a false record however few commits it saves.
+
+`--dry-run` runs every check above and writes nothing: it takes no lock, leaves the revision alone,
+and reports the same rejection the real commit would. Use it on any candidate you are unsure of. The
+common rejection is `current_tasks` disagreeing with the set of `RUNNING` task ids, which is easy to
+introduce by advancing task statuses and forgetting the project-level field.
 
 ## 1. Discover, resume, or initialize
 
@@ -305,8 +336,8 @@ Grill writes `spec.md` with a non-empty `## Current specification` holding exact
 ### Destructive and external actions
 ```
 
-Deliverables name their `target`, `workspace`, or `external` root; destructive and external actions
-name their authorization state.
+Deliverables name their `target`, `workspace`, `workspace_root`, or `external` root; destructive and
+external actions name their authorization state.
 
 Keep a non-empty `## Decision history` below it. When accepted feedback changes a requirement,
 update the current specification immediately and append a dated decision. History is append-only;
@@ -358,10 +389,16 @@ the task to `RUNNING` before performing it.
   a command you ran separately: an entry has to be a record of what happened, not a claim about it.
   Add rooted references to the task before marking it `DONE`, and put any prose that the recorded
   output needs — a limitation, an expected failure, why the tail looks the way it does — in a note
-  below the machine-written entry rather than in place of it.
+  below the machine-written entry rather than in place of it. The command runs directly, with no
+  shell interposed, so a bare `|`, `&&`, `;`, or `>` in the argument list is passed to the program
+  as literal text rather than composing anything; `record-evidence` refuses such an argument list
+  and names the fix. Ask for a shell explicitly when you want one: `-- bash -lc '<pipeline>'`.
 - Record external delivery in a structured receipt with kind, durable identifier, destination, and
   timezone-aware timestamp; where a command produced the delivery evidence, record that command with
-  `record-evidence` too.
+  `record-evidence` too. A durable identifier is a URL, or one of the prefixed forms `receipt:`,
+  `deployment:`, `message:`, `purchase:`, `publish:`, and `commit:`. Use `commit:<sha>` for work
+  landed in a repository: an integration task's delivery is a commit, and the abbreviated or full
+  SHA is what makes it findable later.
 - Mark a task `DONE` only after its success criteria and verification pass. `record-evidence` exits
   non-zero when the command did, and it says in the file that it is not recording a pass; a task
   whose latest recorded exit code is non-zero is not `DONE` until a passing run is recorded.
