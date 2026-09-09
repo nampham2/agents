@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import io
 import json
 import subprocess
 import sys
@@ -13,7 +14,7 @@ from unittest.mock import patch
 
 import manage_workspace
 import validate_workspace
-from workspace_lib import WorkspaceError, allocate_project
+from workspace_lib import WorkspaceError, allocate_project, is_canonical_project_id
 
 from tests.conftest import MANAGER
 
@@ -52,7 +53,9 @@ class ManageCLIInitTests(unittest.TestCase):
             ]
         )
         self.assertEqual(0, result)
-        dirs = [d for d in self.workspace.iterdir() if d.is_dir() and not d.name.startswith(".")]
+        # `memory/` is scaffolded beside the project, so count project directories by their canonical
+        # YYYY-MM-DD-NNN name rather than by "every directory that is not hidden".
+        dirs = [d for d in self.workspace.iterdir() if d.is_dir() and is_canonical_project_id(d.name)]
         self.assertEqual(1, len(dirs))
 
     def test_init_workspace_error_returns_1(self) -> None:
@@ -159,6 +162,117 @@ class ManageCLIRebuildIndexTests(unittest.TestCase):
         with patch("manage_workspace.rebuild_index", side_effect=WorkspaceError("locked")):
             result = _call_manage(["rebuild-index", str(self.workspace)])
         self.assertEqual(1, result)
+
+
+class ManageCLIMemoryTests(unittest.TestCase):
+    """The two memory subcommands, whose exit codes are what a caller reads before deciding.
+
+    `search-memory` exits 0 on no hits on purpose: "nothing is recorded about this" is an answer, and
+    a non-zero exit would make it indistinguishable from a broken search.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.workspace = self.root / "ws"
+        self.workspace.mkdir()
+        (self.workspace / "memory").mkdir()
+
+    def _promote(self, *args: str) -> int:
+        return _call_manage(["promote-memory", *args, "--workspace-root", str(self.workspace)])
+
+    def test_promoting_a_new_topic_creates_it_and_regenerates_the_index(self) -> None:
+        result = self._promote(
+            "uv-toolchain",
+            "--body",
+            "Bare pytest picks up the system interpreter.",
+            "--description",
+            "Run everything through uv",
+            "--kind",
+            "environment",
+            "--scope",
+            "any repo with a uv.lock",
+            "--source",
+            "2026-09-09-002",
+        )
+        self.assertEqual(0, result)
+        self.assertTrue((self.workspace / "memory" / "uv-toolchain.md").is_file())
+        self.assertIn("uv-toolchain", (self.workspace / "MEMORY.md").read_text(encoding="utf-8"))
+
+    def test_a_body_can_come_from_a_file(self) -> None:
+        body_file = self.root / "lesson.txt"
+        body_file.write_text("The lesson, from a file.\n", encoding="utf-8")
+        result = self._promote(
+            "lock-discipline",
+            "--body-file",
+            str(body_file),
+            "--description",
+            "How the workspace locks compose",
+            "--kind",
+            "method",
+            "--scope",
+            "workspace_lib writers",
+        )
+        self.assertEqual(0, result)
+        content = (self.workspace / "memory" / "lock-discipline.md").read_text(encoding="utf-8")
+        self.assertIn("The lesson, from a file.", content)
+
+    def test_a_body_can_come_from_stdin(self) -> None:
+        with patch.object(sys, "stdin", io.StringIO("The lesson, piped in.\n")):
+            result = self._promote(
+                "terse-prose",
+                "--body-file",
+                "-",
+                "--description",
+                "Prefer plain sentences",
+                "--kind",
+                "preference",
+                "--scope",
+                "everything written for this user",
+            )
+        self.assertEqual(0, result)
+        content = (self.workspace / "memory" / "terse-prose.md").read_text(encoding="utf-8")
+        self.assertIn("The lesson, piped in.", content)
+
+    def test_a_refused_promotion_returns_1(self) -> None:
+        result = self._promote("bare-topic", "--body", "Something.")
+        self.assertEqual(1, result)
+        self.assertFalse((self.workspace / "memory" / "bare-topic.md").exists())
+
+    def test_search_prints_a_hit_relative_to_the_root_and_returns_0(self) -> None:
+        self._promote(
+            "uv-toolchain",
+            "--body",
+            "Body text.",
+            "--description",
+            "Run everything through uv",
+            "--kind",
+            "environment",
+            "--scope",
+            "any repo with a uv.lock",
+        )
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            result = _call_manage(["search-memory", "everything through uv", "--workspace-root", str(self.workspace)])
+        self.assertEqual(0, result)
+        self.assertIn("memory/uv-toolchain.md:3: description: Run everything through uv", out.getvalue())
+
+    def test_search_with_no_hits_still_returns_0(self) -> None:
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            result = _call_manage(["search-memory", "nothing at all", "--workspace-root", str(self.workspace)])
+        self.assertEqual(0, result)
+        self.assertIn("No memory matches", err.getvalue())
+
+    def test_search_with_an_empty_query_returns_1(self) -> None:
+        result = _call_manage(["search-memory", "  ", "--workspace-root", str(self.workspace)])
+        self.assertEqual(1, result)
+
+    def test_rebuilding_reports_a_skipped_topic_without_failing(self) -> None:
+        (self.workspace / "memory" / "half-written.md").write_text("---\nname: half-written\n", encoding="utf-8")
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            result = _call_manage(["rebuild-index", str(self.workspace)])
+        self.assertEqual(0, result)
+        self.assertIn("memory topic skipped", err.getvalue())
 
 
 class ManageCLIMigrateTests(unittest.TestCase):

@@ -1372,6 +1372,491 @@ def reflection_warnings(workspace_root: Path) -> "list[str]":
     return warnings
 
 
+# --- Cross-project memory ------------------------------------------------------------------------
+#
+# Memory is layered by how often each layer is read, and only the always-read layer carries a budget.
+# `MEMORY.md` is a generated index of pointers; `memory/<slug>.md` holds the lessons themselves at any
+# length, because nobody pays for those bytes until a pointer says to open one. The flat
+# `reflection.md` this replaces reached 61 KB while counting as 15 of an allowed 20 "entries": the
+# guardrail measured entries and the reader pays in bytes, and the merge discipline that same file
+# prescribed drove the two apart, since merging lowers the entry count while raising the byte count.
+# So the budget here is bytes and lines, applied to the file that is always read.
+#
+# See references/memory-architecture.md for the design, including what it deliberately leaves out.
+
+MEMORY_INDEX_FILENAME = "MEMORY.md"
+MEMORY_DIRECTORY = "memory"
+MEMORY_STAGING_FILENAME = "memory-staging.md"
+MEMORY_STAGING_PLACEHOLDER = "_No candidate lessons staged yet._"
+MEMORY_STAGING_SKELETON = (
+    "# Staged lessons\n"
+    "\n"
+    "Append a line whenever something surprises you, mid-project, without stopping to decide where it\n"
+    "belongs. At close, drain this file: promote each line into `memory/<slug>.md` with\n"
+    "`research-project promote-memory`, fold it into this project's `reflection.md`, or drop it.\n"
+    "\n"
+    f"{MEMORY_STAGING_PLACEHOLDER}\n"
+)
+
+# Both bounds bind. A file can be short and wide or narrow and long, and either way it stops being
+# something a session can afford to read in full before doing anything else.
+MEMORY_INDEX_MAX_LINES = 120
+MEMORY_INDEX_MAX_BYTES = 12 * 1024
+
+# Closed like every other enum here, so a mistyped kind is refused rather than silently opening a
+# fourth group that nothing renders and nobody reads. These three are the sections the flat
+# cross-project file had already grown on its own.
+MEMORY_KINDS = ("preference", "environment", "method")
+MEMORY_KIND_TITLES = {
+    "preference": "Confirmed user preferences",
+    "environment": "Environment and tooling",
+    "method": "Method",
+}
+MEMORY_FRONTMATTER_FIELDS = ("name", "description", "kind", "scope", "sources", "updated")
+# `sources` alone may be empty: a lesson can predate the projects that would cite it. Every other
+# field is load-bearing for either retrieval or provenance, so an empty one is malformed.
+MEMORY_OPTIONAL_FRONTMATTER_FIELDS = ("sources",)
+MEMORY_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+MEMORY_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+MEMORY_FRONTMATTER_DELIMITER = "---"
+
+
+@dataclass
+class MemoryTopic:
+    """One parsed topic file: the pointer `MEMORY.md` renders, plus where the lesson came from."""
+
+    path: Path
+    name: str
+    description: str
+    kind: str
+    scope: str
+    sources: list[str] = field(default_factory=list)
+    updated: str = ""
+
+
+def parse_memory_frontmatter(content: str) -> "tuple[dict[str, str], list[str]]":
+    """Split a topic file's leading `---` block into fields, reporting whatever is malformed.
+
+    Deliberately not YAML. The shipped scripts are stdlib-only, and the contract is six flat
+    `key: value` lines; a topic file that needs more structure than that is doing something this
+    design does not ask of it.
+    """
+    problems: list[str] = []
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != MEMORY_FRONTMATTER_DELIMITER:
+        return {}, [f"must open with a '{MEMORY_FRONTMATTER_DELIMITER}' frontmatter line"]
+    fields: dict[str, str] = {}
+    closed = False
+    for number, line in enumerate(lines[1:], start=2):
+        if line.strip() == MEMORY_FRONTMATTER_DELIMITER:
+            closed = True
+            break
+        if not line.strip():
+            continue
+        key, separator, value = line.partition(":")
+        if not separator:
+            problems.append(f"line {number} is not a 'key: value' pair: {line.strip()!r}")
+            continue
+        key = key.strip()
+        if key in fields:
+            problems.append(f"duplicate frontmatter field: {key!r}")
+        fields[key] = value.strip()
+    if not closed:
+        problems.append(f"frontmatter is never closed by a '{MEMORY_FRONTMATTER_DELIMITER}' line")
+    return fields, problems
+
+
+def parse_memory_topic(path: Path, content: str) -> "tuple[MemoryTopic | None, list[str]]":
+    """Parse one topic file, returning no topic when anything is wrong and always saying what.
+
+    Never raises. A half-written topic file reaches this function on the commit path, where an
+    exception would refuse to record work that is already finished.
+    """
+    fields, problems = parse_memory_frontmatter(content)
+    slug = path.stem
+    if not MEMORY_SLUG_PATTERN.match(slug):
+        problems.append(f"filename {path.name!r} is not a lowercase-hyphenated slug")
+    for required in MEMORY_FRONTMATTER_FIELDS:
+        if required not in fields:
+            problems.append(f"missing frontmatter field: {required!r}")
+        elif not fields[required] and required not in MEMORY_OPTIONAL_FRONTMATTER_FIELDS:
+            problems.append(f"empty frontmatter field: {required!r}")
+    unknown = sorted(set(fields) - set(MEMORY_FRONTMATTER_FIELDS))
+    if unknown:
+        problems.append(f"unknown frontmatter field(s): {', '.join(repr(name) for name in unknown)}")
+    name = fields.get("name", "")
+    if name and name != slug:
+        problems.append(f"frontmatter name {name!r} does not match the filename slug {slug!r}")
+    kind = fields.get("kind", "")
+    if kind and kind not in MEMORY_KINDS:
+        problems.append(f"kind {kind!r} is not one of: {', '.join(MEMORY_KINDS)}")
+    updated = fields.get("updated", "")
+    if updated and not MEMORY_DATE_PATTERN.match(updated):
+        problems.append(f"updated {updated!r} is not a YYYY-MM-DD date")
+    sources = [item.strip() for item in fields.get("sources", "").split(",") if item.strip()]
+    for source in sources:
+        if not PROJECT_ID_PATTERN.match(source):
+            problems.append(f"source {source!r} is not a YYYY-MM-DD-NNN project id")
+    if problems:
+        return None, problems
+    return (
+        MemoryTopic(
+            path=path,
+            name=name,
+            description=fields["description"],
+            kind=kind,
+            scope=fields["scope"],
+            sources=sources,
+            updated=updated,
+        ),
+        [],
+    )
+
+
+def _memory_topic_paths(workspace_root: Path) -> "list[Path]":
+    directory = workspace_root / MEMORY_DIRECTORY
+    if not directory.is_dir():
+        return []
+    return sorted(path for path in directory.iterdir() if path.is_file() and path.suffix == ".md")
+
+
+def load_memory_topics(workspace_root: Path) -> "tuple[list[MemoryTopic], list[str]]":
+    """Every parseable topic file, plus one problem string per file that is not parseable.
+
+    The split return is what lets generation and validation disagree about severity for the same
+    file: generation skips a malformed topic and warns, validation calls it an error.
+    """
+    topics: list[MemoryTopic] = []
+    problems: list[str] = []
+    for path in _memory_topic_paths(workspace_root):
+        try:
+            content = read_text(path)
+        except WorkspaceError as error:
+            problems.append(str(error))
+            continue
+        topic, found = parse_memory_topic(path, content)
+        problems.extend(f"{path}: {problem}" for problem in found)
+        if topic is not None:
+            topics.append(topic)
+    return topics, problems
+
+
+def _memory_postmortem_rows(workspace_root: Path) -> "list[str]":
+    """One pointer per project that actually has a post-mortem, titled from canonical state.
+
+    Titles come from `project.json`, never from the post-mortem's own heading. Across this
+    workspace those headings carry four different prefixes and two of them name no project at all,
+    so an index built from them would be wrong in a way nothing downstream could detect.
+    """
+    rows: list[str] = []
+    if not workspace_root.is_dir():
+        return rows
+    for child in sorted(workspace_root.iterdir(), key=lambda item: item.name):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        if not _has_readable_content(child / "reflection.md"):
+            continue
+        state_path = child / "project.json"
+        if not state_path.is_file():
+            continue
+        try:
+            state = load_json(state_path)
+        except WorkspaceError:
+            continue
+        title = _escape_table(state.get("title", "Untitled"))
+        status = _escape_table(state.get("status", "INVALID"))
+        rows.append(f"- [{child.name}]({child.name}/reflection.md) — {title} ({status})")
+    return rows
+
+
+def render_memory_index(workspace_root: Path) -> str:
+    """Render `MEMORY.md` from the topic files and post-mortems present right now.
+
+    A full render rather than a delta, which is what makes concurrent rebuilds safe: whichever of
+    two racing rebuilds writes last writes from a filesystem that already holds the other's work.
+    """
+    topics, _ = load_memory_topics(workspace_root)
+    parts = [
+        "# Cross-project memory\n",
+        "\n",
+        "<!-- Generated by manage_workspace.py; do not edit manually. -->\n",
+        "\n",
+        "Pointers only. Open a topic file when its description and scope match the work in hand,\n",
+        "and run `research-project search-memory` when they do not.\n",
+    ]
+    for kind in MEMORY_KINDS:
+        chosen = sorted((topic for topic in topics if topic.kind == kind), key=lambda topic: topic.name)
+        if not chosen:
+            continue
+        parts.append(f"\n## {MEMORY_KIND_TITLES[kind]}\n\n")
+        for topic in chosen:
+            parts.append(
+                f"- [{topic.name}]({MEMORY_DIRECTORY}/{topic.name}.md) — "
+                f"{_escape_table(topic.description)} _(scope: {_escape_table(topic.scope)})_\n"
+            )
+    rows = _memory_postmortem_rows(workspace_root)
+    if rows:
+        parts.append("\n## Project post-mortems\n\n")
+        parts.extend(f"{row}\n" for row in rows)
+    return "".join(parts)
+
+
+def memory_index_path(workspace_root: Path) -> Path:
+    return workspace_root / MEMORY_INDEX_FILENAME
+
+
+def memory_lock(workspace_root: Path, *, timeout: float = 5.0) -> DirectoryLock:
+    """The lock guarding read-modify-write of `memory/<slug>.md`.
+
+    Its own lock rather than `.index.lock`, because the commit path already takes that one to
+    regenerate the index: amending a topic and then rebuilding under one lock would deadlock on a
+    non-reentrant `mkdir` lock. Nothing here is ever held across a rebuild.
+    """
+    return DirectoryLock(workspace_root / ".memory.lock", timeout=timeout)
+
+
+def render_memory_topic(topic: MemoryTopic, body: str) -> str:
+    lines = [
+        MEMORY_FRONTMATTER_DELIMITER,
+        f"name: {topic.name}",
+        f"description: {topic.description}",
+        f"kind: {topic.kind}",
+        f"scope: {topic.scope}",
+        f"sources: {', '.join(topic.sources)}",
+        f"updated: {topic.updated}",
+        MEMORY_FRONTMATTER_DELIMITER,
+    ]
+    return "\n".join(lines) + "\n\n" + body.strip("\n") + "\n"
+
+
+def memory_topic_body(content: str) -> str:
+    """Everything below the closing frontmatter delimiter."""
+    lines = content.splitlines()
+    if not lines or lines[0].strip() != MEMORY_FRONTMATTER_DELIMITER:
+        return content.strip("\n")
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == MEMORY_FRONTMATTER_DELIMITER:
+            return "\n".join(lines[index + 1 :]).strip("\n")
+    return ""
+
+
+def amend_memory_topic(
+    workspace_root: Path,
+    slug: str,
+    *,
+    body: str,
+    description: str = "",
+    kind: str = "",
+    scope: str = "",
+    sources: "Sequence[str]" = (),
+    updated: str = "",
+    lock_timeout: float = 5.0,
+) -> Path:
+    """Create or amend one topic file under `.memory.lock`, never rewriting its body from scratch.
+
+    Amending rather than replacing is the point. A rewrite loses the incident that made the lesson
+    credible, and provenance is the only thing separating a recorded lesson from an opinion, so
+    `sources` accumulates and new text lands below what is already there.
+
+    The lock is what makes this safe when two projects close at the same moment and reach for the
+    same topic. Without it the later write carries none of the earlier one's new source id, and
+    nothing reports that it happened.
+    """
+    if not MEMORY_SLUG_PATTERN.match(slug):
+        raise WorkspaceError(f"topic slug must be lowercase-hyphenated: {slug!r}")
+    if kind and kind not in MEMORY_KINDS:
+        raise WorkspaceError(f"kind {kind!r} is not one of: {', '.join(MEMORY_KINDS)}")
+    for source in sources:
+        if not PROJECT_ID_PATTERN.match(source):
+            raise WorkspaceError(f"source {source!r} is not a YYYY-MM-DD-NNN project id")
+    stamp = updated or datetime.now().astimezone().date().isoformat()
+    if not MEMORY_DATE_PATTERN.match(stamp):
+        raise WorkspaceError(f"updated {stamp!r} is not a YYYY-MM-DD date")
+    if not body.strip():
+        raise WorkspaceError("a topic amendment needs a non-empty body")
+    path = workspace_root / MEMORY_DIRECTORY / f"{slug}.md"
+    try:
+        with memory_lock(workspace_root, timeout=lock_timeout):
+            if path.is_file():
+                content = read_text(path)
+                topic, problems = parse_memory_topic(path, content)
+                if topic is None:
+                    raise WorkspaceError(f"refusing to amend an unparseable topic file {path}: " + "; ".join(problems))
+                existing_body = memory_topic_body(content)
+                for source in sources:
+                    if source not in topic.sources:
+                        topic.sources.append(source)
+                topic.description = description or topic.description
+                topic.kind = kind or topic.kind
+                topic.scope = scope or topic.scope
+                topic.updated = stamp
+            else:
+                missing = [
+                    label
+                    for label, value in (("description", description), ("kind", kind), ("scope", scope))
+                    if not value
+                ]
+                if missing:
+                    raise WorkspaceError(f"a new topic file needs {', '.join(missing)}: {path} does not exist yet")
+                existing_body = ""
+                topic = MemoryTopic(
+                    path=path,
+                    name=slug,
+                    description=description,
+                    kind=kind,
+                    scope=scope,
+                    sources=list(sources),
+                    updated=stamp,
+                )
+            combined = f"{existing_body}\n\n{body.strip()}" if existing_body else body.strip()
+            atomic_write_text(path, render_memory_topic(topic, combined))
+    except OSError as error:
+        raise WorkspaceError(f"cannot amend {path}: {error}") from error
+    return path
+
+
+def memory_staging_warnings(project_dir: Path) -> "list[str]":
+    """Warn when a project closes with candidate lessons still staged and untriaged.
+
+    A warning and never an error. "Triaged" is not mechanically checkable, and refusing to close a
+    project whose actual deliverables are all done because a note is still sitting in a scratch file
+    would punish exactly the discipline this file exists to encourage.
+    """
+    path = project_dir / MEMORY_STAGING_FILENAME
+    if not path.is_file():
+        return []
+    try:
+        content = read_text(path)
+    except WorkspaceError:
+        return []
+    # Only a line the skeleton did not put there is a staged lesson. The skeleton explains in prose
+    # how to drain the file, so subtracting just the placeholder would make every freshly initialized
+    # project warn at close about the very instructions telling it there is nothing to drain.
+    scaffolding = set(MEMORY_STAGING_SKELETON.splitlines())
+    staged = [
+        line
+        for line in content.splitlines()
+        if line.strip() and line not in scaffolding and not line.lstrip().startswith("#")
+    ]
+    if not staged:
+        return []
+    return [
+        f"{path} still holds staged lessons at close; promote each one into "
+        f"{MEMORY_DIRECTORY}/<slug>.md, fold it into this project's reflection.md, or drop it"
+    ]
+
+
+def memory_findings(workspace_root: Path, *, check_index: bool = False) -> ValidationReport:
+    """Validate a workspace root's memory layer.
+
+    Absence is never a finding. A root with no `MEMORY.md` and no `memory/` is valid, and so is
+    every project in it: every project created before this layer existed has to stay valid and stay
+    reopenable, which is the same reason `briefing.md` is not required at close.
+    """
+    report = ValidationReport()
+    if (workspace_root / "reflection.md").is_file():
+        report.warnings.append(
+            f"{workspace_root / 'reflection.md'} is the legacy flat cross-project reflection; migrate its "
+            f"entries into {MEMORY_DIRECTORY}/<slug>.md topic files and delete it"
+        )
+    index_path = memory_index_path(workspace_root)
+    directory = workspace_root / MEMORY_DIRECTORY
+    if not index_path.is_file() and not directory.is_dir():
+        return report
+
+    topics, problems = load_memory_topics(workspace_root)
+    report.errors.extend(problems)
+
+    if index_path.is_file():
+        try:
+            content = read_text(index_path)
+        except WorkspaceError as error:
+            report.errors.append(f"cross-project memory index is unreadable: {error}")
+        else:
+            lines = len(content.splitlines())
+            size = len(content.encode("utf-8"))
+            # Named separately so the error says which bound was crossed. Reporting both budgets
+            # against one breach reads as though the file were over on both counts, which sends the
+            # reader looking for bytes to cut when the file is merely long, or the reverse.
+            exceeded = []
+            if lines > MEMORY_INDEX_MAX_LINES:
+                exceeded.append(f"{lines} lines, above the {MEMORY_INDEX_MAX_LINES} allowed")
+            if size > MEMORY_INDEX_MAX_BYTES:
+                exceeded.append(f"{size} bytes, above the {MEMORY_INDEX_MAX_BYTES} allowed")
+            if exceeded:
+                report.errors.append(
+                    f"{index_path} is {' and '.join(exceeded)}; this file is read in full every "
+                    "session, so merge or retire topics rather than appending pointers"
+                )
+
+    cited = {source for topic in topics for source in topic.sources}
+    if cited:
+        present = {child.name for child in workspace_root.iterdir() if child.is_dir()}
+        dangling = sorted(cited - present)
+        if dangling:
+            report.warnings.append(
+                f"{directory} cites source projects absent from the workspace: "
+                f"{', '.join(dangling)}; repair the provenance or retire those topics"
+            )
+
+    if check_index:
+        expected = render_memory_index(workspace_root)
+        actual = ""
+        if index_path.is_file():
+            try:
+                actual = read_text(index_path)
+            except WorkspaceError:
+                actual = ""
+        if actual != expected:
+            report.errors.append(f"derived cross-project memory index is stale: {index_path}")
+    return report
+
+
+def search_memory(workspace_root: Path, query: str) -> "list[tuple[Path, int, str]]":
+    """Find `query` in topic frontmatter first, then in per-project post-mortems.
+
+    Returns locations rather than contents — `(path, line number, line)` — so a wide search costs
+    the caller in proportion to the number of hits rather than the size of what was hit, and the
+    decision about what to actually load stays with the reader.
+
+    Frontmatter before bodies because a frontmatter hit means the topic is *about* the query, while
+    a body hit may only mention it in passing.
+    """
+    if not query.strip():
+        raise WorkspaceError("search-memory needs a non-empty query")
+    needle = query.strip().lower()
+    hits: list[tuple[Path, int, str]] = []
+    for path in _memory_topic_paths(workspace_root):
+        try:
+            content = read_text(path)
+        except WorkspaceError:
+            continue
+        lines = content.splitlines()
+        end = len(lines)
+        if lines and lines[0].strip() == MEMORY_FRONTMATTER_DELIMITER:
+            end = 1
+            for index, line in enumerate(lines[1:], start=1):
+                if line.strip() == MEMORY_FRONTMATTER_DELIMITER:
+                    end = index
+                    break
+        for number, line in enumerate(lines[:end], start=1):
+            if needle in line.lower():
+                hits.append((path, number, line.strip()))
+    if workspace_root.is_dir():
+        for child in sorted(workspace_root.iterdir(), key=lambda item: item.name):
+            postmortem = child / "reflection.md"
+            if not child.is_dir() or child.name.startswith(".") or not postmortem.is_file():
+                continue
+            try:
+                content = read_text(postmortem)
+            except WorkspaceError:
+                continue
+            for number, line in enumerate(content.splitlines(), start=1):
+                if needle in line.lower():
+                    hits.append((postmortem, number, line.strip()))
+    return hits
+
+
 def validate_project(
     project_dir: Path,
     *,
@@ -1397,6 +1882,13 @@ def validate_project(
         return ValidationReport(errors=[str(error)])
     report.warnings.extend(reflection_warnings(project_dir.parent))
     report.warnings.extend(vcs_warnings(project_dir.parent))
+    # The memory layer is validated from any project in the root, because it is the root's state and
+    # a project is the only thing anyone validates. Its errors are reachable here and nowhere on the
+    # commit path: `commit_candidate` validates the candidate state with `validate_v3_state`, so a
+    # malformed topic file can never refuse to record work that is already finished.
+    report.extend(memory_findings(project_dir.parent, check_index=check_index))
+    if close:
+        report.warnings.extend(memory_staging_warnings(project_dir))
     if check_index and version in {2, 3}:
         expected = render_index(project_dir.parent)
         index_path = project_dir.parent / "INDEX.md"
@@ -1734,7 +2226,14 @@ def rebuild_index(workspace_root: Path, *, lock_timeout: float = 5.0) -> Path:
         index_path = workspace_root / "INDEX.md"
         workspace_root.mkdir(parents=True, exist_ok=True)
         with DirectoryLock(workspace_root / ".index.lock", timeout=lock_timeout):
+            # Both derived files are regenerated in full under the one lock. Rendering inside the
+            # `with` rather than before it is what makes a concurrent rebuild harmless: the loser
+            # reads a filesystem that already holds the winner's work and writes a superset of it.
+            # `MEMORY.md` rides along here because it derives from the same directory scan and
+            # because a commit already ends by rebuilding, so memory stays current for free.
             atomic_write_text(index_path, render_index(workspace_root))
+            if (workspace_root / MEMORY_DIRECTORY).is_dir() or memory_index_path(workspace_root).is_file():
+                atomic_write_text(memory_index_path(workspace_root), render_memory_index(workspace_root))
         return index_path
     except OSError as error:
         raise WorkspaceError(f"cannot rebuild {workspace_root / 'INDEX.md'}: {error}") from error
@@ -1984,8 +2483,14 @@ def allocate_project(
         )
         atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))
         atomic_write_text(project_dir / "evidence.md", f"# Evidence\n\n{EVIDENCE_PLACEHOLDER}")
-        if not (workspace_root / "reflection.md").exists():
-            atomic_write_text(workspace_root / "reflection.md", "# Cross-project reflection\n")
+        atomic_write_text(project_dir / MEMORY_STAGING_FILENAME, MEMORY_STAGING_SKELETON)
+        # The flat cross-project `reflection.md` is no longer scaffolded. It is what the memory layer
+        # replaces: one always-read file that grew to 61 KB while its guardrail, which counted
+        # entries, still reported it clean. Existing ones stay valid and warn that they are legacy.
+        # Only the directory is created here. `MEMORY.md` is derived, and the index rebuild that
+        # ends this function generates it as soon as `memory/` exists — so writing it here too would
+        # be a second writer of a generated file, which is how INDEX.md drift used to happen.
+        (workspace_root / MEMORY_DIRECTORY).mkdir(exist_ok=True)
         atomic_write_json(project_dir / "project.json", state)
         _rebuild_index_after_commit(workspace_root, f"project {project_dir} is initialized", lock_timeout)
     except BaseException:
