@@ -1520,14 +1520,30 @@ class AllocateProjectTests(unittest.TestCase):
         self.assertNotEqual(first, second)
         self.assertTrue(second.name.endswith("-002"))
 
-    def test_creates_workspace_reflection_when_absent(self) -> None:
-        allocate_project(self.workspace, title="Test", working_directory=self.target)
-        self.assertTrue((self.workspace / "reflection.md").is_file())
+    def test_scaffolds_the_memory_layer_and_not_a_flat_reflection(self) -> None:
+        project_dir = allocate_project(self.workspace, title="Test", working_directory=self.target)
+        self.assertTrue((self.workspace / "memory").is_dir())
+        self.assertTrue((self.workspace / "MEMORY.md").is_file())
+        self.assertTrue((project_dir / "memory-staging.md").is_file())
+        # The flat cross-project file is what the memory layer replaces, so a fresh root must not
+        # start life with one: scaffolding it is how the 61 KB always-read file came to exist.
+        self.assertFalse((self.workspace / "reflection.md").exists())
 
-    def test_does_not_overwrite_existing_reflection(self) -> None:
+    def test_does_not_overwrite_an_existing_flat_reflection(self) -> None:
         (self.workspace / "reflection.md").write_text("# Existing\n\nOld.\n", encoding="utf-8")
         allocate_project(self.workspace, title="Test", working_directory=self.target)
+        # A legacy file is left exactly as it is. Deleting it would destroy the only copy of lessons
+        # nobody has migrated yet; validation warns instead, on every run, until someone does.
         self.assertIn("Old", (self.workspace / "reflection.md").read_text(encoding="utf-8"))
+
+    def test_regenerates_a_hand_edited_memory_index(self) -> None:
+        (self.workspace / "MEMORY.md").write_text("# Hand edited\n", encoding="utf-8")
+        allocate_project(self.workspace, title="Test", working_directory=self.target)
+        # MEMORY.md is derived, so a hand edit is not preserved — it is discarded, which is the same
+        # contract INDEX.md has and the reason both say "do not edit manually" at the top.
+        index = (self.workspace / "MEMORY.md").read_text(encoding="utf-8")
+        self.assertNotIn("Hand edited", index)
+        self.assertIn("do not edit manually", index)
 
     def test_empty_title_raises(self) -> None:
         with self.assertRaises(WorkspaceError):

@@ -8,12 +8,14 @@ workspace project.
 `project.json` is the only authoritative source for project and task status. Markdown files contain
 specification, evidence, reviews, and notes but must not duplicate canonical statuses.
 
-One coordinator is the sole writer of `project.json`, shared Markdown records, and `INDEX.md`.
+One coordinator is the sole writer of `project.json`, shared Markdown records, `INDEX.md`, and
+`MEMORY.md`.
 Workers own only assigned non-overlapping output paths and return results to the coordinator. State
 updates use `research-project commit` with an expected revision; direct edits are unsupported.
 
 `INDEX.md` is a deterministic cache generated from canonical state. A stale index is an error at
-close but does not supersede `project.json`.
+close but does not supersede `project.json`. `MEMORY.md` is generated the same way and carries the
+same rule; see [Workspace root files](#workspace-root-files).
 
 ## Canonical v3 state
 
@@ -136,9 +138,10 @@ Local paths are always relative, cannot contain `..`, and are rooted explicitly:
 
 - `workspace`: relative to the project directory;
 - `workspace_root`: relative to the directory holding every project — the parent of the project
-  directory. Shared records belong to no single project: `reflection.md` and `INDEX.md` live there,
-  and a task that rewrites one declares it under this root instead of misdeclaring it as `workspace`
-  or leaving it undeclared;
+  directory. Shared records belong to no single project: `INDEX.md`, `MEMORY.md`, and the topic
+  files under `memory/` live there, and a task that rewrites one declares it under this root
+  instead of misdeclaring it as `workspace` or leaving it undeclared. `memory-staging.md` belongs
+  to its project and is declared under `workspace`, exactly like `evidence.md`;
 - `target`: relative to `working_directory`;
 - `external`: a valid HTTP(S) URL with a host or a non-empty durable identifier prefixed by
   `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:`, or `commit:`. The prefix set is
@@ -308,6 +311,63 @@ append cannot destroy the entries already there.
 
 Redact credentials, tokens, private data, and unnecessary command output from every workspace file.
 
+## Workspace root files
+
+Beside the project directories, a workspace root holds two generated caches and one directory of
+cross-project lessons. [memory-architecture.md](memory-architecture.md) specifies the layer in full;
+this section states the part that is schema.
+
+```text
+workspace/
+├── INDEX.md                 # Generated: every project, from canonical state
+├── MEMORY.md                # Generated: pointers into memory/ and per-project post-mortems
+├── memory/
+│   └── <slug>.md            # One cross-project lesson; any length
+└── YYYY-MM-DD-NNN/
+    ├── memory-staging.md    # Candidate lessons for this project, drained at close
+    └── ...
+```
+
+`MEMORY.md` is regenerated in full from the topic files and canonical project state under the
+workspace index lock, in the same call that regenerates `INDEX.md`. Do not edit it; it says so in
+its own header. Its post-mortem lines take their titles and statuses from `project.json`, never from
+headings inside the post-mortems, because canonical titles cannot drift from canonical state and
+document headings demonstrably do.
+
+It is the only memory file with a size budget: **120 lines and 12 KB**, whichever binds first,
+because it is read in full every session. A topic file has no budget at all, since nothing loads one
+until a pointer says it is relevant.
+
+A topic file opens with frontmatter of exactly these six fields, followed by a body of any length:
+
+| Field | Rule |
+| --- | --- |
+| `name` | Non-empty slug, lowercase and hyphenated; equals the filename without `.md` |
+| `description` | Non-empty single line; this is what `MEMORY.md` shows |
+| `kind` | One of `preference`, `environment`, `method` |
+| `scope` | Non-empty free text saying when the lesson applies |
+| `sources` | Comma-separated `YYYY-MM-DD-NNN` project ids; may be empty |
+| `updated` | `YYYY-MM-DD` |
+
+Unknown and duplicated fields are rejected, as everywhere else in this schema.
+
+Validation severities:
+
+- **Error** — `MEMORY.md` over either budget; a topic file whose frontmatter cannot be parsed; and,
+  under `--check-index`, a `MEMORY.md` that disagrees with regeneration.
+- **Warning** — a `sources` id naming no project in the root; a legacy flat `reflection.md` in the
+  root; a `memory-staging.md` still holding staged lines at close.
+
+Two properties are load-bearing rather than incidental. First, **a malformed topic file never blocks
+a commit**: generation skips what it cannot parse and reports it, so a note nobody has finished
+writing cannot refuse the record of work that is finished. Memory is advisory; `project.json` is
+canonical. Second, **absence is never a finding**: a root with no `MEMORY.md` and no `memory/` is
+valid, and so is every project in it, with or without a `memory-staging.md`.
+
+`schema_version` therefore stays **3**. Nothing about canonical project state changes here — memory
+lives beside projects, not inside their schema — and bumping it would invalidate every existing
+project in order to add files next to them.
+
 ## Transactional updates
 
 Do not write `project.json` directly. Starting from revision `R`, construct a complete candidate and
@@ -333,10 +393,15 @@ The command:
 5. sets revision to `R + 1` and updates the timestamp;
 6. validates the candidate, including close invariants for `DONE`;
 7. atomically replaces `project.json`;
-8. regenerates `INDEX.md` under the workspace index lock.
+8. regenerates `INDEX.md` and `MEMORY.md` under the workspace index lock.
 
-On conflict, reload and reconcile. A lock directory contains `owner.json`; inspect it before manually
-removing a lock believed to be stale. Never automatically steal a lock.
+On conflict, reload and reconcile. A lock directory contains `owner.json`; inspect it before
+manually removing a lock believed to be stale. Never automatically steal a lock.
+
+Three locks exist, each scoped to what it protects: `.project.lock` in a project directory,
+`.index.lock` at the root for regenerating both caches, and `.memory.lock` at the root for the
+read-modify-write that amends a topic file. None is reentrant, so `.memory.lock` is never held
+across a call that regenerates the caches.
 
 ## Compatibility and migration
 
@@ -368,7 +433,7 @@ A v3 project may be `DONE` only when:
 - `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty (`briefing.md` is
   deliberately not required, and warns at most);
 - required specification sections and numbered review files exist;
-- canonical state, local files, and generated `INDEX.md` agree.
+- canonical state, local files, and the generated `INDEX.md` and `MEMORY.md` agree.
 
 Run both close and index validation after the transactional `DONE` commit:
 

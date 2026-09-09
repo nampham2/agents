@@ -10,18 +10,23 @@ from pathlib import Path
 
 from workspace_lib import (
     EVIDENCE_TAIL_LINES,
+    MEMORY_KINDS,
     ROOT_SEARCH_MAX_DEPTH,
     WORKSPACE_ROOT_ENV_VAR,
     WorkspaceError,
     allocate_project,
+    amend_memory_topic,
     apply_migration,
     check_candidate,
     commit_candidate,
     find_workspace_roots,
+    load_memory_topics,
     migration_candidate,
+    read_text,
     rebuild_index,
     record_evidence,
     resolve_workspace_root,
+    search_memory,
     validate_v3_state,
     vcs_warnings,
 )
@@ -105,12 +110,71 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"how deep to descend below each search path (default {ROOT_SEARCH_MAX_DEPTH})",
     )
 
+    # `search-memory` takes its root as an option rather than a leading positional, unlike every
+    # other command here. With an optional positional root, `search-memory uv` is ambiguous —
+    # argparse cannot tell a root from a query — and a query silently read as a root would search
+    # nothing and report no hits, which reads exactly like a topic that does not exist.
+    search = subparsers.add_parser(
+        "search-memory",
+        help="Print where a query appears in memory topics and project post-mortems",
+        epilog=(
+            "Prints locations, never contents: a wide search costs the reader in proportion to the "
+            "number of hits rather than the size of the files hit. Topic frontmatter is searched "
+            "before post-mortem bodies, because a frontmatter hit means the topic is about the query."
+        ),
+    )
+    search.add_argument("query", help="case-insensitive substring to look for")
+    search.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
+
+    promote = subparsers.add_parser(
+        "promote-memory",
+        help="Amend or create memory/<slug>.md under the memory lock, then regenerate MEMORY.md",
+        epilog=(
+            "Amends rather than replaces: sources accumulate and the new body lands below what is "
+            "already there, because a rewrite loses the incident that made the lesson credible. "
+            "A new topic needs --description, --kind, and --scope; amending an existing one does not."
+        ),
+    )
+    promote.add_argument("slug", help="topic filename stem, lowercase and hyphenated")
+    body_source = promote.add_mutually_exclusive_group(required=True)
+    body_source.add_argument("--body", help="the lesson text")
+    body_source.add_argument("--body-file", type=Path, help="read the lesson text from a file, or '-' for stdin")
+    promote.add_argument("--description", default="", help="one line; rendered as the pointer in MEMORY.md")
+    promote.add_argument("--kind", default="", choices=("", *MEMORY_KINDS), help="which MEMORY.md group it joins")
+    promote.add_argument("--scope", default="", help="where the lesson applies, so a reader can rule it out")
+    promote.add_argument(
+        "--source",
+        action="append",
+        default=[],
+        dest="sources",
+        metavar="PROJECT_ID",
+        help="YYYY-MM-DD-NNN project this lesson came from; repeat for several",
+    )
+    promote.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
+    promote.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
+    promote.add_argument("--lock-timeout", type=float, default=5.0)
+
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
     migrate.add_argument("project_directory", type=Path)
     migrate.add_argument("--apply", action="store_true", help="Apply the migration; default is a read-only preview")
     migrate.add_argument("--lock-timeout", type=float, default=5.0)
 
     return parser
+
+
+def _read_body(path: Path) -> str:
+    """Read a lesson body from a file, or from stdin when the path is `-`."""
+    if str(path) == "-":
+        return sys.stdin.read()
+    return read_text(path)
 
 
 def _split_at_separator(raw: list[str]) -> tuple[list[str], list[str]]:
@@ -182,6 +246,11 @@ def main() -> int:
             if not workspace_root.is_dir():
                 raise WorkspaceError(f"workspace root does not exist: {workspace_root}")
             print(rebuild_index(workspace_root, lock_timeout=args.lock_timeout))
+            # A malformed topic file is skipped by generation rather than raised, so that a bad
+            # memory file can never block the commit this command ends. Skipping silently would
+            # leave a lesson invisible with nothing said, so the skip is reported here.
+            for problem in load_memory_topics(workspace_root)[1]:
+                print(f"WARNING: memory topic skipped: {problem}", file=sys.stderr)
             return 0
 
         if args.command == "record-evidence":
@@ -230,6 +299,37 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 1
+            return 0
+
+        if args.command == "search-memory":
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            hits = search_memory(workspace_root, args.query)
+            for path, number, line in hits:
+                print(f"{path.relative_to(workspace_root)}:{number}: {line}")
+            if not hits:
+                # Not an error. A query with no hits is the answer to "is there a lesson about this",
+                # and exiting non-zero would make an honest "nothing recorded" look like a failure.
+                print(f"No memory matches {args.query!r} under {workspace_root}", file=sys.stderr)
+            return 0
+
+        if args.command == "promote-memory":
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            body = args.body if args.body is not None else _read_body(args.body_file)
+            path = amend_memory_topic(
+                workspace_root,
+                args.slug,
+                body=body,
+                description=args.description,
+                kind=args.kind,
+                scope=args.scope,
+                sources=args.sources,
+                updated=args.updated,
+                lock_timeout=args.lock_timeout,
+            )
+            # Regenerated after the memory lock is released, never inside it: the rebuild takes the
+            # index lock, and these mkdir-based locks are not reentrant across each other's holders.
+            rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+            print(path)
             return 0
 
         if args.command == "migrate":

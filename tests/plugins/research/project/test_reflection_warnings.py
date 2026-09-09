@@ -253,7 +253,14 @@ class ReflectionWarningsReachValidationTests(unittest.TestCase):
         )
         report = validate_project(self.project_dir)
         self.assertTrue(report.valid, report.errors)
-        self.assertEqual(len([w for w in report.warnings if "reflection.md" in w]), 2)
+        warnings = [warning for warning in report.warnings if "reflection.md" in warning]
+        # Three, not two. The scale and dangling-citation warnings are joined by the one saying the
+        # flat file is now the legacy layout — which is the point of the memory layer replacing it,
+        # so a workspace that still has the file should say so on every validation until it does not.
+        self.assertEqual(len(warnings), 3, warnings)
+        self.assertEqual(len([w for w in warnings if "holds 21 entries" in w]), 1, warnings)
+        self.assertEqual(len([w for w in warnings if "cites source projects" in w]), 1, warnings)
+        self.assertEqual(len([w for w in warnings if "legacy flat cross-project" in w]), 1, warnings)
 
 
 if __name__ == "__main__":  # pragma: no cover

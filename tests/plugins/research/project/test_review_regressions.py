@@ -23,6 +23,7 @@ from workspace_lib import (
     check_state_transition,
     commit_candidate,
     detect_schema,
+    is_canonical_project_id,
     migrate_v2_state,
     render_index,
     validate_project,
@@ -513,7 +514,12 @@ class InitializationOrderTests(unittest.TestCase):
     def test_failure_while_writing_the_skeleton_leaves_no_detectable_project(self) -> None:
         with self._fail_on("spec.md"), self.assertRaises(OSError):
             self._allocate()
-        partial = next(child for child in self.workspace.iterdir() if child.is_dir())
+        # By canonical name for the same reason as the OSError test below: `iterdir` order is the
+        # filesystem's, and "the first directory in the root" stops being the project the moment
+        # anything else is scaffolded beside it.
+        partial = next(
+            child for child in self.workspace.iterdir() if child.is_dir() and is_canonical_project_id(child.name)
+        )
         self.assertFalse((partial / "project.json").exists())
         # Nothing claims to be a v3 project, so nothing can be validated or closed as one.
         with self.assertRaises(WorkspaceError):
@@ -607,7 +613,12 @@ class PostCommitFilesystemFailureTests(unittest.TestCase):
         with self._fail_on_index(), self.assertRaises(WorkspaceError) as caught:
             workspace_lib.allocate_project(self.workspace, title="Ordered", working_directory=self.root)
         self._assert_committed_not_failed(caught.exception, "is initialized")
-        project_dir = next(child for child in self.workspace.iterdir() if child.is_dir())
+        # By canonical name, not "the first directory": `iterdir` returns filesystem order, and
+        # allocation now scaffolds `memory/` beside the project, so on ext4 this picked up `memory`
+        # and asked it for a schema. It passed on APFS, which is what made it a CI-only failure.
+        project_dir = next(
+            child for child in self.workspace.iterdir() if child.is_dir() and is_canonical_project_id(child.name)
+        )
         self.assertEqual(3, detect_schema(project_dir))
 
     def test_commit_reports_the_revision_when_the_rebuild_hits_oserror(self) -> None:
