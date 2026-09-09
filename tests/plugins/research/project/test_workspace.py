@@ -331,7 +331,8 @@ class WorkspaceRootReferenceTests(unittest.TestCase):
 
     def test_a_missing_required_output_is_still_an_error(self) -> None:
         report = validate_v3_state(self._state_with_output("nothing-here.md"), self.fixture.project_dir, close=True)
-        self.assertTrue(any("required output does not exist: workspace_root:nothing-here.md" in e for e in report.errors))
+        expected = "required output does not exist: workspace_root:nothing-here.md"
+        self.assertTrue(any(expected in error for error in report.errors), report.errors)
 
     def test_it_cannot_be_used_to_escape_the_workspace_root(self) -> None:
         report = validate_v3_state(self._state_with_output("../outside.md"), self.fixture.project_dir, close=True)

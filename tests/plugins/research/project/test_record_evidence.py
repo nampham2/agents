@@ -55,8 +55,8 @@ def _interrupted_evidence_replace() -> Iterator[None]:
     """Fail the final rename of `evidence.md`, as a crash between write and replace would."""
     real = workspace_lib.os.replace
 
-    def replace(source: object, destination: object) -> None:
-        if Path(str(destination)).name == "evidence.md":
+    def replace(source: Path, destination: Path) -> None:
+        if destination.name == "evidence.md":
             raise OSError("interrupted before the rename")
         real(source, destination)
 
