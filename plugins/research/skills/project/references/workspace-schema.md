@@ -135,9 +135,15 @@ decision rather than rewriting completed task history.
 Local paths are always relative, cannot contain `..`, and are rooted explicitly:
 
 - `workspace`: relative to the project directory;
+- `workspace_root`: relative to the directory holding every project — the parent of the project
+  directory. Shared records belong to no single project: `reflection.md` and `INDEX.md` live there,
+  and a task that rewrites one declares it under this root instead of misdeclaring it as `workspace`
+  or leaving it undeclared;
 - `target`: relative to `working_directory`;
 - `external`: a valid HTTP(S) URL with a host or a non-empty durable identifier prefixed by
-  `receipt:`, `deployment:`, `message:`, `purchase:`, or `publish:`.
+  `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:`, or `commit:`. The prefix set is
+  closed so a mistyped one is refused rather than accepted; `commit:<sha>` exists because landing a
+  change is a delivery whose durable identifier is the commit SHA.
 
 Outputs use:
 
@@ -294,6 +300,12 @@ Never edit a recorded entry to make it agree with a conclusion.
 
 Only evidence that no command produced, such as an external delivery receipt, is written by hand.
 
+Because no shell is interposed, a bare `|`, `&&`, `;`, or `>` among the arguments is literal text to
+the command rather than a pipeline; that argument list is refused, and `-- bash -lc '<pipeline>'` is
+how to ask for a shell. The entry itself is appended under the project lock and the file replaced
+atomically, so a commit validating `evidence.md` never reads a half-written file and an interrupted
+append cannot destroy the entries already there.
+
 Redact credentials, tokens, private data, and unnecessary command output from every workspace file.
 
 ## Transactional updates
@@ -305,6 +317,12 @@ run:
 research-project commit <project-dir> <candidate.json> \
   --expected-revision R
 ```
+
+A candidate may advance several tasks at once; there is no one-task-per-commit rule. Finishing one
+task and starting the next is one commit, so a plan of `N` tasks costs about `N + 1` commits rather
+than `2N` — subject to every status in the candidate being true at the moment it is written. Adding
+`--dry-run` runs every check below, takes no lock, writes nothing, and leaves the revision alone;
+the usual rejection it catches is `current_tasks` disagreeing with the set of `RUNNING` task ids.
 
 The command:
 

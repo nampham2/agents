@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -27,7 +28,16 @@ TERMINAL_TASK_STATUSES = {"DONE", "SKIPPED"}
 EFFECT_KINDS = {"none", "local_write", "destructive", "external"}
 AUTHORIZATION_STATUSES = {"not_required", "pending", "explicit", "denied", "deferred"}
 REVIEW_STATUSES = {"not_required", "pending", "accepted", "recorded"}
-REFERENCE_ROOTS = {"workspace", "target", "external"}
+# "workspace" is the project directory and "workspace_root" is the directory holding every project.
+# The second exists because shared records — the cross-project reflection, INDEX.md — belong to no
+# single project, and declaring one of them as an output previously meant either lying about its root
+# or leaving it undeclared.
+REFERENCE_ROOTS = {"workspace", "workspace_root", "target", "external"}
+# The set is closed on purpose: an invented or mistyped prefix must be caught rather than
+# accepted, so widening it is a deliberate edit here and nowhere else.
+# "commit" is here because landing a change is a delivery whose durable identifier is the commit
+# SHA, and a plan that makes integration a task of its own had nowhere to record that.
+EXTERNAL_IDENTIFIER_PREFIXES = ("receipt", "deployment", "message", "purchase", "publish", "commit")
 
 # Project directories are allocated as YYYY-MM-DD-NNN. A directory that does not match was made by
 # hand or by an older tool: `project` must equal the directory name, so a malformed name becomes a
@@ -245,7 +255,8 @@ def is_external_reference(value: str) -> bool:
         return False
     if parsed.scheme in {"http", "https"}:
         return bool(parsed.netloc)
-    return bool(re.fullmatch(r"(?:receipt|deployment|message|purchase|publish):\S+", value))
+    prefixes = "|".join(EXTERNAL_IDENTIFIER_PREFIXES)
+    return bool(re.fullmatch(rf"(?:{prefixes}):\S+", value))
 
 
 def read_text(path: Path) -> str:
@@ -355,7 +366,9 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
 def _unexpected_fields(value: dict[str, Any], allowed: set[str], label: str, report: ValidationReport) -> None:
     extras = sorted(set(value) - allowed)
     if extras:
-        report.errors.append(f"{label}: unexpected fields: {', '.join(extras)}")
+        report.errors.append(
+            f"{label}: unexpected fields: {', '.join(extras)}; allowed: {', '.join(sorted(allowed))}"
+        )
 
 
 def _missing_fields(value: dict[str, Any], required: set[str], label: str, report: ValidationReport) -> None:
@@ -370,7 +383,17 @@ def _resolve_local_reference(
     relative = Path(path)
     if relative.is_absolute() or ".." in relative.parts:
         return None, "local reference paths must be relative and cannot contain '..'"
-    base = project_dir if root == "workspace" else working_directory
+    # Enumerated rather than defaulted: the previous form resolved anything that was not
+    # "workspace" against working_directory, so a new root would have silently pointed at the
+    # target repository and a mistyped one would have resolved instead of being refused.
+    if root == "workspace":
+        base = project_dir
+    elif root == "workspace_root":
+        base = project_dir.parent
+    elif root == "target":
+        base = working_directory
+    else:
+        return None, f"unknown local reference root {root!r}"
     try:
         resolved_base = base.resolve()
         resolved = (base / relative).resolve()
@@ -399,7 +422,9 @@ def _validate_output_reference(
     path = value.get("path")
     required = value.get("required")
     if not _enum_string(root, REFERENCE_ROOTS):
-        report.errors.append(f"{label}: invalid root {root!r}")
+        report.errors.append(
+            f"{label}: invalid root {root!r}; allowed: {', '.join(sorted(REFERENCE_ROOTS))}"
+        )
         return
     if not _non_empty_string(path):
         report.errors.append(f"{label}: path must be a non-empty string")
@@ -446,7 +471,9 @@ def _validate_evidence_reference(
     path = value.get("path")
     anchor = value.get("anchor")
     if not _enum_string(root, REFERENCE_ROOTS):
-        report.errors.append(f"{label}: invalid root {root!r}")
+        report.errors.append(
+            f"{label}: invalid root {root!r}; allowed: {', '.join(sorted(REFERENCE_ROOTS))}"
+        )
         return
     if not _non_empty_string(path):
         report.errors.append(f"{label}: path must be a non-empty string")
@@ -473,7 +500,9 @@ def _validate_effect(value: object, label: str, report: ValidationReport) -> str
     kind = value.get("kind")
     description = value.get("description")
     if not _enum_string(kind, EFFECT_KINDS):
-        report.errors.append(f"{label}: invalid effect kind {kind!r}")
+        report.errors.append(
+            f"{label}: invalid effect kind {kind!r}; allowed: {', '.join(sorted(EFFECT_KINDS))}"
+        )
         return None
     if kind != "none" and not _non_empty_string(description):
         report.errors.append(f"{label}: non-none effects require a description")
@@ -501,7 +530,10 @@ def _validate_authorization(
         report.errors.append(f"{label}: required must be a boolean")
         return
     if not _enum_string(status, AUTHORIZATION_STATUSES):
-        report.errors.append(f"{label}: invalid status {status!r}")
+        report.errors.append(
+            f"{label}: invalid authorization status {status!r}; "
+            f"allowed: {', '.join(sorted(AUTHORIZATION_STATUSES))}"
+        )
         return
     if effect_kind in {"destructive", "external"} and not required:
         report.errors.append(f"{label}: {effect_kind} effects must require authorization")
@@ -533,7 +565,11 @@ def _validate_receipt(value: object, label: str, report: ValidationReport) -> No
             report.errors.append(f"{label}: {field_name} must be a non-empty string")
     receipt_value = value.get("value")
     if _non_empty_string(receipt_value) and not is_external_reference(receipt_value):
-        report.errors.append(f"{label}: value must be a valid URL or a durable prefixed identifier")
+        report.errors.append(
+            f"{label}: value must be an http(s) URL with a host, or a durable identifier "
+            f"prefixed with one of: "
+            + ", ".join(f"{prefix}:" for prefix in EXTERNAL_IDENTIFIER_PREFIXES)
+        )
     if not _is_timestamp(value.get("timestamp")):
         report.errors.append(f"{label}: timestamp must be timezone-aware ISO-8601")
 
@@ -694,24 +730,46 @@ def briefing_section_warnings(briefing_markdown: str) -> "list[str]":
     return warnings
 
 
+def _level_three_sections(markdown: str) -> "list[tuple[str, str]]":
+    """Every `###`-or-deeper heading in document order, paired with the body that follows it.
+
+    Deeper levels count because a spec that nests its sections under an extra heading is still
+    covering them, and that shape is already in use.
+    """
+    headings = list(re.finditer(r"^#{3,}\s+(.+?)\s*$", markdown, re.MULTILINE))
+    sections = []
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(markdown)
+        sections.append((heading.group(1).strip(), markdown[heading.end() : end].strip()))
+    return sections
+
+
 def spec_section_warnings(spec_markdown: str) -> "list[str]":
-    """Name each canonical specification section the spec does not appear to cover.
+    """Name each canonical specification section the spec does not cover, or leaves unwritten.
 
     Warnings only. The skill states what `## Current specification` must contain and nothing
     checked, so a project could leave `ALIGNING` with no recorded constraints or authorization
     states at all. Wording is not the subject here — a missing section is.
+
+    An empty section body warns too, on the same mechanism as `briefing.md`: a heading with nothing
+    under it satisfied the original check while saying exactly as little as a missing one, and the
+    skill's instruction to write down that a branch is ungrilled rather than delete its heading made
+    that the likely shape of the failure rather than an unlikely one.
     """
     specification = _section_content(spec_markdown, "Current specification")
     if specification is None:
         return ["spec.md has no '## Current specification' section"]
-    headings = [heading.strip() for heading in re.findall(r"^#{3,}\s+(.+)$", specification, re.MULTILINE)]
-    if not headings:
+    sections = _level_three_sections(specification)
+    if not sections:
         return ["spec.md '## Current specification' has no '###' sections to check"]
-    return [
-        f"spec.md '## Current specification' appears to have no '### {canonical}' section"
-        for canonical, recogniser in SPEC_CANONICAL_SECTIONS
-        if not any(re.search(recogniser, heading, re.IGNORECASE) for heading in headings)
-    ]
+    warnings = []
+    for canonical, recogniser in SPEC_CANONICAL_SECTIONS:
+        matched = [body for heading, body in sections if re.search(recogniser, heading, re.IGNORECASE)]
+        if not matched:
+            warnings.append(f"spec.md '## Current specification' appears to have no '### {canonical}' section")
+        elif all(_is_unwritten(body) for body in matched):
+            warnings.append(f"spec.md section '### {canonical}' is still unwritten")
+    return warnings
 
 
 def _section_content(markdown: str, heading: str) -> str | None:
@@ -771,7 +829,9 @@ def validate_v3_state(
 
     status = state.get("status")
     if not _enum_string(status, PROJECT_STATUSES):
-        report.errors.append(f"project: invalid status {status!r}")
+        report.errors.append(
+            f"project: invalid status {status!r}; allowed: {', '.join(sorted(PROJECT_STATUSES))}"
+        )
 
     working_directory_value = state.get("working_directory")
     working_directory = Path(working_directory_value) if _non_empty_string(working_directory_value) else project_dir
@@ -779,6 +839,8 @@ def validate_v3_state(
         report.errors.append("project: working_directory must be absolute")
     elif check_files and not working_directory.is_dir():
         report.errors.append(f"project: working_directory does not exist: {working_directory}")
+    elif check_files:
+        report.warnings.extend(self_location_warnings(working_directory))
 
     current_tasks = state.get("current_tasks")
     if not isinstance(current_tasks, list) or not all(_non_empty_string(item) for item in current_tasks):
@@ -803,7 +865,9 @@ def validate_v3_state(
         report.errors.append("review: required must be a boolean")
     review_status = review.get("status")
     if not _enum_string(review_status, REVIEW_STATUSES):
-        report.errors.append(f"review: invalid status {review_status!r}")
+        report.errors.append(
+            f"review: invalid status {review_status!r}; allowed: {', '.join(sorted(REVIEW_STATUSES))}"
+        )
     if review_required is True and review_status == "not_required":
         report.errors.append("review: required review cannot use status 'not_required'")
     review_evidence = review.get("evidence")
@@ -856,7 +920,10 @@ def validate_v3_state(
         label = f"task {task_id}"
         task_status = task.get("status")
         if not _enum_string(task_status, TASK_STATUSES):
-            report.errors.append(f"{label}: invalid status {task_status!r}")
+            report.errors.append(
+                f"{label}: invalid task status {task_status!r}; "
+                f"allowed: {', '.join(sorted(TASK_STATUSES))}"
+            )
             task_status = None
         for field_name in ("name", "success_criteria", "verification"):
             if not _non_empty_string(task.get(field_name)):
@@ -1156,7 +1223,46 @@ def detect_schema(project_dir: Path) -> int:
 # Twenty entries is a judgement, not a measurement: it is the scale at which the file stopped fitting
 # on a screen, which is when merging and retiring needs to happen rather than one more append.
 REFLECTION_MAX_ENTRIES = 20
-REFLECTION_ENTRY_PATTERN = re.compile(r"^- \[(?P<meta>[^\]]*)\]", re.MULTILINE)
+
+# Two shapes are in use, and both are entries. The bulleted form carries its provenance in a leading
+# bracket; the dated form is a `## YYYY-MM-DD — lesson` section carrying provenance on a `Source:`
+# line. Counting only the first is how a 47-entry file sat silently under a threshold of 20.
+REFLECTION_BULLET_ENTRY_PATTERN = re.compile(r"^- \[(?P<meta>[^\]]*)\]", re.MULTILINE)
+REFLECTION_HEADING_PATTERN = re.compile(r"^(?P<hashes>#{1,6})\s+(?P<title>.*?)\s*$", re.MULTILINE)
+REFLECTION_DATED_TITLE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}\b")
+REFLECTION_SOURCE_PATTERN = re.compile(r"^Source:(?P<meta>.*)$", re.MULTILINE)
+
+
+def _dated_section_body(content: str, headings: "list[re.Match[str]]", index: int) -> str:
+    """The text under one heading, ending where a heading of the same or shallower level begins.
+
+    Depth matters rather than an exact `##`: a dated lesson that subdivides itself keeps its
+    subsections, while the next lesson — or the next top-level section — ends it.
+    """
+    level = len(headings[index].group("hashes"))
+    for later in headings[index + 1 :]:
+        if len(later.group("hashes")) <= level:
+            return content[headings[index].end() : later.start()]
+    return content[headings[index].end() :]
+
+
+def reflection_entries(content: str) -> "list[str]":
+    """Every reflection entry, as its provenance text, in document order.
+
+    The list length is what the scale warning counts, and each element is where that entry says it
+    came from: a bullet's bracketed metadata, or the `Source:` lines of a dated section joined
+    together. Prose is deliberately not searched for project ids — a lesson that mentions a project
+    in passing is not citing it as a source, which is how the bulleted form has always been read.
+    """
+    found = [(match.start(), match.group("meta")) for match in REFLECTION_BULLET_ENTRY_PATTERN.finditer(content)]
+    headings = list(REFLECTION_HEADING_PATTERN.finditer(content))
+    for index, heading in enumerate(headings):
+        if not REFLECTION_DATED_TITLE_PATTERN.match(heading.group("title")):
+            continue
+        body = _dated_section_body(content, headings, index)
+        sources = " ".join(match.group("meta") for match in REFLECTION_SOURCE_PATTERN.finditer(body))
+        found.append((heading.start(), sources))
+    return [meta for _, meta in sorted(found)]
 
 
 # `.git` is a file, not a directory, inside a worktree or submodule, so presence is what is checked.
@@ -1186,12 +1292,54 @@ def vcs_warnings(workspace_root: Path) -> "list[str]":
     ]
 
 
+# The path of this module inside the plugin, used to recognise a working directory that holds the
+# very tools being run.
+PLUGIN_SELF_PATH = Path("plugins/research/skills/project/scripts/workspace_lib.py")
+
+
+def self_location_warnings(working_directory: Path) -> "list[str]":
+    """Warn when the tools running are not the copy of the tools being edited.
+
+    Hosts install this plugin into a version-keyed cache, so `research-project` on PATH is a frozen
+    copy. A project whose working directory is the plugin's own repository therefore edits one file
+    and verifies another: the edit appears to have no effect, or worse, a test appears to pass
+    against code that does not contain the change. The failure is silent, which is why this is a
+    warning rather than a note in the documentation — that note already existed and did not help.
+
+    Advisory only, and deliberately narrow: it fires solely when the working directory really does
+    contain this module, so ordinary projects never see it.
+    """
+    try:
+        working_directory = working_directory.expanduser().resolve()
+        under_test = working_directory / PLUGIN_SELF_PATH
+        if not under_test.is_file():
+            return []
+        running = Path(__file__).resolve()
+        try:
+            running.relative_to(working_directory)
+        except ValueError:
+            return [
+                f"the running tools are {running}, which is not the copy under {working_directory}. "
+                f"Edits to {under_test} will not affect this command, and a passing verification "
+                "would be evidence about the installed copy instead. Invoke the working-tree "
+                "launchers at plugins/research/skills/project/scripts/ for anything verifying this "
+                "plugin."
+            ]
+    except OSError:
+        return []
+    return []
+
+
 def reflection_warnings(workspace_root: Path) -> "list[str]":
     """Warn about a cross-project reflection that has outgrown its readers or cites what is gone.
 
     Two failure modes, both advisory. A file long enough to skim stops being memory, and an entry
     whose source project is no longer in the workspace cannot be checked against the evidence that
     produced it — its provenance has to be repaired or the entry retired.
+
+    Both checks read `reflection_entries`, so both see the dated `## YYYY-MM-DD` sections as well as
+    the bulleted entries. The threshold is unchanged: it was never wrong, it was just being compared
+    against a fraction of the file.
     """
     reflection_path = workspace_root / "reflection.md"
     if not reflection_path.is_file():
@@ -1203,7 +1351,7 @@ def reflection_warnings(workspace_root: Path) -> "list[str]":
         return []
 
     warnings: list[str] = []
-    entries = REFLECTION_ENTRY_PATTERN.findall(content)
+    entries = reflection_entries(content)
     if len(entries) > REFLECTION_MAX_ENTRIES:
         warnings.append(
             f"{reflection_path} holds {len(entries)} entries, above the {REFLECTION_MAX_ENTRIES} "
@@ -1391,6 +1539,76 @@ def _format_output_tail(stream: str, label: str, tail_lines: int) -> list[str]:
     return body
 
 
+# Operators that only mean anything to a shell. Recognised as whole argv elements rather than as
+# substrings: a quoted argument containing one — a `-c` program, a regex, a commit message — is
+# ordinary data and must keep working, while a standalone one can only have come from a caller who
+# expected a shell to be there.
+SHELL_OPERATORS = ("|", "||", "&&", ";", ">", ">>")
+
+
+def _shell_operator_arguments(command: Sequence[str]) -> "list[tuple[int, str]]":
+    """Argv elements that are bare shell operators, with their 1-based positions."""
+    return [
+        (position, argument)
+        for position, argument in enumerate(command, start=1)
+        if argument in SHELL_OPERATORS
+    ]
+
+
+def _refuse_shell_operators(command: Sequence[str]) -> None:
+    """Refuse an argv that was written as if a shell would interpret it.
+
+    `record-evidence` runs the command with `shell=False`, so a `|` in argv is handed to the program
+    as a literal argument. The result is not an error message about the pipeline: it is whatever that
+    program makes of an unexpected argument, which has read as the verification itself failing. The
+    refusal names the wrapper that does work, because the fix is not obvious from the symptom.
+    """
+    operators = _shell_operator_arguments(command)
+    if not operators:
+        return
+    found = "\n".join(f"  argv element #{position}: {argument!r}" for position, argument in operators)
+    pipeline = " ".join(command)
+    raise WorkspaceError(
+        "record-evidence runs the command directly, with no shell, so these arguments are passed "
+        f"through as literal text instead of composing a pipeline:\n{found}\n"
+        "Ask for a shell explicitly instead:\n"
+        f"  -- bash -lc {shlex.quote(pipeline)}"
+    )
+
+
+def _misrooted_command_arguments(
+    command: Sequence[str], project_dir: Path, working_directory: Path
+) -> list[tuple[str, Path]]:
+    """Arguments that name a real file under the project directory and nothing under the target.
+
+    `record-evidence` runs the command in `working_directory`, which is the target repository, not
+    the project directory. A relative path to something inside the project — a script in
+    `artifacts/`, the project's own `spec.md` — therefore resolves to nothing, and the command fails
+    for a reason that looks like the command's fault. It is the most repeated mistake in this
+    workspace's history, and it survived being written down, so it is detected here instead.
+
+    Only an argument that resolves under the project directory *and* not under the target is
+    reported: one that resolves under the target is what the caller asked for, and one that resolves
+    under neither is the command's own problem to report.
+    """
+    misrooted: list[tuple[str, Path]] = []
+    for argument in command:
+        if not argument or argument.startswith("-") or Path(argument).is_absolute():
+            continue
+        if ".." in Path(argument).parts:
+            continue
+        in_project = project_dir / argument
+        try:
+            # An argument is far more often prose than a path — a `-c` program, a commit message, a
+            # regex. Probing those raises rather than returning False, so a failed probe means "not
+            # a path I can reason about" and the argument is left to the command.
+            if in_project.exists() and not (working_directory / argument).exists():
+                misrooted.append((argument, in_project))
+        except (OSError, ValueError):
+            continue
+    return misrooted
+
+
 def record_evidence(
     project_dir: Path,
     task_id: str,
@@ -1398,6 +1616,7 @@ def record_evidence(
     *,
     tail_lines: int = EVIDENCE_TAIL_LINES,
     timeout: float | None = None,
+    lock_timeout: float = 5.0,
 ) -> int:
     """Run `command`, append what it actually did to `evidence.md`, and return its exit code.
 
@@ -1414,6 +1633,9 @@ def record_evidence(
     project_dir = project_dir.resolve()
     if not command:
         raise WorkspaceError("record-evidence requires a command to run after '--'")
+    # Before the project is even read: an argv holding a bare operator is malformed whatever the
+    # project says, and reporting that beats reporting whatever the command made of it.
+    _refuse_shell_operators(command)
 
     state = load_json(project_dir / "project.json")
     tasks = state.get("tasks")
@@ -1426,6 +1648,18 @@ def record_evidence(
     working_directory = state.get("working_directory")
     if not _non_empty_string(working_directory) or not Path(working_directory).is_dir():
         raise WorkspaceError(f"working_directory is not an existing directory: {working_directory!r}")
+
+    misrooted = _misrooted_command_arguments(command, project_dir, Path(working_directory))
+    if misrooted:
+        details = "\n".join(
+            f"  {argument!r} does not exist in the working directory, but does exist at {resolved}"
+            for argument, resolved in misrooted
+        )
+        raise WorkspaceError(
+            "record-evidence runs the command in the project's working directory, not in the "
+            f"project directory:\n  working directory: {working_directory}\n{details}\n"
+            "Pass an absolute path for anything inside the project directory."
+        )
 
     try:
         completed = subprocess.run(
@@ -1465,17 +1699,29 @@ def record_evidence(
     if not completed.stdout.strip() and not completed.stderr.strip():
         lines.extend(["No output.", ""])
 
+    _append_evidence_entry(project_dir, lines, lock_timeout=lock_timeout)
+    return completed.returncode
+
+
+def _append_evidence_entry(project_dir: Path, lines: "list[str]", *, lock_timeout: float) -> None:
+    """Add one entry to `evidence.md` under the project lock, replacing the file in one step.
+
+    Read-modify-write, which is what appending an entry is, needs both halves of this. The lock is
+    the project lock rather than a lock of its own, because a commit validates the evidence files it
+    is about to accept and must not see a half-written one. And the write is atomic because the
+    previous form truncated `evidence.md` before writing it: an interruption there — a full disk, a
+    killed process — left the record of every earlier task destroyed by the recording of this one.
+    """
     evidence_path = project_dir / "evidence.md"
-    existing = read_text(evidence_path) if evidence_path.exists() else "# Evidence\n"
-    # The skeleton's placeholder would otherwise sit above real entries, saying the opposite of
-    # what the file now holds.
-    existing = existing.replace(EVIDENCE_PLACEHOLDER, "")
     try:
-        evidence_path.write_text(existing.rstrip("\n") + "\n" + "\n".join(lines), encoding="utf-8")
+        with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
+            existing = read_text(evidence_path) if evidence_path.exists() else "# Evidence\n"
+            # The skeleton's placeholder would otherwise sit above real entries, saying the opposite
+            # of what the file now holds.
+            existing = existing.replace(EVIDENCE_PLACEHOLDER, "")
+            atomic_write_text(evidence_path, existing.rstrip("\n") + "\n" + "\n".join(lines))
     except OSError as error:
         raise WorkspaceError(f"cannot write {evidence_path}: {error}") from error
-
-    return completed.returncode
 
 
 def rebuild_index(workspace_root: Path, *, lock_timeout: float = 5.0) -> Path:
@@ -1553,6 +1799,85 @@ def _done_task_ids(state: dict[str, Any]) -> set[str]:
     }
 
 
+SCHEMA_V3_REQUIRED = "transactional commits require schema v3; migrate the project first"
+IMMUTABLE_PROJECT_FIELDS = ("schema_version", "project", "created")
+
+
+def _revision_conflicts(current: dict[str, Any], candidate: dict[str, Any], expected_revision: int) -> "list[str]":
+    """Every way `expected_revision` disagrees with the project or the candidate."""
+    conflicts: list[str] = []
+    if current.get("revision") != expected_revision:
+        conflicts.append(
+            f"revision conflict: expected {expected_revision}, found {current.get('revision')}; reload and reconcile"
+        )
+    if candidate.get("revision") != expected_revision:
+        conflicts.append(
+            f"candidate was built from revision {candidate.get('revision')}, expected {expected_revision}; "
+            "reload and reconcile"
+        )
+    return conflicts
+
+
+def _immutable_field_changes(current: dict[str, Any], candidate: dict[str, Any]) -> "list[str]":
+    """Identity fields the candidate would rewrite, in declaration order."""
+    return [
+        f"candidate cannot change immutable field: {immutable}"
+        for immutable in IMMUTABLE_PROJECT_FIELDS
+        if candidate.get(immutable) != current.get(immutable)
+    ]
+
+
+def check_candidate(
+    project_dir: Path,
+    candidate_path: Path,
+    *,
+    expected_revision: "int | None" = None,
+) -> ValidationReport:
+    """Report everything a commit of `candidate_path` would object to, without committing it.
+
+    `commit_candidate` raises on the first problem, which is correct for a transaction and
+    expensive for a coordinator assembling a candidate by hand: a stale revision hides the
+    transition error behind it, which hides the validation errors behind that, so one candidate
+    costs three round trips to fix. This runs the same four checks and returns all their findings
+    together.
+
+    It deliberately takes no lock and writes nothing, so it is safe to run while another process
+    holds the lock, and `revision` is exactly where it was afterwards. The revision it simulates
+    is the one a commit would write, so a candidate this reports clean is a candidate that commits.
+    """
+    project_dir = project_dir.resolve()
+    candidate = load_json(candidate_path.resolve())
+    current = load_json(project_dir / "project.json")
+    report = ValidationReport()
+    if current.get("schema_version") != 3:
+        report.errors.append(SCHEMA_V3_REQUIRED)
+        return report
+    if expected_revision is None:
+        # Defaulting is for the dry run only: a real commit must state the revision it read, since
+        # that claim is what makes the transaction detect a concurrent write.
+        current_revision = current.get("revision")
+        if not isinstance(current_revision, int) or isinstance(current_revision, bool) or current_revision < 0:
+            report.errors.append(f"project.json holds an unusable revision: {current_revision!r}")
+            return report
+        expected_revision = current_revision
+    report.errors.extend(_revision_conflicts(current, candidate, expected_revision))
+    report.errors.extend(_immutable_field_changes(current, candidate))
+    report.errors.extend(check_state_transition(current, candidate))
+    simulated = copy.deepcopy(candidate)
+    simulated["revision"] = expected_revision + 1
+    simulated["updated"] = now_iso()
+    report.extend(
+        validate_v3_state(
+            simulated,
+            project_dir,
+            close=simulated.get("status") == "DONE",
+            check_files=True,
+            already_done=_done_task_ids(current),
+        )
+    )
+    return report
+
+
 def commit_candidate(
     project_dir: Path,
     candidate_path: Path,
@@ -1565,19 +1890,13 @@ def commit_candidate(
     with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
         current = load_json(project_dir / "project.json")
         if current.get("schema_version") != 3:
-            raise WorkspaceError("transactional commits require schema v3; migrate the project first")
-        if current.get("revision") != expected_revision:
-            raise WorkspaceConflict(
-                f"revision conflict: expected {expected_revision}, found {current.get('revision')}; reload and reconcile"
-            )
-        if candidate.get("revision") != expected_revision:
-            raise WorkspaceConflict(
-                f"candidate was built from revision {candidate.get('revision')}, expected {expected_revision}; "
-                "reload and reconcile"
-            )
-        for immutable in ("schema_version", "project", "created"):
-            if candidate.get(immutable) != current.get(immutable):
-                raise WorkspaceError(f"candidate cannot change immutable field: {immutable}")
+            raise WorkspaceError(SCHEMA_V3_REQUIRED)
+        conflicts = _revision_conflicts(current, candidate, expected_revision)
+        if conflicts:
+            raise WorkspaceConflict(conflicts[0])
+        immutable_changes = _immutable_field_changes(current, candidate)
+        if immutable_changes:
+            raise WorkspaceError(immutable_changes[0])
         transition_errors = check_state_transition(current, candidate)
         if transition_errors:
             raise WorkspaceError("; ".join(transition_errors))

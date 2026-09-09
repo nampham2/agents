@@ -98,6 +98,38 @@ class ManageCLICommitTests(unittest.TestCase):
         )
         self.assertEqual(0, result)
 
+    def _candidate(self, **changes: object) -> Path:
+        state = json.loads((self.project_dir / "project.json").read_text(encoding="utf-8"))
+        state.update(changes)
+        path = self.root / "dry-candidate.json"
+        path.write_text(json.dumps(state), encoding="utf-8")
+        return path
+
+    def test_a_dry_run_reports_a_clean_candidate_and_writes_nothing(self) -> None:
+        before = (self.project_dir / "project.json").read_bytes()
+        result = _call_manage(
+            ["commit", str(self.project_dir), str(self._candidate(status="PLANNING")), "--dry-run"]
+        )
+        self.assertEqual(0, result)
+        self.assertEqual(before, (self.project_dir / "project.json").read_bytes())
+
+    def test_a_dry_run_returns_one_when_the_commit_would_fail(self) -> None:
+        result = _call_manage(
+            [
+                "commit",
+                str(self.project_dir),
+                str(self._candidate(status="REVIEW")),
+                "--dry-run",
+                "--expected-revision",
+                "0",
+            ]
+        )
+        self.assertEqual(1, result)
+
+    def test_a_commit_without_an_expected_revision_is_refused(self) -> None:
+        result = _call_manage(["commit", str(self.project_dir), str(self._candidate())])
+        self.assertEqual(1, result)
+
     def test_commit_workspace_error_returns_1(self) -> None:
         with patch("manage_workspace.commit_candidate", side_effect=WorkspaceError("conflict")):
             result = _call_manage(
