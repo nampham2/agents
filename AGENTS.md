@@ -89,5 +89,9 @@ placement. Keep these surfaces aligned:
 - `project.json` is the commit point and is written last. Route post-commit index rebuilds through
   `_rebuild_index_after_commit`; normalize filesystem failures to `WorkspaceError`.
 - Record task evidence with
-  `research-project record-evidence <project-dir> --task <id> -- <command>`. Never replace command
-  output with prose or describe a failed command as passing.
+  `research-project record-evidence <project-dir> --task <id> -- <command>`, and closure-step
+  evidence — the report check, today the only step — with `--step <name>` from the fixed
+  `CLOSURE_STEPS` vocabulary instead. The two are mutually exclusive: `--task` keeps its guard that
+  the id exists in `project.json`, which is why a step that no task owns needs its own option rather
+  than a reserved id. Never replace command output with prose or describe a failed command as
+  passing.

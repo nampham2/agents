@@ -82,13 +82,16 @@ workspace/
     ├── evidence.md
     ├── tasks/
     ├── artifacts/
+    │   ├── report.md
+    │   └── report.html
     ├── reviews/
     └── reflection.md
 ```
 
 `briefing.md` holds the briefing; `project.json` is the canonical source for project and task
 status. `INDEX.md` is generated from
-that state and must not be edited by hand.
+that state and must not be edited by hand. The two files under `artifacts/` are the closing report,
+written when the project closes; see below.
 
 ## Find, navigate, and resume projects
 
@@ -149,6 +152,24 @@ and delivery receipts are complete.
 
 The skill does not report a project as `DONE` while required work, outputs, verification, review
 acceptance, authorization, or delivery receipts are missing.
+
+Closing also writes a report of the work, in two files under `artifacts/`: `report.md`, the plain
+technical record, and `report.html`, the same findings presented, with charts where something is
+being compared. Neither is generated from the other, and both carry the same five sections:
+
+```text
+## Summary
+## What was done
+## Findings and evidence
+## Limitations and what was not proven
+## Open work
+```
+
+The report is written for someone who was not in the session, which is what neither `evidence.md` (a
+command log) nor `reflection.md` (a post-mortem addressed to future sessions) is for. It is written
+on the way to `CANCELLED` too, where the summary states why the work stopped and `## Open work`
+carries what a successor would pick up. A missing report is a warning at close and never an error,
+so a project closed before this step existed stays valid and stays reopenable.
 
 Project statuses are `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, `BLOCKED`, `DONE`, and
 `CANCELLED`.

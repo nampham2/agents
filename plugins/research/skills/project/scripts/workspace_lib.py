@@ -730,6 +730,324 @@ def briefing_section_warnings(briefing_markdown: str) -> "list[str]":
     return warnings
 
 
+# Where the closing report lives, and the sections it carries. Two authored files rather than one
+# generated from the other: the Markdown is the record a terminal, `grep` and `diff` can read, and the
+# HTML is the same findings presented, with charts. Deriving either from the other would mean shipping
+# a Markdown-to-HTML converter in a stdlib-only package and would cost the charts outright.
+# The closure steps evidence may be recorded against. A closure step runs after the last task is
+# terminal, so it has no task id to record under, and `record_evidence` refuses an id absent from
+# `project.json` — correctly, since a typo'd task id must not silently open a new heading. A fixed
+# vocabulary gives the step a heading without loosening that guard: the set is closed, so a typo here
+# is refused too.
+CLOSURE_STEPS = ("report",)
+
+REPORT_DIRECTORY = "artifacts"
+REPORT_MARKDOWN_FILENAME = "report.md"
+REPORT_HTML_FILENAME = "report.html"
+
+# The five sections both report files carry, with the same recogniser mechanism the briefing uses.
+# `## Limitations and what was not proven` is the section a report is most tempted to omit and the
+# one that makes the rest trustworthy, so it is named in the contract rather than left to judgement.
+REPORT_CANONICAL_SECTIONS: "tuple[tuple[str, str], ...]" = (
+    ("Summary", r"summary|abstract"),
+    ("What was done", r"what was done|method|approach"),
+    ("Findings and evidence", r"finding|evidence|result"),
+    ("Limitations and what was not proven", r"limitation|not proven|caveat"),
+    ("Open work", r"open work|follow.?up|next step|remaining"),
+)
+
+
+def _report_paths(project_dir: Path) -> "tuple[Path, Path]":
+    """The Markdown and HTML report paths for a project, in that order."""
+    directory = project_dir / REPORT_DIRECTORY
+    return directory / REPORT_MARKDOWN_FILENAME, directory / REPORT_HTML_FILENAME
+
+
+_HTML_STRIPPED_ELEMENTS = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
+_HTML_H2 = re.compile(r"<h2\b[^>]*>(.*?)</h2\s*>", re.DOTALL | re.IGNORECASE)
+_HTML_TAG = re.compile(r"<[^>]+>")
+
+
+def _html_headings_as_markdown(html: str) -> str:
+    """Reduce an HTML report to the heading structure `_level_two_sections` reads.
+
+    The section contract is one contract over two files, so the HTML is translated into the shape the
+    Markdown reader already understands rather than the reader growing a second parser. `<h2>` becomes
+    `##`; every other tag is dropped, which leaves `<h1>` and `<h3>` as prose and keeps them from
+    passing as sections. `<style>` and `<script>` bodies are removed whole, so a stylesheet cannot
+    contribute text to a section body and make an unwritten section look written.
+
+    Entities are left as they are: this text is only ever matched against heading recognisers and
+    tested for emptiness, and `&amp;` is as non-empty as `&`.
+    """
+    text = _HTML_STRIPPED_ELEMENTS.sub(" ", html)
+    text = _HTML_H2.sub(lambda match: f"\n\n## {_HTML_TAG.sub('', match.group(1)).strip()}\n\n", text)
+    return _HTML_TAG.sub(" ", text)
+
+
+def _report_section_findings(markdown: str, label: str) -> "list[str]":
+    """Name each canonical report section a file does not cover, or leaves unwritten.
+
+    Shared by the close-time warning and the mechanical `--report` check, so the two can never
+    disagree about what the contract is. HTML goes through the same reader: `_level_two_sections`
+    matches Markdown `##` headings, and the HTML report's headings are `<h2>`, so the caller
+    translates before calling rather than this growing a second parser.
+    """
+    sections = _level_two_sections(markdown)
+    if not sections:
+        return [f"{label} has no '##' sections to check"]
+    findings = []
+    for canonical, recogniser in REPORT_CANONICAL_SECTIONS:
+        matched = [body for heading, body in sections if re.search(recogniser, heading, re.IGNORECASE)]
+        if not matched:
+            findings.append(f"{label} appears to have no '## {canonical}' section")
+        elif all(_is_unwritten(body) for body in matched):
+            findings.append(f"{label} section '## {canonical}' is still unwritten")
+    return findings
+
+
+def report_warnings(project_dir: Path) -> "list[str]":
+    """Warn about a missing or incomplete closing report, at close and never before.
+
+    Warnings only, on the same reasoning as `briefing.md`: the report postdates every project already
+    in a workspace, and a closed project must stay valid and stay reopenable. The trigger differs
+    though. The briefing is checked from the moment a project leaves `ALIGNING`, because it is written
+    in that phase; a report cannot exist before the work it reports on, so checking it any earlier
+    than close would warn every project through its entire working life about a file it is correct not
+    to have yet.
+    """
+    markdown_path, html_path = _report_paths(project_dir)
+    warnings = []
+    for path, label in ((markdown_path, REPORT_MARKDOWN_FILENAME), (html_path, REPORT_HTML_FILENAME)):
+        relative = f"{REPORT_DIRECTORY}/{label}"
+        if not path.is_file():
+            warnings.append(f"no closing report at {relative}")
+            continue
+        try:
+            content = read_text(path)
+        except WorkspaceError as error:
+            warnings.append(f"{relative} is unreadable: {error}")
+            continue
+        if path is html_path:
+            content = _html_headings_as_markdown(content)
+        warnings.extend(_report_section_findings(content, relative))
+    return warnings
+
+
+# Elements with no closing tag, so the balance check below does not wait for one. HTML's rules are
+# larger than this — `<p>` may be closed implicitly too — but a report is authored, not scraped, and
+# an unclosed `<p>` in an authored document is a mistake worth naming rather than a shape to tolerate.
+_VOID_ELEMENTS = frozenset(
+    ("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr")
+)
+
+_HTML_ELEMENT = re.compile(r"<(/?)([A-Za-z][A-Za-z0-9-]*)\b[^>]*?(/?)>", re.DOTALL)
+_HTML_COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+_STYLE_BLOCK = re.compile(r"<style\b[^>]*>(.*?)</style\s*>", re.DOTALL | re.IGNORECASE)
+_EXTERNAL_SCRIPT = re.compile(r"<script\b[^>]*\bsrc\s*=\s*(\"[^\"]*\"|'[^']*')", re.IGNORECASE)
+_STYLESHEET_LINK = re.compile(r"<link\b[^>]*>", re.IGNORECASE)
+_HREF = re.compile(r"\bhref\s*=\s*(\"([^\"]*)\"|'([^']*)')", re.IGNORECASE)
+_CSS_IMPORT = re.compile(r"@import\b", re.IGNORECASE)
+_SVG_OPEN = re.compile(r"<svg\b[^>]*>", re.IGNORECASE)
+_ATTRIBUTE = re.compile(r"\b([A-Za-z-]+)\s*=\s*(\"([^\"]*)\"|'([^']*)')")
+_FIGURE_BLOCK = re.compile(r"<figure\b[^>]*>(.*?)</figure\s*>", re.DOTALL | re.IGNORECASE)
+_FIGCAPTION_BLOCK = re.compile(r"<figcaption\b[^>]*>(.*?)</figcaption\s*>", re.DOTALL | re.IGNORECASE)
+_CSS_DECLARATION = re.compile(r"([-A-Za-z]+)\s*:\s*([^;{}]+)")
+
+# The one network dependency the reference report allows, and the only one this check allows: a web
+# font stylesheet. Everything else must be inline, because a report is read after the work is
+# finished and a dead CDN link is a report that renders wrong for reasons nobody will diagnose.
+ALLOWED_STYLESHEET_HOSTS = ("https://fonts.googleapis.com/",)
+
+# Colour literals outside a token definition. Deliberately a lint and not a CSS parser: it catches
+# the shapes an author actually writes, and a value it cannot classify is left alone rather than
+# guessed at. The named set is the common ones, not all 148 — a report using `lightgoldenrodyellow`
+# is not the failure this guards against.
+_COLOUR_LITERAL = re.compile(
+    r"(#[0-9A-Fa-f]{3,8}\b|\b(?:rgba?|hsla?|color-mix|lab|lch|oklab|oklch)\s*\(|"
+    r"\b(?:white|black|red|blue|green|gray|grey|orange|yellow|purple|pink|brown|cyan|magenta|"
+    r"silver|gold|navy|teal|olive|maroon|lime|aqua|fuchsia|beige|ivory|coral|salmon|khaki|indigo|"
+    r"violet|crimson|turquoise|tan|plum|orchid|tomato|wheat)\b)"
+)
+
+# Properties whose values carry colour. Checking these rather than every declaration keeps the lint
+# off `font-family: Georgia` and `grid-template-areas`, where a colour word is not a colour.
+_COLOUR_PROPERTIES = (
+    "color",
+    "background",
+    "border",
+    "outline",
+    "fill",
+    "stroke",
+    "box-shadow",
+    "text-shadow",
+    "text-decoration",
+    "caret-color",
+    "accent-color",
+    "column-rule",
+    "stop-color",
+    "flood-color",
+    "lighting-color",
+)
+
+# The three blocks a theme-aware report needs, each with the selector that makes it work. A palette
+# defined only inside a media query borrows the host's theme in every other state, and one that
+# omits the `[data-theme]` blocks ignores an explicit choice the reader has made.
+REPORT_THEME_BLOCKS: "tuple[tuple[str, str], ...]" = (
+    ("the light palette on bare ':root'", r":root\s*(?:,[^{]*)?\{"),
+    (
+        "a 'prefers-color-scheme: dark' block guarded as ':root:not([data-theme=\"light\"])'",
+        r"prefers-color-scheme\s*:\s*dark",
+    ),
+    ("an explicit ':root[data-theme=\"dark\"]' block", r":root\[data-theme\s*=\s*[\"']?dark[\"']?\]"),
+)
+
+
+def _attributes(tag: str) -> "dict[str, str]":
+    """The attributes of one start tag, lowercased by name, unquoted by value."""
+    found = {}
+    for match in _ATTRIBUTE.finditer(tag):
+        found[match.group(1).lower()] = match.group(3) if match.group(3) is not None else match.group(4) or ""
+    return found
+
+
+def _tag_balance_errors(html: str, label: str) -> "list[str]":
+    """Name the first unbalanced tag, if any. One finding, because the rest cascade from it."""
+    stripped = _HTML_COMMENT.sub(" ", html)
+    stack: "list[str]" = []
+    for match in _HTML_ELEMENT.finditer(stripped):
+        closing, name, self_closing = match.group(1), match.group(2).lower(), match.group(3)
+        if name in _VOID_ELEMENTS or self_closing:
+            continue
+        if not closing:
+            stack.append(name)
+            continue
+        if not stack:
+            return [f"{label}: </{name}> closes a tag that was never opened"]
+        if stack[-1] != name:
+            return [f"{label}: </{name}> closes while <{stack[-1]}> is still open"]
+        stack.pop()
+    if stack:
+        return [f"{label}: <{stack[-1]}> is never closed"]
+    return []
+
+
+def _external_resource_errors(html: str, label: str) -> "list[str]":
+    """Name every external script and every stylesheet that is not the allowed font link."""
+    errors = []
+    for match in _EXTERNAL_SCRIPT.finditer(html):
+        errors.append(f"{label}: loads an external script ({match.group(1).strip(chr(34) + chr(39))})")
+    for match in _STYLESHEET_LINK.finditer(html):
+        attributes = _attributes(match.group(0))
+        if "stylesheet" not in attributes.get("rel", "").lower():
+            continue
+        href = attributes.get("href", "")
+        if not href.startswith(ALLOWED_STYLESHEET_HOSTS):
+            allowed = ", ".join(ALLOWED_STYLESHEET_HOSTS)
+            errors.append(f"{label}: loads an external stylesheet ({href or 'no href'}); only {allowed} is allowed")
+    for style in _STYLE_BLOCK.findall(html):
+        if _CSS_IMPORT.search(style):
+            errors.append(f"{label}: an inline stylesheet uses @import, which fetches at render time")
+            break
+    return errors
+
+
+def _colour_token_errors(html: str, label: str) -> "list[str]":
+    """Name colour literals used outside a custom-property definition.
+
+    The palette lives in tokens so the three theme blocks can redefine it; a literal anywhere else is
+    a colour that cannot follow the theme. Definitions of `--*` are where literals belong, so they
+    are skipped, and only properties that actually carry colour are examined.
+    """
+    errors = []
+    for style in _STYLE_BLOCK.findall(html):
+        for match in _CSS_DECLARATION.finditer(_HTML_COMMENT.sub(" ", style)):
+            prop, value = match.group(1).lower(), match.group(2).strip()
+            if prop.startswith("--") or not prop.endswith(_COLOUR_PROPERTIES):
+                continue
+            literal = _COLOUR_LITERAL.search(value)
+            if literal:
+                errors.append(f"{label}: '{prop}: {value}' uses the colour literal '{literal.group(0)}'; use var(--…)")
+    return errors
+
+
+def _theme_block_errors(html: str, label: str) -> "list[str]":
+    """Name each of the three theme blocks the document does not define."""
+    styles = "\n".join(_STYLE_BLOCK.findall(html))
+    return [
+        f"{label}: no {description}"
+        for description, recogniser in REPORT_THEME_BLOCKS
+        if not re.search(recogniser, styles, re.IGNORECASE)
+    ]
+
+
+def _chart_errors(html: str, label: str) -> "list[str]":
+    """Name every chart that cannot be read without seeing it, or read without its interpretation.
+
+    A chart carries the same finding twice — once as geometry and once as text — so a reader using a
+    screen reader, a terminal, or a printout is not reading a hole. `role` and `aria-label` carry the
+    first; the `<figcaption>` carries the second, which is why a bare `<svg>` outside a `<figure>` is
+    a finding even when its labels are perfect.
+    """
+    errors = []
+    for index, match in enumerate(_SVG_OPEN.finditer(html), start=1):
+        attributes = _attributes(match.group(0))
+        if attributes.get("role", "").strip() != "img":
+            errors.append(f"{label}: <svg> #{index} has no role=\"img\"")
+        if not attributes.get("aria-label", "").strip():
+            errors.append(f"{label}: <svg> #{index} has no non-empty aria-label")
+    figures = _FIGURE_BLOCK.findall(html)
+    charted = sum(1 for figure in figures if _SVG_OPEN.search(figure))
+    total = len(_SVG_OPEN.findall(html))
+    if total > charted:
+        errors.append(f"{label}: {total - charted} <svg> of {total} is outside a <figure>, so it can carry no caption")
+    for index, figure in enumerate(figures, start=1):
+        if not _SVG_OPEN.search(figure):
+            continue
+        # The caption's *text* has to be non-empty, not just its element. Matching for any
+        # non-whitespace after the start tag would accept `<figcaption> </figcaption>`, because the
+        # `<` of the closing tag is itself non-whitespace — which is how a blank caption first got
+        # past this check.
+        captions = [_HTML_TAG.sub("", body).strip() for body in _FIGCAPTION_BLOCK.findall(figure)]
+        if not any(captions):
+            errors.append(f"{label}: <figure> #{index} holds a chart with no non-empty <figcaption>")
+    return errors
+
+
+def report_findings(project_dir: Path) -> ValidationReport:
+    """Check both report files mechanically, as errors rather than warnings.
+
+    This is what `--report` runs, and it is deliberately harsher than the close-time warning: the
+    warning nudges a project that has not written a report, while this is the check the step runs
+    through `record-evidence` so its exit code becomes a record instead of a claim. What it can
+    check is structure — sections, tags, tokens, themes, labels, captions. What it cannot check is
+    whether the report is true, or whether a chart's bars are the length its numbers imply; the
+    first is the reader's job and the second is arithmetic the author verifies against the `viewBox`.
+    """
+    report = ValidationReport()
+    markdown_path, html_path = _report_paths(project_dir)
+    for path, label in ((markdown_path, REPORT_MARKDOWN_FILENAME), (html_path, REPORT_HTML_FILENAME)):
+        relative = f"{REPORT_DIRECTORY}/{label}"
+        if not path.is_file():
+            report.errors.append(f"no report at {relative}")
+            continue
+        try:
+            content = read_text(path)
+        except WorkspaceError as error:
+            report.errors.append(f"{relative} is unreadable: {error}")
+            continue
+        if path is html_path:
+            report.errors.extend(_report_section_findings(_html_headings_as_markdown(content), relative))
+            report.errors.extend(_tag_balance_errors(content, relative))
+            report.errors.extend(_external_resource_errors(content, relative))
+            report.errors.extend(_colour_token_errors(content, relative))
+            report.errors.extend(_theme_block_errors(content, relative))
+            report.errors.extend(_chart_errors(content, relative))
+        else:
+            report.errors.extend(_report_section_findings(content, relative))
+    return report
+
+
 def _level_three_sections(markdown: str) -> "list[tuple[str, str]]":
     """Every `###`-or-deeper heading in document order, paired with the body that follows it.
 
@@ -1016,6 +1334,13 @@ def validate_v3_state(
         briefing_path = project_dir / "briefing.md"
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
+
+    # The closing report is checked at close and for a project already past it, and at no other
+    # point. `CANCELLED` counts: the step runs on that path too, reporting what was abandoned and
+    # why. Unlike the section check above this cannot key off "has left ALIGNING", because a report
+    # cannot exist before the work it reports on.
+    if check_files and (close or _enum_string(status, {"DONE", "CANCELLED"})):
+        report.warnings.extend(report_warnings(project_dir))
 
     if close or status == "DONE":
         incomplete = sorted(
@@ -1862,6 +2187,7 @@ def validate_project(
     *,
     close: bool = False,
     check_index: bool = False,
+    check_report: bool = False,
     allow_legacy_close: bool = False,
 ) -> ValidationReport:
     project_dir = project_dir.resolve()
@@ -1889,6 +2215,12 @@ def validate_project(
     report.extend(memory_findings(project_dir.parent, check_index=check_index))
     if close:
         report.warnings.extend(memory_staging_warnings(project_dir))
+    # Opt-in, and additive: it adds the mechanical report check to whatever mode was asked for rather
+    # than replacing it, so `--close --report` is one run and `--report` alone still validates the
+    # project around the report. Errors, not warnings, because this is the check the closure step runs
+    # through `record-evidence` for an exit code.
+    if check_report:
+        report.extend(report_findings(project_dir))
     if check_index and version in {2, 3}:
         expected = render_index(project_dir.parent)
         index_path = project_dir.parent / "INDEX.md"
@@ -2103,9 +2435,10 @@ def _misrooted_command_arguments(
 
 def record_evidence(
     project_dir: Path,
-    task_id: str,
+    task_id: "str | None",
     command: Sequence[str],
     *,
+    step: "str | None" = None,
     tail_lines: int = EVIDENCE_TAIL_LINES,
     timeout: float | None = None,
     lock_timeout: float = 5.0,
@@ -2121,8 +2454,19 @@ def record_evidence(
     compose it. A non-zero exit is still recorded — a failure is evidence too — but it is recorded
     as a failure and returned as one, so a caller cannot mark a task done on the strength of it.
     Canonical state is never touched: transitions stay with `commit_candidate` and its revision check.
+
+    Evidence belongs to a task or to a closure step, never both and never neither. A task id must
+    exist in `project.json`; a step name must come from `CLOSURE_STEPS`. Both are closed sets, so
+    neither route can open a heading for something that does not exist.
     """
     project_dir = project_dir.resolve()
+    if task_id is not None and step is not None:
+        raise WorkspaceError("record-evidence takes --task or --step, not both")
+    if task_id is None and step is None:
+        raise WorkspaceError("record-evidence needs --task <id> or --step <name>")
+    if step is not None and step not in CLOSURE_STEPS:
+        allowed = ", ".join(CLOSURE_STEPS)
+        raise WorkspaceError(f"unknown closure step {step!r}; the closure steps are: {allowed}")
     if not command:
         raise WorkspaceError("record-evidence requires a command to run after '--'")
     # Before the project is even read: an argv holding a bare operator is malformed whatever the
@@ -2133,7 +2477,7 @@ def record_evidence(
     tasks = state.get("tasks")
     if not isinstance(tasks, list):
         raise WorkspaceError(f"{project_dir / 'project.json'} has no task list to record against")
-    if not any(isinstance(task, dict) and task.get("id") == task_id for task in tasks):
+    if task_id is not None and not any(isinstance(task, dict) and task.get("id") == task_id for task in tasks):
         known = ", ".join(str(task.get("id")) for task in tasks if isinstance(task, dict) and task.get("id"))
         raise WorkspaceError(f"unknown task {task_id!r}; this project has: {known or '(none)'}")
 
@@ -2174,7 +2518,7 @@ def record_evidence(
     heading = _evidence_heading_command(joined)
     lines = [
         "",
-        f"## {task_id} — {heading}",
+        f"## {task_id or step} — {heading}",
         "",
         f"- Recorded: {now_iso()}",
         f"- Working directory: {working_directory}",

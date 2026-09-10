@@ -303,6 +303,14 @@ Never edit a recorded entry to make it agree with a conclusion.
 
 Only evidence that no command produced, such as an external delivery receipt, is written by hand.
 
+`--task <id>` requires that the id exists in `project.json`, which is what makes a heading in this
+file traceable to a task. Closure work owned by no task — the report check below is the only case
+today — is recorded with `--step <name>` instead, from a fixed vocabulary the tool holds rather than
+free text. The two options are mutually exclusive: a reserved task id would have weakened the
+existence guard for every ordinary recording, and a free-form label would have made the heading
+unverifiable. A step entry is headed `## <name> — <command>` and is otherwise identical, real exit
+code included.
+
 Because no shell is interposed, a bare `|`, `&&`, `;`, or `>` among the arguments is literal text to
 the command rather than a pipeline; that argument list is refused, and `-- bash -lc '<pipeline>'` is
 how to ask for a shell. The entry itself is appended under the project lock and the file replaced
@@ -310,6 +318,64 @@ atomically, so a commit validating `evidence.md` never reads a half-written file
 append cannot destroy the entries already there.
 
 Redact credentials, tokens, private data, and unnecessary command output from every workspace file.
+
+## The closing report
+
+Closure writes a report of the work into the `artifacts/` directory that `init` already created:
+
+```text
+YYYY-MM-DD-NNN/
+└── artifacts/
+    ├── report.md            # The plain technical record
+    └── report.html          # The same findings, presented, with charts
+```
+
+Both files are authored; neither is generated from the other, and nothing in this plugin converts
+between them. Both carry the same five `##` sections, in this order:
+
+```text
+## Summary
+## What was done
+## Findings and evidence
+## Limitations and what was not proven
+## Open work
+```
+
+The report is addressed to a reader who was not in the session. That reader is served by neither of
+the two documents that already exist: `evidence.md` is a command log, and `reflection.md` is a
+post-mortem addressed to future sessions. The report cites rather than measures — every figure in it
+traces to `evidence.md`, an `artifacts/` file, or a receipt — because closure is not the time to run
+a new measurement.
+
+`research-validate <project-directory> --report` checks both files mechanically and is opt-in, so an
+ordinary validation run is unchanged by the report's absence. It asserts that both files exist, that
+each carries all five sections written rather than left at a placeholder, that the HTML's tags
+balance and it loads no external script, no external stylesheet other than a font link, and no CSS
+`@import`, that every colour outside a `--*` definition is a `var(--…)` reference and all three theme
+blocks are present, and that every `<svg>` carries `role="img"` and a non-empty `aria-label` and sits
+inside a `<figure>` whose `<figcaption>` has text in it. What it cannot check is whether the charts
+look right or whether the prose is true; no screenshot tool is available, and that limitation is
+stated rather than worked around.
+
+Validation severities for the report:
+
+- **Warning** — a report that is missing, still at its placeholder, or missing sections, reported by
+  `--close` and by validating a project already `DONE` or `CANCELLED`.
+- **Not a finding at all** — the same conditions in `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, or
+  `BLOCKED`. A report cannot exist before the work it reports on does, which is why this rule differs
+  from the briefing's; `briefing.md` warns from the moment a project leaves `ALIGNING`.
+- **Never an error** — in any status, including at close. The reasoning is the one stated for
+  `briefing.md` above: requiring a new file at close would invalidate valid history and block
+  reopening a closed project for maintenance. `report.md` and `report.html` are not in the list of
+  files required non-empty at close.
+
+Errors are still possible, but only under `--report`, which nothing runs unless it was asked for:
+that flag exists to make a broken report fail loudly for the author writing it, and it is run through
+`record-evidence --step report` so its exit code becomes a record rather than a claim.
+
+The report is written on the way to `CANCELLED` as well as `DONE`. There the summary states the
+cancellation reason and `## Open work` carries what a successor would pick up; the rule that
+cancellation must never be presented as successful completion continues to bind.
 
 ## Workspace root files
 
@@ -430,8 +496,8 @@ A v3 project may be `DONE` only when:
 - every required review is accepted with evidence;
 - every authorization-required completed task has scoped explicit authorization;
 - every completed external task has a durable receipt;
-- `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty (`briefing.md` is
-  deliberately not required, and warns at most);
+- `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty (`briefing.md` and the
+  two report files under `artifacts/` are deliberately not required, and warn at most);
 - required specification sections and numbered review files exist;
 - canonical state, local files, and the generated `INDEX.md` and `MEMORY.md` agree.
 

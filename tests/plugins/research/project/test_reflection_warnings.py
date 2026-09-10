@@ -214,8 +214,13 @@ class RealWorkspaceReflectionTests(unittest.TestCase):
         self.dated = len(re.findall(r"^#{1,6} \d{4}-\d{2}-\d{2}", self.content, re.MULTILINE))
 
     def test_the_real_file_is_written_in_both_shapes(self) -> None:
-        # Without this, the count below could agree while one whole shape went unexercised.
-        self.assertGreater(self.bullets, 0)
+        # Without this, the count below could agree while one whole shape went unexercised. Which
+        # shapes the real file happens to use is the user's business, though, not this code's
+        # contract: the bulleted form disappeared from it when the flat reflection became the
+        # three-layer memory. So a shape the file no longer uses skips here — the fixtures above
+        # cover both forms unconditionally, and the count below still cannot pass vacuously.
+        if not self.bullets:
+            self.skipTest("the real file no longer uses the bulleted form")
         self.assertGreater(self.dated, 0)
 
     def test_every_entry_in_the_real_file_is_counted(self) -> None:
