@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 from workspace_lib import (
+    CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
     MEMORY_KINDS,
     ROOT_SEARCH_MAX_DEPTH,
@@ -78,14 +79,22 @@ def _build_parser() -> argparse.ArgumentParser:
     record = subparsers.add_parser(
         "record-evidence",
         help="Run a command and append its real exit code and output tail to evidence.md",
-        usage="manage_workspace.py record-evidence <project-directory> --task <id> -- <command>",
+        usage="manage_workspace.py record-evidence <project-directory> (--task <id> | --step <name>) -- <command>",
         epilog=(
             "The command after '--' is executed verbatim with no shell. The separator is required: "
-            "without it a command's own flags are indistinguishable from this script's."
+            "without it a command's own flags are indistinguishable from this script's. Evidence "
+            "belongs either to a task or to a closure step, which runs once every task is terminal "
+            "and so has no task ID to record under."
         ),
     )
     record.add_argument("project_directory", type=Path)
-    record.add_argument("--task", required=True, help="task ID the evidence belongs to")
+    owner = record.add_mutually_exclusive_group(required=True)
+    owner.add_argument("--task", help="task ID the evidence belongs to; must exist in project.json")
+    owner.add_argument(
+        "--step",
+        choices=CLOSURE_STEPS,
+        help="closure step the evidence belongs to, for evidence recorded after the last task",
+    )
     record.add_argument("--tail-lines", type=int, default=EVIDENCE_TAIL_LINES)
     record.add_argument("--timeout", type=float, default=None, help="seconds before the command is abandoned")
 
@@ -261,21 +270,23 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 return 1
+            owner = args.task or args.step
             exit_code = record_evidence(
                 args.project_directory,
                 args.task,
                 command_argv,
+                step=args.step,
                 tail_lines=args.tail_lines,
                 timeout=args.timeout,
             )
             evidence_path = args.project_directory.resolve() / "evidence.md"
             if exit_code == 0:
-                print(f"Recorded a passing result for {args.task} in {evidence_path}")
+                print(f"Recorded a passing result for {owner} in {evidence_path}")
                 return 0
             # The failure is written down, but it is never written down as a pass: a caller that
             # marks the task done from here has to do so against a non-zero exit it can see.
             print(
-                f"Recorded exit code {exit_code} for {args.task} in {evidence_path}; not recording it as a pass",
+                f"Recorded exit code {exit_code} for {owner} in {evidence_path}; not recording it as a pass",
                 file=sys.stderr,
             )
             return 1

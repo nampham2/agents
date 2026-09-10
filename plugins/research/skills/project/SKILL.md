@@ -98,6 +98,8 @@ workspace/
     ├── memory-staging.md    # Candidate lessons, staged during the work and drained at close
     ├── tasks/               # Optional detailed notes; never duplicate task status here
     ├── artifacts/           # Workspace-native outputs only
+    │   ├── report.md        # Closing report: the plain technical record
+    │   └── report.html      # Closing report: the same findings, presented, with charts
     ├── reviews/             # Sanitized review summaries
     └── reflection.md        # Project post-mortem
 ```
@@ -105,7 +107,9 @@ workspace/
 Read [references/workspace-schema.md](references/workspace-schema.md) before initializing,
 resuming, migrating, or closing a project. Read
 [references/memory-architecture.md](references/memory-architecture.md) before changing how memory
-is recorded or retrieved; `## Cross-project memory` below is the working summary of it.
+is recorded or retrieved; `## Cross-project memory` below is the working summary of it. Read
+[references/report-design.md](references/report-design.md) at closure, before writing the report
+that step 7 requires; it carries the section contract, the CSS baseline, and the chart rules.
 
 `init` and `research-validate` warn when the workspace root is not under version control, because a
 workspace is the record of the work and an unversioned record has no history to recover. Report the
@@ -153,11 +157,15 @@ research-project commit <project-directory> <candidate.json> \
   --expected-revision <revision> --dry-run
 research-project rebuild-index <workspace-root>
 research-project record-evidence <project-directory> --task <id> -- <command>
+# --step names a closure step instead of a task, for work no task owns. `report` is the only one.
+research-project record-evidence <project-directory> --step report -- <command>
 # Memory: find where a lesson is recorded, then promote a staged one into a topic file.
 research-project search-memory <query> --workspace-root <workspace-root>
 research-project promote-memory <slug> --body "<lesson>" --source <project-id> \
   --description "<one line>" --kind preference|environment|method --scope "<where it applies>"
 research-validate <project-directory>
+# Opt-in structural check of artifacts/report.md and artifacts/report.html; see step 7.
+research-validate <project-directory> --report
 ```
 
 Generated code and files intended for an existing repository belong in their requested target
@@ -455,29 +463,62 @@ an implementation detail needs no interview; record it and continue.
 ## 7. Cancel, block, or close
 
 For cancellation, stop running tasks, set a non-empty `cancellation_reason`, preserve existing work,
-and transition the project to `CANCELLED`. Do not present cancellation as successful completion.
+and transition the project to `CANCELLED`. Do not present cancellation as successful completion. The
+report in step 2 below is written on this path too: the summary states the cancellation reason and
+`## Open work` carries what a successor would pick up.
 
 Before successful closure:
 
 1. Ensure every task is `DONE` or compatibly `SKIPPED`, all required reviews are accepted, and every
    external task has scoped authorization and a durable receipt.
-2. Write non-empty project `reflection.md` content covering what worked, what did not, technical
-   notes, and open work.
-3. Drain `memory-staging.md`. For each staged line decide one of three things: promote it into a
+2. Write the closing report, as `artifacts/report.md` and `artifacts/report.html`. Read
+   [references/report-design.md](references/report-design.md) first. Both files carry the same five
+   `##` sections — `<h2>` in the HTML — and neither is generated from the other:
+
+   ```text
+   ## Summary
+   ## What was done
+   ## Findings and evidence
+   ## Limitations and what was not proven
+   ## Open work
+   ```
+
+   The report is addressed to a reader who was not in the session, which `evidence.md` (a command
+   log) and `reflection.md` (an inward post-mortem) are not. It cites rather than measures: every
+   figure traces to `evidence.md`, an `artifacts/` file, or a receipt, and closure is not the time to
+   run a new measurement. The HTML loads nothing but an optional web font, keeps every colour in a
+   `var(--…)` token with all three theme blocks, and carries hand-authored inline SVG charts whose
+   geometry you verify arithmetically against the `viewBox`. Then check both files and record the
+   exit code rather than claiming it:
+
+   ```sh
+   research-project record-evidence <project-directory> --step report -- \
+     research-validate <project-directory> --report
+   ```
+
+   `--report` is opt-in and checks structure only — sections, tags, tokens, themes, labels,
+   captions. It cannot check whether the report is true, whether a chart's bars match its numbers, or
+   whether the two files agree; those are yours. A missing or unwritten report is a **warning** at
+   close and never an error, so that every project closed before this step existed stays valid and
+   stays reopenable.
+3. Write non-empty project `reflection.md` content covering what worked, what did not, technical
+   notes, and open work. The report is outward-facing and the reflection is inward-facing; some
+   overlap is expected and neither needs to cite the other.
+4. Drain `memory-staging.md`. For each staged line decide one of three things: promote it into a
    topic file with `research-project promote-memory <slug> --body … --source <project-id>`, fold it
    into the post-mortem you just wrote, or drop it. Then empty the file. Promote only what is
    durable, sourced, and would change what a future session does; the other two outcomes are the
    normal ones. A staged line left at close is a warning, never a blocker.
-4. Validate the not-yet-closed candidate state and local evidence.
-5. Commit the project status to `DONE` through `research-project commit`; the commit enforces
+5. Validate the not-yet-closed candidate state and local evidence.
+6. Commit the project status to `DONE` through `research-project commit`; the commit enforces
    close invariants and rebuilds both generated caches.
-6. Run:
+7. Run:
 
    ```sh
    research-validate <project-directory> --close --check-index
    ```
 
-7. Fix every failure. Confirm the project path, completed outcome, verification, review evidence,
+8. Fix every failure. Confirm the project path, completed outcome, verification, review evidence,
    delivery receipts, and explicitly skipped work.
 
 ## Cross-project memory
