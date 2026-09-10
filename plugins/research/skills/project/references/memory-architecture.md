@@ -27,7 +27,7 @@ memory and becomes an archive" — but nothing enforced it.
 
 Two further facts shaped the design:
 
-- `SKILL.md:208`, step 1.7, is the **only** step that reads cross-project memory, and it reads the
+- `SKILL.md:228`, step 1.7, is the **only** step that reads cross-project memory, and it reads the
   whole flat file. There was no way to read part of it.
 - About 219 KB of per-project post-mortems exist — 22 files across 26 project directories
   (`<project>/reflection.md`, `SKILL.md:97`). Nothing reads them and nothing indexes them. Across

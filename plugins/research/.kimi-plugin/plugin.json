@@ -1,6 +1,6 @@
 {
   "name": "research",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Persistent, transactional workspace management for long-running work, with consensus on the goal reached before work starts",
   "skills": "./skills",
   "interface": {

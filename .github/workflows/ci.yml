@@ -60,3 +60,8 @@ jobs:
             --title "CI smoke" --working-directory "$workdir")"
           python validate_workspace.py "$project"
           RESEARCH_WORKSPACE="$workdir/ws" python manage_workspace.py rebuild-index
+          # show-graph renders text a user reads, so importing the module is not enough. The project
+          # above is fresh and has no tasks, so this reaches the dispatch and the empty-plan render
+          # rather than the table; the table's 3.9 output is compared against the dev interpreter's,
+          # byte for byte, over every real project by tasks/check_python39_floor.py in 2026-09-10-003.
+          python manage_workspace.py show-graph "$project"

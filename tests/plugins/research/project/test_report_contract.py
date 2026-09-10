@@ -40,6 +40,8 @@ from workspace_lib import (
     CLOSURE_STEPS,
     REPORT_CANONICAL_SECTIONS,
     REPORT_DIRECTORY,
+    REPORT_GRAPH_PARENT,
+    REPORT_GRAPH_SUBSECTION,
     REPORT_HTML_FILENAME,
     REPORT_MARKDOWN_FILENAME,
     REPORT_THEME_BLOCKS,
@@ -52,8 +54,14 @@ from workspace_lib import (
 
 from tests.conftest import REPO_ROOT, VALIDATOR
 
+GRAPH_HEADING = REPORT_GRAPH_SUBSECTION[0]
+
+# The subsection is written into the conforming fixtures from the constants rather than spelled out,
+# so a change to either name reaches these fixtures instead of leaving them quietly non-conforming.
 GOOD_MARKDOWN = "# Title — report\n\n" + "".join(
-    f"## {canonical}\n\nWritten.\n\n" for canonical, _ in REPORT_CANONICAL_SECTIONS
+    f"## {canonical}\n\nWritten.\n\n"
+    + (f"### {GRAPH_HEADING}\n\nWritten.\n\n" if canonical == REPORT_GRAPH_PARENT else "")
+    for canonical, _ in REPORT_CANONICAL_SECTIONS
 )
 
 GOOD_HTML = (
@@ -66,7 +74,11 @@ GOOD_HTML = (
     ':root[data-theme="dark"] { --fg: #eeeeee; }\n'
     "body { color: var(--fg); font-family: Georgia, serif; }\n"
     "</style></head><body>\n<h1>Title</h1>\n"
-    + "".join(f"<h2>{canonical}</h2>\n<p>Written.</p>\n" for canonical, _ in REPORT_CANONICAL_SECTIONS)
+    + "".join(
+        f"<h2>{canonical}</h2>\n<p>Written.</p>\n"
+        + (f"<h3>{GRAPH_HEADING}</h3>\n<p>Written.</p>\n" if canonical == REPORT_GRAPH_PARENT else "")
+        for canonical, _ in REPORT_CANONICAL_SECTIONS
+    )
     + '<figure>\n<svg viewBox="0 0 100 50" role="img" aria-label="Bar chart of two runs">\n'
     '<rect x="0" y="0" width="40" height="10" fill="var(--bar)"/>\n</svg>\n'
     "<figcaption>The second run is four times the first.</figcaption>\n</figure>\n"
@@ -118,7 +130,8 @@ class ReportSectionContractTests(unittest.TestCase):
 
     def test_reworded_headings_still_satisfy_the_contract(self) -> None:
         markdown = (
-            "## Abstract\n\nx\n\n## Method\n\nx\n\n## Results\n\nx\n\n## Caveats\n\nx\n\n## Next steps\n\nx\n"
+            "## Abstract\n\nx\n\n## Method\n\nx\n\n### Dependency graph\n\nx\n\n"
+            "## Results\n\nx\n\n## Caveats\n\nx\n\n## Next steps\n\nx\n"
         )
         self.assertEqual(report_warnings(_project(markdown=markdown)), [])
 
@@ -130,9 +143,11 @@ class ReportSectionContractTests(unittest.TestCase):
     def test_the_html_is_read_through_its_h2_headings(self) -> None:
         self.assertEqual(report_warnings(_project(html=GOOD_HTML)), [])
 
-    def test_an_h1_or_h3_in_the_html_is_prose_and_not_a_section(self) -> None:
+    def test_a_demoted_html_heading_does_not_satisfy_the_section_contract(self) -> None:
         # The contract is `##` in Markdown and `<h2>` in HTML. A demoted heading is a missing
-        # section, or a report could satisfy the contract with headings nobody scans for.
+        # section, or a report could satisfy the contract with headings nobody scans for. `<h3>` is
+        # translated to `###` for the subsection check, which is why this is worth pinning: a
+        # subsection heading must not be able to stand in for the section it sits under.
         warnings = report_warnings(_project(html=GOOD_HTML.replace("<h2>Open work</h2>", "<h3>Open work</h3>")))
         self.assertEqual(len(warnings), 1, warnings)
         self.assertIn("no '## Open work' section", warnings[0])
@@ -653,7 +668,7 @@ class DocumentedContractTests(unittest.TestCase):
     def test_the_skill_documents_the_step_on_the_cancelled_path_too(self) -> None:
         # The path most likely to skip the report is the one where nobody feels like writing one.
         content = (REPO_ROOT / "plugins/research/skills/project/SKILL.md").read_text(encoding="utf-8")
-        closure = content[content.index("## 7. Cancel, block, or close") :]
+        closure = content[content.index("## 8. Cancel, block, or close") :]
         cancellation = closure[: closure.index("Before successful closure:")]
 
         self.assertIn("report", cancellation)
