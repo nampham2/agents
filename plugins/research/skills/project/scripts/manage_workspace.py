@@ -23,9 +23,11 @@ from workspace_lib import (
     find_workspace_roots,
     load_memory_topics,
     migration_candidate,
+    project_task_graph,
     read_text,
     rebuild_index,
     record_evidence,
+    render_task_graph,
     resolve_workspace_root,
     search_memory,
     validate_v3_state,
@@ -97,6 +99,18 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     record.add_argument("--tail-lines", type=int, default=EVIDENCE_TAIL_LINES)
     record.add_argument("--timeout", type=float, default=None, help="seconds before the command is abandoned")
+
+    graph = subparsers.add_parser(
+        "show-graph",
+        help="Print a project's task graph, and what execution has done to it so far",
+        epilog=(
+            "Read-only: it opens project.json and evidence.md and writes nothing. One form serves "
+            "both moments it is wanted at, because the state already says which is meaningful — "
+            "before execution it describes a plan, and once anything has run it also carries each "
+            "task's status and the span its recorded evidence covers."
+        ),
+    )
+    graph.add_argument("project_directory", type=Path)
 
     roots = subparsers.add_parser(
         "find-roots",
@@ -290,6 +304,10 @@ def main() -> int:
                 file=sys.stderr,
             )
             return 1
+
+        if args.command == "show-graph":
+            print(render_task_graph(project_task_graph(args.project_directory)))
+            return 0
 
         if args.command == "find-roots":
             found = find_workspace_roots(args.search_paths or None, max_depth=args.max_depth)

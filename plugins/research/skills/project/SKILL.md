@@ -109,7 +109,7 @@ resuming, migrating, or closing a project. Read
 [references/memory-architecture.md](references/memory-architecture.md) before changing how memory
 is recorded or retrieved; `## Cross-project memory` below is the working summary of it. Read
 [references/report-design.md](references/report-design.md) at closure, before writing the report
-that step 7 requires; it carries the section contract, the CSS baseline, and the chart rules.
+that step 8 requires; it carries the section contract, the CSS baseline, and the chart rules.
 
 `init` and `research-validate` warn when the workspace root is not under version control, because a
 workspace is the record of the work and an unversioned record has no history to recover. Report the
@@ -164,7 +164,7 @@ research-project search-memory <query> --workspace-root <workspace-root>
 research-project promote-memory <slug> --body "<lesson>" --source <project-id> \
   --description "<one line>" --kind preference|environment|method --scope "<where it applies>"
 research-validate <project-directory>
-# Opt-in structural check of artifacts/report.md and artifacts/report.html; see step 7.
+# Opt-in structural check of artifacts/report.md and artifacts/report.html; see step 8.
 research-validate <project-directory> --report
 ```
 
@@ -399,7 +399,34 @@ verification, effect classification, authorization, receipts, and block/skip rea
 
 Use project status `PLANNING` while forming the plan and `EXECUTING` when work starts.
 
-## 5. Execute and verify
+## 5. Show the graph before executing
+
+Planning is done and nothing has run yet. Print the task graph and show the user what it says:
+
+```sh
+research-project show-graph <project-directory>
+```
+
+It prints a summary line, one row per task in topological order carrying its dependency level,
+effect and authorization, and then a warnings block naming every task whose authorization is
+`pending` or `denied`. One command adapts to the state, so run before execution it shows the plan and
+run afterwards it shows what happened to it.
+
+**Advisory, and only advisory.** It prints and execution continues. This step is not a gate, it does
+not wait for approval, it records no evidence, and it writes nothing to the workspace — the graph is
+reproducible by running the command again. When plan approval is genuinely required, step 4's last
+bullet is what requires it; showing the graph neither adds that checkpoint nor satisfies it.
+
+Show the user the output rather than paraphrasing it. Three things on that screen are worth their
+own sentence if they are true of this plan: how much of it is sequential rather than parallel, which
+tasks are `destructive` or `external`, and any authorization still outstanding. The last one is why
+the warnings block exists — a `pending` authorization sitting in a column on row 12 of 62 is easy to
+miss, and it is the one fact there where missing it has consequences.
+
+Keep the output. Step 8 writes the same graph into the closing report, and the report contract says
+to write that subsection from this command rather than by reading `project.json` again by eye.
+
+## 6. Execute and verify
 
 Before starting a task, confirm its dependencies are `DONE`. For authorization-required work,
 confirm the stored authorization is explicit, current, and scoped to the exact action. Then commit
@@ -439,7 +466,7 @@ the task to `RUNNING` before performing it.
 - Keep the user informed during long work, while ensuring the workspace remains sufficient for
   resumption without chat history.
 
-## 6. Review, revise, and deliver
+## 7. Review, revise, and deliver
 
 Set the project to `REVIEW` when a meaningful reviewable milestone is ready. Record whether review
 is required, its cycle, status, and rooted evidence. Every numbered cycle must have a non-empty
@@ -460,7 +487,7 @@ affects: settled branches stay settled, and re-interviewing them wastes the user
 churn. The resulting dated decision cites the review file it came from. Feedback that only corrects
 an implementation detail needs no interview; record it and continue.
 
-## 7. Cancel, block, or close
+## 8. Cancel, block, or close
 
 For cancellation, stop running tasks, set a non-empty `cancellation_reason`, preserve existing work,
 and transition the project to `CANCELLED`. Do not present cancellation as successful completion. The

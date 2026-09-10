@@ -756,6 +756,14 @@ REPORT_CANONICAL_SECTIONS: "tuple[tuple[str, str], ...]" = (
     ("Open work", r"open work|follow.?up|next step|remaining"),
 )
 
+# The one `###` subsection the contract names, and the section it hangs beneath. It is a subsection
+# rather than a sixth `##` because the spine above is closed, and because a graph is subordinate to a
+# method narrative rather than a replacement for one. Recognised by heading, with the same reworded
+# tolerance the five sections get: a structural check can find a subsection by its heading or not at
+# all, since it cannot read the report's meaning.
+REPORT_GRAPH_PARENT = "What was done"
+REPORT_GRAPH_SUBSECTION = ("Task graph", r"task graph|dependency graph|plan and execution graph")
+
 
 def _report_paths(project_dir: Path) -> "tuple[Path, Path]":
     """The Markdown and HTML report paths for a project, in that order."""
@@ -765,6 +773,7 @@ def _report_paths(project_dir: Path) -> "tuple[Path, Path]":
 
 _HTML_STRIPPED_ELEMENTS = re.compile(r"<(script|style)\b[^>]*>.*?</\1\s*>", re.DOTALL | re.IGNORECASE)
 _HTML_H2 = re.compile(r"<h2\b[^>]*>(.*?)</h2\s*>", re.DOTALL | re.IGNORECASE)
+_HTML_H3 = re.compile(r"<h([3-6])\b[^>]*>(.*?)</h\1\s*>", re.DOTALL | re.IGNORECASE)
 _HTML_TAG = re.compile(r"<[^>]+>")
 
 
@@ -773,15 +782,22 @@ def _html_headings_as_markdown(html: str) -> str:
 
     The section contract is one contract over two files, so the HTML is translated into the shape the
     Markdown reader already understands rather than the reader growing a second parser. `<h2>` becomes
-    `##`; every other tag is dropped, which leaves `<h1>` and `<h3>` as prose and keeps them from
-    passing as sections. `<style>` and `<script>` bodies are removed whole, so a stylesheet cannot
-    contribute text to a section body and make an unwritten section look written.
+    `##`, and `<h3>` through `<h6>` all become `###` because the Markdown reader they feed accepts
+    `###`-or-deeper; translating only `<h3>` would let one report pass as Markdown and fail as HTML
+    over a heading depth neither contract cares about. Every other tag is dropped, which leaves `<h1>`
+    as prose and keeps it from passing as a section. `<style>` and `<script>` bodies are removed
+    whole, so a stylesheet cannot contribute text to a section body and make an unwritten section look
+    written.
+
+    `###` cannot be mistaken for a `##` section, because `_level_two_sections` requires whitespace
+    after the second `#` and finds a third there instead.
 
     Entities are left as they are: this text is only ever matched against heading recognisers and
     tested for emptiness, and `&amp;` is as non-empty as `&`.
     """
     text = _HTML_STRIPPED_ELEMENTS.sub(" ", html)
     text = _HTML_H2.sub(lambda match: f"\n\n## {_HTML_TAG.sub('', match.group(1)).strip()}\n\n", text)
+    text = _HTML_H3.sub(lambda match: f"\n\n### {_HTML_TAG.sub('', match.group(2)).strip()}\n\n", text)
     return _HTML_TAG.sub(" ", text)
 
 
@@ -804,6 +820,28 @@ def _report_section_findings(markdown: str, label: str) -> "list[str]":
         elif all(_is_unwritten(body) for body in matched):
             findings.append(f"{label} section '## {canonical}' is still unwritten")
     return findings
+
+
+def _report_graph_findings(markdown: str, label: str) -> "list[str]":
+    """Whether the report carries a written task-graph subsection under its method section.
+
+    Silent when the parent section is itself absent: `_report_section_findings` already reports that,
+    and two findings for one missing heading would read as two problems. The subsection is looked for
+    only inside the parent's body, so a `### Task graph` filed under `## Open work` does not satisfy
+    the contract — where it sits is part of what was agreed.
+    """
+    canonical, recogniser = REPORT_GRAPH_SUBSECTION
+    parent = next(pattern for name, pattern in REPORT_CANONICAL_SECTIONS if name == REPORT_GRAPH_PARENT)
+    bodies = [
+        body for heading, body in _level_two_sections(markdown) if re.search(parent, heading, re.IGNORECASE)
+    ]
+    if not bodies:
+        return []
+    for body in bodies:
+        for heading, subsection in _level_three_sections(body):
+            if re.search(recogniser, heading, re.IGNORECASE) and not _is_unwritten(subsection):
+                return []
+    return [f"{label} has no written '### {canonical}' subsection under '## {REPORT_GRAPH_PARENT}'"]
 
 
 def report_warnings(project_dir: Path) -> "list[str]":
@@ -831,6 +869,7 @@ def report_warnings(project_dir: Path) -> "list[str]":
         if path is html_path:
             content = _html_headings_as_markdown(content)
         warnings.extend(_report_section_findings(content, relative))
+        warnings.extend(_report_graph_findings(content, relative))
     return warnings
 
 
@@ -1037,7 +1076,9 @@ def report_findings(project_dir: Path) -> ValidationReport:
             report.errors.append(f"{relative} is unreadable: {error}")
             continue
         if path is html_path:
-            report.errors.extend(_report_section_findings(_html_headings_as_markdown(content), relative))
+            headings = _html_headings_as_markdown(content)
+            report.errors.extend(_report_section_findings(headings, relative))
+            report.errors.extend(_report_graph_findings(headings, relative))
             report.errors.extend(_tag_balance_errors(content, relative))
             report.errors.extend(_external_resource_errors(content, relative))
             report.errors.extend(_colour_token_errors(content, relative))
@@ -1045,6 +1086,7 @@ def report_findings(project_dir: Path) -> ValidationReport:
             report.errors.extend(_chart_errors(content, relative))
         else:
             report.errors.extend(_report_section_findings(content, relative))
+            report.errors.extend(_report_graph_findings(content, relative))
     return report
 
 
@@ -2558,6 +2600,433 @@ def _append_evidence_entry(project_dir: Path, lines: "list[str]", *, lock_timeou
             atomic_write_text(evidence_path, existing.rstrip("\n") + "\n" + "\n".join(lines))
     except OSError as error:
         raise WorkspaceError(f"cannot write {evidence_path}: {error}") from error
+
+
+# The task graph as something presentable, and the console rendering the lifecycle shows before
+# execution starts. Both the pre-execution summary and the closing report's graph subsection are
+# built from `build_task_graph` rather than from two independent readings of `project.json`: this
+# plugin has twice shipped one rule implemented twice — a section list duplicated between a document
+# and a tuple, and a slug rule that diverged across 27 headings — and both times the copies drifted
+# before anyone noticed.
+#
+# The span half reads `evidence.md`, immediately above, because that file is the only per-task
+# temporal record the schema has. `TASK_FIELDS` holds no start, no end, and no duration, so a task's
+# span is derived from the stamps `record_evidence` wrote and is a lower bound on the work: it
+# measures verification, and only for tasks whose verification was recorded at all.
+
+# The level given to a task the layering could not place, which happens only when it is inside a
+# dependency cycle or behind one. `_check_dependencies` rejects a cycle at commit time, so canonical
+# state never holds one — but `show-graph` reads a file that may have been edited by hand, and a
+# renderer that raises on the state a user most needs to look at is a renderer that quits when asked
+# to do its job.
+TASK_GRAPH_UNLEVELLED = -1
+
+# Wide enough for a descriptive task name, narrow enough that the table still fits an 80-column
+# terminal alongside every other column.
+TASK_NAME_DISPLAY_WIDTH = 52
+DEPENDENCY_DISPLAY_WIDTH = 13
+
+
+@dataclass
+class EvidenceSpan:
+    """What `evidence.md` records about one task, reduced to what a summary can show."""
+
+    entries: int = 0
+    failed: int = 0
+    first: "datetime | None" = None
+    last: "datetime | None" = None
+    # Entries whose `- Recorded:` stamp could not be placed on a timeline. Counted rather than
+    # ignored, so a task with three unreadable stamps renders as unmeasured-with-entries instead of
+    # looking like a task nobody ever ran.
+    unplaceable: int = 0
+
+    @property
+    def measured(self) -> bool:
+        return self.first is not None and self.last is not None
+
+    @property
+    def seconds(self) -> "float | None":
+        """The span in seconds, or None when nothing placeable was recorded."""
+        if self.first is None or self.last is None:
+            return None
+        return (self.last - self.first).total_seconds()
+
+
+@dataclass
+class TaskGraphNode:
+    """One task, as the two presentations need it: structure, plan facts, and outcome."""
+
+    id: str
+    name: str
+    status: str
+    level: int
+    depends_on: "list[str]"
+    unknown_depends_on: "list[str]"
+    effect_kind: str
+    authorization_status: str
+    span: EvidenceSpan
+    receipts: int
+
+    @property
+    def needs_authorization(self) -> bool:
+        """Whether this task cannot proceed on the authorization it currently holds."""
+        return self.authorization_status in {"pending", "denied", "deferred"}
+
+
+@dataclass
+class TaskGraph:
+    """A project's tasks in topological order, each carrying its dependency level."""
+
+    project: str
+    status: str
+    nodes: "list[TaskGraphNode]"
+    # Tasks the layering could not place. Empty for any state that passed `commit`.
+    cycle_members: "list[str]"
+
+    @property
+    def levels(self) -> int:
+        return len({node.level for node in self.nodes if node.level != TASK_GRAPH_UNLEVELLED})
+
+    @property
+    def executed(self) -> bool:
+        """Whether there is anything to show about execution, rather than only about the plan.
+
+        This is what lets one command serve both moments instead of taking a mode flag. A plan whose
+        tasks are all still `TODO` has no outcome to report, and a project part-way through has one
+        for the tasks that have moved.
+        """
+        return any(node.status != "TODO" for node in self.nodes)
+
+    def effect_counts(self) -> "dict[str, int]":
+        counts: "dict[str, int]" = {}
+        for node in self.nodes:
+            counts[node.effect_kind] = counts.get(node.effect_kind, 0) + 1
+        return counts
+
+    def measured_bounds(self) -> "tuple[datetime | None, datetime | None]":
+        """The first and last placeable instant across every task, or a pair of Nones."""
+        instants = [node.span.first for node in self.nodes if node.span.first is not None]
+        instants += [node.span.last for node in self.nodes if node.span.last is not None]
+        return (min(instants), max(instants)) if instants else (None, None)
+
+
+# The heading `record_evidence` writes, read back. Both halves live in this module so the format has
+# one owner: an entry is `## <task id or closure step> — <command>`, and the em dash is what
+# separates an owner from a command that may itself contain spaces.
+_EVIDENCE_ENTRY_HEADING = re.compile(r"^##[ \t]+(?P<owner>\S+)[ \t]+—", re.MULTILINE)
+_EVIDENCE_RECORDED_STAMP = re.compile(r"^-[ \t]+Recorded:[ \t]*(?P<stamp>.+?)[ \t]*$", re.MULTILINE)
+_EVIDENCE_EXIT_CODE = re.compile(r"^-[ \t]+Exit code:[ \t]*(?P<code>-?\d+)\b", re.MULTILINE)
+
+
+def _placeable_instant(value: str) -> "datetime | None":
+    """One recorded stamp as an instant, or None when it cannot be placed on a timeline.
+
+    `record_evidence` writes a timezone-aware ISO-8601 stamp and nothing else, but the workspace this
+    ships for contains two entries carrying a date alone — hand-authored, which the skill forbids and
+    which no parser gets to assume away. A stamp with no offset is refused rather than assumed to be
+    local time, for two reasons: subtracting a naive datetime from an aware one is a `TypeError` that
+    surfaces far from its cause, and inventing an offset would place a task at a confidently wrong
+    hour, which is worse than declining to place it at all.
+    """
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def parse_evidence_spans(evidence_markdown: str) -> "dict[str, EvidenceSpan]":
+    """Reduce `evidence.md` to one span per owner: first and last instant, entries, failures.
+
+    Keyed by whatever the heading names, which is a task id for a task and a closure step otherwise,
+    so a caller that only knows about tasks simply finds no entry for `report`. Nothing here rejects
+    an unknown owner: this is a reader of a file that is appended to by hand as well as by tool, and
+    its job is to report what is there.
+    """
+    spans: "dict[str, EvidenceSpan]" = {}
+    headings = list(_EVIDENCE_ENTRY_HEADING.finditer(evidence_markdown))
+    for index, heading in enumerate(headings):
+        end = headings[index + 1].start() if index + 1 < len(headings) else len(evidence_markdown)
+        body = evidence_markdown[heading.end() : end]
+        span = spans.setdefault(heading.group("owner"), EvidenceSpan())
+        span.entries += 1
+        exit_code = _EVIDENCE_EXIT_CODE.search(body)
+        if exit_code is not None and int(exit_code.group("code")) != 0:
+            span.failed += 1
+        stamp = _EVIDENCE_RECORDED_STAMP.search(body)
+        instant = _placeable_instant(stamp.group("stamp")) if stamp is not None else None
+        if instant is None:
+            span.unplaceable += 1
+            continue
+        if span.first is None or instant < span.first:
+            span.first = instant
+        if span.last is None or instant > span.last:
+            span.last = instant
+    return spans
+
+
+def _dependency_levels(dependencies: "dict[str, list[str]]") -> "dict[str, int]":
+    """A dependency level per task: 0 with no prerequisite in the plan, else one past the deepest.
+
+    Kahn's algorithm, so the level of every task is decided only by the edges and never by the order
+    the tasks happen to appear in the file. A task missing from the result is in a cycle or behind
+    one, which the caller reports rather than this raising: an unknown dependency is treated as
+    already satisfied for layering, because a plan naming a task that does not exist is a plan whose
+    shape is still worth showing next to that fact.
+    """
+    levels: "dict[str, int]" = {}
+    remaining = {task_id: list(deps) for task_id, deps in dependencies.items()}
+    while remaining:
+        ready = sorted(
+            task_id for task_id, deps in remaining.items() if all(dep not in remaining for dep in deps)
+        )
+        if not ready:
+            break
+        for task_id in ready:
+            depths = [levels[dep] for dep in remaining.pop(task_id) if dep in levels]
+            levels[task_id] = max(depths) + 1 if depths else 0
+    return levels
+
+
+def build_task_graph(state: dict[str, Any], evidence_markdown: str = "") -> TaskGraph:
+    """Turn canonical state and its evidence file into one graph both presentations render.
+
+    Order is `(level, id)`, which is a topological order because a dependency's level is always
+    strictly lower than its dependent's, and which depends on nothing but the task ids — so the same
+    plan renders identically however its tasks are arranged in the file. Tasks the layering could not
+    place sort last, where the renderer marks them.
+    """
+    spans = parse_evidence_spans(evidence_markdown)
+    tasks = [task for task in state.get("tasks", []) if isinstance(task, dict)]
+    dependencies = {
+        str(task.get("id")): [str(dep) for dep in task.get("depends_on") or [] if _non_empty_string(dep)]
+        for task in tasks
+        if _non_empty_string(task.get("id"))
+    }
+    levels = _dependency_levels(dependencies)
+
+    nodes = []
+    for task in tasks:
+        task_id = task.get("id")
+        if not _non_empty_string(task_id):
+            continue
+        declared = dependencies[task_id]
+        effect = task.get("effect") if isinstance(task.get("effect"), dict) else {}
+        authorization = task.get("authorization") if isinstance(task.get("authorization"), dict) else {}
+        receipts = task.get("receipts")
+        nodes.append(
+            TaskGraphNode(
+                id=task_id,
+                name=str(task.get("name") or ""),
+                status=str(task.get("status") or ""),
+                level=levels.get(task_id, TASK_GRAPH_UNLEVELLED),
+                depends_on=declared,
+                unknown_depends_on=[dep for dep in declared if dep not in dependencies],
+                effect_kind=str(effect.get("kind") or ""),
+                authorization_status=str(authorization.get("status") or ""),
+                span=spans.get(task_id, EvidenceSpan()),
+                receipts=len(receipts) if isinstance(receipts, list) else 0,
+            )
+        )
+
+    nodes.sort(key=lambda node: (node.level == TASK_GRAPH_UNLEVELLED, node.level, node.id))
+    return TaskGraph(
+        project=str(state.get("project") or ""),
+        status=str(state.get("status") or ""),
+        nodes=nodes,
+        cycle_members=sorted(task_id for task_id in dependencies if task_id not in levels),
+    )
+
+
+def _truncate(value: str, width: int) -> str:
+    """`value` in at most `width` characters, marking that something was cut."""
+    return value if len(value) <= width else value[: width - 3].rstrip() + "..."
+
+
+def _wrap_dependencies(dependencies: "list[str]", width: int) -> "list[str]":
+    """A dependency list as one or more lines no wider than `width`, splitting between ids.
+
+    Returns a single "-" line for a task with no dependencies, so the column is never blank in a way
+    a reader could mistake for a continuation line. A single id longer than `width` is left over-wide
+    rather than cut: a truncated task id is a wrong task id.
+    """
+    if not dependencies:
+        return ["-"]
+    lines = [""]
+    for position, dependency in enumerate(dependencies):
+        piece = dependency + ("," if position < len(dependencies) - 1 else "")
+        if lines[-1] and len(lines[-1]) + len(piece) > width:
+            lines.append(piece)
+        else:
+            lines[-1] += piece
+    return lines
+
+
+def _format_duration(seconds: float) -> str:
+    """A span in the coarsest unit that still says something, since these run minutes to days."""
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    minutes = round(seconds / 60)
+    if minutes < 60:
+        return f"{minutes}m"
+    return f"{minutes // 60}h {minutes % 60:02d}m"
+
+
+def _render_table(headers: "list[str]", rows: "list[list[str]]", right_aligned: "set[int]") -> "list[str]":
+    """Fixed-width columns, two spaces apart, computed from the content they have to hold."""
+    widths = [len(header) for header in headers]
+    for row in rows:
+        for index, cell in enumerate(row):
+            widths[index] = max(widths[index], len(cell))
+    lines = []
+    for row in [headers, *rows]:
+        cells = [
+            cell.rjust(widths[index]) if index in right_aligned else cell.ljust(widths[index])
+            for index, cell in enumerate(row)
+        ]
+        lines.append(("  " + "  ".join(cells)).rstrip())
+    return lines
+
+
+def render_task_graph(graph: TaskGraph) -> str:
+    """The console form: a summary line, a flat topological table, then a warnings block.
+
+    One rendering serves both moments the skill needs it at. Before execution the table describes a
+    plan; once anything has run it grows a `Status` column and the summary grows the measured span,
+    which is why this takes no mode flag — the state already says which is meaningful.
+
+    The warnings block exists because a column cannot carry urgency. An authorization still `pending`
+    on row 12 of 62 is a fact with consequences, and a reader scanning a wide table will miss it;
+    naming those tasks again underneath costs three lines and is the whole reason the pre-execution
+    summary is worth printing at all.
+    """
+    executed = graph.executed
+    headers = ["#", "ID", "Task", "Lv", "Deps"]
+    if executed:
+        headers.append("Status")
+    headers.extend(["Effect", "Auth"])
+    status_column = headers.index("Status") if executed else None
+    dependency_column = headers.index("Deps")
+
+    rows: "list[list[str]]" = []
+    for position, node in enumerate(graph.nodes, start=1):
+        dependency_lines = _wrap_dependencies(node.depends_on, DEPENDENCY_DISPLAY_WIDTH)
+        row = [
+            str(position),
+            node.id,
+            _truncate(node.name, TASK_NAME_DISPLAY_WIDTH) or "-",
+            "?" if node.level == TASK_GRAPH_UNLEVELLED else str(node.level),
+            dependency_lines[0],
+        ]
+        if status_column is not None:
+            row.append(node.status or "-")
+        row.extend([node.effect_kind or "-", "-" if node.authorization_status == "not_required" else node.authorization_status or "-"])
+        rows.append(row)
+        for continuation in dependency_lines[1:]:
+            wrapped = [""] * len(headers)
+            wrapped[dependency_column] = continuation
+            rows.append(wrapped)
+
+    effects = ", ".join(f"{kind or 'unset'} {count}" for kind, count in sorted(graph.effect_counts().items()))
+    summary = [
+        f"{graph.project or 'project'} | {graph.status or 'unknown'} | {len(graph.nodes)} tasks | "
+        f"{graph.levels} levels | effects: {effects or 'none declared'}"
+    ]
+    first, last = graph.measured_bounds()
+    if first is not None and last is not None:
+        started = [node for node in graph.nodes if node.status in {"RUNNING", "DONE"}]
+        unmeasured = [node for node in started if not node.span.measured]
+        span = f"verification spans {first:%Y-%m-%d %H:%M} -> {last:%H:%M} ({_format_duration((last - first).total_seconds())})"
+        if unmeasured:
+            span += f" | {len(unmeasured)} of {len(started)} started tasks unmeasured"
+        summary.append(span)
+
+    lines = [*summary, ""]
+    if rows:
+        lines.extend(_render_table(headers, rows, right_aligned={0, headers.index("Lv")}))
+    else:
+        # A header row over nothing reads as a rendering fault rather than as a fact about the
+        # project. A plan that does not exist yet is worth saying in words.
+        lines.append("No tasks planned yet.")
+    lines.extend(_task_graph_warnings(graph))
+    # No trailing newline: the caller prints this, and a renderer that supplies its own would put a
+    # blank line under every summary.
+    return "\n".join(lines)
+
+
+def _task_graph_warnings(graph: TaskGraph) -> "list[str]":
+    """The block under the table: what a reader must not miss, named task by task.
+
+    Authorization is reported even when nothing is outstanding. The absence of a pending
+    authorization is a fact worth stating rather than a silence to interpret, and a reader who has
+    learned that this block always speaks about authorization can trust it when it says nothing is
+    waiting.
+    """
+    lines = []
+    outstanding = [node for node in graph.nodes if node.needs_authorization]
+    if outstanding:
+        lines.extend(["", f"Authorization outstanding for {len(outstanding)} of {len(graph.nodes)} tasks:"])
+        lines.extend(
+            f"  {node.id}  authorization {node.authorization_status}, {node.effect_kind or 'unset'} effect: {node.name}"
+            for node in outstanding
+        )
+    else:
+        lines.extend(["", "Authorization: nothing outstanding."])
+
+    failed = [node for node in graph.nodes if node.span.failed]
+    if failed:
+        lines.extend(["", "Non-zero exit codes recorded:"])
+        lines.extend(
+            f"  {node.id}  {node.span.failed} of {node.span.entries} recorded commands failed" for node in failed
+        )
+
+    unplaceable = [node for node in graph.nodes if node.span.unplaceable]
+    if unplaceable:
+        lines.extend(["", "Evidence entries that could not be placed on a timeline:"])
+        lines.extend(
+            f"  {node.id}  {node.span.unplaceable} of {node.span.entries} entries carry no timezone-aware stamp"
+            for node in unplaceable
+        )
+
+    unknown = [node for node in graph.nodes if node.unknown_depends_on]
+    if unknown:
+        lines.extend(["", "Dependencies naming tasks that are not in the plan:"])
+        lines.extend(f"  {node.id}  depends on {', '.join(node.unknown_depends_on)}" for node in unknown)
+
+    if graph.cycle_members:
+        lines.extend(
+            [
+                "",
+                f"Not levelled, so inside a dependency cycle or behind one: {', '.join(graph.cycle_members)}",
+            ]
+        )
+    return lines
+
+
+def project_task_graph(project_dir: Path) -> TaskGraph:
+    """The task graph of a project on disk. Reads two files and writes nothing.
+
+    A missing `evidence.md` is not an error. The pre-execution summary exists precisely for the
+    moment before anything has run, and a plan with no evidence renders every task as unmeasured,
+    which is the truth about it.
+
+    Refused for anything but schema v3, because the columns a reader would trust — effect kind,
+    authorization status, dependency level — are v3 fields. A v2 project would render a table of
+    `unset` and look like a finding rather than a schema mismatch.
+    """
+    directory = project_dir.resolve()
+    if not directory.is_dir():
+        raise WorkspaceError(f"project directory does not exist: {directory}")
+    state = load_json(directory / "project.json")
+    version = state.get("schema_version")
+    if version != 3:
+        raise WorkspaceError(
+            f"{directory} is schema v{version!r}, and the task graph needs v3 fields; "
+            "migrate it first with `research-project migrate`"
+        )
+    evidence_path = directory / "evidence.md"
+    evidence = read_text(evidence_path) if evidence_path.exists() else ""
+    return build_task_graph(state, evidence)
 
 
 def rebuild_index(workspace_root: Path, *, lock_timeout: float = 5.0) -> Path:

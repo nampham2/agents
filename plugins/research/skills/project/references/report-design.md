@@ -256,6 +256,119 @@ label at `x=150` with `text-anchor="end"` has 150px of room for its longest stri
 point on a scale, a line for a series. No pie charts: the report's readers compare magnitudes, and
 angles are the worst encoding for that.
 
+## The task-graph subsection
+
+Both files carry one `###` subsection under `## What was done`, holding the project's task graph
+annotated with what execution did to it. A subsection and not a sixth `##` section, because the
+five-section spine is closed and because a graph supports the method narrative rather than replacing
+it: the prose says what was done and why, and the graph shows how the work was ordered and how it
+actually ran.
+
+The heading, at `###` in Markdown and `<h3>` in HTML:
+
+```text
+### Task graph
+```
+
+`research-validate --report` recognises `### Task graph`, `### The task graph`,
+`### Dependency graph`, `### Task dependency graph`, and `### Plan and execution graph`, the same
+reworded-heading tolerance the five sections get. A heading that does not say graph is not this
+subsection, however well it reads: the check finds the subsection by its heading or not at all.
+
+Where it sits is checked too. The subsection must be inside `## What was done`; the same heading under
+another section does not satisfy the contract. A heading deeper than `###` is accepted — `####` in
+Markdown, `<h4>` through `<h6>` in HTML — because both readers accept `###`-or-deeper, and a report
+should not pass as one file and fail as the other over a nesting depth the contract does not care
+about.
+
+Absence is an **error** under `--report` and a **warning** under `--close` and for a project already
+`DONE` or `CANCELLED`, so every report written before this contract stays valid and its project stays
+reopenable. A heading with nothing written under it counts as absent.
+
+`research-project show-graph <project-directory>` prints the same graph as text. Write the subsection
+from its output rather than reading `project.json` again by eye: the console form and the report form
+come from one model in code, and the figures in the subsection should be the figures the command
+printed.
+
+### What the subsection carries
+
+Three parts in HTML, in this order; the third alone in Markdown:
+
+1. **A dependency-level profile** — one horizontal bar per dependency level, its length the number of
+   tasks at that level. This is the shape of the plan: a profile of mostly-one bars is a chain, and a
+   wide bar is work that could have run in parallel.
+2. **An execution timeline** — one horizontal bar per measured task, positioned inside the project's
+   measured window. This is what happened to that shape.
+3. **A table** — one row per task, carrying the exact values: id and name, dependency level,
+   dependencies, final status, effect kind, authorization status, recorded evidence pass/fail counts,
+   and the task's measured span or `unmeasured`.
+
+That split is the chart/table rule above applied to one subject: the figures carry the shape, the
+table carries the values, and the table is what the two files must agree on row for row. The Markdown
+twin carries the table and the prose and not the figures — it is the plain technical record, and an
+ASCII rendering of a bar chart is neither plain nor a record.
+
+**A span measures verification, not work, and is a lower bound.** It is derived from `evidence.md`
+`- Recorded:` stamps, so it runs from a task's first recorded command to its last and knows nothing
+about the time before the first one. Say that in the subsection rather than letting a reader take it
+for a duration. A task with no recorded command is **unmeasured**: it renders as `unmeasured` in the
+table, never as a zero-length span, and it is never dropped from the table because it cannot be
+plotted.
+
+### The profile's geometry
+
+```text
+row pitch      28px, bar height 16px, first bar at y=40
+label gutter   x=0..112, level labels text-anchor="end" at x=104
+plot area      x=120..600, so 480px wide
+scale          480 / (tasks at the widest level) px per task
+height         28 x levels + 54
+```
+
+Worked, for the 14-task graph of this contract's own project — 7 levels, widest level 3 tasks:
+
+- `height = 28 x 7 + 54 = 250`, so `viewBox="0 0 640 250"`.
+- `scale = 480 / 3 = 160` px per task.
+- The widest level, 3 tasks: `x=120`, `width = 3 x 160 = 480`, right edge `120 + 480 = 600`, exactly
+  the plot edge and inside the `viewBox`.
+- A level holding 1 task: `width = 160`, right edge `280`.
+- Row tops are `40, 68, 96, 124, 152, 180, 208`; the last bar's bottom is `208 + 16 = 224`, leaving
+  `250 - 224 = 26px` for the caption line.
+
+No bar can leave the `viewBox`, because the widest level is what set the scale.
+
+### The timeline's geometry
+
+```text
+row pitch      28px, bar height 16px, first bar at y=40
+label gutter   x=0..112, task ids text-anchor="end" at x=104
+plot area      x=120..600 spanning the whole measured window
+scale          480 / window minutes px per minute
+bar            x = 120 + (task start - window start) x scale
+               width = max(3, span x scale), then x = min(x, 597)
+height         28 x measured tasks + 54
+```
+
+Worked, for the predecessor project `2026-09-10-002` — window 11:12 to 12:27, 75 minutes, 15 tasks
+all measured:
+
+- `scale = 480 / 75 = 6.4` px per minute; `height = 28 x 15 + 54 = 474`.
+- A task spanning 11:12 to 11:17 — minute 0 to 5: `x = 120 + 0 x 6.4 = 120`,
+  `width = 5 x 6.4 = 32`.
+- A task spanning 12:22 to 12:27 — minute 70 to 75: `x = 120 + 70 x 6.4 = 568`, `width = 32`, right
+  edge `600`.
+- A task with a single recorded command at 11:40 — minute 28, span 0: `x = 120 + 28 x 6.4 = 299.2`,
+  `width = max(3, 0) = 3`. Without that floor a single-entry task draws nothing at all, which reads
+  as "did not run" rather than "ran once".
+- The floor is the only way a bar can overrun: a single entry at the very end of the window would
+  start at `x=600` and draw to `603`. Clamping the start to `x=597` keeps it inside, which is why the
+  clamp is written down rather than left to whoever notices.
+
+The window itself is the first and last readable stamp in the whole project, so the leftmost bar
+starts at `x=120` and the rightmost ends at `x=600` by construction. State the window's real clock
+times in the `aria-label` and the count of unmeasured tasks in the `<figcaption>`: a timeline that
+silently plots 11 of 15 tasks is a chart that lies by omission.
+
 ## What the check does and does not cover
 
 `research-validate --report <project-dir>` is opt-in, and the closure step runs it through
@@ -270,7 +383,7 @@ It checks, as errors: both files exist and are readable; all five sections are p
 each; the HTML's tags balance; no external script, no non-font stylesheet, no `@import`; no colour
 literal outside a `--*` definition; all three theme blocks present; every `<svg>` carrying
 `role="img"` and a non-empty `aria-label`; every chart inside a `<figure>` with a non-empty
-`<figcaption>`.
+`<figcaption>`; the task-graph subsection present under `## What was done` in both files.
 
 It cannot check the things that actually make the report good, and no amount of passing it substitutes
 for them:
@@ -281,7 +394,8 @@ for them:
 - whether the prose is readable, or the limitations honest.
 
 Separately, `research-validate --close` and validation of a project already `DONE` or `CANCELLED`
-**warn** when a report is missing, unwritten, or missing sections. That is a warning and never an
+**warn** when a report is missing, unwritten, missing sections, or missing the task-graph
+subsection. That is a warning and never an
 error, on the same reasoning as `briefing.md`: the report postdates every project already in a
 workspace, and a closed project must stay valid and stay reopenable. Nothing warns before close — a
 report cannot exist before the work it reports on.
