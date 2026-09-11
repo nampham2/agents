@@ -1,394 +1,731 @@
-"""A design-stage executable model of the parallel-execution protocol's decision functions.
+"""A small stateful reference model of the parallel-execution design (§21.2 of the reference).
 
-`plugins/research/skills/project/references/parallel-execution.md` §20.2 promises this file. It is a
-model, not an implementation: nothing here is imported by the shipped scripts, nothing is wired into
-`research:project`, and there is no executor. The point is that the document's decision functions —
-the label function of §6.1, the conflict relation of §8.2, the admission predicates of §8.1, the
-dispatch gate of §7.3, and the crash-prefix recovery outcomes of §6.3 — are stated precisely enough
-to run, and that the invariants the document claims for them are actually entailed by the rules as
-written.
+Two coordinators, two tasks, one shared write path, one checker, one launch capability. Canonical
+state and external execution are modelled **separately**: `Store` holds the durable records and the
+canonical task state, `World` holds the modelled processes and the modelled bytes they write, and no
+guard in this file reads a process to decide anything — guards read records, invariants read
+processes. That separation is the whole point. Revision 4's suite derived "the worker is running"
+from "the record says running", so every question it could ask had been answered by construction.
 
-What this establishes is internal: the specified functions have the properties the specification
-claims. What it cannot establish is that the specification is right. A defect the document and this
-model share is invisible here, and nothing below touches a real filesystem, real concurrency, a real
-host, or real timing. §20.2 says so in the document; it is repeated here so a green run is not
-mistaken for a correctness result.
+Recovery is a function from a store to a sequence of operations (`recover`) whose durable effects the
+caller then applies, so recovery is exercised rather than asserted. Crashes are injected between
+durable effects, at every prefix of every operation's sequence, by `crash_and_recover`.
 
-The canonical enums are read from `workspace_lib` rather than restated, because the point of the
-authorization tests is agreement with the real validator's vocabulary.
+The five invariants are stated externally, over the modelled world rather than over a label:
+
+* **I1** no two executors hold conflicting claims — read off the registry of active grants.
+* **I2** no claim is released while any modelled process can still write, including one whose
+  coordinator is dead and whose launch capability is unconsumed.
+* **I3** an acceptance's `accepted_snapshot` equals the modelled bytes at commit time and its
+  `definition_hash` equals the modelled definition.
+* **I4** a task is `DONE` only if its `evidence` holds the receipt — checked by building the real
+  candidate and dry-running it through the real `check_candidate`.
+* **I5** no projection reads a malformed or unexplainable record as absence: an unreadable record
+  stops the reader instead of counting as nothing.
+
+Every invariant is shown reachable-failure by `ForcedViolationTests`, which bypasses the guards and
+requires the violation to appear. An invariant no scenario can break is not being checked.
+
+**Passing this model does not establish that the protocol is correct.** There is no executor, no
+filesystem and no adapter behind it; the world has one write path and one checker; and
+`check_candidate` validates a candidate's schema and transitions, not a receipt's meaning, so the
+receipt half of I4 is this file's own assertion. Eight of review 04's eighteen findings — R4-05,
+R4-09, R4-11, R4-13, R4-15, R4-16, R4-17 and R4-18 — are not traces of this state machine and are not
+modelled here: they are answered in the reference by §6 and §11.1, by refusal codes in §4, by this
+replacement itself, by §17.1, and by the documentation checker and §21.3.
 """
 
 from __future__ import annotations
 
-import itertools
+import copy
+import hashlib
+import json
+import tempfile
 import unittest
-from typing import FrozenSet, Optional, Tuple
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
 
-from workspace_lib import AUTHORIZATION_STATUSES, EFFECT_KINDS
-
-from tests.conftest import REPO_ROOT  # noqa: F401  (imported for sys.path side effect)
+from workspace_lib import allocate_project, check_candidate
 
 # --------------------------------------------------------------------------------------------------
-# §6.1 — the label function, and §5.2's finalization predicate
+# The modelled world
 # --------------------------------------------------------------------------------------------------
 
-# A record set is the set of record names present in an attempt's journal directory. Parameterised
-# records collapse to their family here: `hold`, `uncertainty`, `heartbeat`, `disposition`. Rows 2 and
-# 3 discriminate on a disposition's `resolution`, so a disposition is carried as a separate argument
-# rather than as a bare name.
+SUBJECT = "out.txt"
+OTHER_SUBJECT = "other.txt"
+TASK = "produce-output"
+OTHER_TASK = "produce-other"
+COORDINATOR_A = "run-a"
+COORDINATOR_B = "run-b"
+ATTEMPT_A = "att-a"
+ATTEMPT_B = "att-b"
 
-ABANDON_RESOLUTIONS = frozenset({"abandon", "retry"})
-RECONCILE_RESOLUTIONS = frozenset({"accept_partial", "block"})
-RESOLUTIONS = ABANDON_RESOLUTIONS | RECONCILE_RESOLUTIONS
+DEFINITION: "Dict[str, Dict[str, str]]" = {
+    TASK: {"subject": SUBJECT, "check": "assert-nonempty"},
+    OTHER_TASK: {"subject": OTHER_SUBJECT, "check": "assert-nonempty"},
+}
 
-# (row number, label, predicate, the records the row's condition positively requires). The fourth
-# element is what makes the necessity test meaningful: perturbing a record the condition never
-# mentions proves nothing, so only these are removed.
-ROWS = (
-    (1, "UNCERTAIN", lambda r, d: "uncertainty" in r and "stop-evidence" not in r,
-     ("uncertainty",)),
-    (2, "ABANDONED", lambda r, d: "disposition" in r and d in ABANDON_RESOLUTIONS,
-     ("disposition",)),
-    (3, "RECONCILED", lambda r, d: "disposition" in r and d in RECONCILE_RESOLUTIONS,
-     ("disposition",)),
-    (4, "INTEGRATED", lambda r, d: {"acceptance", "commit-observed"} <= r,
-     ("acceptance", "commit-observed")),
-    (5, "QUARANTINED", lambda r, d: "hold" in r and d is None, ("hold",)),
-    (6, "STOPPED", lambda r, d: "stop-evidence" in r and d is None, ("stop-evidence",)),
-    (7, "LAUNCH_FAILED", lambda r, d: "launch-failed" in r, ("launch-failed",)),
-    (8, "VERIFIED", lambda r, d: "acceptance" in r and "commit-observed" not in r, ("acceptance",)),
-    (9, "RESULT_READY", lambda r, d: {"result", "classification"} <= r and "acceptance" not in r,
-     ("result", "classification")),
-    (10, "PUBLISHED", lambda r, d: "result" in r and "classification" not in r, ("result",)),
-    (11, "RUNNING", lambda r, d: {"launch", "heartbeat"} <= r and "result" not in r,
-     ("launch", "heartbeat")),
-    (12, "DISPATCHED", lambda r, d: "launch" in r and not {"heartbeat", "result"} & r, ("launch",)),
-    (13, "DISPATCHING", lambda r, d: "start-permit" in r and "launch" not in r, ("start-permit",)),
-    (14, "PREPARED", lambda r, d: r == {"prepared"}, ()),
-)
+# §12.2: the three proofs of death. Staleness and a different host are triggers, never proofs.
+DEATH_PROOFS = frozenset({"host_rebooted", "pid_gone", "operator_attestation"})
 
-LABELS = tuple(label for _, label, _, _ in ROWS)
-
-# Rows 2, 3, 4 and 7 are §6.1's finalizable conditions. Terminality for *scheduling* is what these
-# four are; terminality for claim-holding is `finalized`, which is a different question. Conflating
-# the two is the defect review 03 named as R3-06.
-FINALIZABLE_ROWS = (2, 3, 4, 7)
-SCHEDULING_TERMINAL = ("ABANDONED", "RECONCILED", "INTEGRATED", "LAUNCH_FAILED")
-
-# §6.2, T9-T14 and T25-T29: every state a hold may be written from. Bounded so that no hold is
-# written into a finalizable condition, where rows 4 and 7 would shadow it.
-HOLD_SOURCE_LABELS = (
-    "PREPARED", "DISPATCHING", "DISPATCHED", "RUNNING", "PUBLISHED", "RESULT_READY", "VERIFIED",
-    "UNCERTAIN", "STOPPED",
-)
-
-UNLABELLED = "<unreadable>"
+# The fields each record kind must carry for a projection to read it at all (§7.6).
+RECORD_FIELDS: "Dict[str, frozenset]" = {
+    "reservation": frozenset({"kind", "attempt", "coordinator", "task", "subjects", "definition_hash"}),
+    "grant": frozenset({"kind", "attempt", "coordinator", "task", "subjects", "definition_hash"}),
+    "launch": frozenset({"kind", "attempt", "coordinator", "capability", "at"}),
+    "result": frozenset({"kind", "attempt", "coordinator", "outcome", "code"}),
+    "capture": frozenset({"kind", "attempt", "coordinator", "check", "subjects", "exit", "code"}),
+    "acceptance": frozenset(
+        {"kind", "attempt", "coordinator", "task", "accepted_snapshot", "definition_hash",
+         "qualifying_captures", "intent", "receipt"}
+    ),
+    "release": frozenset({"kind", "attempt", "coordinator"}),
+    "seal": frozenset({"kind", "attempt", "coordinator", "evidence"}),
+    "classification": frozenset({"kind", "task", "coordinator", "cause_id", "cause_class"}),
+    "resolution": frozenset({"kind", "task", "coordinator", "cause_id", "decided_at", "decided_by"}),
+    "death-proof": frozenset({"kind", "coordinator", "proof", "taken_by", "successor_generation"}),
+    "owner": frozenset({"kind", "coordinator", "generation"}),
+}
 
 
-def label(records: "frozenset[str]", disposition: "str | None" = None) -> str:
-    """§6.1: the first matching row's label.
+def digest(value: object) -> str:
+    """§7.3's canonical serialization, reduced to what the model needs: sorted keys, no whitespace."""
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
-    `prepared` is a precondition of the whole table, and an unmatched set is reported rather than
-    labelled — both are the document's rules, not conveniences of this model.
+
+def receipt_for(
+    accepted_snapshot: "Dict[str, Optional[str]]",
+    attempt: str,
+    definition_hash: str,
+    intent: str,
+    qualifying_captures: "List[str]",
+) -> str:
+    """§11.3: `rcp-` plus 32 hex over the five-key object. `receipt` itself is not one of the keys."""
+    body = {
+        "accepted_snapshot": accepted_snapshot,
+        "attempt_id": attempt,
+        "definition_hash": definition_hash,
+        "intent": intent,
+        "qualifying_captures": qualifying_captures,
+    }
+    return "rcp-" + digest(body)[:32]
+
+
+@dataclass
+class Adapter:
+    """§17.1: what a host's executor can be evidenced to do, not what its documentation says."""
+
+    name: str
+    seals: bool          # a finished worker can be attested gone
+    resumable: bool      # a finished worker can be restarted, so "finished" is not "sealed"
+
+
+SEALING = Adapter("sealing", seals=True, resumable=False)
+RESUMABLE = Adapter("resumable", seals=False, resumable=True)
+
+
+@dataclass
+class Store:
+    """The durable side: publish-if-absent journal records, plus canonical task state."""
+
+    records: "Dict[str, Any]" = field(default_factory=dict)
+    canonical: "Dict[str, Dict[str, Any]]" = field(default_factory=dict)
+    revision: int = 0
+    conflicts: "List[str]" = field(default_factory=list)
+
+    def publish(self, path: str, record: "Dict[str, Any]") -> str:
+        """§7.2: never clobber. Identical bytes are success; different bytes are a recorded event."""
+        existing = self.records.get(path)
+        if existing is None:
+            self.records[path] = copy.deepcopy(record)
+            return "published"
+        if existing == record:
+            return "identical"
+        self.conflicts.append(path)
+        return "conflict"
+
+    def of_kind(self, kind: str) -> "List[Dict[str, Any]]":
+        return [r for r in self.records.values() if isinstance(r, dict) and r.get("kind") == kind]
+
+
+@dataclass
+class World:
+    """Everything the store cannot see: the processes, the bytes, and the host's adapter."""
+
+    adapter: Adapter = field(default_factory=lambda: SEALING)
+    store: Store = field(default_factory=Store)
+    armed: "Set[str]" = field(default_factory=set)     # launch authorized, not yet physically started
+    running: "Set[str]" = field(default_factory=set)   # a process exists and can write
+    content: "Dict[str, str]" = field(default_factory=dict)
+    definition: "Dict[str, Dict[str, str]]" = field(default_factory=lambda: copy.deepcopy(DEFINITION))
+    read_after_indeterminate: "List[str]" = field(default_factory=list)
+
+
+def can_write(world: World, attempt: str) -> bool:
+    """A launch that has been authorized but not yet fired can still write: that is R4-01."""
+    return attempt in world.armed or attempt in world.running
+
+
+# --------------------------------------------------------------------------------------------------
+# Facts derived from records (§6.1) — never from a process
+# --------------------------------------------------------------------------------------------------
+
+
+def capability(store: Store, attempt: str) -> str:
+    """`none → issued → consumed`. Consumption is the result record, so an unpublished result reads
+    as `issued`, which is the conservative direction."""
+    if f"launches/{attempt}.json" not in store.records:
+        return "none"
+    if f"results/{attempt}.json" in store.records:
+        return "consumed"
+    return "issued"
+
+
+def sealed(store: Store, attempt: str) -> bool:
+    return f"seals/{attempt}.json" in store.records
+
+
+def active_grants(store: Store) -> "Dict[str, Dict[str, Any]]":
+    grants = {}
+    for record in store.of_kind("grant"):
+        attempt = record["attempt"]
+        if f"releases/{attempt}.json" not in store.records:
+            grants[attempt] = record
+    return grants
+
+
+def open_causes(store: Store, task: str) -> "Set[str]":
+    """§14.2: the gate closes on classification and opens on resolution. A stop is not a diagnosis."""
+    resolved = {r["cause_id"] for r in store.of_kind("resolution")}
+    return {
+        r["cause_id"]
+        for r in store.of_kind("classification")
+        if r["task"] == task and r["cause_class"] != "operator_stop" and r["cause_id"] not in resolved
+    }
+
+
+def explained_generations(store: Store) -> "Set[int]":
+    return {0} | {int(r["generation"]) for r in store.of_kind("owner")}
+
+
+def projection(store: Store, path: str) -> str:
+    """§6.3 and I5: `present`, `absent`, or `indeterminate`. A record that exists is never absent."""
+    record = store.records.get(path)
+    if record is None:
+        return "absent"
+    if not isinstance(record, dict):
+        return "indeterminate"
+    required = RECORD_FIELDS.get(record.get("kind"))
+    if required is None or not required <= set(record):
+        return "indeterminate"
+    generation = record.get("generation")
+    if generation is not None and int(generation) not in explained_generations(store):
+        return "indeterminate"
+    return "present"
+
+
+def indeterminate_records(store: Store) -> "List[str]":
+    return sorted(p for p in store.records if projection(store, p) == "indeterminate")
+
+
+def snapshot_of(world: World, subjects: "List[str]") -> "Dict[str, Optional[str]]":
+    return {s: (digest(world.content[s]) if s in world.content else None) for s in subjects}
+
+
+# --------------------------------------------------------------------------------------------------
+# Durable effects and the operations that order them (§8.1, §8.2)
+# --------------------------------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Publish:
+    path: str
+    record: "Dict[str, Any]"
+
+
+@dataclass(frozen=True)
+class Arm:
+    """The launch authorization taking physical effect. The spawn itself fires later, or never."""
+
+    attempt: str
+
+
+@dataclass(frozen=True)
+class CommitCanonical:
+    task: str
+    receipt: str
+
+
+Effect = Union[Publish, Arm, CommitCanonical]
+
+
+@dataclass
+class Operation:
+    name: str
+    code: str
+    effects: "List[Effect]"
+
+
+def apply_effect(world: World, effect: Effect) -> None:
+    if indeterminate_records(world.store):
+        world.read_after_indeterminate.append(type(effect).__name__)
+    if isinstance(effect, Publish):
+        world.store.publish(effect.path, effect.record)
+    elif isinstance(effect, Arm):
+        world.armed.add(effect.attempt)
+    else:
+        entry = world.store.canonical.setdefault(effect.task, {"status": "RUNNING", "evidence": []})
+        entry["status"] = "DONE"
+        if effect.receipt not in entry["evidence"]:
+            entry["evidence"].append(effect.receipt)
+        world.store.revision += 1
+
+
+def op_reserve(attempt: str, coordinator: str, task: str, subject: str, definition_hash: str) -> Operation:
+    return Operation("reserve", "O1", [
+        Publish(f"claims/{attempt}.json", {
+            "kind": "reservation", "attempt": attempt, "coordinator": coordinator,
+            "task": task, "subjects": [subject], "definition_hash": definition_hash,
+        }),
+    ])
+
+
+def op_grant(attempt: str, coordinator: str, task: str, subject: str, definition_hash: str) -> Operation:
+    return Operation("grant", "O2", [
+        Publish(f"grants/{attempt}.json", {
+            "kind": "grant", "attempt": attempt, "coordinator": coordinator,
+            "task": task, "subjects": [subject], "definition_hash": definition_hash,
+        }),
+    ])
+
+
+def op_issue_capability(attempt: str, coordinator: str) -> Operation:
+    """Two effects in one order, and R4-01 lives in the gap: the record is durable before the spawn."""
+    return Operation("issue-capability", "O3", [
+        Publish(f"launches/{attempt}.json", {
+            "kind": "launch", "attempt": attempt, "coordinator": coordinator,
+            "capability": "issued", "at": "2026-09-11T00:00:00+00:00",
+        }),
+        Arm(attempt),
+    ])
+
+
+def op_record_result(attempt: str, coordinator: str, outcome: str = "exited", code: int = 0) -> Operation:
+    return Operation("record-result", "O10", [
+        Publish(f"results/{attempt}.json", {
+            "kind": "result", "attempt": attempt, "coordinator": coordinator,
+            "outcome": outcome, "code": code,
+        }),
+    ])
+
+
+def op_capture(attempt: str, coordinator: str, subject: str, after: "Optional[str]") -> Operation:
+    return Operation("capture", "O8", [
+        Publish(f"captures/{attempt}-0001.json", {
+            "kind": "capture", "attempt": attempt, "coordinator": coordinator,
+            "check": "assert-nonempty", "subjects": [{"path": subject, "after": after}],
+            "exit": "exited", "code": 0,
+        }),
+    ])
+
+
+def op_seal(attempt: str, coordinator: str, evidence: str) -> Operation:
+    return Operation("seal", "O12", [
+        Publish(f"seals/{attempt}.json", {
+            "kind": "seal", "attempt": attempt, "coordinator": coordinator, "evidence": evidence,
+        }),
+    ])
+
+
+def op_accept(
+    attempt: str, coordinator: str, task: str,
+    accepted_snapshot: "Dict[str, Optional[str]]", definition_hash: str,
+) -> Operation:
+    captures = [f"{attempt}-0001"]
+    receipt = receipt_for(accepted_snapshot, attempt, definition_hash, "accept", captures)
+    return Operation("accept", "O11", [
+        Publish(f"acceptances/{attempt}.json", {
+            "kind": "acceptance", "attempt": attempt, "coordinator": coordinator, "task": task,
+            "accepted_snapshot": accepted_snapshot, "definition_hash": definition_hash,
+            "qualifying_captures": captures, "intent": "accept", "receipt": receipt,
+        }),
+        CommitCanonical(task, receipt),
+    ])
+
+
+def op_withdraw(attempt: str, coordinator: str, task: str, cause: str) -> Operation:
+    return Operation("withdraw", "O13", [
+        Publish(f"withdrawals/{attempt}.json", {
+            "kind": "classification", "task": task, "coordinator": coordinator,
+            "cause_id": f"{attempt}-{cause}", "cause_class": cause,
+        }),
+    ])
+
+
+def op_classify(task: str, coordinator: str, cause_id: str, cause_class: str) -> Operation:
+    return Operation("classify", "O7", [
+        Publish(f"causes/{cause_id}.json", {
+            "kind": "classification", "task": task, "coordinator": coordinator,
+            "cause_id": cause_id, "cause_class": cause_class,
+        }),
+    ])
+
+
+def op_resolve(task: str, coordinator: str, cause_id: str) -> Operation:
+    return Operation("resolve", "O9", [
+        Publish(f"resolutions/{cause_id}.json", {
+            "kind": "resolution", "task": task, "coordinator": coordinator, "cause_id": cause_id,
+            "decided_at": "2026-09-11T01:00:00+00:00", "decided_by": "operator",
+        }),
+    ])
+
+
+def op_release(attempt: str, coordinator: str) -> Operation:
+    return Operation("release", "O16", [
+        Publish(f"releases/{attempt}.json", {
+            "kind": "release", "attempt": attempt, "coordinator": coordinator,
+        }),
+    ])
+
+
+def op_take_over(coordinator: str, dead: str, proof: str, generation: int) -> Operation:
+    """The proof names its successor, so a crash between the two records still has a completion.
+
+    Without `taken_by` and `successor_generation` on the proof, a store holding only the first effect
+    cannot say who was taking over, and `recover` would have to guess. That is the R4-04 shape: an
+    ordered effect list is only recoverable if each effect determines the ones after it. The successor's
+    generation is spelled separately from `generation`, which means "written by this generation" and is
+    what `projection` checks: a proof announcing a generation is not yet a record written by one.
     """
-    if "prepared" not in records:
-        return UNLABELLED
-    for _, name, predicate, _ in ROWS:
-        if predicate(records, disposition):
-            return name
-    return UNLABELLED
+    return Operation("take-over", "O17", [
+        Publish(f"deaths/{dead}.json", {
+            "kind": "death-proof", "coordinator": dead, "proof": proof,
+            "taken_by": coordinator, "successor_generation": generation,
+        }),
+        Publish(f"owners/{coordinator}.json", {
+            "kind": "owner", "coordinator": coordinator, "generation": generation,
+        }),
+    ])
 
 
-def matching_rows(records: "frozenset[str]", disposition: "str | None" = None) -> "list[int]":
-    if "prepared" not in records:
-        return []
-    return [n for n, _, predicate, _ in ROWS if predicate(records, disposition)]
+# --------------------------------------------------------------------------------------------------
+# Guards: refusal codes over facts (§4). Nothing here reads a process.
+# --------------------------------------------------------------------------------------------------
 
 
-def finalized(records: "frozenset[str]") -> bool:
-    """§6.1's second predicate."""
-    return "release" in records
+def refuse_common(world: World) -> "Optional[str]":
+    if indeterminate_records(world.store):
+        return "R-INDETERMINATE"
+    return None
 
 
-def holds_claims(records: "frozenset[str]") -> bool:
-    """§5.2: `prepared` present and `release` absent.
+def refuse_reserve(world: World, task: str, subject: str) -> "Optional[str]":
+    if not world.adapter.seals:
+        return "R-DETACHED-CHILD"
+    if open_causes(world.store, task):
+        return "R-GATE-CLOSED"
+    for record in active_grants(world.store).values():
+        if subject in record["subjects"]:
+            return "R-CLAIM-CONFLICT"
+    return None
 
-    Deliberately not a function of the label. That independence is the fix for R3-06, so it is the
-    property most worth asserting.
+
+def refuse_grant(world: World, attempt: str, subject: str) -> "Optional[str]":
+    if f"claims/{attempt}.json" not in world.store.records:
+        return "R-NO-RESERVATION"
+    for other, record in active_grants(world.store).items():
+        if other != attempt and subject in record["subjects"]:
+            return "R-CLAIM-CONFLICT"
+    return None
+
+
+def refuse_issue_capability(world: World, attempt: str) -> "Optional[str]":
+    if attempt not in active_grants(world.store):
+        return "R-NO-GRANT"
+    if capability(world.store, attempt) != "none":
+        return "R-CAPABILITY-ISSUED"
+    return None
+
+
+def refuse_accept(
+    world: World, attempt: str, task: str, snapshot_now: "Dict[str, Optional[str]]",
+) -> "Optional[str]":
+    grant = world.store.records.get(f"grants/{attempt}.json")
+    if grant is None:
+        return "R-NO-GRANT"
+    capture = world.store.records.get(f"captures/{attempt}-0001.json")
+    if capture is None:
+        return "R-NO-CAPTURE"
+    if digest(world.definition) != grant["definition_hash"]:
+        return "definition_changed"
+    for subject in capture["subjects"]:
+        if snapshot_now.get(subject["path"]) != subject["after"]:
+            return "stale_evidence"
+    return None
+
+
+def refuse_release(world: World, attempt: str) -> "Optional[str]":
+    """I2's guard. `consumed` is not `sealed` when the adapter can resume a finished worker."""
+    state = capability(world.store, attempt)
+    if state == "issued" and not sealed(world.store, attempt):
+        return "R-LAUNCH-IN-FLIGHT"
+    if state == "consumed" and world.adapter.resumable and not sealed(world.store, attempt):
+        return "R-LAUNCH-IN-FLIGHT"
+    return None
+
+
+def refuse_take_over(world: World, dead: str, proof: str) -> "Optional[str]":
+    del dead
+    if proof not in DEATH_PROOFS:
+        return "R-NO-PROOF-OF-DEATH"
+    return None
+
+
+# --------------------------------------------------------------------------------------------------
+# Recovery: a function from a store to the operations that complete every incomplete prefix (§8.2)
+# --------------------------------------------------------------------------------------------------
+
+
+def recover(store: Store) -> "List[Operation]":
+    """Pure over the store. The caller applies the effects, so recovery is run rather than claimed.
+
+    An issued-but-unconsumed capability has no completion: the attempt is indeterminate and its
+    claims stay held, which is why a crash between `Publish` and `Arm` does not free the subject.
     """
-    return "prepared" in records and not finalized(records)
-
-
-# One witness record set per row, in row order, each without `release` so the label and the
-# finalization predicate are exercised independently.
-WITNESSES = (
-    (1, frozenset({"prepared", "start-permit", "launch", "uncertainty"}), None),
-    (2, frozenset({"prepared", "start-permit", "launch", "uncertainty", "stop-evidence",
-                   "disposition"}), "abandon"),
-    (3, frozenset({"prepared", "start-permit", "launch", "result", "hold", "disposition"}), "block"),
-    (4, frozenset({"prepared", "start-permit", "launch", "result", "classification",
-                   "acceptance", "commit-observed"}), None),
-    (5, frozenset({"prepared", "start-permit", "launch", "result", "hold"}), None),
-    (6, frozenset({"prepared", "start-permit", "launch", "uncertainty", "stop-evidence"}), None),
-    (7, frozenset({"prepared", "start-permit", "launch-failed"}), None),
-    (8, frozenset({"prepared", "start-permit", "launch", "result", "classification",
-                   "acceptance"}), None),
-    (9, frozenset({"prepared", "start-permit", "launch", "result", "classification"}), None),
-    (10, frozenset({"prepared", "start-permit", "launch", "result"}), None),
-    (11, frozenset({"prepared", "start-permit", "launch", "heartbeat"}), None),
-    (12, frozenset({"prepared", "start-permit", "launch"}), None),
-    (13, frozenset({"prepared", "start-permit"}), None),
-    (14, frozenset({"prepared"}), None),
-)
-
-ALL_RECORD_NAMES = (
-    "prepared", "start-permit", "launch", "launch-failed", "heartbeat", "result",
-    "classification", "hold", "uncertainty", "stop-evidence", "acceptance",
-    "commit-observed", "disposition", "release",
-)
-
-
-# --------------------------------------------------------------------------------------------------
-# §6.2 — the transition table as a reachability graph
-# --------------------------------------------------------------------------------------------------
-
-# §6.2 declares each row's source as a *label*, and §6.1 computes the label from the record set. The
-# two can disagree: a row may declare a source that the label function never produces for any set the
-# row could fire from, in which case the row is dead and whatever it writes is shadowed. That is the
-# defect class this graph exists to catch, so the graph fires a row only when `label()` on the
-# predecessor actually returns one of its declared sources — never when the table merely says so.
-#
-# Parameterised record families collapse to one name, as in §6.1: `hold/*`, `uncertainty/*`,
-# `heartbeat/*`. A record already present is not written again, so such a row simply does not fire.
-
-_PREPARED_TO_RUNNING = ("PREPARED", "DISPATCHING", "DISPATCHED", "RUNNING")
-_PREPARED_TO_VERIFIED = (*_PREPARED_TO_RUNNING, "PUBLISHED", "RESULT_READY", "VERIFIED")
-
-# (row id, declared source labels — `None` means the empty journal, record written, resolutions)
-TABLE_62 = (
-    ("T1", (None,), "prepared", None),
-    ("T2", ("PREPARED",), "start-permit", None),
-    ("T3", ("DISPATCHING",), "launch", None),
-    ("T4", ("DISPATCHING",), "launch-failed", None),
-    ("T5", ("DISPATCHING",), "uncertainty", None),
-    ("T6", ("DISPATCHED",), "heartbeat", None),
-    ("T7", ("DISPATCHED", "RUNNING"), "result", None),
-    ("T8", ("PUBLISHED",), "classification", None),
-    ("T9", ("PUBLISHED",), "hold", None),
-    ("T10", ("PUBLISHED",), "hold", None),
-    ("T11", ("PUBLISHED",), "hold", None),
-    ("T12", ("PUBLISHED",), "hold", None),
-    ("T13", ("RESULT_READY",), "acceptance", None),
-    ("T14", ("RESULT_READY",), "hold", None),
-    ("T15", ("VERIFIED",), "commit-observed", None),
-    ("T16", ("INTEGRATED", "LAUNCH_FAILED"), "release", None),
-    ("T17", ("DISPATCHED", "RUNNING"), "uncertainty", None),
-    ("T18", ("DISPATCHED", "RUNNING"), "uncertainty", None),
-    ("T19", ("UNCERTAIN",), "stop-evidence", None),
-    ("T20", ("STOPPED", "QUARANTINED"), "disposition", ("block",)),
-    ("T21", ("STOPPED", "QUARANTINED"), "disposition", ("accept_partial",)),
-    ("T22", ("STOPPED", "QUARANTINED"), "disposition", ("retry",)),
-    ("T23", ("STOPPED", "QUARANTINED"), "disposition", ("abandon",)),
-    ("T24", ("RECONCILED", "ABANDONED"), "release", None),
-    ("T25", ("PREPARED",), "hold", None),
-    ("T26", _PREPARED_TO_RUNNING, "hold", None),
-    ("T27", _PREPARED_TO_RUNNING, "hold", None),
-    ("T28", (*_PREPARED_TO_VERIFIED, "UNCERTAIN", "STOPPED"), "hold", None),
-    ("T29", (*_PREPARED_TO_VERIFIED, "UNCERTAIN", "STOPPED"), "hold", None),
-)
-
-State = Tuple[FrozenSet[str], Optional[str]]
-EMPTY_STATE = (frozenset(), None)
-
-
-def source_label(state: State) -> "str | None":
-    records, disposition = state
-    if not records:
-        return None
-    return label(records, disposition)
-
-
-def successors(state: State) -> "list[tuple[str, State]]":
-    src = source_label(state)
-    records, disposition = state
-    out = []
-    for row, sources, record, resolutions in TABLE_62:
-        if src not in sources or record in records:
+    operations: "List[Operation]" = []
+    for path in sorted(store.records):
+        record = store.records[path]
+        if not isinstance(record, dict):
             continue
-        if resolutions is None:
-            out.append((row, (records | {record}, disposition)))
-        else:
-            for resolution in resolutions:
-                out.append((row, (records | {record}, resolution)))
-    return out
-
-
-def explore() -> "tuple[set[State], set[tuple[State, str, State]]]":
-    """Every state §6.2 can actually produce, and every edge that produced one."""
-    seen = {EMPTY_STATE}
-    edges = set()
-    frontier = [EMPTY_STATE]
-    while frontier:
-        state = frontier.pop()
-        for row, nxt in successors(state):
-            edges.add((state, row, nxt))
-            if nxt not in seen:
-                seen.add(nxt)
-                frontier.append(nxt)
-    return seen, edges
-
-
-REACHABLE, EDGES = explore()
-
-# --------------------------------------------------------------------------------------------------
-# §8.2 — claims and the conflict relation
-# --------------------------------------------------------------------------------------------------
-
-
-class Claim:
-    """`{namespace, key, access}` with the two namespaces of §8.2."""
-
-    __slots__ = ("access", "key", "namespace")
-
-    def __init__(self, namespace: str, key: str, access: str) -> None:
-        if namespace not in {"path", "external"}:
-            raise ValueError(f"unknown namespace {namespace!r}")
-        if access not in {"read", "write"}:
-            raise ValueError(f"unknown access {access!r}")
-        if namespace == "path" and not key.startswith("/"):
-            # §8.2: "A bare name is never a claim." The derivation error names the offending value.
-            raise ValueError(f"path claim is not an absolute resolved path: {key!r}")
-        self.namespace = namespace
-        self.key = key
-        self.access = access
-
-    def __repr__(self) -> str:  # pragma: no cover - diagnostics only
-        return f"Claim({self.namespace}:{self.key} {self.access})"
-
-
-def _segments(namespace: str, key: str) -> "list[str]":
-    separator = "/"
-    return [part for part in key.split(separator) if part] if namespace == "path" else \
-        [part for part in key.split("/") if part]
-
-
-def is_proper_ancestor(namespace: str, a: str, b: str) -> bool:
-    """Component-wise ancestry, so `/repo-a` is not an ancestor of `/repo-b`."""
-    first, second = _segments(namespace, a), _segments(namespace, b)
-    return len(first) < len(second) and second[: len(first)] == first
-
-
-def conflict(a: Claim, b: Claim) -> bool:
-    """§8.2's relation, written once and tested in both directions by construction."""
-    if a.namespace != b.namespace:
-        return False
-    if a.access == "read" and b.access == "read":
-        return False
-    return (
-        a.key == b.key
-        or is_proper_ancestor(a.namespace, a.key, b.key)
-        or is_proper_ancestor(a.namespace, b.key, a.key)
-    )
+        kind = record.get("kind")
+        if kind == "reservation" and f"grants/{record['attempt']}.json" not in store.records:
+            operations.append(op_grant(
+                record["attempt"], record["coordinator"], record["task"],
+                record["subjects"][0], record["definition_hash"],
+            ))
+        elif kind == "death-proof" and f"owners/{record['taken_by']}.json" not in store.records:
+            operations.append(Operation("complete-take-over", "O17", [
+                Publish(f"owners/{record['taken_by']}.json", {
+                    "kind": "owner", "coordinator": record["taken_by"],
+                    "generation": record["successor_generation"],
+                }),
+            ]))
+        elif kind == "acceptance":
+            committed = store.canonical.get(record["task"], {})
+            if record["receipt"] not in committed.get("evidence", []):
+                operations.append(Operation("complete-commit", "O11", [
+                    CommitCanonical(record["task"], record["receipt"]),
+                ]))
+    return operations
 
 
 # --------------------------------------------------------------------------------------------------
-# §8.1 — the two admission predicates
+# The invariants, stated externally
 # --------------------------------------------------------------------------------------------------
 
 
-def delegable(effect_kind: str, required: bool, status: str) -> bool:
-    """§8.1 condition 3."""
-    return effect_kind in {"none", "local_write"} and not required and status == "not_required"
+def violations(world: World, last: "Optional[Effect]" = None) -> "List[str]":
+    store = world.store
+    found: "List[str]" = []
 
+    claimed: "Dict[str, str]" = {}
+    for attempt, record in sorted(active_grants(store).items()):
+        # A malformed grant is reported by I5, never dereferenced here: reading it as a claim
+        # over nothing is exactly the absence-from-unreadability I5 exists to forbid.
+        for subject in record.get("subjects") or []:
+            if subject in claimed and claimed[subject] != attempt:
+                found.append(f"I1: {claimed[subject]} and {attempt} both hold {subject}")
+            claimed[subject] = attempt
 
-def in_force(required: bool, status: str, scope: "str | None", frozen_scope: "str | None") -> bool:
-    """§8.1 condition 4."""
-    if not required:
-        return status == "not_required"
-    return status == "explicit" and scope is not None and scope == frozen_scope
+    for record in store.of_kind("release"):
+        if can_write(world, record["attempt"]):
+            found.append(f"I2: {record['attempt']} is released while a modelled process can write")
 
+    if isinstance(last, Publish) and last.record.get("kind") == "acceptance":
+        subjects = sorted(last.record["accepted_snapshot"])
+        if last.record["accepted_snapshot"] != snapshot_of(world, subjects):
+            found.append("I3: accepted_snapshot is not the modelled bytes at commit time")
+        if last.record["definition_hash"] != digest(world.definition):
+            found.append("I3: definition_hash is not the modelled definition")
 
-# --------------------------------------------------------------------------------------------------
-# §7.3 — the dispatch gate
-# --------------------------------------------------------------------------------------------------
+    for task, entry in sorted(store.canonical.items()):
+        if entry.get("status") == "DONE" and not entry.get("evidence"):
+            found.append(f"I4: {task} is DONE with no receipt in its evidence")
 
-
-def dispatch_blocked(
-    attempts: "list[tuple[frozenset[str], str | None]]",
-    schema_version: int = 4,
-    ownership_current: bool = True,
-) -> bool:
-    """§7.3: a query over the journal, never a stored flag.
-
-    The `"hold" not in records` conjunct in the first clause is the fix this model forced. Rows 2-5
-    of §6.1's classification table quarantine a publication *instead of* classifying it, so
-    `result ∧ ¬classification` stays true for a quarantined publication forever and clause 1 without
-    the conjunct never clears.
-    """
-    for records, disposition in attempts:
-        if "result" in records and "classification" not in records and "hold" not in records:
-            return True
-        if "hold" in records and disposition is None:
-            return True
-        if "uncertainty" in records and "stop-evidence" not in records:
-            return True
-    return schema_version != 4 or not ownership_current
+    for path in store.records:
+        if projection(store, path) == "absent":
+            found.append(f"I5: {path} projects as absent while its record exists")
+    if world.read_after_indeterminate:
+        found.append("I5: an effect was applied while the store held an unreadable record")
+    return found
 
 
 # --------------------------------------------------------------------------------------------------
-# §6.3 — crash prefixes and their deterministic recovery outcomes
+# Staging, crash injection, and the scenario table
 # --------------------------------------------------------------------------------------------------
 
-# Each multi-file transition is an ordered tuple of durable writes. A crash may land after any
-# prefix, so the model enumerates every prefix and asks for exactly one outcome.
-TRANSITIONS = {
-    "dispatch": ("canonical-running", "start-permit", "launch"),
-    "accept-and-commit": ("acceptance", "canonical-accept", "commit-observed"),
-    "finalize": ("canonical-final", "release"),
-    "launch-failure": ("launch-failed", "canonical-todo", "release"),
-    "reconcile": ("disposition", "canonical-disposition", "release"),
-    "collection": ("tombstone", "files-removed"),
-}
-
-OUTCOMES = {
-    ("dispatch", 0): "re-prepare or release; no host call can have happened",
-    ("dispatch", 1): "write the permit and proceed, or commit RUNNING -> TODO and release",
-    ("dispatch", 2): "discover(launch_key); failing that write uncertainty/dispatch_interrupted",
-    ("dispatch", 3): "complete: the attempt is DISPATCHED",
-    ("accept-and-commit", 0): "no acceptance: classification stands, re-decide adequacy",
-    ("accept-and-commit", 1): "re-read canonical state; retry the same commit with the same bytes",
-    ("accept-and-commit", 2): "write commit-observed",
-    ("accept-and-commit", 3): "complete: the attempt is INTEGRATED*",
-    ("finalize", 0): "re-run the required canonical commit idempotently, then release",
-    ("finalize", 1): "write release",
-    ("finalize", 2): "complete: finalization done",
-    ("launch-failure", 0): "no launch-failed: the dispatch prefix rules apply",
-    ("launch-failure", 1): "commit RUNNING -> TODO, then release",
-    ("launch-failure", 2): "write release",
-    ("launch-failure", 3): "complete: the attempt is LAUNCH_FAILED",
-    ("reconcile", 0): "no disposition: the hold or stop-evidence stands",
-    ("reconcile", 1): "apply the disposition's canonical status, then release",
-    ("reconcile", 2): "write release",
-    ("reconcile", 3): "complete: the attempt is RECONCILED or ABANDONED",
-    ("collection", 0): "nothing was promised; collection has not started",
-    ("collection", 1): "re-remove the named paths; a missing named path is collected, not lost",
-    ("collection", 2): "complete: collection done",
-}
+DEFINITION_HASH = digest(DEFINITION)
 
 
-def recovery_outcome(transition: str, prefix_length: int) -> str:
-    """The single outcome §6.3 assigns to one crash prefix."""
-    return OUTCOMES[(transition, prefix_length)]
+def run(world: World, operation: Operation, prefix: "Optional[int]" = None) -> "List[str]":
+    limit = len(operation.effects) if prefix is None else prefix
+    found: "List[str]" = []
+    for effect in operation.effects[:limit]:
+        apply_effect(world, effect)
+        found.extend(violations(world, effect))
+    return found
 
 
-def apply_outcome(transition: str, prefix_length: int) -> int:
-    """Applying a recovery outcome completes the transition. Idempotence is modelled as a fixpoint.
+def drain(world: World, rounds: int = 8) -> "List[str]":
+    found: "List[str]" = []
+    for _ in range(rounds):
+        pending = recover(world.store)
+        if not pending:
+            return found
+        for operation in pending:
+            found.extend(run(world, operation))
+    found.append("recovery did not reach a fixpoint")
+    return found
 
-    Recovery drives a prefix to the full write sequence. Applying it again from the completed state
-    is a no-op, which is what "tolerates having already happened" means in §6.3.
-    """
-    del prefix_length
-    return len(TRANSITIONS[transition])
+
+def staged(*stages: str, adapter: Adapter = SEALING) -> World:
+    """Build a world at a named point in one attempt's life. External steps are explicit."""
+    world = World(adapter=adapter)
+    for stage in stages:
+        if stage == "reserve":
+            run(world, op_reserve(ATTEMPT_A, COORDINATOR_A, TASK, SUBJECT, DEFINITION_HASH))
+        elif stage == "grant":
+            run(world, op_grant(ATTEMPT_A, COORDINATOR_A, TASK, SUBJECT, DEFINITION_HASH))
+        elif stage == "capability":
+            run(world, op_issue_capability(ATTEMPT_A, COORDINATOR_A))
+        elif stage == "fire":
+            world.armed.discard(ATTEMPT_A)
+            world.running.add(ATTEMPT_A)
+        elif stage == "write":
+            world.content[SUBJECT] = "produced"
+        elif stage == "exit":
+            world.running.discard(ATTEMPT_A)
+        elif stage == "result":
+            run(world, op_record_result(ATTEMPT_A, COORDINATOR_A))
+        elif stage == "capture":
+            run(world, op_capture(ATTEMPT_A, COORDINATOR_A, SUBJECT, digest(world.content[SUBJECT])))
+        elif stage == "seal":
+            run(world, op_seal(ATTEMPT_A, COORDINATOR_A, "pid_gone"))
+        else:  # pragma: no cover - a typo in a scenario name must not pass silently
+            raise AssertionError(f"unknown stage {stage!r}")
+    return world
+
+
+READY = ("reserve", "grant", "capability", "fire", "write", "exit", "result", "capture", "seal")
+
+# name -> (the stages that must already have happened, the operation whose prefixes are injected)
+SCENARIOS: "Tuple[Tuple[str, Tuple[str, ...], Callable[[World], Operation]], ...]" = (
+    ("O1 reserve", (), lambda w: op_reserve(ATTEMPT_A, COORDINATOR_A, TASK, SUBJECT, DEFINITION_HASH)),
+    ("O2 grant", ("reserve",), lambda w: op_grant(ATTEMPT_A, COORDINATOR_A, TASK, SUBJECT, DEFINITION_HASH)),
+    ("O3 issue-capability", ("reserve", "grant"), lambda w: op_issue_capability(ATTEMPT_A, COORDINATOR_A)),
+    ("O10 record-result", ("reserve", "grant", "capability", "fire", "write", "exit"),
+     lambda w: op_record_result(ATTEMPT_A, COORDINATOR_A)),
+    ("O8 capture", ("reserve", "grant", "capability", "fire", "write", "exit", "result"),
+     lambda w: op_capture(ATTEMPT_A, COORDINATOR_A, SUBJECT, digest(w.content[SUBJECT]))),
+    ("O11 accept", READY,
+     lambda w: op_accept(ATTEMPT_A, COORDINATOR_A, TASK, snapshot_of(w, [SUBJECT]), DEFINITION_HASH)),
+    ("O16 release", (*READY, "accept"), lambda w: op_release(ATTEMPT_A, COORDINATOR_A)),
+    ("O7 classify", ("reserve", "grant"),
+     lambda w: op_classify(TASK, COORDINATOR_A, "c-1", "adapter_error")),
+    ("O9 resolve", ("reserve", "grant"), lambda w: op_resolve(TASK, COORDINATOR_A, "c-1")),
+    ("O17 take-over", ("reserve", "grant", "capability"),
+     lambda w: op_take_over(COORDINATOR_B, COORDINATOR_A, "pid_gone", 1)),
+)
+
+
+def build(stages: "Tuple[str, ...]") -> World:
+    if stages and stages[-1] == "accept":
+        world = staged(*stages[:-1])
+        run(world, op_accept(ATTEMPT_A, COORDINATOR_A, TASK, snapshot_of(world, [SUBJECT]), DEFINITION_HASH))
+        return world
+    return staged(*stages)
+
+
+# --------------------------------------------------------------------------------------------------
+# I4: the real candidate, dry-run through the real validator
+# --------------------------------------------------------------------------------------------------
+
+
+def _task_record(task_id: str, status: str, evidence: "List[Dict[str, Any]]") -> "Dict[str, Any]":
+    return {
+        "id": task_id,
+        "name": f"Model task {task_id}",
+        "status": status,
+        "depends_on": [],
+        "outputs": [],
+        "success_criteria": "the modelled subject is non-empty",
+        "verification": "the modelled checker reports exit 0",
+        "evidence": evidence,
+        "effect": {"kind": "local_write", "description": "writes the modelled subject"},
+        "authorization": {
+            "required": False, "status": "not_required", "scope": None,
+            "source": None, "authorized_at": None,
+        },
+        "receipts": [],
+        "skip_reason": None,
+        "block_reason": None,
+    }
+
+
+def build_candidate(world: World, baseline: "Dict[str, Any]") -> "Dict[str, Any]":
+    """The real v3 candidate a coordinator would commit from this modelled canonical state."""
+    candidate = copy.deepcopy(baseline)
+    tasks = []
+    for task_id in (TASK, OTHER_TASK):
+        entry = world.store.canonical.get(task_id, {"status": "RUNNING", "evidence": []})
+        evidence = [
+            {"root": "workspace", "path": "evidence.md", "anchor": receipt}
+            for receipt in entry.get("evidence", [])
+        ]
+        tasks.append(_task_record(task_id, entry.get("status", "RUNNING"), evidence))
+    candidate["tasks"] = tasks
+    candidate["current_tasks"] = [t["id"] for t in tasks if t["status"] == "RUNNING"]
+    return candidate
+
+
+class RealValidatorHarness:
+    """One real project directory, reused so I4 costs file I/O once rather than once per assertion."""
+
+    def __init__(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        root = Path(self.tmp.name) / "workspace"
+        root.mkdir()
+        self.project_dir = allocate_project(
+            root, title="Parallel execution reference model", working_directory=Path(self.tmp.name)
+        )
+        state = json.loads((self.project_dir / "project.json").read_text(encoding="utf-8"))
+        state["status"] = "EXECUTING"
+        state["tasks"] = [_task_record(TASK, "RUNNING", []), _task_record(OTHER_TASK, "RUNNING", [])]
+        state["current_tasks"] = [TASK, OTHER_TASK]
+        (self.project_dir / "project.json").write_text(
+            json.dumps(state, indent=2) + "\n", encoding="utf-8"
+        )
+        self.baseline = state
+
+    def commit(self, candidate: "Dict[str, Any]") -> None:
+        """Make this candidate the baseline, so the next check sees a real DONE→X transition."""
+        landed = copy.deepcopy(candidate)
+        landed["revision"] = candidate["revision"] + 1
+        (self.project_dir / "project.json").write_text(
+            json.dumps(landed, indent=2) + "\n", encoding="utf-8"
+        )
+        self.baseline = landed
+
+    def errors(self, candidate: "Dict[str, Any]") -> "List[str]":
+        path = self.project_dir / "candidate.json"
+        path.write_text(json.dumps(candidate, indent=2) + "\n", encoding="utf-8")
+        report = check_candidate(self.project_dir, path, expected_revision=self.baseline["revision"])
+        return list(report.errors)
+
+    def close(self) -> None:
+        self.tmp.cleanup()
 
 
 # --------------------------------------------------------------------------------------------------
@@ -396,773 +733,315 @@ def apply_outcome(transition: str, prefix_length: int) -> int:
 # --------------------------------------------------------------------------------------------------
 
 
-class LabelFunctionTest(unittest.TestCase):
-    """§6.1: the label is a total, deterministic, first-match function of the record set, and it is
-    a different question from whether the attempt still holds its claims."""
+class CrashPrefixTests(unittest.TestCase):
+    """§8.2: every prefix of every operation has exactly one completion, and no prefix violates
+    an invariant on the way there."""
 
-    def test_the_table_is_a_bijection_onto_the_labels(self) -> None:
-        """Revision 3 had fifteen rows for fourteen labels because `release` was folded into three
-        row conditions. One row per label is what makes `label()` and `finalized()` separable."""
-        self.assertEqual(14, len(ROWS))
-        self.assertEqual(14, len(set(LABELS)))
-        self.assertEqual([n for n, _, _, _ in ROWS], list(range(1, 15)))
+    def test_no_prefix_violates_an_invariant(self) -> None:
+        for name, stages, builder in SCENARIOS:
+            for prefix in range(len(builder(build(stages)).effects) + 1):
+                with self.subTest(operation=name, prefix=prefix):
+                    world = build(stages)
+                    found = run(world, builder(world), prefix)
+                    found.extend(drain(world))
+                    self.assertEqual([], found)
 
-    def test_every_row_has_a_witness_that_reaches_it(self) -> None:
-        self.assertEqual(len(ROWS), len(WITNESSES))
-        for row, records, disposition in WITNESSES:
-            with self.subTest(row=row):
-                matched = matching_rows(records, disposition)
-                self.assertTrue(matched, f"row {row}'s witness matches nothing")
-                self.assertEqual(
-                    row, matched[0],
-                    f"row {row}'s witness is captured earlier by row {matched[0]}",
-                )
-
-    def test_every_label_is_reachable(self) -> None:
-        reached = {label(records, disposition) for _, records, disposition in WITNESSES}
-        self.assertEqual(set(LABELS), reached)
-
-    def test_each_row_condition_is_necessary(self) -> None:
-        """Remove a record the row's condition positively requires, and the row must stop matching.
-
-        Only the records the condition names are perturbed. Removing an unrelated record proves
-        nothing about the row, and asserting on it is how a necessity test becomes noise.
-        """
-        for row, records, disposition in WITNESSES:
-            predicate = ROWS[row - 1][2]
-            required = ROWS[row - 1][3]
-            self.assertTrue(predicate(records, disposition), f"row {row}'s witness does not match")
-            for name in required:
-                with self.subTest(row=row, without=name):
-                    self.assertIn(name, records, f"row {row} requires {name} but omits it")
-                    self.assertFalse(
-                        predicate(frozenset(records - {name}), disposition),
-                        f"row {row} still matches without {name}, so the conjunct is decoration",
-                    )
-
-    def test_row_14_is_the_empty_case_and_needs_no_required_record(self) -> None:
-        """`PREPARED` is `prepared` alone. Its condition names nothing else, which is why it is the
-        one row with an empty required set rather than an omission."""
-        self.assertEqual((), ROWS[13][3])
-        self.assertEqual("PREPARED", label(frozenset({"prepared"})))
-
-    def test_disposition_resolution_discriminates(self) -> None:
-        records = frozenset({"prepared", "start-permit", "launch", "result", "hold", "disposition"})
-        self.assertEqual("ABANDONED", label(records, "abandon"))
-        self.assertEqual("ABANDONED", label(records, "retry"), "T22 writes retry; row 2 must take it")
-        self.assertEqual("RECONCILED", label(records, "block"))
-        self.assertEqual("RECONCILED", label(records, "accept_partial"))
-        self.assertEqual(
-            ABANDON_RESOLUTIONS | RECONCILE_RESOLUTIONS, RESOLUTIONS,
-            "the two rows must partition the resolutions, with none left unlabelled",
-        )
-        self.assertEqual(frozenset(), ABANDON_RESOLUTIONS & RECONCILE_RESOLUTIONS)
-
-    def test_no_record_set_needs_two_labels(self) -> None:
-        """First-match resolution means one label. What is worth checking is that wherever two rows
-        match, the answer is the earlier row — the document's order, not the model's iteration."""
-        names = [n for n in ALL_RECORD_NAMES if n != "prepared"]
-        overlaps = 0
-        for size in range(0, 4):
-            for combination in itertools.combinations(names, size):
-                records = frozenset(("prepared", *combination))
-                for disposition in (None, *sorted(RESOLUTIONS)):
-                    if ("disposition" in records) != (disposition is not None):
+    def test_every_prefix_recovers_to_the_uncrashed_store(self) -> None:
+        for name, stages, builder in SCENARIOS:
+            complete = build(stages)
+            run(complete, builder(complete))
+            drain(complete)
+            expected = (complete.store.records, complete.store.canonical)
+            for prefix in range(len(builder(build(stages)).effects) + 1):
+                with self.subTest(operation=name, prefix=prefix):
+                    world = build(stages)
+                    run(world, builder(world), prefix)
+                    drain(world)
+                    if prefix == 0:
                         continue
-                    matched = matching_rows(records, disposition)
-                    if len(matched) > 1:
-                        overlaps += 1
-                        with self.subTest(records=sorted(records), disposition=disposition):
-                            self.assertEqual(matched[0], min(matched))
-                            self.assertEqual(ROWS[matched[0] - 1][1], label(records, disposition))
-        self.assertGreater(overlaps, 0, "no set matched two rows, so first-match was never tested")
+                    self.assertEqual(expected, (world.store.records, world.store.canonical))
 
-    def test_uncertainty_outranks_every_other_row(self) -> None:
-        """Consequence 1 of §6.1. A possible live writer must never be hidden behind a hold, a
-        result, or a disposition, because every other row's consequence assumes the writer stopped."""
-        names = [n for n in ALL_RECORD_NAMES if n not in {"prepared", "stop-evidence"}]
-        for size in range(0, 3):
-            for combination in itertools.combinations(names, size):
-                records = frozenset(("prepared", "uncertainty", *combination))
-                disposition = "abandon" if "disposition" in records else None
-                with self.subTest(records=sorted(records)):
-                    self.assertEqual("UNCERTAIN", label(records, disposition))
+    def test_recovery_of_a_complete_operation_is_a_no_op(self) -> None:
+        for name, stages, builder in SCENARIOS:
+            with self.subTest(operation=name):
+                world = build(stages)
+                run(world, builder(world))
+                drain(world)
+                self.assertEqual([], recover(world.store))
 
-    def test_hold_outranks_progress_but_not_uncertainty(self) -> None:
-        """Consequence 2, at the scope the document states: rows 8-13, the states whose canonical
-        status is still `RUNNING`. Row 4 is *above* row 5, which is why §6.2 bounds the hold sources
-        instead of relying on this ordering to cover them."""
-        published = frozenset({"prepared", "start-permit", "launch", "result"})
-        self.assertEqual("PUBLISHED", label(published))
-        self.assertEqual("QUARANTINED", label(published | {"hold"}))
-        verified = published | {"classification", "acceptance"}
-        self.assertEqual("VERIFIED", label(verified))
-        self.assertEqual("QUARANTINED", label(verified | {"hold"}))
-        self.assertEqual("UNCERTAIN", label(verified | {"hold", "uncertainty"}))
-
-    def test_unmatched_sets_are_reported_not_labelled(self) -> None:
-        """`prepared` is a precondition of the whole table (§6.1), so a set without it is
-        unreadable rather than mislabelled. This is the check that found the gap: before the
-        precondition was stated, `{launch}` silently labelled `DISPATCHED`."""
-        for records in (frozenset(), frozenset({"launch"}), frozenset({"result"}),
-                        frozenset({"start-permit", "launch", "heartbeat"})):
-            with self.subTest(records=sorted(records)):
-                self.assertEqual(UNLABELLED, label(records))
-                self.assertEqual([], matching_rows(records))
-
-    def test_finalization_is_orthogonal_to_the_label(self) -> None:
-        """R3-06, and the defect this model found in revision 3.
-
-        Adding `release` must not move a finalizable attempt to a different row. Revision 3 required
-        `release` inside rows 1-3, so an attempt that had written its disposition and crashed before
-        its release matched *no row at all* — a crash window with no label and therefore no recovery
-        rule. Separating the two predicates is what closes it.
-        """
-        for row, records, disposition in WITNESSES:
-            if row not in FINALIZABLE_ROWS:
-                continue
-            with self.subTest(row=row, label=label(records, disposition)):
-                self.assertFalse(finalized(records))
-                self.assertTrue(holds_claims(records))
-                released = records | {"release"}
-                self.assertEqual(
-                    label(records, disposition), label(released, disposition),
-                    "release changed the label, so the two predicates are entangled again",
-                )
-                self.assertTrue(finalized(released))
-                self.assertFalse(holds_claims(released))
-
-    def test_every_witness_holds_its_claims_before_release(self) -> None:
-        for row, records, disposition in WITNESSES:
-            with self.subTest(row=row, label=label(records, disposition)):
-                self.assertFalse(finalized(records))
-                self.assertTrue(holds_claims(records))
-
-    def test_release_is_unreachable_from_prepared(self) -> None:
-        """Row 14's `prepared` *only* excludes `release`, and §6.2 backs that: T16 and T24 are the
-        only rows writing `release` and neither has `PREPARED` as a source. So `{prepared, release}`
-        is unreachable, and the table must report it rather than invent a label for it."""
-        self.assertEqual(UNLABELLED, label(frozenset({"prepared", "release"})))
-        self.assertNotIn("PREPARED", {ROWS[n - 1][1] for n in FINALIZABLE_ROWS})
-
-    def test_a_hold_is_never_shadowed_from_any_permitted_source(self) -> None:
-        """§6.2's bounded hold sources, checked as a property of §6.1's order.
-
-        Revision 3 let T28 and T29 write a hold from "any unresolved" state, which includes
-        `INTEGRATED`* and `LAUNCH_FAILED`*. Rows 4 and 7 precede row 5, so the hold would leave the
-        label untouched and change no decision. Every permitted source must therefore either become
-        `QUARANTINED` or stay `UNCERTAIN` — the one state that outranks a hold on purpose.
-        """
-        for row, records, disposition in WITNESSES:
-            name = label(records, disposition)
-            if name not in HOLD_SOURCE_LABELS:
-                continue
-            with self.subTest(row=row, label=name):
-                held = label(records | {"hold"}, disposition)
-                expected = "UNCERTAIN" if name == "UNCERTAIN" else "QUARANTINED"
-                self.assertEqual(expected, held, f"a hold written from {name} is shadowed as {held}")
-
-    def test_no_hold_source_is_finalizable(self) -> None:
-        """The invariant is disjointness, not equality. `QUARANTINED` is a non-finalizable label that
-        is deliberately *not* a hold source: a quarantined attempt is owed a disposition, and §6.2
-        routes supersession of one through T22 rather than through a second hold."""
-        finalizable = {ROWS[n - 1][1] for n in FINALIZABLE_ROWS}
-        self.assertEqual(frozenset(), finalizable & set(HOLD_SOURCE_LABELS))
-        self.assertLess(set(HOLD_SOURCE_LABELS), set(LABELS))
-        self.assertNotIn("QUARANTINED", HOLD_SOURCE_LABELS)
-
-    def test_a_writer_that_may_be_live_never_appears_released(self) -> None:
-        """Priority 6 of the revision brief: quarantined or uncertain writers keep ownership until
-        execution is demonstrably stopped."""
-        for row, records, disposition in WITNESSES:
-            name = label(records, disposition)
-            if name in {"UNCERTAIN", "QUARANTINED", "STOPPED"}:
-                with self.subTest(row=row, label=name):
-                    self.assertTrue(holds_claims(records))
-                    self.assertNotIn(name, SCHEDULING_TERMINAL)
-
-    def test_exactly_four_rows_are_finalizable(self) -> None:
-        finalizable = {ROWS[n - 1][1] for n in FINALIZABLE_ROWS}
-        self.assertEqual(set(SCHEDULING_TERMINAL), finalizable)
-        self.assertEqual(4, len(FINALIZABLE_ROWS))
+    def test_a_crash_before_the_spawn_does_not_free_the_subject(self) -> None:
+        """R4-01's prefix: the launch record is durable, the spawn is not, and recovery must not
+        conclude that nothing happened."""
+        world = staged("reserve", "grant")
+        run(world, op_issue_capability(ATTEMPT_A, COORDINATOR_A), prefix=1)
+        drain(world)
+        self.assertEqual("issued", capability(world.store, ATTEMPT_A))
+        self.assertIn(ATTEMPT_A, active_grants(world.store))
+        self.assertEqual("R-LAUNCH-IN-FLIGHT", refuse_release(world, ATTEMPT_A))
 
 
-class ReachabilityTest(unittest.TestCase):
-    """§6.2 read as a graph, so the claims that depend on what the table can *produce* are derived
-    rather than assumed. Each row fires only when §6.1's label function actually returns one of its
-    declared sources, which is what makes a shadowed row visible as a dead row."""
+class ForcedViolationTests(unittest.TestCase):
+    """Each invariant must be breakable with the guards bypassed, or it is not being checked."""
 
-    def test_the_graph_is_not_trivial(self) -> None:
-        self.assertGreater(len(REACHABLE), 100)
-        self.assertGreater(len(EDGES), len(REACHABLE))
+    def test_i1_fires_when_two_grants_cover_one_subject(self) -> None:
+        world = staged("reserve", "grant")
+        run(world, op_grant(ATTEMPT_B, COORDINATOR_B, OTHER_TASK, SUBJECT, DEFINITION_HASH))
+        self.assertTrue(any(v.startswith("I1") for v in violations(world)))
 
-    def test_every_reachable_state_has_a_label(self) -> None:
-        """The strongest property this model checks, and the one revision 3 failed: §6.1 must be
-        total over everything §6.2 can produce, including every crash-window intermediate."""
-        for records, disposition in sorted(REACHABLE, key=lambda st: (len(st[0]), sorted(st[0]))):
-            if not records:
-                continue
-            with self.subTest(records=sorted(records), disposition=disposition):
-                self.assertNotEqual(UNLABELLED, label(records, disposition))
+    def test_i2_fires_when_an_armed_launch_is_released(self) -> None:
+        world = staged("reserve", "grant", "capability")
+        self.assertEqual("R-LAUNCH-IN-FLIGHT", refuse_release(world, ATTEMPT_A))
+        run(world, op_release(ATTEMPT_A, COORDINATOR_A))
+        self.assertTrue(any(v.startswith("I2") for v in violations(world)))
 
-    def test_no_row_is_dead(self) -> None:
-        """A row whose declared source §6.1 never produces would write a record that changes nothing.
-        Revision 3's T28 and T29 declared "any unresolved", which included `INTEGRATED`* — the row
-        fired but its hold was shadowed. Bounding the sources is what makes every row live."""
-        declared = {row for row, _, _, _ in TABLE_62}
-        fired = {row for _, row, _ in EDGES}
-        self.assertEqual(declared, fired, f"rows that never fire: {sorted(declared - fired)}")
+    def test_i3_fires_when_the_bytes_moved_under_the_acceptance(self) -> None:
+        world = staged(*READY)
+        stale = snapshot_of(world, [SUBJECT])
+        world.content[SUBJECT] = "rewritten after the check ran"
+        found = run(world, op_accept(ATTEMPT_A, COORDINATOR_A, TASK, stale, DEFINITION_HASH))
+        self.assertTrue(any(v.startswith("I3") for v in found))
 
-    def test_a_disposition_is_written_only_from_quarantined_or_stopped(self) -> None:
-        """§6.1's consequence 4, checked against the labels the graph actually computes rather than
-        against §6.2's own prose."""
-        sources = {
-            source_label(before)
-            for before, _, after in EDGES
-            if "disposition" in after[0] and "disposition" not in before[0]
-        }
-        self.assertEqual({"QUARANTINED", "STOPPED"}, sources)
+    def test_i3_fires_when_the_definition_moved_under_the_acceptance(self) -> None:
+        world = staged(*READY)
+        snapshot = snapshot_of(world, [SUBJECT])
+        world.definition[TASK]["check"] = "assert-two-lines"
+        found = run(world, op_accept(ATTEMPT_A, COORDINATOR_A, TASK, snapshot, DEFINITION_HASH))
+        self.assertTrue(any("definition_hash" in v for v in found))
 
-    def test_a_hold_always_lands_as_quarantine_or_stays_uncertain(self) -> None:
-        for before, row, after in sorted(EDGES, key=lambda e: e[1]):
-            if "hold" in before[0] or "hold" not in after[0]:
-                continue
-            src = source_label(before)
-            with self.subTest(row=row, source=src):
-                self.assertIn(src, HOLD_SOURCE_LABELS)
-                expected = "UNCERTAIN" if src == "UNCERTAIN" else "QUARANTINED"
-                self.assertEqual(expected, label(*after))
+    def test_i4_fires_when_a_task_is_done_without_a_receipt(self) -> None:
+        world = staged(*READY)
+        world.store.canonical[TASK] = {"status": "DONE", "evidence": []}
+        self.assertTrue(any(v.startswith("I4") for v in violations(world)))
 
-    def test_release_appears_only_under_a_finalizable_label(self) -> None:
-        finalizable = {ROWS[n - 1][1] for n in FINALIZABLE_ROWS}
-        for records, disposition in REACHABLE:
-            if "release" in records:
-                with self.subTest(records=sorted(records)):
-                    self.assertIn(label(records, disposition), finalizable)
-
-    def test_a_possibly_live_writer_never_carries_a_release(self) -> None:
-        """Priority 6 of the revision brief, as a reachability property: no path through §6.2 reaches
-        `UNCERTAIN`, `QUARANTINED` or `STOPPED` with the grant already dropped."""
-        for records, disposition in REACHABLE:
-            if not records:
-                continue
-            if label(records, disposition) in {"UNCERTAIN", "QUARANTINED", "STOPPED"}:
-                with self.subTest(records=sorted(records)):
-                    self.assertNotIn("release", records)
-                    self.assertTrue(holds_claims(records))
-
-    def test_prepared_with_a_release_is_unreachable(self) -> None:
-        self.assertNotIn((frozenset({"prepared", "release"}), None), REACHABLE)
-
-    def test_the_states_with_no_successor_are_exactly_the_finalized_ones(self) -> None:
-        outgoing = {before for before, _, _ in EDGES}
-        terminal = {label(*st) for st in REACHABLE if st not in outgoing}
-        self.assertEqual(set(SCHEDULING_TERMINAL), terminal)
-        for st in REACHABLE:
-            if st not in outgoing:
-                with self.subTest(records=sorted(st[0])):
-                    self.assertTrue(finalized(st[0]))
-                    self.assertFalse(holds_claims(st[0]))
-
-    def test_the_co_occurrences_the_label_table_never_has_to_rank(self) -> None:
-        """Derived, not assumed. These pairs are why rows 2-4 may sit above row 5 without shadowing
-        anything: no path produces them, so the ordering between them is never consulted."""
-        for pair in (("commit-observed", "hold"), ("commit-observed", "stop-evidence"),
-                     ("commit-observed", "uncertainty"), ("launch", "launch-failed")):
-            with self.subTest(pair=pair):
-                self.assertEqual(
-                    [], [sorted(r) for r, _ in REACHABLE if set(pair) <= r],
-                    f"{pair} is reachable, so §6.1's ordering between its rows is load-bearing",
-                )
-
-    def test_no_reachable_state_blocks_dispatch_forever(self) -> None:
-        """Liveness, and the reason §7.3's first clause carries `no hold`.
-
-        From every reachable state that blocks dispatch there must be a path to one that does not.
-        Without the conjunct, a quarantined publication satisfies `result ∧ ¬classification` for the
-        rest of the journal's life and no continuation clears it — the project deadlocks. This model
-        found that by exhaustion, not by inspection.
-        """
-        successor_map: "dict[State, set[State]]" = {}
-        for before, _, after in EDGES:
-            successor_map.setdefault(before, set()).add(after)
-
-        def escapes(start: State) -> bool:
-            seen = {start}
-            stack = [start]
-            while stack:
-                state = stack.pop()
-                if not dispatch_blocked([state]):
-                    return True
-                for nxt in successor_map.get(state, ()):
-                    if nxt not in seen:
-                        seen.add(nxt)
-                        stack.append(nxt)
-            return False
-
-        for state in sorted(REACHABLE, key=lambda st: (len(st[0]), sorted(st[0]))):
-            if not state[0] or not dispatch_blocked([state]):
-                continue
-            with self.subTest(records=sorted(state[0]), disposition=state[1]):
-                self.assertTrue(escapes(state), "no continuation of this state ever admits dispatch")
+    def test_i5_fires_when_an_effect_is_applied_over_an_unreadable_record(self) -> None:
+        world = staged("reserve", "grant")
+        world.store.records["grants/att-c.json"] = {"kind": "grant", "attempt": ATTEMPT_B}
+        self.assertEqual("R-INDETERMINATE", refuse_common(world))
+        run(world, op_issue_capability(ATTEMPT_A, COORDINATOR_A))
+        self.assertTrue(any(v.startswith("I5") for v in violations(world)))
 
 
-class ConflictRelationTest(unittest.TestCase):
-    """§8.2: one relation, symmetric, ancestor-sensitive in both directions."""
+class ProjectionTests(unittest.TestCase):
+    """I5: an unreadable record stops the reader. Absence is only ever a missing record."""
 
-    SAMPLE = (
-        ("path", "/repo", "write"),
-        ("path", "/repo", "read"),
-        ("path", "/repo/plugins", "write"),
-        ("path", "/repo/plugins", "read"),
-        ("path", "/repo/plugins/b.py", "write"),
-        ("path", "/repo-b", "write"),
-        ("path", "/repo-b/plugins", "write"),
-        ("external", "gitlab/project/branch", "write"),
-        ("external", "gitlab/project", "write"),
-        ("external", "gitlab/other", "write"),
-    )
+    def test_a_missing_record_is_absent(self) -> None:
+        self.assertEqual("absent", projection(Store(), "grants/att-a.json"))
 
-    def claims(self) -> "list[Claim]":
-        return [Claim(*spec) for spec in self.SAMPLE]
+    def test_a_well_formed_record_is_present(self) -> None:
+        world = staged("reserve", "grant")
+        self.assertEqual("present", projection(world.store, f"grants/{ATTEMPT_A}.json"))
 
-    def test_bare_names_are_derivation_errors(self) -> None:
-        for key in ("PROTECTED", "the repository", "repo/plugins"):
-            with self.subTest(key=key):
-                with self.assertRaises(ValueError):
-                    Claim("path", key, "write")
+    def test_a_record_missing_a_required_field_is_indeterminate(self) -> None:
+        store = Store(records={"grants/x.json": {"kind": "grant", "attempt": "x"}})
+        self.assertEqual("indeterminate", projection(store, "grants/x.json"))
 
-    def test_relation_is_symmetric(self) -> None:
-        for a, b in itertools.product(self.claims(), repeat=2):
-            with self.subTest(a=repr(a), b=repr(b)):
-                self.assertEqual(conflict(a, b), conflict(b, a))
+    def test_an_unknown_kind_is_indeterminate(self) -> None:
+        store = Store(records={"grants/x.json": {"kind": "vote", "attempt": "x"}})
+        self.assertEqual("indeterminate", projection(store, "grants/x.json"))
 
-    def test_write_conflicts_with_itself(self) -> None:
-        for claim in self.claims():
-            if claim.access == "write":
-                with self.subTest(claim=repr(claim)):
-                    self.assertTrue(conflict(claim, claim))
+    def test_a_non_object_record_is_indeterminate(self) -> None:
+        store = Store(records={"grants/x.json": ["not", "an", "object"]})
+        self.assertEqual("indeterminate", projection(store, "grants/x.json"))
 
-    def test_two_reads_never_conflict(self) -> None:
-        for a, b in itertools.product([c for c in self.claims() if c.access == "read"], repeat=2):
-            with self.subTest(a=repr(a), b=repr(b)):
-                self.assertFalse(conflict(a, b))
-
-    def test_repository_write_conflicts_with_a_file_inside_it_both_ways(self) -> None:
-        """R3-03's failure trace, as the assertion that the fix is real."""
-        repo = Claim("path", "/repo", "write")
-        inner = Claim("path", "/repo/plugins/b.py", "write")
-        self.assertTrue(conflict(repo, inner))
-        self.assertTrue(conflict(inner, repo))
-
-    def test_global_read_excludes_writers_and_admits_readers(self) -> None:
-        global_read = Claim("path", "/repo", "read")
-        self.assertTrue(conflict(global_read, Claim("path", "/repo/b.py", "write")))
-        self.assertFalse(conflict(global_read, Claim("path", "/repo/b.py", "read")))
-
-    def test_string_prefix_siblings_do_not_conflict(self) -> None:
-        self.assertFalse(conflict(
-            Claim("path", "/repo", "write"), Claim("path", "/repo-b", "write")))
-        self.assertFalse(conflict(
-            Claim("path", "/repo/plugins", "write"), Claim("path", "/repo-b/plugins", "write")))
-
-    def test_namespaces_do_not_cross(self) -> None:
-        self.assertFalse(conflict(
-            Claim("path", "/repo", "write"), Claim("external", "repo", "write")))
-
-    def test_external_ancestry_is_on_segments(self) -> None:
-        self.assertTrue(conflict(
-            Claim("external", "gitlab/project", "write"),
-            Claim("external", "gitlab/project/branch", "write")))
-        self.assertFalse(conflict(
-            Claim("external", "gitlab/project", "write"),
-            Claim("external", "gitlab/other", "write")))
-
-    def test_verification_under_its_own_grant_requests_nothing(self) -> None:
-        """§8.2: a coordinator re-running a check for its own attempt adds no claim.
-
-        Modelled as the property that matters: the attempt's own grant set is unchanged, so the
-        self-conflict of revision 3 cannot arise by construction.
-        """
-        granted = [Claim("path", "/repo/out.txt", "write")]
-        rerun_requests: "list[Claim]" = []
-        combined = granted + rerun_requests
-        self.assertEqual(len(granted), len(combined))
-        for a, b in itertools.combinations(combined, 2):  # pragma: no cover - empty by construction
-            self.assertFalse(conflict(a, b))
+    def test_an_unexplained_generation_is_indeterminate(self) -> None:
+        """R4-13's shape: a record from a writer this store never recorded taking over."""
+        world = staged("reserve", "grant")
+        record = dict(world.store.records[f"grants/{ATTEMPT_A}.json"])
+        record["generation"] = 7
+        world.store.records["grants/att-z.json"] = record
+        self.assertEqual("indeterminate", projection(world.store, "grants/att-z.json"))
+        run(world, op_take_over(COORDINATOR_B, COORDINATOR_A, "pid_gone", 7))
+        self.assertEqual("present", projection(world.store, "grants/att-z.json"))
 
 
-class AdmissionPredicateTest(unittest.TestCase):
-    """§8.1: `delegable` and `in_force` over the real canonical enums."""
+class GuardTests(unittest.TestCase):
+    """Every refusal code is returned by the situation §4 says it names."""
 
-    def test_effect_kinds_come_from_the_validator(self) -> None:
-        self.assertEqual({"none", "local_write", "destructive", "external"}, set(EFFECT_KINDS))
+    def test_a_resumable_adapter_is_refused_at_admission(self) -> None:
+        world = World(adapter=RESUMABLE)
+        self.assertEqual("R-DETACHED-CHILD", refuse_reserve(world, TASK, SUBJECT))
 
-    def test_authorization_statuses_come_from_the_validator(self) -> None:
+    def test_a_held_subject_refuses_a_second_reservation(self) -> None:
+        world = staged("reserve", "grant")
+        self.assertEqual("R-CLAIM-CONFLICT", refuse_reserve(world, OTHER_TASK, SUBJECT))
+
+    def test_a_grant_without_a_reservation_is_refused(self) -> None:
+        self.assertEqual("R-NO-RESERVATION", refuse_grant(World(), ATTEMPT_A, SUBJECT))
+
+    def test_a_second_capability_is_refused(self) -> None:
+        world = staged("reserve", "grant", "capability")
+        self.assertEqual("R-CAPABILITY-ISSUED", refuse_issue_capability(world, ATTEMPT_A))
+
+    def test_a_capability_without_a_grant_is_refused(self) -> None:
+        world = staged("reserve")
+        self.assertEqual("R-NO-GRANT", refuse_issue_capability(world, ATTEMPT_A))
+
+    def test_takeover_without_a_proof_of_death_is_refused(self) -> None:
+        world = staged("reserve", "grant", "capability")
+        self.assertEqual("R-NO-PROOF-OF-DEATH", refuse_take_over(world, COORDINATOR_A, "stale_heartbeat"))
+        self.assertEqual("R-NO-PROOF-OF-DEATH", refuse_take_over(world, COORDINATOR_A, "different_host"))
+        for proof in sorted(DEATH_PROOFS):
+            self.assertIsNone(refuse_take_over(world, COORDINATOR_A, proof))
+
+    def test_a_ready_attempt_accepts(self) -> None:
+        world = staged(*READY)
+        self.assertIsNone(refuse_accept(world, ATTEMPT_A, TASK, snapshot_of(world, [SUBJECT])))
+
+
+class ReviewFourRegressionTests(unittest.TestCase):
+    """One named case per trace in docs/parallel-execution-review-04.md."""
+
+    def test_r4_01_a_delayed_launch_cannot_outlive_its_reservation(self) -> None:
+        """The record says issued, the coordinator dies, the spawn fires afterwards."""
+        world = staged("reserve", "grant", "capability")
+        self.assertEqual("R-NO-PROOF-OF-DEATH", refuse_take_over(world, COORDINATOR_A, "stale_heartbeat"))
+        run(world, op_take_over(COORDINATOR_B, COORDINATOR_A, "pid_gone", 1))
+        self.assertEqual("R-LAUNCH-IN-FLIGHT", refuse_release(world, ATTEMPT_A))
+        # Forced anyway, the delayed spawn is exactly the violation the guard exists to prevent.
+        run(world, op_release(ATTEMPT_A, COORDINATOR_A))
+        world.armed.discard(ATTEMPT_A)
+        world.running.add(ATTEMPT_A)
+        self.assertTrue(any(v.startswith("I2") for v in violations(world)))
+
+    def test_r4_02_a_superseded_coordinator_cannot_clobber_a_journal_record(self) -> None:
+        world = staged("reserve", "grant", "capability", "fire", "write", "exit")
+        run(world, op_take_over(COORDINATOR_B, COORDINATOR_A, "pid_gone", 1))
+        run(world, op_record_result(ATTEMPT_A, COORDINATOR_B))
+        before = copy.deepcopy(world.store.records[f"results/{ATTEMPT_A}.json"])
+        run(world, op_record_result(ATTEMPT_A, COORDINATOR_A, outcome="signalled", code=9))
+        self.assertEqual(before, world.store.records[f"results/{ATTEMPT_A}.json"])
+        self.assertEqual([f"results/{ATTEMPT_A}.json"], world.store.conflicts)
+
+    def test_r4_03_a_finished_worker_is_not_a_sealed_one(self) -> None:
+        """The review's point, made worse by this host's own adapter: completed is resumable."""
+        world = staged("reserve", "grant", "capability", "fire", "write", "exit", "result")
+        world.adapter = RESUMABLE
+        self.assertEqual("R-LAUNCH-IN-FLIGHT", refuse_release(world, ATTEMPT_A))
+        run(world, op_release(ATTEMPT_A, COORDINATOR_A))
+        world.running.add(ATTEMPT_A)  # the adapter resumed a "finished" worker
+        self.assertTrue(any(v.startswith("I2") for v in violations(world)))
+
+    def test_r4_03_sealing_is_what_makes_a_release_safe(self) -> None:
+        world = staged("reserve", "grant", "capability", "fire", "write", "exit", "result", "seal")
+        world.adapter = RESUMABLE
+        self.assertIsNone(refuse_release(world, ATTEMPT_A))
+        run(world, op_release(ATTEMPT_A, COORDINATOR_A))
+        self.assertEqual([], violations(world))
+
+    def test_r4_04_the_acquisition_orphan_prefix_completes(self) -> None:
+        """A reservation with no grant is completed by recovery, not leaked and not re-reserved."""
+        world = staged("reserve")
+        self.assertNotIn(ATTEMPT_A, active_grants(world.store))
+        drain(world)
+        self.assertIn(ATTEMPT_A, active_grants(world.store))
+        self.assertEqual([], recover(world.store))
+
+    def test_r4_06_the_dispatch_gate_opens_on_resolution_not_classification(self) -> None:
+        world = staged("reserve", "grant", "capability", "fire", "exit")
+        run(world, op_classify(TASK, COORDINATOR_A, "c-1", "adapter_error"))
+        self.assertEqual({"c-1"}, open_causes(world.store, TASK))
+        self.assertEqual("R-GATE-CLOSED", refuse_reserve(world, TASK, OTHER_SUBJECT))
+        run(world, op_resolve(TASK, COORDINATOR_A, "c-1"))
+        self.assertEqual(set(), open_causes(world.store, TASK))
+        self.assertIsNone(refuse_reserve(world, TASK, OTHER_SUBJECT))
+
+    def test_r4_06_an_operator_stop_does_not_close_the_gate(self) -> None:
+        world = staged("reserve", "grant")
+        run(world, op_classify(TASK, COORDINATOR_A, "c-2", "operator_stop"))
+        self.assertEqual(set(), open_causes(world.store, TASK))
+
+    def test_r4_07_evidence_is_bound_to_the_accepted_bytes(self) -> None:
+        world = staged(*READY)
+        world.content[SUBJECT] = "rewritten after the check ran"
         self.assertEqual(
-            {"not_required", "pending", "explicit", "denied", "deferred"},
-            set(AUTHORIZATION_STATUSES),
+            "stale_evidence", refuse_accept(world, ATTEMPT_A, TASK, snapshot_of(world, [SUBJECT]))
         )
 
-    def test_revoked_is_not_a_canonical_status(self) -> None:
-        """R3-05: revision 3's T21 named a status the validator does not have."""
-        self.assertNotIn("revoked", AUTHORIZATION_STATUSES)
-
-    def test_delegable_is_exactly_local_unauthorized_work(self) -> None:
-        for kind, required, status in itertools.product(
-            sorted(EFFECT_KINDS), (True, False), sorted(AUTHORIZATION_STATUSES)
-        ):
-            expected = kind in {"none", "local_write"} and not required and status == "not_required"
-            with self.subTest(kind=kind, required=required, status=status):
-                self.assertEqual(expected, delegable(kind, required, status))
-
-    def test_destructive_and_external_are_never_delegable(self) -> None:
-        for kind in ("destructive", "external"):
-            with self.subTest(kind=kind):
-                self.assertFalse(delegable(kind, False, "not_required"))
-
-    def test_pending_denied_and_deferred_are_not_in_force(self) -> None:
-        for status in ("pending", "denied", "deferred"):
-            with self.subTest(status=status):
-                self.assertFalse(in_force(True, status, "scope", "scope"))
-                self.assertFalse(in_force(False, status, None, None))
-
-    def test_explicit_is_in_force_only_at_the_frozen_scope(self) -> None:
-        self.assertTrue(in_force(True, "explicit", "push branch X", "push branch X"))
-        self.assertFalse(in_force(True, "explicit", "push branch Y", "push branch X"))
-        self.assertFalse(in_force(True, "explicit", None, "push branch X"))
-
-    def test_not_required_is_in_force_only_with_the_matching_status(self) -> None:
-        self.assertTrue(in_force(False, "not_required", None, None))
-        for status in sorted(AUTHORIZATION_STATUSES - {"not_required"}):
-            with self.subTest(status=status):
-                self.assertFalse(in_force(False, status, None, None))
-
-    def test_withdrawal_is_representable_as_one_status_change(self) -> None:
-        """§14.1: withdrawal sets `denied`, which is in the enum and is not in force."""
-        self.assertIn("denied", AUTHORIZATION_STATUSES)
-        self.assertTrue(in_force(True, "explicit", "s", "s"))
-        self.assertFalse(in_force(True, "denied", "s", "s"))
-
-
-class DispatchGateTest(unittest.TestCase):
-    """§7.3: the gate is a query, so the write that creates the failure creates the block."""
-
-    def test_no_attempts_and_a_current_owner_admits_dispatch(self) -> None:
-        self.assertFalse(dispatch_blocked([]))
-
-    def test_published_failure_with_no_flag_anywhere_blocks(self) -> None:
-        """R3-08 and §13.1: recovery needs no pause flag to have survived the crash."""
-        attempts = [(frozenset({"prepared", "start-permit", "launch", "result"}), None)]
-        self.assertFalse(any("flag" in records for records, _ in attempts))
-        self.assertTrue(dispatch_blocked(attempts))
-
-    def test_classifying_the_publication_clears_that_reason(self) -> None:
-        classified = [(frozenset({"prepared", "start-permit", "launch", "result",
-                                  "classification"}), None)]
-        self.assertFalse(dispatch_blocked(classified))
-
-    def test_unresolved_hold_blocks_until_a_disposition_exists(self) -> None:
-        """And it must actually clear. A quarantined publication satisfies clause 1's first two
-        conjuncts permanently, so without clause 1's `no hold` the disposition would change
-        nothing and the project could never dispatch again."""
-        held = frozenset({"prepared", "start-permit", "launch", "result", "hold"})
-        self.assertTrue(dispatch_blocked([(held, None)]))
-        resolved = held | {"disposition"}
-        self.assertFalse(dispatch_blocked([(resolved, "block")]))
-        self.assertFalse(dispatch_blocked([(resolved | {"release"}, "block")]))
-
-    def test_uncertainty_blocks_until_stop_evidence_exists(self) -> None:
-        """Clause 3 asks only whether a writer may still be running. A `STOPPED` attempt is
-        demonstrably not running, so it stops blocking *dispatch* — it keeps its claims instead
-        (§6.1's second predicate), and the claims are what keep a conflicting task out."""
-        uncertain = frozenset({"prepared", "start-permit", "launch", "uncertainty"})
-        self.assertTrue(dispatch_blocked([(uncertain, None)]))
-        stopped = uncertain | {"stop-evidence"}
-        self.assertFalse(dispatch_blocked([(stopped, None)]))
-        self.assertTrue(holds_claims(stopped))
-        self.assertEqual("STOPPED", label(stopped))
-        released = stopped | {"disposition", "release"}
-        self.assertFalse(dispatch_blocked([(released, "abandon")]))
-        self.assertFalse(holds_claims(released))
-
-    def test_wrong_schema_version_and_lost_ownership_block(self) -> None:
-        self.assertTrue(dispatch_blocked([], schema_version=3))
-        self.assertTrue(dispatch_blocked([], ownership_current=False))
-
-    def test_the_blocking_attempt_is_the_one_that_wrote_the_record(self) -> None:
-        clean = (frozenset({"prepared", "start-permit", "launch", "heartbeat"}), None)
-        failing = (frozenset({"prepared", "start-permit", "launch", "result"}), None)
-        self.assertFalse(dispatch_blocked([clean]))
-        self.assertTrue(dispatch_blocked([clean, failing]))
-
-
-class CrashPrefixTest(unittest.TestCase):
-    """§6.3: every prefix of every multi-file transition has one outcome, applied idempotently."""
-
-    def test_every_prefix_has_exactly_one_outcome(self) -> None:
-        for name, writes in TRANSITIONS.items():
-            for length in range(len(writes) + 1):
-                with self.subTest(transition=name, prefix=length):
-                    self.assertIn((name, length), OUTCOMES)
-                    self.assertIsInstance(recovery_outcome(name, length), str)
-
-    def test_no_prefix_is_left_undefined_and_none_is_invented(self) -> None:
-        expected = {
-            (name, length)
-            for name, writes in TRANSITIONS.items()
-            for length in range(len(writes) + 1)
-        }
-        self.assertEqual(expected, set(OUTCOMES))
-
-    def test_recovery_is_idempotent(self) -> None:
-        for name, writes in TRANSITIONS.items():
-            for length in range(len(writes) + 1):
-                with self.subTest(transition=name, prefix=length):
-                    once = apply_outcome(name, length)
-                    twice = apply_outcome(name, once)
-                    self.assertEqual(once, twice)
-                    self.assertEqual(len(writes), once)
-
-    def test_dispatch_has_exactly_one_ambiguous_prefix(self) -> None:
-        """The permit-written-no-launch window is the only one resolved by evidence, not by rule."""
-        ambiguous = [
-            length for length in range(len(TRANSITIONS["dispatch"]) + 1)
-            if "discover" in recovery_outcome("dispatch", length)
-        ]
-        self.assertEqual([2], ambiguous)
-
-    def test_no_prefix_outcome_redispatches(self) -> None:
-        """R3-07: no recovery outcome may resolve an ambiguous dispatch by launching again."""
-        for (name, length), outcome in OUTCOMES.items():
-            with self.subTest(transition=name, prefix=length):
-                self.assertNotIn("redispatch", outcome)
-                self.assertNotIn("launch again", outcome)
-
-
-# --------------------------------------------------------------------------------------------------
-# §11.2, §11.5, §11.6 — checks, captures, and which capture qualifies
-# --------------------------------------------------------------------------------------------------
-
-METHODS = ("command", "inspection", "review")
-INDEPENDENCE = ("none", "separate_actor", "human")
-OWNERS = ("worker", "coordinator")
-RECORD_KINDS = {"command": "command_run", "inspection": "assessment", "review": "assessment"}
-COMMAND_ONLY_FIELDS = ("argv", "cwd", "exit_status", "duration_ms", "streams")
-ASSESSMENT_ONLY_FIELDS = ("criteria", "rationale", "assessor")
-
-
-class Check:
-    """One resolved check of a contract (§11.2)."""
-
-    def __init__(self, check_id: str, method: str, independence: str, executed_by: str) -> None:
-        self.check_id = check_id
-        self.method = method
-        self.independence = independence
-        self.executed_by = executed_by
-
-
-class Capture:
-    """One capture record (§11.3). `fields` is the set of kind-specific field names present."""
-
-    def __init__(
-        self,
-        check_id: str,
-        record_kind: str,
-        owner: str,
-        sequence: int,
-        verdict: str,
-        relation: str,
-        fields: "frozenset[str]" = frozenset(),
-    ) -> None:
-        self.check_id = check_id
-        self.record_kind = record_kind
-        self.owner = owner
-        self.sequence = sequence
-        self.verdict = verdict
-        self.relation = relation
-        self.fields = fields
-
-
-def derivation_error(check: Check) -> bool:
-    """§11.2: a producer cannot be independent of itself, so this contract must not be admitted."""
-    return check.independence in ("separate_actor", "human") and check.executed_by == "worker"
-
-
-def record_kind_ok(check: Check, capture: Capture) -> bool:
-    return capture.record_kind == RECORD_KINDS[check.method]
-
-
-def fields_ok(capture: Capture) -> bool:
-    """§11.3: each kind requires its own fields and forbids the other kind's."""
-    if capture.record_kind == "command_run":
-        return not (capture.fields & frozenset(ASSESSMENT_ONLY_FIELDS))
-    return not (capture.fields & frozenset(COMMAND_ONLY_FIELDS))
-
-
-def independence_ok(check: Check, capture: Capture) -> bool:
-    if check.independence == "none":
-        return True
-    if check.independence == "separate_actor":
-        return capture.relation in ("separate", "human")
-    return capture.relation == "human"
-
-
-def considered(check: Check, captures: "tuple[Capture, ...]") -> "list[Capture]":
-    """§11.5: captures in the running for this check, before precedence is applied.
-
-    A worker capture for a `coordinator` check is *ignored*, not superseded: it was never asked for.
-    """
-    return [
-        capture for capture in captures
-        if capture.check_id == check.check_id
-        and not (check.executed_by == "coordinator" and capture.owner == "worker")
-    ]
-
-
-def qualifying(check: Check, captures: "tuple[Capture, ...]") -> "Capture | None":
-    pool = [
-        capture for capture in considered(check, captures)
-        if record_kind_ok(check, capture) and fields_ok(capture) and independence_ok(check, capture)
-    ]
-    if not pool:
-        return None
-    best_owner = "coordinator" if any(c.owner == "coordinator" for c in pool) else "worker"
-    return max(
-        (c for c in pool if c.owner == best_owner), key=lambda capture: capture.sequence
-    )
-
-
-def adequate(checks: "tuple[Check, ...]", captures: "tuple[Capture, ...]") -> bool:
-    return all(qualifying(check, captures) is not None for check in checks)
-
-
-def canonical_intent(checks: "tuple[Check, ...]", captures: "tuple[Capture, ...]") -> str:
-    """§11.5: any failing qualifying capture makes the intent BLOCKED, whatever the worker said."""
-    if not adequate(checks, captures):
-        return "QUARANTINED"
-    verdicts = [qualifying(check, captures) for check in checks]
-    return "BLOCKED" if any(c is not None and c.verdict == "fail" for c in verdicts) else "DONE"
-
-
-def worker_capture(check_id: str, kind: str, sequence: int = 1, verdict: str = "pass") -> Capture:
-    return Capture(check_id, kind, "worker", sequence, verdict, "self")
-
-
-def coordinator_capture(
-    check_id: str, kind: str, sequence: int = 1, verdict: str = "pass", relation: str = "separate"
-) -> Capture:
-    return Capture(check_id, kind, "coordinator", sequence, verdict, relation)
-
-
-class CaptureAdequacyTest(unittest.TestCase):
-    """The invariants the fifth walkthrough scenario exposed, and problem 10's field exclusivity."""
-
-    def test_independent_checks_must_be_coordinator_executed(self) -> None:
-        for method in METHODS:
-            for independence in INDEPENDENCE:
-                for executed_by in OWNERS:
-                    check = Check("c", method, independence, executed_by)
-                    with self.subTest(method=method, independence=independence, by=executed_by):
-                        self.assertEqual(
-                            independence != "none" and executed_by == "worker",
-                            derivation_error(check),
-                        )
-
-    def test_a_worker_capture_never_satisfies_a_coordinator_check(self) -> None:
-        """The defect: an independent check has no worker capture *by design*."""
-        check = Check("prose", "inspection", "separate_actor", "coordinator")
-        self.assertEqual([], considered(check, (worker_capture("prose", "assessment"),)))
-        self.assertIsNone(qualifying(check, (worker_capture("prose", "assessment"),)))
-        self.assertIsNotNone(qualifying(check, (coordinator_capture("prose", "assessment"),)))
-
-    def test_adequacy_before_the_coordinator_runs_its_checks_would_fail_every_plan(self) -> None:
-        """§11.5's ordering rule, stated as the thing that goes wrong without it."""
-        checks = (
-            Check("pytest", "command", "none", "worker"),
-            Check("prose", "inspection", "separate_actor", "coordinator"),
+    def test_r4_08_a_changed_definition_withdraws_instead_of_accepting(self) -> None:
+        world = staged(*READY)
+        world.definition[TASK]["check"] = "assert-two-lines"
+        self.assertEqual(
+            "definition_changed",
+            refuse_accept(world, ATTEMPT_A, TASK, snapshot_of(world, [SUBJECT])),
         )
-        after_worker = (worker_capture("pytest", "command_run"),)
-        self.assertFalse(adequate(checks, after_worker))
-        after_coordinator = (*after_worker, coordinator_capture("prose", "assessment"))
-        self.assertTrue(adequate(checks, after_coordinator))
+        run(world, op_withdraw(ATTEMPT_A, COORDINATOR_A, TASK, "definition_changed"))
+        self.assertEqual({f"{ATTEMPT_A}-definition_changed"}, open_causes(world.store, TASK))
 
-    def test_a_review_check_is_adequate_only_with_a_human_assessment(self) -> None:
-        check = Check("review", "review", "human", "coordinator")
-        self.assertIsNone(qualifying(check, (coordinator_capture("review", "assessment"),)))
-        human = coordinator_capture("review", "assessment", relation="human")
-        self.assertIsNotNone(qualifying(check, (human,)))
+    def test_r4_12_identical_bytes_are_success_and_different_bytes_are_an_event(self) -> None:
+        store = Store()
+        record = {"kind": "release", "attempt": ATTEMPT_A, "coordinator": COORDINATOR_A}
+        self.assertEqual("published", store.publish("releases/a.json", record))
+        self.assertEqual("identical", store.publish("releases/a.json", dict(record)))
+        self.assertEqual([], store.conflicts)
+        other = dict(record, coordinator=COORDINATOR_B)
+        self.assertEqual("conflict", store.publish("releases/a.json", other))
+        self.assertEqual(["releases/a.json"], store.conflicts)
+        self.assertEqual(record, store.records["releases/a.json"])
 
-    def test_a_capture_of_the_wrong_kind_never_qualifies(self) -> None:
-        for method in METHODS:
-            for kind in ("command_run", "assessment"):
-                check = Check("c", method, "none", "worker")
-                capture = worker_capture("c", kind)
-                with self.subTest(method=method, kind=kind):
-                    self.assertEqual(
-                        kind == RECORD_KINDS[method], qualifying(check, (capture,)) is not None
-                    )
+    def test_r4_14_a_commit_is_proved_by_the_receipt_not_by_a_status(self) -> None:
+        world = staged(*READY)
+        snapshot = snapshot_of(world, [SUBJECT])
+        run(world, op_accept(ATTEMPT_A, COORDINATOR_A, TASK, snapshot, DEFINITION_HASH))
+        expected = receipt_for(snapshot, ATTEMPT_A, DEFINITION_HASH, "accept", [f"{ATTEMPT_A}-0001"])
+        self.assertEqual([expected], world.store.canonical[TASK]["evidence"])
+        # A status with no receipt behind it is not a landed commit, whatever the status says.
+        world.store.canonical[OTHER_TASK] = {"status": "DONE", "evidence": []}
+        self.assertTrue(any(v.startswith("I4") for v in violations(world)))
 
-    def test_no_capture_carries_both_kinds_of_fields(self) -> None:
-        for kind, forbidden in (
-            ("command_run", ASSESSMENT_ONLY_FIELDS),
-            ("assessment", COMMAND_ONLY_FIELDS),
-        ):
-            for field in forbidden:
-                capture = worker_capture("c", kind)
-                capture.fields = frozenset({field})
-                with self.subTest(kind=kind, field=field):
-                    self.assertFalse(fields_ok(capture))
 
-    def test_a_coordinator_rerun_supersedes_the_worker_capture(self) -> None:
-        check = Check("pytest", "command", "none", "worker")
-        failed = worker_capture("pytest", "command_run", sequence=1, verdict="fail")
-        rerun = coordinator_capture("pytest", "command_run", sequence=1, verdict="pass")
-        winner = qualifying(check, (failed, rerun))
-        assert winner is not None
-        self.assertEqual("coordinator", winner.owner)
-        self.assertEqual("DONE", canonical_intent((check,), (failed, rerun)))
-        self.assertEqual("BLOCKED", canonical_intent((check,), (failed,)))
+class RealValidatorTests(unittest.TestCase):
+    """I4 through the shipped code: the candidate is built for real and dry-run for real."""
 
-    def test_the_highest_sequence_wins_within_one_owner(self) -> None:
-        check = Check("pytest", "command", "none", "worker")
-        captures = tuple(
-            worker_capture("pytest", "command_run", sequence=n, verdict="fail" if n < 3 else "pass")
-            for n in (1, 2, 3)
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.harness = RealValidatorHarness()
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls.harness.close()
+
+    def test_an_accepted_task_commits_cleanly(self) -> None:
+        world = staged(*READY)
+        run(world, op_accept(ATTEMPT_A, COORDINATOR_A, TASK, snapshot_of(world, [SUBJECT]), DEFINITION_HASH))
+        self.assertEqual([], self.harness.errors(build_candidate(world, self.harness.baseline)))
+
+    def test_a_done_task_without_evidence_is_rejected_by_the_real_validator(self) -> None:
+        world = staged(*READY)
+        world.store.canonical[TASK] = {"status": "DONE", "evidence": []}
+        errors = self.harness.errors(build_candidate(world, self.harness.baseline))
+        self.assertTrue(any("DONE task requires evidence" in e for e in errors), errors)
+
+    def test_r4_10_current_tasks_disagreeing_is_rejected_by_the_real_validator(self) -> None:
+        """R4-10: revision 4's mutations were asserted legal without ever being validated."""
+        world = staged(*READY)
+        candidate = build_candidate(world, self.harness.baseline)
+        candidate["current_tasks"] = [TASK]
+        errors = self.harness.errors(candidate)
+        self.assertTrue(any("does not match RUNNING tasks" in e for e in errors), errors)
+
+    def test_a_forbidden_task_transition_is_rejected_by_the_real_validator(self) -> None:
+        """`DONE` is terminal, so a rerun cannot be modelled as walking a task back."""
+        harness = RealValidatorHarness()
+        self.addCleanup(harness.close)
+        world = staged(*READY)
+        run(world, op_accept(ATTEMPT_A, COORDINATOR_A, TASK, snapshot_of(world, [SUBJECT]), DEFINITION_HASH))
+        clean = build_candidate(world, harness.baseline)
+        self.assertEqual([], harness.errors(clean))
+        harness.commit(clean)
+        world.store.canonical[TASK] = {"status": "TODO", "evidence": []}
+        errors = harness.errors(build_candidate(world, harness.baseline))
+        self.assertTrue(any("DONE" in e for e in errors), errors)
+
+    def test_the_receipt_half_of_i4_is_this_models_own_assertion(self) -> None:
+        """The validator checks that evidence exists, not that its anchor is a receipt. Saying so
+        here keeps a green run from being read as more than it is."""
+        world = staged(*READY)
+        world.store.canonical[TASK] = {"status": "DONE", "evidence": ["not-a-receipt"]}
+        self.assertEqual([], self.harness.errors(build_candidate(world, self.harness.baseline)))
+        self.assertFalse(
+            world.store.canonical[TASK]["evidence"][0].startswith("rcp-"),
+            "the model, not the validator, is what rejects this",
         )
-        for order in (captures, tuple(reversed(captures))):
-            with self.subTest(order=[c.sequence for c in order]):
-                winner = qualifying(check, order)
-                assert winner is not None
-                self.assertEqual(3, winner.sequence)
-                self.assertEqual("DONE", canonical_intent((check,), order))
-
-    def test_multiple_commands_are_judged_separately(self) -> None:
-        """Problem 10: several commands means several checks, so adequacy can name the failing one."""
-        checks = (
-            Check("pytest", "command", "none", "worker"),
-            Check("ruff", "command", "none", "worker"),
-        )
-        both = (
-            worker_capture("pytest", "command_run", verdict="pass"),
-            worker_capture("ruff", "command_run", verdict="fail"),
-        )
-        self.assertTrue(adequate(checks, both))
-        self.assertEqual("BLOCKED", canonical_intent(checks, both))
-        self.assertEqual("QUARANTINED", canonical_intent(checks, both[:1]))
-
-    def test_a_failing_verdict_outranks_a_worker_claiming_success(self) -> None:
-        check = Check("pytest", "command", "none", "worker")
-        failed = worker_capture("pytest", "command_run", verdict="fail")
-        self.assertEqual("BLOCKED", canonical_intent((check,), (failed,)))
-
-    def test_a_not_run_command_is_an_adequate_record_of_a_failure(self) -> None:
-        """§11.6: a missing interpreter is a BLOCKED task, not a quarantined attempt."""
-        check = Check("pytest", "command", "none", "coordinator")
-        not_run = coordinator_capture("pytest", "command_run", verdict="fail")
-        not_run.fields = frozenset({"argv", "cwd", "exit_status", "duration_ms", "streams"})
-        self.assertTrue(adequate((check,), (not_run,)))
-        self.assertEqual("BLOCKED", canonical_intent((check,), (not_run,)))
 
 
 if __name__ == "__main__":
