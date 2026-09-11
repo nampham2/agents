@@ -1,6 +1,6 @@
 """Relationship checks on the parallel-execution design documents.
 
-Four expert reviews have now found claims about existing code that were wrong, so every such claim in
+Five expert reviews have now found claims about existing code that were wrong, so every such claim in
 the reference carries a citation naming a file, a line range, and literal text expected inside it, and
 this suite enforces them. Review 03 showed the previous checker three mutations it did not notice, all
 of which passed because the checks were mostly *phrase presence*: a required string is still there
@@ -28,7 +28,16 @@ So every check here is a relationship, and revision 5's own structure supplies m
 * every §19 rule has an `[UNENFORCED U<n>]` marker inside each section it names, and every marker
   belongs to a rule and stands in a section that rule names;
 * every finding id of every review file present has a disposition row, and the assessed/answered
-  revision pairs form an unbroken chain ending at this revision.
+  revision pairs form an unbroken chain ending at this revision;
+* §7.3's two digests differ by exactly the fields §7.4's *common* envelope lets a writer stamp, and
+  §7.2's `EEXIST` branch compares the one that excludes them — the defect revision 6 found by building
+  the reference model, where "equal bytes" contradicted §8.2's own completions;
+* every top-level family of §7.1's store layout is accounted for by one of the document's own
+  statements about what a generation fence covers, which is the other defect the model found: nothing
+  fenced `control/stop-requests/`, so a durable stop request read `indeterminate` forever after a
+  takeover;
+* §20's phase ids are unique and contiguous, and the implementation plan carries a section per phase
+  and points back at the reference.
 
 The checks are functions over document text and a repository root, so the same code runs against the
 real documents and against deliberately mutated copies. Every check carries at least one mutation that
@@ -57,9 +66,17 @@ from tests.conftest import REPO_ROOT
 REFERENCE = REPO_ROOT / "plugins/research/skills/project/references/parallel-execution.md"
 DECISIONS = REPO_ROOT / "docs/parallel-execution-decisions.md"
 WORKSPACE_LIB = REPO_ROOT / "plugins/research/skills/project/scripts/workspace_lib.py"
+PLAN = REPO_ROOT / "docs/parallel-execution-implementation-plan.md"
 
 CITATIONS_HEADING = "## 23. Citations"
 REFUSAL_SECTION = "## 4. Refusals"
+STORE_SECTION = "### 7.1 Layout"
+PUBLISH_SECTION = "### 7.2 Publish-if-absent"
+SERIALIZATION_SECTION = "### 7.3 Canonical serialization and identifiers"
+RECORD_SECTION = "### 7.4 Record schemas"
+DURABILITY_SECTION = "### 7.5 Durability classes and the failure model"
+JOURNAL_FENCE_SECTION = "### 12.4 Fencing journal writes"
+PHASES_SECTION = "## 20. Implementation phases"
 FACTS_SECTION = "### 6.1 The fact set"
 LABEL_SECTION = "### 6.2 The derived label"
 OPERATION_SECTION = "### 8.1 The operation table"
@@ -90,6 +107,13 @@ BACKTICKED_LOWER = re.compile(r"`([a-z_]+)`")
 REVISION_HEADER = re.compile(r"\*\*Revision (\d+), \d{4}-\d{2}-\d{2}\.\*\*")
 REVISION_ROW = re.compile(r"^\|\s*(\d+)\s*\|\s*[`*]", re.MULTILINE)
 ASSESSED = re.compile(r"Assessed against revision (\d+); answered in revision (\d+)\.")
+
+# §7.1's ASCII tree. The indent unit is four characters (`│   ` or four spaces), so its length
+# divided by four is the depth: the tree is parsed rather than pattern-matched line by line.
+TREE_ENTRY = re.compile(r"^(?P<indent>(?:[│ ]   )*)(?:├──|└──) (?P<name>\S+)")
+BACKTICKED = re.compile(r"`([^`]+)`")
+PHASE_ROW = re.compile(r"^\|\s*(\d+)\s*\|", re.MULTILINE)
+PLAN_PHASE = re.compile(r"^## Phase (\d+)\b", re.MULTILINE)
 
 # Sections the reference must carry: every major heading, plus the subsections this checker slices or
 # another document points at. A renamed heading breaks a cross-reference somewhere.
@@ -142,7 +166,7 @@ REFERENCE_SECTIONS = (
     "### 17.3 What an adapter may not do",
     "## 18. Authoring plans that can actually run in parallel",
     UNENFORCED_SECTION,
-    "## 20. Implementation stages",
+    PHASES_SECTION,
     "## 21. What is verified, and what is not",
     "### 21.1 The documentation checks",
     "### 21.2 The reference model",
@@ -158,6 +182,7 @@ DECISIONS_SECTIONS = (
     "## Review 02 — disposition",
     "## Review 03 — disposition",
     "## Review 04 — disposition",
+    "## Review 05 — disposition",
     "## Conditions for reconsidering a database and an MCP transport",
     "## Rejected, deferred and revisited",
     "## What is still unmeasured",
@@ -206,7 +231,7 @@ RETIRED_OK_SECTIONS = (
     "<preamble>",
     "## 2. Foundations that already exist",
     "## 5. Architecture",
-    "## 20. Implementation stages",
+    PHASES_SECTION,
     "## 22. Deferred and out of scope",
 )
 
@@ -232,6 +257,11 @@ REVIEW_FILES = (
         "docs/parallel-execution-review-04.md",
         "## Review 04 — disposition",
         (re.compile(r"^## (R4-\d+)", re.MULTILINE), re.compile(r"\b(S4-\d\d)\b")),
+    ),
+    (
+        "docs/parallel-execution-review-05.md",
+        "## Review 05 — disposition",
+        (re.compile(r"^### (R5-\d+)", re.MULTILINE),),
     ),
 )
 
@@ -296,6 +326,87 @@ def _canonical_literal(name: str) -> object:
                 if isinstance(target, ast.Name) and target.id == name:
                     return ast.literal_eval(node.value)
     raise KeyError(name)
+
+
+def _family(name: str) -> str:
+    """The top-level family of a §7.1 tree entry: its first path segment, or the bare filename."""
+    return name.split("/", 1)[0] + "/" if "/" in name else name
+
+
+def _store_families(reference: str) -> "Dict[str, List[str]]":
+    """§7.1's layout, as top-level families mapped to the families one level below them.
+
+    The tree is parsed, not searched for phrases, so a family added to the diagram without being
+    accounted for anywhere else in the document is a finding rather than a silence.
+    """
+    families: Dict[str, List[str]] = {}
+    current: Optional[str] = None
+    for line in _slice(reference, STORE_SECTION).splitlines():
+        match = TREE_ENTRY.match(line)
+        if not match:
+            continue
+        depth = len(match.group("indent")) // 4
+        name = match.group("name")
+        if depth == 0:
+            current = _family(name)
+            families.setdefault(current, [])
+        elif depth == 1 and current is not None:
+            families[current].append(_family(name))
+    return families
+
+
+def _digest_inputs(reference: str, digest_name: str) -> "Set[str]":
+    """The field names one §7.3 digest bullet says are removed from its input.
+
+    The bullet is flattened and read up to its last `removed`, so the names come from the clause that
+    states the exclusion rather than from anywhere else in the bullet. `sha256` is dropped because it
+    is the algorithm, not a field, and the digest's own name because a digest never covers itself.
+    """
+    for bullet in re.split(r"\n(?=- )", _slice(reference, SERIALIZATION_SECTION)):
+        flat = " ".join(bullet.split())
+        if not flat.startswith(f"- `{digest_name}` is "):
+            continue
+        head = flat[: flat.rfind("removed")] if "removed" in flat else ""
+        return set(BACKTICKED.findall(head)) - {"sha256", digest_name}
+    return set()
+
+
+def _envelope_fields(records: str, marker: str) -> "Set[str]":
+    """The first-column field names of the table that follows `marker` in §7.4."""
+    start = records.find(marker)
+    if start < 0:
+        return set()
+    fields: Set[str] = set()
+    for line in records[start:].splitlines():
+        if not line.startswith("|"):
+            if fields:
+                break
+            continue
+        fields |= set(BACKTICKED.findall(line.strip("|").split("|")[0]))
+    return fields
+
+
+def _non_journal_families(records: str) -> "Set[str]":
+    """The §7.1 families §7.4 exempts from the envelope by saying they are not journal records."""
+    flat = " ".join(records.split())
+    out: Set[str] = set()
+    for sentence in re.split(r"(?<=\.)\s", flat):
+        if "not journal records" not in sentence:
+            continue
+        out |= {_family(token) for token in BACKTICKED.findall(sentence)}
+    return out
+
+
+def _store_root_fence_bullet(reference: str) -> "Optional[str]":
+    """§12.4's bullet establishing the store-root, project-scope generation fence."""
+    for bullet in re.split(r"\n(?=- )", _slice(reference, JOURNAL_FENCE_SECTION)):
+        if "store root" in bullet:
+            return bullet
+    return None
+
+
+def _phase_ids(reference: str) -> "List[int]":
+    return [int(number) for number in PHASE_ROW.findall(_slice(reference, PHASES_SECTION))]
 
 
 def _canonical_set(name: str) -> "Set[str]":
@@ -786,15 +897,134 @@ def check_benchmark_honesty(reference: str) -> "List[str]":
     """§3.2's figures are not reproducible here yet, and the retirement is one stated edit.
 
     S31 asked for a retirement path, because a check demanding a disclaimer forever would have to be
-    deleted alongside it. The disclaimer names the stage that retires it, and this check requires that
+    deleted alongside it. The disclaimer names the phase that retires it, and this check requires that
     naming, so retiring it is an edit the document itself authorizes rather than a silent deletion.
     """
     findings: List[str] = []
     if "not yet reproducible in this repository" not in reference:
         findings.append("reference does not disclaim present reproducibility")
-    if not re.search(r"committed by Stage \d+ \(§\d+(\.\d+)?\)", reference):
-        findings.append("disclaimer does not name the stage whose landing retires it")
+    match = re.search(r"committed by Phase (\d+) \(§\d+(?:\.\d+)?\)", reference)
+    if not match:
+        findings.append("disclaimer does not name the phase whose landing retires it")
+    elif int(match.group(1)) not in _phase_ids(reference):
+        findings.append(f"disclaimer names phase {match.group(1)}, which §20 does not carry")
     return findings
+
+
+def check_content_identity(reference: str) -> "List[str]":
+    """§7.2's `identical` compares the digest that excludes exactly the fields a writer stamps.
+
+    This is the defect revision 6 found by building the reference model rather than by reading. §7.2
+    step 4 compared bytes, while §7.4's common envelope carries `coordinator_run`,
+    `ownership_generation` and a second-precision `written_at` — none of them derived from the record's
+    content. A retry, and more sharply a successor completing a predecessor's operation after a
+    takeover, therefore re-derives the same record and cannot reproduce the same bytes, so byte
+    comparison reports `conflict` for exactly the publications §8.2 promises are `identical`.
+
+    The relationship, not the phrase: whatever `content_digest` removes beyond what `body_digest`
+    removes must be a field of the *common* envelope and of no other table, because a field only the
+    attempt envelope carries is part of what two records must agree about, and excluding it would make
+    two different attempts' records compare equal.
+    """
+    findings: List[str] = []
+    body = _digest_inputs(reference, "body_digest")
+    content = _digest_inputs(reference, "content_digest")
+    if not body:
+        return ["§7.3 states no `body_digest` input"]
+    if not content:
+        return ["§7.3 defines no `content_digest` for §7.2 to compare"]
+    for name in sorted(body - content):
+        findings.append(f"`content_digest` keeps {name!r}, which `body_digest` removes")
+    if "body_digest" not in content:
+        findings.append("`content_digest` does not remove `body_digest`")
+    stamped = content - body - {"body_digest"}
+    if not stamped:
+        findings.append("`content_digest` excludes nothing `body_digest` keeps, so the two are one digest")
+    records = _slice(reference, RECORD_SECTION)
+    common = _envelope_fields(records, "The **common envelope**")
+    attempt = _envelope_fields(records, "The **attempt envelope**")
+    if not common:
+        findings.append("§7.4 states no common envelope")
+    for name in sorted(stamped):
+        if name not in common:
+            findings.append(f"`content_digest` excludes {name!r}, which is not a common-envelope field")
+        if name in attempt:
+            findings.append(f"`content_digest` excludes {name!r}, an attempt-envelope field records must agree on")
+    eexist = [line for line in _slice(reference, PUBLISH_SECTION).splitlines() if "EEXIST" in line]
+    if not eexist:
+        findings.append("§7.2 has no `EEXIST` branch to compare anything in")
+    for line in eexist:
+        if "content_digest" not in line:
+            findings.append("§7.2's `EEXIST` branch does not compare `content_digest`")
+        if "bytes" in line:
+            findings.append("§7.2's `EEXIST` branch still compares bytes")
+    return sorted(set(findings))
+
+
+def check_fence_coverage(reference: str) -> "List[str]":
+    """Every top-level family of §7.1's store is fenced, exempted, or is the fence itself.
+
+    The other defect the reference model found. §12.4 originally fenced only `attempts/<attempt-id>/`,
+    and an attempt's fence can list only paths under that attempt, so no fence could ever explain
+    `control/stop-requests/0001.json` from an earlier generation: §6.3 read it as `indeterminate` for
+    the rest of the project's life, which breaks the one guarantee §10.1 asks of the stop gate at
+    exactly the moment it matters. This check walks §7.1's tree and demands an account for each family
+    from the document itself, so adding a store path without fencing it is a finding.
+    """
+    families = _store_families(reference)
+    if not families:
+        return ["§7.1 carries no store layout"]
+    fencing = _slice(reference, JOURNAL_FENCE_SECTION)
+    bullet = _store_root_fence_bullet(reference)
+    if bullet is None:
+        return ["§12.4 states no store-root fence for the project-level records"]
+    exempt = _non_journal_families(_slice(reference, RECORD_SECTION))
+    durability = _slice(reference, DURABILITY_SECTION)
+    findings: List[str] = []
+    for family, children in sorted(families.items()):
+        if family == "attempts/":
+            if "attempts/<attempt-id>/generation-fences/" not in fencing:
+                findings.append("§12.4 does not fence the per-attempt records of §7.1")
+            continue
+        if family == "generation-fences/":
+            continue  # the fence is what explains the others; nothing explains it
+        if family == "runtime/":
+            if not re.search(r"^\|\s*D2\s*\|[^|]*runtime/", durability, re.MULTILINE):
+                findings.append("`runtime/` is unfenced and §7.5 does not class it D2")
+            continue
+        for name in sorted(children) or [""]:
+            path = family + name
+            if _family(path) in exempt or path in exempt:
+                continue
+            if f"`{path}`" not in bullet:
+                findings.append(f"§12.4's store-root fence does not cover {path!r}")
+    return sorted(set(findings))
+
+
+def check_phases(reference: str, repo_root: Path) -> "List[str]":
+    """§20's phases are numbered without gaps, and the plan carries a section for each of them."""
+    ids = _phase_ids(reference)
+    findings: List[str] = []
+    if not ids:
+        return ["§20 carries no phase rows"]
+    if len(set(ids)) != len(ids):
+        findings.append("§20 numbers a phase twice")
+    if sorted(set(ids)) != list(range(1, max(ids) + 1)):
+        findings.append(f"§20's phase ids are not contiguous from 1: {sorted(set(ids))}")
+    plan = repo_root / "docs/parallel-execution-implementation-plan.md"
+    if not plan.is_file():
+        return [*findings, "the implementation plan §20 points at does not exist"]
+    text = plan.read_text(encoding="utf-8")
+    if "docs/parallel-execution-implementation-plan.md" not in reference:
+        findings.append("§20 does not link the implementation plan")
+    if "references/parallel-execution.md" not in text:
+        findings.append("the implementation plan does not link the normative reference")
+    documented = {int(number) for number in PLAN_PHASE.findall(text)}
+    for phase in sorted(set(ids) - documented):
+        findings.append(f"the implementation plan has no section for phase {phase}")
+    for phase in sorted(documented - set(ids)):
+        findings.append(f"the implementation plan documents phase {phase}, which §20 does not carry")
+    return sorted(set(findings))
 
 
 def check_dispositions(decisions: str, repo_root: Path) -> "List[str]":
@@ -904,8 +1134,11 @@ CHECKS = (
     ("refusals", lambda ref, dec, root: check_refusals(ref)),
     ("unenforced sites", lambda ref, dec, root: check_unenforced_sites(ref)),
     ("settings", lambda ref, dec, root: check_settings(ref)),
+    ("content identity", lambda ref, dec, root: check_content_identity(ref)),
+    ("fence coverage", lambda ref, dec, root: check_fence_coverage(ref)),
     ("retired", lambda ref, dec, root: check_retired(ref)),
     ("benchmark honesty", lambda ref, dec, root: check_benchmark_honesty(ref)),
+    ("phases", lambda ref, dec, root: check_phases(ref, root)),
     ("dispositions", lambda ref, dec, root: check_dispositions(dec, root)),
     ("revision chain", lambda ref, dec, root: check_revision_chain(ref, dec, root)),
     ("cross links", lambda ref, dec, root: check_cross_links(ref, dec)),
@@ -966,10 +1199,19 @@ MUTATIONS = (
      "a timeout that disagrees with the shipped DirectoryLock default"),
     ("settings", "reference", "| `tmp_reap` | 3600 s |", "| `tmp_purge` | 3600 s |",
      "a setting defined in §15.1 and named nowhere else"),
+    ("content identity", "reference", 'equal content_digest (§7.3) -> "identical"',
+     'equal bytes -> "identical"',
+     "R6: §7.2 comparing bytes, which no completion after a takeover can reproduce"),
+    ("fence coverage", "reference",
+     "`owners/`, `control/stop-requests/` and `control/clearances/`",
+     "`owners/` and `control/clearances/`",
+     "R6: a store family left unfenced, so a durable stop request reads indeterminate forever"),
+    ("phases", "reference", "| 6 | An opt-in pilot", "| 7 | An opt-in pilot",
+     "a phase id §20 numbers but the implementation plan does not carry"),
     ("retired", "reference", "A crash prefix is a proper prefix",
      "A SQLite crash prefix is a proper prefix",
      "a retired component proposed again outside the sections that may name it"),
-    ("benchmark honesty", "reference", "committed by Stage 2 (§21.3)", "committed eventually",
+    ("benchmark honesty", "reference", "committed by Phase 6 (§21.3)", "committed eventually",
      "a disclaimer with no stated retirement"),
     ("dispositions", "decisions", "| R4-09 |", "| R4-99 |", "a finding with no disposition row"),
     ("revision chain", "decisions",
@@ -992,7 +1234,7 @@ class ParallelExecutionDocTest(unittest.TestCase):
         cls.decisions = DECISIONS.read_text(encoding="utf-8")
 
     def test_documents_exist(self) -> None:
-        for path in (REFERENCE, DECISIONS, WORKSPACE_LIB):
+        for path in (REFERENCE, DECISIONS, WORKSPACE_LIB, PLAN):
             self.assertTrue(path.is_file(), f"{path} is missing")
 
     def test_documents_pass_every_check(self) -> None:
