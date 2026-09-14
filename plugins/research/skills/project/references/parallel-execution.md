@@ -2012,8 +2012,9 @@ documented and tested behaviour, and this table is where that is written down.
 
 ### 17.1 The matrix
 
-**Every row below is unverified.** No adapter has been written, and nothing in this repository tests
-any of these. The column is a *requirement placed on Phase 2* (§20), not an observation.
+The Claude Code and Local subprocess rows are verified by the Phase 2 feasibility spike
+(`docs/parallel-execution-phase-2-spike.md`, 2026-09-14). Codex and Kimi Code remain
+uninvestigated.
 
 | Host | Version | `start` | `observe` | `seal` | `terminate` | Consequence |
 |---|---|---|---|---|---|---|
