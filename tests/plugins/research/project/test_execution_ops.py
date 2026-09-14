@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from unittest import mock
 
+import execution_ops as _exec_ops_mod
 import pytest
 from execution_adapter import OBSERVE_RUNNING, OBSERVE_UNKNOWN, AdapterError, FakeAdapter
 from execution_ops import (
@@ -41,7 +42,18 @@ from execution_ops import (
     Facts,
     OperationError,
     PreconditionError,
+    RecoveryReport,
     TaskState,
+    _complete_o4_ambiguous_launch,
+    _complete_o4_consume_capability,
+    _complete_o4_post_commit,
+    _complete_o4_pre_commit,
+    _complete_o12_ack,
+    _complete_prefix,
+    _complete_release_grant_removal,
+    _find_dispatch_rid,
+    _has_ack,
+    _has_fence,
     _next_fence_sequence,
     _o1_reserve,
     _o2_grant,
@@ -66,6 +78,7 @@ from execution_ops import (
     derive_label,
     perform,
     project_facts,
+    recover,
 )
 from execution_serialization import (
     body_digest,
@@ -2660,3 +2673,1081 @@ class TestCoverageGaps:
         assert (attempt_dir / "release.json").exists()
 
 
+
+# ---------------------------------------------------------------------------
+# TestCrashHelpers
+# ---------------------------------------------------------------------------
+
+
+class TestCrashHelpers:
+    """Tests for _find_dispatch_rid, _has_fence, _has_ack."""
+
+    def test_crash_find_dispatch_rid_no_dir(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        assert _find_dispatch_rid(mutations_dir) is None
+
+    def test_crash_find_dispatch_rid_non_dir_entry(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        mutations_dir.mkdir(parents=True)
+        (mutations_dir / "not-a-dir.json").write_bytes(b"{}")
+        assert _find_dispatch_rid(mutations_dir) is None
+
+    def test_crash_find_dispatch_rid_no_intent_json(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        (mutations_dir / "some-rid").mkdir(parents=True)
+        assert _find_dispatch_rid(mutations_dir) is None
+
+    def test_crash_find_dispatch_rid_non_running_intent(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        rid_dir = mutations_dir / "rid-done"
+        rid_dir.mkdir(parents=True)
+        (rid_dir / "intent.json").write_bytes(b'{"intent":"DONE"}')
+        assert _find_dispatch_rid(mutations_dir) is None
+
+    def test_crash_find_dispatch_rid_running_found(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        rid_dir = mutations_dir / "rid-running"
+        rid_dir.mkdir(parents=True)
+        (rid_dir / "intent.json").write_bytes(b'{"intent":"RUNNING"}')
+        assert _find_dispatch_rid(mutations_dir) == "rid-running"
+
+    def test_crash_find_dispatch_rid_bad_json(self, tmp: Any) -> None:
+        # Covers except (OSError, ValueError): pass in _find_dispatch_rid
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        rid_dir = mutations_dir / "rid-bad"
+        rid_dir.mkdir(parents=True)
+        (rid_dir / "intent.json").write_bytes(b"not valid json{{{")
+        assert _find_dispatch_rid(mutations_dir) is None
+
+    def test_crash_has_fence_no_dir(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        mutations_dir.mkdir(parents=True)
+        assert not _has_fence(mutations_dir, "some-rid")
+
+    def test_crash_has_fence_dir_no_json(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        fences_dir = mutations_dir / "some-rid" / "fences"
+        fences_dir.mkdir(parents=True)
+        (fences_dir / "note.txt").write_bytes(b"not json")
+        assert not _has_fence(mutations_dir, "some-rid")
+
+    def test_crash_has_fence_dir_with_json(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        fences_dir = mutations_dir / "some-rid" / "fences"
+        fences_dir.mkdir(parents=True)
+        (fences_dir / "0001.json").write_bytes(b"{}")
+        assert _has_fence(mutations_dir, "some-rid")
+
+    def test_crash_has_ack_absent(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        (mutations_dir / "some-rid").mkdir(parents=True)
+        assert not _has_ack(mutations_dir, "some-rid")
+
+    def test_crash_has_ack_present(self, tmp: Any) -> None:
+        exec_dir, _ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        rid_dir = mutations_dir / "some-rid"
+        rid_dir.mkdir(parents=True)
+        (rid_dir / "ack.json").write_bytes(b"{}")
+        assert _has_ack(mutations_dir, "some-rid")
+
+
+# ---------------------------------------------------------------------------
+# TestCrashO4PreCommit
+# ---------------------------------------------------------------------------
+
+
+class TestCrashO4PreCommit:
+    """Tests for _complete_o4_pre_commit."""
+
+    def _setup(self, exec_dir: Path, ws: Path) -> str:
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        _write_record(
+            attempt_dir / "prepared.json",
+            record_kind="prepared", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            definition_hash=DEFINITION_HASH, plan_hash="", contract={}, baseline={},
+            instruction_digest="i" * 64,
+            deadline_at="2026-09-14T23:59:59Z", deadline_budget_s=3600,
+            heartbeat_interval_s=30, log_cap_bytes=1048576,
+        )
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        _write_record(
+            attempt_dir / "mutations" / dispatch_rid / "intent.json",
+            record_kind="acceptance", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt_id=dispatch_rid, intent="RUNNING",
+            definition_hash=DEFINITION_HASH,
+            accepted_snapshot={}, qualifying_captures=[],
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        return dispatch_rid
+
+    def test_crash_o4_pre_commit_creates_fence(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        dispatch_rid = self._setup(exec_dir, ws)
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID)
+        _complete_o4_pre_commit(ctx, task, ATTEMPT_ID, dispatch_rid)
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        mutations_dir = attempt_dir / "mutations"
+        assert _has_fence(mutations_dir, dispatch_rid)
+        assert _has_ack(mutations_dir, dispatch_rid)
+        assert (attempt_dir / "launch.json").exists()
+
+    def test_crash_o4_pre_commit_fence_already_present(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        dispatch_rid = self._setup(exec_dir, ws)
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        fences_dir = attempt_dir / "mutations" / dispatch_rid / "fences"
+        fences_dir.mkdir(parents=True, exist_ok=True)
+        (fences_dir / "0001.json").write_bytes(b"{}")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID)
+        _complete_o4_pre_commit(ctx, task, ATTEMPT_ID, dispatch_rid)
+        mutations_dir = attempt_dir / "mutations"
+        assert _has_ack(mutations_dir, dispatch_rid)
+        assert (attempt_dir / "launch.json").exists()
+
+    def test_crash_o4_pre_commit_guard_already_running(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        with pytest.raises(PreconditionError, match="already RUNNING"):
+            _complete_o4_pre_commit(ctx, task, ATTEMPT_ID, dispatch_rid)
+
+    def test_crash_o4_pre_commit_guard_not_prepared(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="TODO")
+        with pytest.raises(PreconditionError, match="not prepared"):
+            _complete_o4_pre_commit(ctx, task, ATTEMPT_ID, dispatch_rid)
+
+
+# ---------------------------------------------------------------------------
+# TestCrashO4PostCommit
+# ---------------------------------------------------------------------------
+
+
+class TestCrashO4PostCommit:
+    """Tests for _complete_o4_post_commit."""
+
+    def _write_dispatch_intent(self, exec_dir: Path) -> str:
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "mutations" / dispatch_rid / "intent.json",
+            record_kind="acceptance", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt_id=dispatch_rid, intent="RUNNING",
+            definition_hash=DEFINITION_HASH,
+            accepted_snapshot={}, qualifying_captures=[],
+        )
+        return dispatch_rid
+
+    def test_crash_o4_post_commit_writes_ack_and_launch(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        dispatch_rid = self._write_dispatch_intent(exec_dir)
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        _complete_o4_post_commit(ctx, task, ATTEMPT_ID, dispatch_rid)
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        mutations_dir = attempt_dir / "mutations"
+        assert _has_ack(mutations_dir, dispatch_rid)
+        assert (attempt_dir / "launch.json").exists()
+
+    def test_crash_o4_post_commit_ack_already_present(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        dispatch_rid = self._write_dispatch_intent(exec_dir)
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        ack_dir = attempt_dir / "mutations" / dispatch_rid
+        (ack_dir / "ack.json").write_bytes(b"{}")
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        _complete_o4_post_commit(ctx, task, ATTEMPT_ID, dispatch_rid)
+        assert (attempt_dir / "launch.json").exists()
+
+    def test_crash_o4_post_commit_guard_not_running(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="TODO")
+        with pytest.raises(PreconditionError, match="not RUNNING"):
+            _complete_o4_post_commit(ctx, task, ATTEMPT_ID, dispatch_rid)
+
+    def test_crash_o4_post_commit_guard_already_launched(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        dispatch_rid = self._write_dispatch_intent(exec_dir)
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "launch.json",
+            record_kind="launch", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            start_outcome="ambiguous", handle=None, capability_id="cap-1",
+            started_at="2026-09-14T00:00:00Z",
+            adapter={"name": "fake", "version": "0"},
+        )
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        with pytest.raises(PreconditionError, match="already launched"):
+            _complete_o4_post_commit(ctx, task, ATTEMPT_ID, dispatch_rid)
+
+
+# ---------------------------------------------------------------------------
+# TestCrashO4AmbiguousLaunch
+# ---------------------------------------------------------------------------
+
+
+class TestCrashO4AmbiguousLaunch:
+    """Tests for _complete_o4_ambiguous_launch."""
+
+    def test_crash_o4_ambiguous_launch_writes_launch(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        _store_grant(ws, ATTEMPT_ID, capability="issued", capability_id="cap-xyz")
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "mutations" / dispatch_rid / "intent.json",
+            record_kind="acceptance", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt_id=dispatch_rid, intent="RUNNING",
+            definition_hash=DEFINITION_HASH,
+            accepted_snapshot={}, qualifying_captures=[],
+        )
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        _complete_o4_ambiguous_launch(ctx, task, ATTEMPT_ID)
+        assert (attempt_dir / "launch.json").exists()
+
+    def test_crash_o4_ambiguous_launch_guard_not_running(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="TODO")
+        with pytest.raises(PreconditionError, match="not RUNNING"):
+            _complete_o4_ambiguous_launch(ctx, task, ATTEMPT_ID)
+
+    def test_crash_o4_ambiguous_launch_guard_already_launched(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "launch.json",
+            record_kind="launch", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            start_outcome="ambiguous", handle=None, capability_id="cap-1",
+            started_at="2026-09-14T00:00:00Z",
+            adapter={"name": "fake", "version": "0"},
+        )
+        _store_grant(ws, ATTEMPT_ID, capability="issued", capability_id="cap-1")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        with pytest.raises(PreconditionError, match="already launched"):
+            _complete_o4_ambiguous_launch(ctx, task, ATTEMPT_ID)
+
+    def test_crash_o4_ambiguous_launch_guard_cap_not_issued(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        _store_grant(ws, ATTEMPT_ID, capability="consumed", capability_id="cap-1")
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "mutations" / dispatch_rid / "intent.json",
+            record_kind="acceptance", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt_id=dispatch_rid, intent="RUNNING",
+            definition_hash=DEFINITION_HASH,
+            accepted_snapshot={}, qualifying_captures=[],
+        )
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        with pytest.raises(PreconditionError, match="capability is"):
+            _complete_o4_ambiguous_launch(ctx, task, ATTEMPT_ID)
+
+
+# ---------------------------------------------------------------------------
+# TestCrashO4ConsumeCapability
+# ---------------------------------------------------------------------------
+
+
+class TestCrashO4ConsumeCapability:
+    """Tests for _complete_o4_consume_capability."""
+
+    def test_crash_o4_consume_capability_sets_consumed(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "launch.json",
+            record_kind="launch", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            start_outcome="ambiguous", handle=None, capability_id="cap-abc",
+            started_at="2026-09-14T00:00:00Z",
+            adapter={"name": "fake", "version": "0"},
+        )
+        _store_grant(ws, ATTEMPT_ID, capability="issued", capability_id="cap-abc")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        _complete_o4_consume_capability(ctx, task, ATTEMPT_ID)
+        grants = ctx.registry.read_all_grants()
+        grant = next((g for g in grants if g["attempt_id"] == ATTEMPT_ID), None)
+        assert grant is not None
+        assert grant.get("capability") == "consumed"
+
+    def test_crash_o4_consume_capability_guard_not_launched(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        _store_grant(ws, ATTEMPT_ID, capability="issued", capability_id="cap-abc")
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "mutations" / dispatch_rid / "intent.json",
+            record_kind="acceptance", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt_id=dispatch_rid, intent="RUNNING",
+            definition_hash=DEFINITION_HASH,
+            accepted_snapshot={}, qualifying_captures=[],
+        )
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        with pytest.raises(PreconditionError, match="not launched"):
+            _complete_o4_consume_capability(ctx, task, ATTEMPT_ID)
+
+    def test_crash_o4_consume_capability_guard_cap_not_issued(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "launch.json",
+            record_kind="launch", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            start_outcome="ambiguous", handle=None, capability_id="cap-1",
+            started_at="2026-09-14T00:00:00Z",
+            adapter={"name": "fake", "version": "0"},
+        )
+        _store_grant(ws, ATTEMPT_ID, capability="consumed", capability_id="cap-1")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        with pytest.raises(PreconditionError, match="capability is"):
+            _complete_o4_consume_capability(ctx, task, ATTEMPT_ID)
+
+
+# ---------------------------------------------------------------------------
+# TestCrashO12Ack
+# ---------------------------------------------------------------------------
+
+
+class TestCrashO12Ack:
+    """Tests for _complete_o12_ack."""
+
+    def _write_terminal_intent(
+        self, exec_dir: Path, attempt_id: str = ATTEMPT_ID,
+        definition_hash: str = DEFINITION_HASH, intent: str = "DONE",
+    ) -> str:
+        rid = receipt_id(attempt_id, definition_hash, intent, {}, [])
+        attempt_dir = exec_dir / "attempts" / attempt_id
+        _write_record(
+            attempt_dir / "mutations" / rid / "intent.json",
+            record_kind="acceptance", task_id=TASK_ID, attempt_id=attempt_id,
+            receipt_id=rid, intent=intent,
+            definition_hash=definition_hash,
+            accepted_snapshot={}, qualifying_captures=[],
+        )
+        return rid
+
+    def test_crash_o12_ack_writes_ack(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        rid = self._write_terminal_intent(exec_dir)
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        _complete_o12_ack(ctx, task, ATTEMPT_ID)
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        assert _has_ack(mutations_dir, rid)
+
+    def test_crash_o12_ack_no_mutations_dir_is_noop(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        _complete_o12_ack(ctx, task, ATTEMPT_ID)  # no error; no mutations dir
+
+    def test_crash_o12_ack_non_dir_entry_skipped(self, tmp: Any) -> None:
+        # Covers `if not rid_dir.is_dir(): continue`
+        exec_dir, ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        mutations_dir.mkdir(parents=True)
+        (mutations_dir / "not-a-dir.json").write_bytes(b"{}")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        _complete_o12_ack(ctx, task, ATTEMPT_ID)  # no error; no terminal_rid found
+
+    def test_crash_o12_ack_existing_ack_skipped(self, tmp: Any) -> None:
+        # Covers `if not intent_path.exists() or ack_path.exists(): continue`
+        exec_dir, ws = tmp
+        rid = self._write_terminal_intent(exec_dir)
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        (attempt_dir / "mutations" / rid / "ack.json").write_bytes(b"{}")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        _complete_o12_ack(ctx, task, ATTEMPT_ID)  # ack already present → no-op
+
+    def test_crash_o12_ack_bad_json_covered(self, tmp: Any) -> None:
+        # Covers except (OSError, ValueError): pass
+        exec_dir, ws = tmp
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        rid_dir = mutations_dir / "rid-bad"
+        rid_dir.mkdir(parents=True)
+        (rid_dir / "intent.json").write_bytes(b"not valid json{{{")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        _complete_o12_ack(ctx, task, ATTEMPT_ID)  # bad JSON skipped; no terminal_rid
+
+    def test_crash_o12_ack_guard_not_accepted(self, tmp: Any) -> None:
+        # Covers `if not facts.accepted: raise` via mock.patch
+        exec_dir, ws = tmp
+        self._write_terminal_intent(exec_dir)
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        not_accepted = _facts_base(
+            task_status="DONE", reserved=True, bound_attempt=ATTEMPT_ID,
+        )
+        with mock.patch.object(_exec_ops_mod, "project_facts", return_value=not_accepted):
+            with pytest.raises(PreconditionError, match="not accepted"):
+                _complete_o12_ack(ctx, task, ATTEMPT_ID)
+
+    def test_crash_o12_ack_guard_already_acked(self, tmp: Any) -> None:
+        # Two rids: rid1 has valid ack → commit_observed=True; rid2 has no ack → terminal_rid
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        rid1 = self._write_terminal_intent(exec_dir)
+        _write_record(
+            attempt_dir / "mutations" / rid1 / "ack.json",
+            record_kind="commit-observed", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt_id=rid1, fence_sequence=1,
+            committed_revision=REVISION + 1, evidence_index=0,
+            committed_status="DONE",
+        )
+        # rid2: different definition_hash produces different rid; no ack
+        rid2 = self._write_terminal_intent(exec_dir, definition_hash="a" * 64)
+        assert rid1 != rid2
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        with pytest.raises(PreconditionError, match="already ack"):
+            _complete_o12_ack(ctx, task, ATTEMPT_ID)
+
+
+# ---------------------------------------------------------------------------
+# TestCrashReleaseGrantRemoval
+# ---------------------------------------------------------------------------
+
+
+class TestCrashReleaseGrantRemoval:
+    """Tests for _complete_release_grant_removal."""
+
+    def _setup_released(self, exec_dir: Path, ws: Path) -> None:
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        _write_record(
+            attempt_dir / "release.json",
+            record_kind="release", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt=None, sealed_scopes=[], grant_removed=False, reason="test",
+        )
+
+    def test_crash_release_grant_removal_success(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._setup_released(exec_dir, ws)
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        _complete_release_grant_removal(ctx, task, ATTEMPT_ID)
+        grants = ctx.registry.read_all_grants()
+        assert not any(g["attempt_id"] == ATTEMPT_ID for g in grants)
+
+    def test_crash_release_grant_removal_guard_not_released(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        with pytest.raises(PreconditionError, match="not released"):
+            _complete_release_grant_removal(ctx, task, ATTEMPT_ID)
+
+    def test_crash_release_grant_removal_guard_no_grant(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._setup_released(exec_dir, ws)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        with pytest.raises(PreconditionError, match="no grant"):
+            _complete_release_grant_removal(ctx, task, ATTEMPT_ID)
+
+
+# ---------------------------------------------------------------------------
+# TestCrashCompletePrefix
+# ---------------------------------------------------------------------------
+
+
+class TestCrashCompletePrefix:
+    """Tests for _complete_prefix routing logic."""
+
+    def _write_reservation(self, exec_dir: Path, plan_hash: str = "") -> None:
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash=plan_hash, claims=[], counter=0,
+        )
+
+    def _write_prepared(self, exec_dir: Path) -> None:
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "prepared.json",
+            record_kind="prepared", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            definition_hash=DEFINITION_HASH, plan_hash="", contract={}, baseline={},
+            instruction_digest="i" * 64,
+            deadline_at="2026-09-14T23:59:59Z", deadline_budget_s=3600,
+            heartbeat_interval_s=30, log_cap_bytes=1048576,
+        )
+
+    def _write_dispatch_intent(self, exec_dir: Path) -> str:
+        dispatch_rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "RUNNING", {}, [])
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "mutations" / dispatch_rid / "intent.json",
+            record_kind="acceptance", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt_id=dispatch_rid, intent="RUNNING",
+            definition_hash=DEFINITION_HASH,
+            accepted_snapshot={}, qualifying_captures=[],
+        )
+        return dispatch_rid
+
+    def test_crash_complete_prefix_indeterminate_noop(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        facts = _facts_base(indeterminate=True, indeterminate_path="test/path")
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)  # returns immediately; no error
+
+    def test_crash_complete_prefix_released_with_grant(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "release.json",
+            record_kind="release", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt=None, sealed_scopes=[], grant_removed=False, reason="test",
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        facts = _facts_base(released=True, grant_present=True, reserved=True, bound_attempt=ATTEMPT_ID)
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        grants = ctx.registry.read_all_grants()
+        assert not any(g["attempt_id"] == ATTEMPT_ID for g in grants)
+
+    def test_crash_complete_prefix_released_no_grant(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        facts = _facts_base(released=True, grant_present=False)
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)  # returns without error
+
+    def test_crash_complete_prefix_o1_after_1(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        facts = project_facts(ctx, task)
+        assert facts.reserved and not facts.grant_present and not facts.prepared
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        grants = ctx.registry.read_all_grants()
+        assert any(g["attempt_id"] == ATTEMPT_ID for g in grants)
+
+    def test_crash_complete_prefix_o1_bad_reservation_except(self, tmp: Any) -> None:
+        # TOCTOU: compute facts from valid reservation, then corrupt it.
+        # Covers except (OSError, ValueError): pass in the O1 branch of _complete_prefix.
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        facts = project_facts(ctx, task)
+        assert facts.reserved and not facts.grant_present and not facts.prepared
+        (exec_dir / "attempts" / ATTEMPT_ID / "reservation.json").write_bytes(b"{bad}")
+        with pytest.raises(OperationError):
+            _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+
+    def test_crash_complete_prefix_o3_matching_plan(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "scopes" / "worker.json",
+            record_kind="scope", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            scope_id="worker", kind="worker", claims=[],
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID, plan_hash=None)
+        facts = project_facts(ctx, task)
+        assert facts.reserved and facts.grant_present and not facts.prepared
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        assert (exec_dir / "attempts" / ATTEMPT_ID / "prepared.json").exists()
+
+    def test_crash_complete_prefix_o3_bad_worker_json_except(self, tmp: Any) -> None:
+        # TOCTOU: compute facts from valid worker.json, then corrupt it.
+        # Covers except (OSError, ValueError): pass in the O3 branch of _complete_prefix.
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "scopes" / "worker.json",
+            record_kind="scope", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            scope_id="worker", kind="worker", claims=[],
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID, plan_hash=None)
+        facts = project_facts(ctx, task)
+        assert facts.reserved and facts.grant_present and not facts.prepared
+        (exec_dir / "attempts" / ATTEMPT_ID / "scopes" / "worker.json").write_bytes(b"{bad}")
+        with pytest.raises(OperationError):
+            _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+
+    def test_crash_complete_prefix_o3_plan_mismatch(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        plan_hash_a = "a" * 64
+        plan_hash_b = "b" * 64
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash=plan_hash_a, claims=[], counter=0,
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID, plan_hash=plan_hash_b)
+        facts = project_facts(ctx, task)
+        assert facts.reserved and facts.grant_present and not facts.prepared
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        assert (exec_dir / "attempts" / ATTEMPT_ID / "release.json").exists()
+
+    def test_crash_complete_prefix_o4_after_1_dispatch_present(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        self._write_prepared(exec_dir)
+        dispatch_rid = self._write_dispatch_intent(exec_dir)
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="TODO")
+        facts = project_facts(ctx, task)
+        assert facts.prepared and facts.task_status == "TODO"
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        assert _has_ack(mutations_dir, dispatch_rid)
+
+    def test_crash_complete_prefix_o4_after_1_no_dispatch(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        self._write_prepared(exec_dir)
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="TODO")
+        facts = project_facts(ctx, task)
+        assert facts.prepared and facts.task_status == "TODO"
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)  # no dispatch → no-op
+
+    def test_crash_complete_prefix_o4_after_3(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        self._write_prepared(exec_dir)
+        self._write_dispatch_intent(exec_dir)
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        facts = _facts_base(
+            task_status="RUNNING", reserved=True, prepared=True, grant_present=True,
+            launched=False, launch_capability="none", bound_attempt=ATTEMPT_ID,
+        )
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        assert (exec_dir / "attempts" / ATTEMPT_ID / "launch.json").exists()
+
+    def test_crash_complete_prefix_o4_after_5_6(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        self._write_prepared(exec_dir)
+        self._write_dispatch_intent(exec_dir)
+        _store_grant(ws, ATTEMPT_ID, capability="issued", capability_id="cap-pp")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        facts = _facts_base(
+            task_status="RUNNING", reserved=True, prepared=True, grant_present=True,
+            launched=False, launch_capability="issued", bound_attempt=ATTEMPT_ID,
+        )
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        assert (exec_dir / "attempts" / ATTEMPT_ID / "launch.json").exists()
+
+    def test_crash_complete_prefix_o4_after_7(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        self._write_prepared(exec_dir)
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "launch.json",
+            record_kind="launch", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            start_outcome="ambiguous", handle=None, capability_id="cap-qq",
+            started_at="2026-09-14T00:00:00Z",
+            adapter={"name": "fake", "version": "0"},
+        )
+        _store_grant(ws, ATTEMPT_ID, capability="issued", capability_id="cap-qq")
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="RUNNING")
+        facts = _facts_base(
+            task_status="RUNNING", reserved=True, prepared=True, grant_present=True,
+            launched=True, launch_capability="issued", bound_attempt=ATTEMPT_ID,
+        )
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        grants = ctx.registry.read_all_grants()
+        grant = next((g for g in grants if g["attempt_id"] == ATTEMPT_ID), None)
+        assert grant is not None
+        assert grant.get("capability") == "consumed"
+
+    def test_crash_complete_prefix_o15_after_4_seals(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "scopes" / "worker.json",
+            record_kind="scope", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            scope_id="worker", kind="worker", claims=[],
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        facts = _facts_base(
+            task_status="DONE", reserved=True, prepared=True, grant_present=True,
+            declared_scopes=frozenset({"worker"}),
+            sealed_scopes=frozenset(),
+            open_scopes=frozenset({"worker"}),
+            stop_evidence="operator_stop",
+            bound_attempt=ATTEMPT_ID,
+        )
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        sealed_dir = exec_dir / "attempts" / ATTEMPT_ID / "sealed"
+        assert (sealed_dir / "worker.json").exists()
+
+    def test_crash_complete_prefix_o15_seal_except(self, tmp: Any) -> None:
+        # Covers except (OperationError, PreconditionError): pass in the O15 seal loop
+        exec_dir, ws = tmp
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        facts = _facts_base(
+            task_status="DONE", reserved=True, prepared=True, grant_present=True,
+            declared_scopes=frozenset({"worker"}),
+            sealed_scopes=frozenset(),
+            open_scopes=frozenset({"worker"}),
+            stop_evidence="operator_stop",
+            bound_attempt=ATTEMPT_ID,
+        )
+        with mock.patch.object(_exec_ops_mod, "_o6_seal", side_effect=OperationError("test")):
+            _complete_prefix(ctx, task, ATTEMPT_ID, facts)  # exception caught; no re-raise
+
+    def test_crash_complete_prefix_o12_after_3(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        self._write_reservation(exec_dir)
+        rid = receipt_id(ATTEMPT_ID, DEFINITION_HASH, "DONE", {}, [])
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "mutations" / rid / "intent.json",
+            record_kind="acceptance", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt_id=rid, intent="DONE",
+            definition_hash=DEFINITION_HASH,
+            accepted_snapshot={}, qualifying_captures=[],
+        )
+        ctx = _ctx(exec_dir, ws, commit_fn=_null_commit)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        facts = _facts_base(
+            task_status="DONE", reserved=True, prepared=True, grant_present=True,
+            accepted=True, commit_observed=False, bound_attempt=ATTEMPT_ID,
+        )
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        mutations_dir = exec_dir / "attempts" / ATTEMPT_ID / "mutations"
+        assert _has_ack(mutations_dir, rid)
+
+    def test_crash_complete_prefix_o18_after_1(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        self._write_reservation(exec_dir)
+        self._write_prepared(exec_dir)
+        _write_record(
+            attempt_dir / "scopes" / "worker.json",
+            record_kind="scope", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            scope_id="worker", kind="worker", claims=[],
+        )
+        _write_record(
+            attempt_dir / "sealed" / "worker.json",
+            record_kind="sealed", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            scope_id="worker",
+            exit={"variant": "exited", "code": 0},
+            tree_exited=True, resumable=False,
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="DONE")
+        facts = _facts_base(
+            task_status="DONE", reserved=True, prepared=True, grant_present=True,
+            released=False, launch_capability="none",
+            declared_scopes=frozenset({"worker"}),
+            sealed_scopes=frozenset({"worker"}),
+            open_scopes=frozenset(),
+            bound_attempt=ATTEMPT_ID,
+        )
+        _complete_prefix(ctx, task, ATTEMPT_ID, facts)
+        assert (attempt_dir / "release.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# TestRecover
+# ---------------------------------------------------------------------------
+
+
+class TestRecover:
+    """Tests for the recover() function (§13.1 steps 3-8)."""
+
+    def test_crash_recover_deletes_runtime(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        (exec_dir / "runtime" / "some_file.txt").write_text("data")
+        ctx = _ctx(exec_dir, ws)
+        report = recover(ctx, {})
+        assert not (exec_dir / "runtime" / "some_file.txt").exists()
+        assert isinstance(report, RecoveryReport)
+
+    def test_crash_recover_empty_map(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        ctx = _ctx(exec_dir, ws)
+        report = recover(ctx, {})
+        assert report.open_causes == {}
+        assert report.indeterminate == []
+        assert not report.stop_requested
+        assert (exec_dir / "runtime" / "projection.json").exists()
+
+    def test_crash_recover_discovers_disk_attempts(self, tmp: Any) -> None:
+        # Attempt dir on disk but not in map → task is None → continue (covers line 2274-2275)
+        exec_dir, ws = tmp
+        (exec_dir / "attempts" / "extra-att").mkdir(parents=True)
+        ctx = _ctx(exec_dir, ws)
+        report = recover(ctx, {})
+        assert "extra-att" not in report.indeterminate
+
+    def test_crash_recover_indeterminate_attempt(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        attempt_dir.mkdir(parents=True)
+        (attempt_dir / "reservation.json").write_bytes(b"{bad json}")
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        report = recover(ctx, {ATTEMPT_ID: task})
+        assert ATTEMPT_ID in report.indeterminate
+
+    def test_crash_recover_released_attempt_skipped(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        _write_record(
+            attempt_dir / "release.json",
+            record_kind="release", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt=None, sealed_scopes=[], grant_removed=False, reason="test",
+        )
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        report = recover(ctx, {ATTEMPT_ID: task})
+        assert ATTEMPT_ID not in report.indeterminate
+
+    def test_crash_recover_complete_prefix_error_caught(self, tmp: Any) -> None:
+        # Covers except (OperationError, PreconditionError): pass in steps 4+5
+        exec_dir, ws = tmp
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        with mock.patch.object(
+            _exec_ops_mod, "_complete_prefix",
+            side_effect=OperationError("test"),
+        ):
+            with mock.patch.object(_exec_ops_mod, "_o18_dispose"):
+                report = recover(ctx, {ATTEMPT_ID: task})
+        assert isinstance(report, RecoveryReport)
+
+    def test_crash_recover_step6_released_with_grant(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        _write_record(
+            attempt_dir / "release.json",
+            record_kind="release", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt=None, sealed_scopes=[], grant_removed=False, reason="test",
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        recover(ctx, {ATTEMPT_ID: task})
+        grants = ctx.registry.read_all_grants()
+        assert not any(g["attempt_id"] == ATTEMPT_ID for g in grants)
+
+    def test_crash_recover_step6_released_grant_error_caught(self, tmp: Any) -> None:
+        # Covers except (OperationError, PreconditionError): pass in step 6 released+grant branch
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        _write_record(
+            attempt_dir / "release.json",
+            record_kind="release", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            receipt=None, sealed_scopes=[], grant_removed=False, reason="test",
+        )
+        _store_grant(ws, ATTEMPT_ID)
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        with mock.patch.object(
+            _exec_ops_mod, "_complete_release_grant_removal",
+            side_effect=OperationError("test"),
+        ):
+            report = recover(ctx, {ATTEMPT_ID: task})
+        assert isinstance(report, RecoveryReport)
+
+    def test_crash_recover_step6_bare_reservation_error_caught(self, tmp: Any) -> None:
+        # Covers except (OperationError, PreconditionError): pass in step 6 bare-reservation branch
+        exec_dir, ws = tmp
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        with mock.patch.object(_exec_ops_mod, "_complete_prefix"):
+            with mock.patch.object(
+                _exec_ops_mod, "_o18_dispose",
+                side_effect=PreconditionError("test"),
+            ):
+                report = recover(ctx, {ATTEMPT_ID: task})
+        assert isinstance(report, RecoveryReport)
+
+    def test_crash_recover_step6_prepared_no_grant_indeterminate(self, tmp: Any) -> None:
+        # Prepared but no grant: step 6 marks as indeterminate (lines 2312-2315)
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        _write_record(
+            attempt_dir / "prepared.json",
+            record_kind="prepared", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            definition_hash=DEFINITION_HASH, plan_hash="", contract={}, baseline={},
+            instruction_digest="i" * 64,
+            deadline_at="2026-09-14T23:59:59Z", deadline_budget_s=3600,
+            heartbeat_interval_s=30, log_cap_bytes=1048576,
+        )
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID, task_status="TODO")
+        report = recover(ctx, {ATTEMPT_ID: task})
+        assert ATTEMPT_ID in report.indeterminate
+
+    def test_crash_recover_step6_became_indeterminate(self, tmp: Any) -> None:
+        # Covers `if attempt_id not in indeterminate: indeterminate.append(attempt_id)` True branch.
+        # Step 4+5 returns released=True (skipped, not added to indeterminate).
+        # Step 6 returns indeterminate=True, so attempt is added.
+        exec_dir, ws = tmp
+        _write_record(
+            exec_dir / "attempts" / ATTEMPT_ID / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        call_counts: List[int] = [0]
+
+        def _mock_pf(c: Any, t: Any) -> Any:
+            call_counts[0] += 1
+            if call_counts[0] == 1:
+                return _facts_base(released=True, bound_attempt=ATTEMPT_ID)
+            return _facts_base(
+                indeterminate=True, indeterminate_path="test/path",
+                bound_attempt=ATTEMPT_ID,
+            )
+
+        with mock.patch.object(_exec_ops_mod, "project_facts", side_effect=_mock_pf):
+            report = recover(ctx, {ATTEMPT_ID: task})
+        assert ATTEMPT_ID in report.indeterminate
+
+    def test_crash_recover_stop_requested_indeterminate_caught(self, tmp: Any) -> None:
+        # Corrupt stop-request triggers _IndeterminateError; recover catches it (lines 2323-2324)
+        exec_dir, ws = tmp
+        sr_dir = exec_dir / "control" / "stop-requests"
+        sr_dir.mkdir(parents=True)
+        (sr_dir / "0001.json").write_bytes(b"bad json{{")
+        ctx = _ctx(exec_dir, ws)
+        report = recover(ctx, {})
+        assert not report.stop_requested
+
+    def test_crash_recover_stop_requested_true(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        sr_dir = exec_dir / "control" / "stop-requests"
+        sr_dir.mkdir(parents=True)
+        _write_record(
+            sr_dir / "0001.json",
+            record_kind="stop-request", task_id=None, attempt_id=None,
+            sequence=1, requested_by="operator", reason="test",
+        )
+        ctx = _ctx(exec_dir, ws)
+        report = recover(ctx, {})
+        assert report.stop_requested
+
+    def test_crash_recover_writes_projection_json(self, tmp: Any) -> None:
+        exec_dir, ws = tmp
+        ctx = _ctx(exec_dir, ws)
+        recover(ctx, {})
+        proj = exec_dir / "runtime" / "projection.json"
+        assert proj.exists()
+        data = json.loads(proj.read_bytes())
+        assert "indeterminate" in data
+        assert "open_causes" in data
+        assert "stop_requested" in data
+
+    def test_crash_recover_collects_open_causes(self, tmp: Any) -> None:
+        # Covers line 2334: open_causes_map[attempt_id] = sorted(facts.open_causes)
+        exec_dir, ws = tmp
+        attempt_dir = exec_dir / "attempts" / ATTEMPT_ID
+        _write_record(
+            attempt_dir / "reservation.json",
+            record_kind="reservation", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            plan_hash="", claims=[], counter=0,
+        )
+        _write_record(
+            attempt_dir / "holds" / "cause-001.json",
+            record_kind="hold", task_id=TASK_ID, attempt_id=ATTEMPT_ID,
+            cause_id="cause-001", cause_class="operator_hold",
+            detail="test hold", raised_by="operator",
+        )
+        ctx = _ctx(exec_dir, ws)
+        task = _task(attempt_id=ATTEMPT_ID)
+        report = recover(ctx, {ATTEMPT_ID: task})
+        assert "cause-001" in report.open_causes.get(ATTEMPT_ID, [])

@@ -1799,3 +1799,555 @@ def _o20_relinquish(ctx: Context) -> None:
         )
         ctx.revision = new_rev
     ctx.coordinator_run = None
+
+
+# ---------------------------------------------------------------------------
+# §8.2 Crash-prefix completions and §13.1 Recovery
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RecoveryReport:
+    """Result of one §13.1 recovery scan (steps 3-8)."""
+
+    open_causes: Dict[str, List[str]]
+    """attempt_id → sorted list of open cause_ids at end of scan."""
+
+    indeterminate: List[str]
+    """Attempt ids that projected as indeterminate and could not be completed."""
+
+    stop_requested: bool
+    """True if any uncleared stop-request was present after the scan."""
+
+
+def _find_dispatch_rid(mutations_dir: Path) -> Optional[str]:
+    """Return the receipt_id for the dispatch mutation (intent==RUNNING), or None."""
+    if not mutations_dir.exists():
+        return None
+    for rid_dir in mutations_dir.iterdir():
+        if not rid_dir.is_dir():
+            continue
+        intent_path = rid_dir / "intent.json"
+        if not intent_path.exists():
+            continue
+        try:
+            raw: Any = json.loads(intent_path.read_bytes())
+            if raw.get("intent") == "RUNNING":
+                return rid_dir.name
+        except (OSError, ValueError):
+            pass
+    return None
+
+
+def _has_fence(mutations_dir: Path, rid: str) -> bool:
+    """True if at least one fence JSON exists under mutations/<rid>/fences/."""
+    fences_dir = mutations_dir / rid / "fences"
+    if not fences_dir.exists():
+        return False
+    return any(f.suffix == ".json" for f in fences_dir.iterdir())
+
+
+def _has_ack(mutations_dir: Path, rid: str) -> bool:
+    """True if mutations/<rid>/ack.json exists."""
+    return (mutations_dir / rid / "ack.json").exists()
+
+
+def _complete_o4_pre_commit(
+    ctx: Context,
+    task: TaskState,
+    attempt_id: str,
+    dispatch_rid: str,
+) -> None:
+    """O4 after 1 or 2: dispatch intent present, task still TODO.
+
+    Ensures fence exists, commits, acks, sets capability=issued, publishes an
+    ambiguous launch.  Never calls adapter.start() again (§8.3).
+    Routes through perform so R5-07 is upheld.
+    """
+    attempt_dir = ctx.execution_dir / "attempts" / attempt_id
+    mutations_dir = attempt_dir / "mutations"
+    dispatch_dir = mutations_dir / dispatch_rid
+
+    def _guard(facts: Facts) -> None:
+        if facts.task_status == "RUNNING":
+            raise PreconditionError("O4/pre-commit recovery: task already RUNNING")
+        if not facts.prepared:
+            raise PreconditionError("O4/pre-commit recovery: not prepared")
+
+    def _effect(ctx: Context, _task: TaskState) -> None:
+        # Step 2: ensure fence exists
+        if not _has_fence(mutations_dir, dispatch_rid):
+            seq = _next_fence_sequence(mutations_dir, dispatch_rid)
+            fence_raw = _make_record(
+                ctx, "fence",
+                task_id=task.task_id, attempt_id=attempt_id,
+                receipt_id=dispatch_rid,
+                sequence=seq,
+                expected_revision=ctx.revision,
+                expected_run=ctx.coordinator_run or "",
+                expected_generation=ctx.ownership_generation,
+                submitted_at=_now(),
+            )
+            _publish_record(ctx, dispatch_dir / "fences" / f"{seq:04d}.json", fence_raw)
+        # Step 3: commit
+        ev_idx = 0
+        if ctx.commit_fn is not None:
+            new_rev, ev_idx = ctx.commit_fn(
+                task.task_id, "RUNNING", attempt_id, ctx.revision,
+                None, None, {"receipt_id": dispatch_rid, "kind": "dispatch"},
+            )
+            ctx.revision = new_rev
+        # Step 4: ack
+        fence_seq = max(_next_fence_sequence(mutations_dir, dispatch_rid) - 1, 1)
+        ack_raw = _make_record(
+            ctx, "commit-observed",
+            task_id=task.task_id, attempt_id=attempt_id,
+            receipt_id=dispatch_rid,
+            fence_sequence=fence_seq,
+            committed_revision=ctx.revision,
+            evidence_index=ev_idx,
+            committed_status="RUNNING",
+        )
+        _publish_record(ctx, dispatch_dir / "ack.json", ack_raw)
+        # Step 5: set capability=issued
+        cap_id = "cap-" + secrets.token_hex(16)
+        grant = _read_grant(ctx.workspace_root, attempt_id)
+        if grant is not None:
+            grant["capability"] = "issued"
+            grant["capability_id"] = cap_id
+            grant["body_digest"] = _grant_body_digest(grant)
+            ctx.registry.update_grant(attempt_id, grant)
+        # Steps 6/7 skipped — adapter.start() is never retried in recovery.
+        # Publish ambiguous launch so §13.2 can investigate.
+        launch_raw = _make_record(
+            ctx, "launch",
+            task_id=task.task_id, attempt_id=attempt_id,
+            start_outcome="ambiguous",
+            handle=None,
+            capability_id=cap_id,
+            started_at=_now(),
+            adapter={"name": "unknown", "version": "0"},
+        )
+        _publish_record(ctx, attempt_dir / "launch.json", launch_raw)
+
+    perform(ctx, task, _guard, _effect)
+
+
+def _complete_o4_post_commit(
+    ctx: Context,
+    task: TaskState,
+    attempt_id: str,
+    dispatch_rid: str,
+) -> None:
+    """O4 after 3: committed RUNNING, ack/capability/launch still missing.
+
+    Publishes ack if absent, sets capability=issued, publishes ambiguous launch.
+    Routes through perform so R5-07 is upheld.
+    """
+    attempt_dir = ctx.execution_dir / "attempts" / attempt_id
+    mutations_dir = attempt_dir / "mutations"
+    dispatch_dir = mutations_dir / dispatch_rid
+
+    def _guard(facts: Facts) -> None:
+        if facts.task_status != "RUNNING":
+            raise PreconditionError("O4/post-commit recovery: not RUNNING")
+        if facts.launched:
+            raise PreconditionError("O4/post-commit recovery: already launched")
+
+    def _effect(ctx: Context, _task: TaskState) -> None:
+        # Step 4: ack (publish_if_absent — idempotent)
+        if not _has_ack(mutations_dir, dispatch_rid):
+            fence_seq = max(_next_fence_sequence(mutations_dir, dispatch_rid) - 1, 1)
+            ack_raw = _make_record(
+                ctx, "commit-observed",
+                task_id=task.task_id, attempt_id=attempt_id,
+                receipt_id=dispatch_rid,
+                fence_sequence=fence_seq,
+                committed_revision=ctx.revision,
+                evidence_index=0,
+                committed_status="RUNNING",
+            )
+            _publish_record(ctx, dispatch_dir / "ack.json", ack_raw)
+        # Step 5: set capability=issued if still none
+        new_cap_id = "cap-" + secrets.token_hex(16)
+        grant = _read_grant(ctx.workspace_root, attempt_id)
+        if grant is not None and grant.get("capability") == "none":
+            grant["capability"] = "issued"
+            grant["capability_id"] = new_cap_id
+            grant["body_digest"] = _grant_body_digest(grant)
+            ctx.registry.update_grant(attempt_id, grant)
+        grant2 = _read_grant(ctx.workspace_root, attempt_id)
+        cap_id: str = (grant2.get("capability_id") or new_cap_id) if grant2 else new_cap_id
+        # Publish ambiguous launch
+        launch_raw = _make_record(
+            ctx, "launch",
+            task_id=task.task_id, attempt_id=attempt_id,
+            start_outcome="ambiguous",
+            handle=None,
+            capability_id=cap_id,
+            started_at=_now(),
+            adapter={"name": "unknown", "version": "0"},
+        )
+        _publish_record(ctx, attempt_dir / "launch.json", launch_raw)
+
+    perform(ctx, task, _guard, _effect)
+
+
+def _complete_o4_ambiguous_launch(
+    ctx: Context,
+    task: TaskState,
+    attempt_id: str,
+) -> None:
+    """O4 after 5/6: capability=issued, no launch → publish ambiguous launch record."""
+    attempt_dir = ctx.execution_dir / "attempts" / attempt_id
+
+    def _guard(facts: Facts) -> None:
+        if facts.task_status != "RUNNING":
+            raise PreconditionError("O4/ambiguous-launch recovery: not RUNNING")
+        if facts.launched:
+            raise PreconditionError("O4/ambiguous-launch recovery: already launched")
+        if facts.launch_capability != "issued":
+            raise PreconditionError(
+                f"O4/ambiguous-launch recovery: capability is {facts.launch_capability!r}"
+            )
+
+    def _effect(ctx: Context, _task: TaskState) -> None:
+        grant = _read_grant(ctx.workspace_root, attempt_id)
+        cap_id: str = (grant.get("capability_id") or "") if grant else ""
+        launch_raw = _make_record(
+            ctx, "launch",
+            task_id=task.task_id, attempt_id=attempt_id,
+            start_outcome="ambiguous",
+            handle=None,
+            capability_id=cap_id,
+            started_at=_now(),
+            adapter={"name": "unknown", "version": "0"},
+        )
+        _publish_record(ctx, attempt_dir / "launch.json", launch_raw)
+
+    perform(ctx, task, _guard, _effect)
+
+
+def _complete_o4_consume_capability(
+    ctx: Context,
+    task: TaskState,
+    attempt_id: str,
+) -> None:
+    """O4 after 7: launch present, capability still issued → set capability consumed."""
+
+    def _guard(facts: Facts) -> None:
+        if not facts.launched:
+            raise PreconditionError("O4/consume recovery: not launched")
+        if facts.launch_capability != "issued":
+            raise PreconditionError(
+                f"O4/consume recovery: capability is {facts.launch_capability!r}"
+            )
+
+    def _effect(ctx: Context, _task: TaskState) -> None:
+        grant = _read_grant(ctx.workspace_root, attempt_id)
+        if grant is not None:
+            grant["capability"] = "consumed"
+            grant["body_digest"] = _grant_body_digest(grant)
+            ctx.registry.update_grant(attempt_id, grant)
+
+    perform(ctx, task, _guard, _effect)
+
+
+def _complete_o12_ack(
+    ctx: Context,
+    task: TaskState,
+    attempt_id: str,
+) -> None:
+    """O12/O13/O14 after 3: terminal mutation committed but no ack → publish ack."""
+    mutations_dir = ctx.execution_dir / "attempts" / attempt_id / "mutations"
+
+    terminal_rid: Optional[str] = None
+    terminal_status: str = ""
+    if mutations_dir.exists():
+        for rid_dir in mutations_dir.iterdir():
+            if not rid_dir.is_dir():
+                continue
+            intent_path = rid_dir / "intent.json"
+            ack_path = rid_dir / "ack.json"
+            if not intent_path.exists() or ack_path.exists():
+                continue
+            try:
+                ri: Any = json.loads(intent_path.read_bytes())
+                iv: str = ri.get("intent", "")
+                if iv in ("DONE", "BLOCKED", "SKIPPED", "TODO"):
+                    terminal_rid = rid_dir.name
+                    terminal_status = iv
+                    break
+            except (OSError, ValueError):
+                pass
+
+    if terminal_rid is None:
+        return
+
+    rid = terminal_rid
+    rid_dir_path = mutations_dir / rid
+
+    def _guard(facts: Facts) -> None:
+        if not facts.accepted:
+            raise PreconditionError("O12-ack recovery: not accepted")
+        if facts.commit_observed:
+            raise PreconditionError("O12-ack recovery: already ack'd")
+
+    def _effect(ctx: Context, _task: TaskState) -> None:
+        fence_seq = max(_next_fence_sequence(mutations_dir, rid) - 1, 1)
+        ack_raw = _make_record(
+            ctx, "commit-observed",
+            task_id=task.task_id, attempt_id=attempt_id,
+            receipt_id=rid,
+            fence_sequence=fence_seq,
+            committed_revision=ctx.revision,
+            evidence_index=0,
+            committed_status=terminal_status,
+        )
+        _publish_record(ctx, rid_dir_path / "ack.json", ack_raw)
+
+    perform(ctx, task, _guard, _effect)
+
+
+def _complete_release_grant_removal(
+    ctx: Context,
+    task: TaskState,
+    attempt_id: str,
+) -> None:
+    """O16/O18 after 2: release record present but grant still in registry → remove grant."""
+
+    def _guard(facts: Facts) -> None:
+        if not facts.released:
+            raise PreconditionError("release-grant-removal recovery: not released")
+        if not facts.grant_present:
+            raise PreconditionError("release-grant-removal recovery: no grant")
+
+    def _effect(ctx: Context, _task: TaskState) -> None:
+        ctx.registry.scan_and_remove(attempt_id)
+
+    perform(ctx, task, _guard, _effect)
+
+
+def _complete_prefix(
+    ctx: Context,
+    task: TaskState,
+    attempt_id: str,
+    facts: Facts,
+) -> None:
+    """Route to the §8.2 crash-prefix completion for one attempt.
+
+    Every branch routes through perform (directly or via an _oX helper), so
+    R5-07 is structurally upheld: perform is the only path to the store.
+    """
+    if facts.indeterminate:
+        return
+
+    attempt_dir = ctx.execution_dir / "attempts" / attempt_id
+    mutations_dir = attempt_dir / "mutations"
+
+    # O16/O18 after 2: release present (with or without grant)
+    if facts.released:
+        if facts.grant_present:
+            _complete_release_grant_removal(ctx, task, attempt_id)
+        return
+
+    # O1 after 1: reserved, no grant, not prepared
+    if facts.reserved and not facts.grant_present and not facts.prepared:
+        res_claims: List[str] = []
+        try:
+            res_raw: Any = json.loads((attempt_dir / "reservation.json").read_bytes())
+            res_claims = list(res_raw.get("claims", []))
+        except (OSError, ValueError):
+            pass
+        _o2_grant(ctx, task, attempt_id, res_claims)
+        return
+
+    # O2/O3 after 1: grant present, not prepared
+    if facts.reserved and facts.grant_present and not facts.prepared:
+        if task.plan_hash is None or facts.plan_hash == task.plan_hash:
+            scope_claims: List[str] = []
+            try:
+                wj: Any = json.loads((attempt_dir / "scopes" / "worker.json").read_bytes())
+                scope_claims = list(wj.get("claims", []))
+            except (OSError, ValueError):
+                pass
+            _o3_prepare(ctx, task, attempt_id, scope_claims, {
+                "definition_hash": "",
+                "plan_hash": task.plan_hash or "",
+                "contract": {},
+                "baseline": {},
+                "instruction_digest": "",
+                "deadline_at": None,
+                "deadline_budget_s": 0,
+                "heartbeat_interval_s": 60,
+                "log_cap_bytes": 0,
+            })
+        else:
+            _o18_dispose(ctx, task, attempt_id, "recovery: plan no longer matches")
+        return
+
+    # O4 after 1 or 2: dispatch intent present, task still TODO
+    if facts.prepared and facts.task_status == "TODO":
+        dispatch_rid = _find_dispatch_rid(mutations_dir)
+        if dispatch_rid is not None:
+            _complete_o4_pre_commit(ctx, task, attempt_id, dispatch_rid)
+        return
+
+    # O4 after 3: committed RUNNING, capability=none, not yet launched
+    if facts.task_status == "RUNNING" and not facts.launched and facts.launch_capability == "none":
+        dispatch_rid = _find_dispatch_rid(mutations_dir)
+        if dispatch_rid is not None:
+            _complete_o4_post_commit(ctx, task, attempt_id, dispatch_rid)
+        return
+
+    # O4 after 5/6: capability=issued, no launch → ambiguous
+    if facts.task_status == "RUNNING" and not facts.launched and facts.launch_capability == "issued":
+        _complete_o4_ambiguous_launch(ctx, task, attempt_id)
+        return
+
+    # O4 after 7: launch present, capability still issued → consume
+    if facts.task_status == "RUNNING" and facts.launched and facts.launch_capability == "issued":
+        _complete_o4_consume_capability(ctx, task, attempt_id)
+        return
+
+    # O15 after 4: stop evidence present, open scopes → O6 for each scope
+    if facts.stop_evidence is not None and facts.open_scopes:
+        for scope_id in sorted(facts.open_scopes):
+            try:
+                _o6_seal(ctx, task, attempt_id, scope_id,
+                         {"variant": "stopped", "stop_kind": facts.stop_evidence})
+            except (OperationError, PreconditionError):
+                pass
+        return
+
+    # O12/O13/O14 after 3: accepted but no ack → publish ack
+    if facts.accepted and not facts.commit_observed:
+        _complete_o12_ack(ctx, task, attempt_id)
+        return
+
+    # O18 after 1: all scopes sealed, launch_capability=none, no release yet
+    # Call O18 which handles release + grant removal (sealing loop is a no-op
+    # when open_scopes is already empty).
+    if (not facts.released and facts.launch_capability == "none"
+            and facts.declared_scopes and not facts.open_scopes
+            and facts.grant_present):
+        _o18_dispose(ctx, task, attempt_id, "recovery: O18 after 1")
+        return
+
+
+def recover(
+    ctx: Context,
+    attempt_task_map: Dict[str, TaskState],
+) -> RecoveryReport:
+    """§13.1 Recovery scan, steps 3-8.
+
+    Ownership (steps 1-2) is the caller's responsibility: the caller has
+    already established that ``ctx.coordinator_run`` is current, and has
+    performed O17 and published generation fences if a takeover was required.
+
+    ``attempt_task_map`` maps attempt_id → TaskState for every attempt recorded
+    in ``execution.attempts`` of project.json.  The function also scans the
+    ``attempts/`` directory to pick up any attempt directories not yet registered
+    there (e.g. O4 prefix after 3 where the commit landed but the dict was not
+    yet read).
+    """
+    exec_dir = ctx.execution_dir
+
+    # Step 3: delete runtime/ (§13.1 step 3)
+    runtime_dir = exec_dir / "runtime"
+    if runtime_dir.exists():
+        shutil.rmtree(str(runtime_dir), ignore_errors=True)
+
+    # Collect all attempt ids from project.json + from disk
+    all_ids: Set[str] = set(attempt_task_map.keys())
+    attempt_dir_root = exec_dir / "attempts"
+    if attempt_dir_root.exists():
+        for entry in attempt_dir_root.iterdir():
+            if entry.is_dir():
+                all_ids.add(entry.name)
+
+    indeterminate: List[str] = []
+
+    # Steps 4 + 5: compute facts and perform completions
+    for attempt_id in sorted(all_ids):
+        task = attempt_task_map.get(attempt_id)
+        if task is None:
+            continue  # No TaskState → cannot project facts or perform operations
+        facts = project_facts(ctx, task)
+        if facts.indeterminate:
+            indeterminate.append(attempt_id)
+            continue
+        if facts.released:
+            continue
+        try:
+            _complete_prefix(ctx, task, attempt_id, facts)
+        except (OperationError, PreconditionError):
+            pass  # Non-fatal; the attempt will appear in the step-8 report
+
+    # Step 6: reconcile claims
+    # Every grant must name an unreleased attempt; every unreleased attempt
+    # must have a grant.
+    for attempt_id in sorted(all_ids):
+        task = attempt_task_map.get(attempt_id)
+        if task is None:
+            continue
+        facts = project_facts(ctx, task)
+        if facts.indeterminate:
+            if attempt_id not in indeterminate:
+                indeterminate.append(attempt_id)
+            continue
+        if facts.released:
+            if facts.grant_present:
+                try:
+                    _complete_release_grant_removal(ctx, task, attempt_id)
+                except (OperationError, PreconditionError):
+                    pass
+            continue
+        if not facts.grant_present and not facts.prepared:
+            # Unreleased, no grant, no prepared → bare reservation: dispose
+            try:
+                _o18_dispose(ctx, task, attempt_id, "recovery: reconcile, bare reservation")
+            except (OperationError, PreconditionError):
+                pass
+        elif not facts.grant_present and facts.prepared:
+            # Unreleased, prepared, no grant → indeterminate (§13.1 step 6)
+            if attempt_id not in indeterminate:
+                indeterminate.append(attempt_id)
+
+    # Step 7: read stop_requested
+    project_fences = _load_gen_fences(exec_dir, None, ctx.project_id, ctx.ownership_generation)
+    try:
+        stop_requested = _compute_stop_requested(
+            exec_dir, ctx.project_id, ctx.ownership_generation, project_fences,
+        )
+    except _IndeterminateError:
+        stop_requested = False
+
+    # Step 8: collect open causes and rebuild runtime/projection.json
+    open_causes_map: Dict[str, List[str]] = {}
+    for attempt_id in sorted(all_ids):
+        task = attempt_task_map.get(attempt_id)
+        if task is None:
+            continue
+        facts = project_facts(ctx, task)
+        if not facts.indeterminate and facts.open_causes:
+            open_causes_map[attempt_id] = sorted(facts.open_causes)
+
+    proj_dir = exec_dir / "runtime"
+    proj_dir.mkdir(parents=True, exist_ok=True)
+    proj_data: Dict[str, Any] = {
+        "indeterminate": indeterminate,
+        "open_causes": open_causes_map,
+        "stop_requested": stop_requested,
+        "rebuilt_at": _now(),
+    }
+    (proj_dir / "projection.json").write_text(
+        json.dumps(proj_data, indent=2),
+        encoding="utf-8",
+    )
+
+    return RecoveryReport(
+        open_causes=open_causes_map,
+        indeterminate=indeterminate,
+        stop_requested=stop_requested,
+    )
