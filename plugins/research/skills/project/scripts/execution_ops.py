@@ -6,6 +6,7 @@ actions call it; no code in this module writes to the store by any other route
 """
 from __future__ import annotations
 
+import concurrent.futures
 import copy
 import datetime
 import hashlib
@@ -17,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
     Dict,
     FrozenSet,
     List,
@@ -26,6 +28,7 @@ from typing import (
     Tuple,
 )
 
+from execution_adapter import AdapterError
 from execution_serialization import (
     AttemptEnvelope,
     CommonEnvelope,
@@ -2377,69 +2380,73 @@ def _make_commit_fn(
         skip_reason: Optional[str],
         receipt_entry: Dict[str, Any],
     ) -> Tuple[int, int]:
-        deadline = time.monotonic() + lock_timeout
-        while True:
-            try:
-                lock_dir.mkdir()
-                break
-            except FileExistsError:
-                if time.monotonic() >= deadline:
-                    raise OperationError(f"project lock busy: {lock_dir}") from None
-                time.sleep(0.05)
-        try:
-            raw = project_json.read_bytes()
-            state: Dict[str, Any] = copy.deepcopy(json.loads(raw))
-            if state.get("revision") != expected_revision:
-                raise OperationError(
-                    f"revision conflict: expected {expected_revision}, "
-                    f"got {state.get('revision')}"
-                )
-            state["revision"] = expected_revision + 1
-            state["updated"] = _now()
-            exec_block: Dict[str, Any] = state.setdefault("execution", {})
-
-            if task_id == "":
-                exec_block["coordinator_run"] = receipt_entry.get("coordinator_run")
-                if "ownership_generation" in receipt_entry:
-                    exec_block["ownership_generation"] = receipt_entry["ownership_generation"]
-            else:
-                for task in state.get("tasks", []):
-                    if task.get("id") == task_id:
-                        task["status"] = target_status
-                        if block_reason is not None:
-                            task["block_reason"] = block_reason
-                        if skip_reason is not None:
-                            task["skip_reason"] = skip_reason
-                        break
-                attempts: Dict[str, Any] = exec_block.setdefault("attempts", {})
-                if target_status == "RUNNING" and bound_attempt is not None:
-                    attempts[task_id] = bound_attempt
-                else:
-                    attempts.pop(task_id, None)
-                state["current_tasks"] = sorted(
-                    t["id"] for t in state.get("tasks", [])
-                    if t.get("status") == "RUNNING"
-                )
-
-            tmp = project_dir / f".project.json.{secrets.token_hex(8)}.tmp"
-            try:
-                tmp.write_text(
-                    json.dumps(state, indent=2, ensure_ascii=False) + "\n",
-                    encoding="utf-8",
-                )
-                tmp.replace(project_json)
-            except BaseException:
+        _expected = expected_revision
+        for _retry in range(20):
+            deadline = time.monotonic() + lock_timeout
+            while True:
                 try:
-                    tmp.unlink()
+                    lock_dir.mkdir()
+                    break
+                except FileExistsError:
+                    if time.monotonic() >= deadline:
+                        raise OperationError(f"project lock busy: {lock_dir}") from None
+                    time.sleep(0.05)
+            try:
+                raw = project_json.read_bytes()
+                state: Dict[str, Any] = copy.deepcopy(json.loads(raw))
+                if state.get("revision") != _expected:
+                    _expected = int(state["revision"])
+                    continue
+                state["revision"] = _expected + 1
+                state["updated"] = _now()
+                exec_block: Dict[str, Any] = state.setdefault("execution", {})
+
+                if task_id == "":
+                    exec_block["coordinator_run"] = receipt_entry.get("coordinator_run")
+                    if "ownership_generation" in receipt_entry:
+                        exec_block["ownership_generation"] = receipt_entry["ownership_generation"]
+                else:
+                    for task in state.get("tasks", []):
+                        if task.get("id") == task_id:
+                            task["status"] = target_status
+                            if block_reason is not None:
+                                task["block_reason"] = block_reason
+                            if skip_reason is not None:
+                                task["skip_reason"] = skip_reason
+                            break
+                    attempts: Dict[str, Any] = exec_block.setdefault("attempts", {})
+                    if target_status == "RUNNING" and bound_attempt is not None:
+                        attempts[task_id] = bound_attempt
+                    else:
+                        attempts.pop(task_id, None)
+                    state["current_tasks"] = sorted(
+                        t["id"] for t in state.get("tasks", [])
+                        if t.get("status") == "RUNNING"
+                    )
+
+                tmp = project_dir / f".project.json.{secrets.token_hex(8)}.tmp"
+                try:
+                    tmp.write_text(
+                        json.dumps(state, indent=2, ensure_ascii=False) + "\n",
+                        encoding="utf-8",
+                    )
+                    tmp.replace(project_json)
+                except BaseException:
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
+                    raise
+            finally:
+                try:
+                    lock_dir.rmdir()
                 except OSError:
                     pass
-                raise
-        finally:
-            try:
-                lock_dir.rmdir()
-            except OSError:
-                pass
-        return state["revision"], 0
+            return state["revision"], 0
+        raise OperationError(
+            f"revision conflict: exceeded retry limit (expected {expected_revision}, "
+            f"last seen {_expected})"
+        )
 
     return _commit
 
@@ -2564,6 +2571,7 @@ def run_sequential_task(
     if handle:
         obs = adapter.observe(handle)
         while obs == "running":
+            time.sleep(0.1)
             obs = adapter.observe(handle)
 
     # Seal via adapter (ignore AdapterError — attestation is optional)
@@ -2571,7 +2579,7 @@ def run_sequential_task(
     if handle:
         try:
             attestation = adapter.seal(handle)
-        except Exception:
+        except AdapterError:
             pass
 
     # O5: record result
@@ -2607,3 +2615,185 @@ def run_sequential_task(
     # O20: relinquish
     _o20_relinquish(ctx)
     return True
+
+
+def _run_task_in_ctx(ctx: Context, task: Dict[str, Any]) -> bool:
+    """Run the full O1-O16 lifecycle for one READY task using the context's adapter.
+
+    Returns True when the task reached DONE.  Used by run_parallel_tasks.
+    """
+    task_id: str = task["id"]
+    plan_hash: Optional[str] = task.get("plan_hash")
+    auth: Dict[str, Any] = task.get("authorization", {})
+    auth_in_force = (
+        not auth.get("required", False)
+        or auth.get("status") in ("explicit", "not_required")
+    )
+    attempt_id = "att-" + secrets.token_hex(16)
+    definition_hash = hashlib.sha256(task_id.encode()).hexdigest()
+
+    unbound = TaskState(
+        task_id=task_id, attempt_id=None, task_status="TODO",
+        authorization_in_force=auth_in_force, receipt_present=False,
+        plan_hash=plan_hash,
+    )
+    _o1_reserve(ctx, unbound, attempt_id)
+
+    bound = TaskState(
+        task_id=task_id, attempt_id=attempt_id, task_status="TODO",
+        authorization_in_force=auth_in_force, receipt_present=False,
+        plan_hash=plan_hash,
+    )
+    _o2_grant(ctx, bound, attempt_id, [])
+
+    now = _now()
+    _o3_prepare(ctx, bound, attempt_id, [], {
+        "definition_hash": definition_hash,
+        "plan_hash": plan_hash or "",
+        "contract": {},
+        "baseline": {},
+        "instruction_digest": "",
+        "deadline_at": now,
+        "deadline_budget_s": 3600,
+        "heartbeat_interval_s": 30,
+        "log_cap_bytes": 1048576,
+    })
+    _o4_dispatch(ctx, bound, attempt_id, definition_hash, {})
+
+    running = TaskState(
+        task_id=task_id, attempt_id=attempt_id, task_status="RUNNING",
+        authorization_in_force=auth_in_force, receipt_present=True,
+        plan_hash=plan_hash,
+    )
+
+    launch_rec: Dict[str, Any] = json.loads(
+        (ctx.execution_dir / "attempts" / attempt_id / "launch.json").read_bytes()
+    )
+    handle: str = launch_rec.get("handle") or ""
+
+    if handle:
+        obs = ctx.adapter.observe(handle)
+        while obs == "running":
+            time.sleep(0.1)
+            obs = ctx.adapter.observe(handle)
+
+    attestation: Dict[str, Any] = {}
+    if handle:
+        try:
+            attestation = ctx.adapter.seal(handle)
+        except AdapterError:
+            pass
+
+    _o5_record_result(ctx, running, attempt_id, {
+        "outcome": "success",
+        "produced": {},
+        "baseline_matched": True,
+        "captures": [],
+        "summary": "",
+        "refusal_code": None,
+    })
+    _o6_seal(ctx, running, attempt_id, "worker", attestation)
+    _o7_classify(ctx, running, attempt_id, "success", [])
+    rid = _o11_accept(ctx, running, attempt_id, definition_hash, "DONE", {}, [])
+    _o12_commit_acceptance(ctx, running, attempt_id, rid, definition_hash, {}, "DONE")
+
+    done = TaskState(
+        task_id=task_id, attempt_id=attempt_id, task_status="DONE",
+        authorization_in_force=auth_in_force, receipt_present=True,
+        plan_hash=plan_hash,
+    )
+    _o16_release(ctx, done, attempt_id, rid, "task_terminal")
+    return True
+
+
+def run_parallel_tasks(
+    project_dir: Path,
+    adapter_factory: Callable[[], AdapterProtocol],
+    *,
+    max_concurrent: int = 2,
+    lock_timeout: float = 5.0,
+) -> int:
+    """Run up to max_concurrent READY tasks concurrently via O19 -> N x (O1-O16) -> O20.
+
+    Each task gets its own adapter instance from adapter_factory.  Returns the count of
+    tasks that reached DONE.  The project must be schema v4 (enable_execution called first).
+    """
+    project_dir = project_dir.resolve()
+    state: Dict[str, Any] = json.loads((project_dir / "project.json").read_bytes())
+
+    project_id: str = state["project"]
+    execution: Dict[str, Any] = state.get("execution", {})
+    coordinator_run: Optional[str] = execution.get("coordinator_run")
+    ownership_generation: int = execution.get("ownership_generation", 0)
+    revision: int = state["revision"]
+    workspace_root = project_dir.parent
+    execution_dir = project_dir / "execution"
+
+    registry = GrantRegistry(workspace_root)
+    commit_fn = _make_commit_fn(project_dir, lock_timeout)
+
+    ctx = Context(
+        execution_dir=execution_dir,
+        workspace_root=workspace_root,
+        project_id=project_id,
+        coordinator_run=coordinator_run,
+        ownership_generation=ownership_generation,
+        revision=revision,
+        registry=registry,
+        adapter=adapter_factory(),
+        project_dir=project_dir,
+        commit_fn=commit_fn,
+    )
+
+    _o19_acquire(ctx, {
+        "host_id": "localhost",
+        "boot_id": "",
+        "pid": 0,
+        "process_start": _now(),
+        "started_at": _now(),
+    })
+
+    terminal_statuses = {"DONE", "SKIPPED", "BLOCKED"}
+    task_list: List[Dict[str, Any]] = state.get("tasks", [])
+    by_status = {t["id"]: t.get("status", "TODO") for t in task_list}
+    ready_tasks: List[Dict[str, Any]] = []
+    for t in task_list:
+        if len(ready_tasks) >= max_concurrent:
+            break
+        if t.get("status") == "TODO":
+            deps: List[str] = t.get("depends_on", [])
+            if all(by_status.get(d) in terminal_statuses for d in deps):
+                ready_tasks.append(t)
+
+    if not ready_tasks:
+        _o20_relinquish(ctx)
+        return 0
+
+    post_o19_revision: int = ctx.revision
+    post_o19_coordinator_run: Optional[str] = ctx.coordinator_run
+    post_o19_generation: int = ctx.ownership_generation
+
+    def _task_worker(task: Dict[str, Any]) -> bool:
+        task_ctx = Context(
+            execution_dir=execution_dir,
+            workspace_root=workspace_root,
+            project_id=project_id,
+            coordinator_run=post_o19_coordinator_run,
+            ownership_generation=post_o19_generation,
+            revision=post_o19_revision,
+            registry=registry,
+            adapter=adapter_factory(),
+            project_dir=project_dir,
+            commit_fn=commit_fn,
+        )
+        return _run_task_in_ctx(task_ctx, task)
+
+    done_count = 0
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(ready_tasks)) as pool:
+        futures = {pool.submit(_task_worker, t): t for t in ready_tasks}
+        for f in concurrent.futures.as_completed(futures):
+            if f.result():
+                done_count += 1
+
+    _o20_relinquish(ctx)
+    return done_count

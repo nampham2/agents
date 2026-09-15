@@ -1,17 +1,19 @@
-"""Fake host adapter for the parallel execution protocol (§17, Phase 4 testing).
+"""Adapters for the parallel execution protocol (§17).
 
 The adapter protocol has four operations: start, observe, seal, terminate.  This module
-ships a FakeAdapter whose responses are injected up-front — one queue per handle for
-observe and seal — so tests can exercise delayed starts, ambiguous starts, unknown
-outcomes, failed checks, late results, and configurable seal attestations without any
-real process management.
+ships two implementations:
 
-Phase 5 will replace this with a real POSIX adapter (startling_new_session + waitpid +
-killpg), proven by the Phase 2 feasibility spike.  FakeAdapter shares the protocol so
-the same test infrastructure works in both phases.
+  FakeAdapter   — queue-based controllable fake for testing; injected responses per handle
+  SubprocessAdapter — production POSIX adapter; spawns a real child process per task attempt
+
+Phase 4/5 used FakeAdapter.  Phase 6 introduces SubprocessAdapter for production use.
 """
 from __future__ import annotations
 
+import os
+import signal
+import subprocess
+import time
 from typing import Any, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
@@ -150,3 +152,161 @@ class FakeAdapter:
         self.terminated.append(handle)
         if self._terminate_raises is not None:
             raise self._terminate_raises
+
+
+# ---------------------------------------------------------------------------
+# SubprocessAdapter
+# ---------------------------------------------------------------------------
+
+
+def _file_size(path: str) -> int:
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return 0
+
+
+class _ProcState:
+    __slots__ = ("attempt_dir", "exit_code", "pgid", "pid", "reaped")
+
+    def __init__(self, pid: int, pgid: int, attempt_dir: str) -> None:
+        self.pid = pid
+        self.pgid = pgid
+        self.reaped: bool = False
+        self.exit_code: Optional[int] = None
+        self.attempt_dir = attempt_dir
+
+
+class SubprocessAdapter:
+    """Production POSIX adapter that spawns a real child process per task attempt.
+
+    The command to run is injected at construction.  The ``plan`` dict passed to
+    ``start`` is reserved for future overrides and is currently ignored.
+
+    Handles are opaque strings encoding ``"pid:<N>:pgid:<N>"``; internal state is
+    tracked per handle so the protocol methods remain stateless from the caller's
+    perspective.
+    """
+
+    def __init__(self, command: List[str]) -> None:
+        self._command = list(command)
+        self._procs: Dict[str, _ProcState] = {}
+
+    def start(self, plan: Dict[str, Any], attempt_dir: str) -> str:
+        stdout_path = os.path.join(attempt_dir, "stdout.txt")
+        stderr_path = os.path.join(attempt_dir, "stderr.txt")
+        with open(stdout_path, "w") as stdout_fh, open(stderr_path, "w") as stderr_fh:
+            proc = subprocess.Popen(
+                self._command,
+                stdout=stdout_fh,
+                stderr=stderr_fh,
+                start_new_session=True,
+                cwd=attempt_dir,
+            )
+        pid = proc.pid
+        pgid = os.getpgid(pid)
+        handle = f"pid:{pid}:pgid:{pgid}"
+        self._procs[handle] = _ProcState(pid, pgid, attempt_dir)
+        return handle
+
+    def observe(self, handle: str) -> str:
+        state = self._procs.get(handle)
+        if state is None:
+            return OBSERVE_UNKNOWN
+        if state.reaped:
+            return OBSERVE_FINISHED
+        try:
+            os.kill(state.pid, 0)
+        except ProcessLookupError:
+            return OBSERVE_FINISHED
+        except PermissionError:
+            return OBSERVE_UNKNOWN
+        # Process exists in the kernel table (may be a zombie). Use waitpid(WNOHANG)
+        # to detect an un-reaped exit without blocking.
+        try:
+            pid, wstatus = os.waitpid(state.pid, os.WNOHANG)
+            if pid != 0:
+                state.exit_code = os.waitstatus_to_exitcode(wstatus)
+                state.reaped = True
+                try:
+                    os.killpg(state.pgid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                return OBSERVE_FINISHED
+        except ChildProcessError:
+            state.reaped = True
+            return OBSERVE_FINISHED
+        return OBSERVE_RUNNING
+
+    def seal(self, handle: str) -> Dict[str, Any]:
+        state = self._procs.get(handle)
+        if state is None:
+            raise AdapterError(f"unknown handle: {handle!r}")
+
+        if state.reaped and state.exit_code is not None:
+            return {
+                "variant": "exited",
+                "exit_code": state.exit_code,
+                "stdout_bytes": _file_size(os.path.join(state.attempt_dir, "stdout.txt")),
+                "stderr_bytes": _file_size(os.path.join(state.attempt_dir, "stderr.txt")),
+            }
+
+        try:
+            pid, wstatus = os.waitpid(state.pid, os.WNOHANG)
+        except ChildProcessError:
+            raise AdapterError(f"process {state.pid} was already reaped externally") from None
+
+        if pid == 0:
+            raise AdapterError(f"process {state.pid} has not exited yet")
+
+        exit_code = os.waitstatus_to_exitcode(wstatus)
+
+        try:
+            os.killpg(state.pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+        state.reaped = True
+        state.exit_code = exit_code
+
+        return {
+            "variant": "exited",
+            "exit_code": exit_code,
+            "stdout_bytes": _file_size(os.path.join(state.attempt_dir, "stdout.txt")),
+            "stderr_bytes": _file_size(os.path.join(state.attempt_dir, "stderr.txt")),
+        }
+
+    def terminate(self, handle: str) -> None:
+        state = self._procs.get(handle)
+        if state is None or state.reaped:
+            return
+
+        try:
+            os.killpg(state.pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            state.reaped = True
+            return
+
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                pid, _ = os.waitpid(state.pid, os.WNOHANG)
+                if pid != 0:
+                    state.reaped = True
+                    return
+            except ChildProcessError:
+                state.reaped = True
+                return
+            time.sleep(0.05)
+
+        try:
+            os.killpg(state.pgid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            state.reaped = True
+            return
+
+        try:
+            os.waitpid(state.pid, 0)
+        except ChildProcessError:
+            pass
+        state.reaped = True
