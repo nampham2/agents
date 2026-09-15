@@ -11,8 +11,10 @@ import copy
 import datetime
 import hashlib
 import json
+import os
 import secrets
 import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -737,6 +739,74 @@ def perform(
 def _now() -> str:
     """RFC 3339 UTC timestamp at second precision."""
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _read_host_identity() -> Dict[str, Any]:
+    """Read host/process identity for O19 owner records.
+
+    Tries Linux paths, then macOS equivalents, then falls back to empty
+    string so the coordinator never fails to acquire ownership.
+    """
+    pid = os.getpid()
+
+    # host_id: /etc/machine-id (Linux) → ioreg (macOS) → ""
+    host_id = ""
+    try:
+        host_id = Path("/etc/machine-id").read_text(encoding="ascii", errors="replace").strip()
+    except OSError:
+        try:
+            out = subprocess.run(
+                ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
+                capture_output=True, text=True, timeout=2,
+            ).stdout
+            for line in out.splitlines():
+                if "IOPlatformUUID" in line:
+                    parts = line.split('"')
+                    if len(parts) >= 4:
+                        host_id = parts[3]
+                    break
+        except Exception:
+            pass
+
+    # boot_id: /proc/sys/kernel/random/boot_id (Linux) → sysctl (macOS) → ""
+    boot_id = ""
+    try:
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
+            encoding="ascii", errors="replace"
+        ).strip()
+    except OSError:
+        try:
+            boot_id = subprocess.run(
+                ["sysctl", "-n", "kern.bootuuid"],
+                capture_output=True, text=True, timeout=2,
+            ).stdout.strip()
+        except Exception:
+            pass
+
+    # process_start: /proc/<pid>/stat starttime (Linux) → _now() fallback
+    process_start = _now()
+    try:
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(
+            encoding="ascii", errors="replace"
+        ).split()
+        starttime_ticks = int(stat_fields[21])
+        ticks_per_sec = os.sysconf("SC_CLK_TCK")
+        uptime_text = Path("/proc/uptime").read_text(encoding="ascii", errors="replace")
+        uptime_secs = float(uptime_text.split()[0])
+        boot_epoch = time.time() - uptime_secs
+        start_epoch = boot_epoch + starttime_ticks / ticks_per_sec
+        process_start = datetime.datetime.fromtimestamp(
+            start_epoch, tz=datetime.timezone.utc
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except Exception:
+        pass
+
+    return {
+        "host_id": host_id,
+        "boot_id": boot_id,
+        "pid": pid,
+        "process_start": process_start,
+    }
 
 
 def _tmp_dir(ctx: Context) -> Path:
@@ -2490,11 +2560,9 @@ def run_sequential_task(
     )
 
     # O19: acquire coordinator run
+    _identity = _read_host_identity()
     _o19_acquire(ctx, {
-        "host_id": "localhost",
-        "boot_id": "",
-        "pid": 0,
-        "process_start": _now(),
+        **_identity,
         "started_at": _now(),
     })
 
