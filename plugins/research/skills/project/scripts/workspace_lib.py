@@ -1411,7 +1411,7 @@ def validate_v3_state(
     return report
 
 
-EXECUTION_FIELDS = frozenset({"protocol_version", "coordinator_run", "ownership_generation", "attempts"})
+EXECUTION_FIELDS = {"protocol_version", "coordinator_run", "ownership_generation", "attempts"}
 
 
 def validate_v4_state(
@@ -3918,3 +3918,153 @@ def apply_migration(project_dir: Path, *, lock_timeout: float = 5.0) -> Path:
         atomic_write_json(state_path, candidate)
     _rebuild_index_after_commit(project_dir.parent, "migration is committed", lock_timeout)
     return state_path
+
+
+def enable_execution(
+    project_dir: Path,
+    *,
+    expected_revision: int,
+    legacy_writers_quiesced: bool,
+    lock_timeout: float = 5.0,
+) -> None:
+    if not legacy_writers_quiesced:
+        raise WorkspaceError(
+            "R-LEGACY-WRITER: --legacy-writers-quiesced is required; attest that every installation "
+            "with write access to this workspace or working directory has been upgraded to schema v4"
+        )
+    project_dir = project_dir.resolve()
+    state_path = project_dir / "project.json"
+    config_path = project_dir / "execution" / "config.json"
+
+    current = load_json(state_path)
+    current_revision = current.get("revision")
+    if current_revision != expected_revision:
+        raise WorkspaceConflict(
+            f"revision conflict: expected {expected_revision}, found {current_revision}; "
+            "reload and reconcile"
+        )
+
+    if current.get("schema_version") == 4:
+        if not config_path.exists():
+            raise WorkspaceError(
+                "project is schema v4 but execution/config.json is missing; "
+                "the execution store may be corrupt — inspect manually"
+            )
+        generation: int = current.get("execution", {}).get("ownership_generation", 0)
+        print(f"already enabled at generation {generation}")
+        return
+
+    # Probe the store's filesystem from a scratch directory inside execution/.
+    scratch_dir = project_dir / "execution" / "scratch"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    probe_src = scratch_dir / "probe_src.tmp"
+    probe_dst = scratch_dir / "probe_dst.tmp"
+    probe_case_upper = scratch_dir / "probe_CASE.tmp"
+    probe_case_lower = scratch_dir / "probe_case.tmp"
+
+    atomic_link = False
+    same_volume = False
+    case_sensitive = True
+    try:
+        probe_src.write_bytes(b"")
+        try:
+            os.unlink(probe_dst)
+        except OSError:
+            pass
+        try:
+            os.link(probe_src, probe_dst)
+            atomic_link = True
+        except OSError:
+            pass
+        same_volume = os.stat(scratch_dir).st_dev == os.stat(tempfile.gettempdir()).st_dev
+        probe_case_upper.write_bytes(b"")
+        case_sensitive = not probe_case_lower.exists()
+    finally:
+        for _p in (probe_src, probe_dst, probe_case_upper):
+            try:
+                os.unlink(_p)
+            except OSError:
+                pass
+        try:
+            os.rmdir(scratch_dir)
+        except OSError:
+            pass
+
+    if not atomic_link:
+        raise WorkspaceError(
+            "R-NO-ATOMIC-LINK: the store's filesystem cannot link a file without clobbering an "
+            "existing name; the parallel execution protocol is unavailable on this filesystem"
+        )
+    if not same_volume:
+        raise WorkspaceError(
+            "R-CROSS-VOLUME: the store's temporary directory is on a different volume from the "
+            "execution store; the parallel execution protocol requires them on the same volume"
+        )
+
+    expected_config: dict[str, Any] = {
+        "max_concurrent": 2,
+        "max_prepare": 2,
+        "project_lock_timeout": 5.0,
+        "registry_lock_timeout": 5.0,
+        "poll_interval": 2.0,
+        "heartbeat_interval": 30,
+        "stale_after": 900,
+        "stale_grace": 900,
+        "check_timeout": 1800,
+        "max_reruns": 16,
+        "max_consecutive_failures": 3,
+        "log_cap": 1048576,
+        "summary_cap": 4096,
+        "tmp_reap": 3600,
+        "atomic_link": atomic_link,
+        "same_volume": same_volume,
+        "case_sensitive": case_sensitive,
+        "legacy_writers_quiesced": True,
+    }
+
+    if config_path.exists():
+        existing_config = load_json(config_path)
+        if existing_config != expected_config:
+            raise WorkspaceError(
+                "config mismatch: execution/config.json exists but does not match what this call "
+                "would write; inspect config.json and remove it if it is stale before re-running"
+            )
+    else:
+        atomic_write_json(config_path, expected_config)
+
+    # Commit schema 3 → 4 under the project lock, bypassing _immutable_field_changes.
+    # This is the one permitted exception: enable_execution is the only path that may change
+    # schema_version, and it takes the lock and writes the migration directly.
+    with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
+        current = load_json(state_path)
+        if current.get("revision") != expected_revision:
+            if current.get("schema_version") == 4:
+                # A concurrent call committed the activation first (or a retry after signal).
+                generation = current.get("execution", {}).get("ownership_generation", 0)
+                print(f"already enabled at generation {generation}")
+                return
+            raise WorkspaceConflict(
+                f"revision conflict: expected {expected_revision}, found {current.get('revision')}; "
+                "reload and reconcile"
+            )
+        new_state = copy.deepcopy(current)
+        new_state["schema_version"] = 4
+        new_state["execution"] = {
+            "protocol_version": 1,
+            "coordinator_run": None,
+            "ownership_generation": 0,
+            "attempts": {},
+        }
+        new_state["revision"] = expected_revision + 1
+        new_state["updated"] = now_iso()
+        report = validate_v4_state(
+            new_state,
+            project_dir,
+            close=new_state.get("status") == "DONE",
+            check_files=True,
+            already_done=_done_task_ids(current),
+        )
+        if report.errors:
+            raise WorkspaceError("v4 state validation failed:\n- " + "\n- ".join(report.errors))
+        atomic_write_json(state_path, new_state)
+    _rebuild_index_after_commit(project_dir.parent, "schema v4 enabled at generation 0", lock_timeout)

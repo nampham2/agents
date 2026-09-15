@@ -20,6 +20,7 @@ from workspace_lib import (
     apply_migration,
     check_candidate,
     commit_candidate,
+    enable_execution,
     find_workspace_roots,
     load_memory_topics,
     migration_candidate,
@@ -189,6 +190,31 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("project_directory", type=Path)
     migrate.add_argument("--apply", action="store_true", help="Apply the migration; default is a read-only preview")
     migrate.add_argument("--lock-timeout", type=float, default=5.0)
+
+    enable = subparsers.add_parser(
+        "enable-execution",
+        help="Activate the parallel execution protocol on a schema v3 project (irreversible)",
+        epilog=(
+            "Probes the store's filesystem, writes config.json with probe results and §15.1 "
+            "settings, and commits schema_version 3 → 4. Idempotent: a second call on an "
+            "already-enabled project prints 'already enabled at generation G' and exits zero. "
+            "--legacy-writers-quiesced attests that every installation with write access to this "
+            "workspace or working directory has been upgraded."
+        ),
+    )
+    enable.add_argument("project_directory", type=Path)
+    enable.add_argument(
+        "--expected-revision",
+        type=int,
+        required=True,
+        help="revision the caller read from project.json; checked before any filesystem work",
+    )
+    enable.add_argument(
+        "--legacy-writers-quiesced",
+        action="store_true",
+        help="attest that no legacy (pre-v4) installation can mutate this workspace or working directory",
+    )
+    enable.add_argument("--lock-timeout", type=float, default=5.0)
 
     return parser
 
@@ -378,6 +404,15 @@ def main() -> int:
                 for error in report.errors:
                     print(f"ERROR: {error}", file=sys.stderr)
                 return 1
+            return 0
+
+        if args.command == "enable-execution":
+            enable_execution(
+                args.project_directory,
+                expected_revision=args.expected_revision,
+                legacy_writers_quiesced=args.legacy_writers_quiesced,
+                lock_timeout=args.lock_timeout,
+            )
             return 0
     except WorkspaceError as error:
         print(f"ERROR: {error}", file=sys.stderr)
