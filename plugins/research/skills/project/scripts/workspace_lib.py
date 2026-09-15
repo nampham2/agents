@@ -79,6 +79,7 @@ PROJECT_FIELDS = {
     "tasks",
     "predecessor",
 }
+PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution"}
 TASK_FIELDS = {
     "id",
     "name",
@@ -1381,6 +1382,283 @@ def validate_v3_state(
     # point. `CANCELLED` counts: the step runs on that path too, reporting what was abandoned and
     # why. Unlike the section check above this cannot key off "has left ALIGNING", because a report
     # cannot exist before the work it reports on.
+    if check_files and (close or _enum_string(status, {"DONE", "CANCELLED"})):
+        report.warnings.extend(report_warnings(project_dir))
+
+    if close or status == "DONE":
+        incomplete = sorted(
+            task_id
+            for task_id, task in tasks_by_id.items()
+            if not _enum_string(task.get("status"), TERMINAL_TASK_STATUSES)
+        )
+        if incomplete:
+            report.errors.append(f"project cannot close with non-terminal tasks: {', '.join(incomplete)}")
+        if check_files:
+            spec = _read_nonempty(project_dir / "spec.md", "spec.md", report)
+            for section in ("Current specification", "Decision history"):
+                content = _section_content(spec, section)
+                if content is None:
+                    report.errors.append(f"spec.md is missing '## {section}'")
+                elif not content:
+                    report.errors.append(f"spec.md section '## {section}' must not be empty")
+            _read_nonempty(project_dir / "evidence.md", "evidence.md", report)
+            _read_nonempty(project_dir / "reflection.md", "reflection.md", report)
+            for cycle in range(1, review_cycle + 1):
+                _read_nonempty(
+                    project_dir / "reviews" / f"review_{cycle:02d}.md", f"reviews/review_{cycle:02d}.md", report
+                )
+
+    return report
+
+
+EXECUTION_FIELDS = {"protocol_version", "coordinator_run", "ownership_generation", "attempts"}
+
+
+def validate_v4_state(
+    state: dict[str, Any],
+    project_dir: Path,
+    *,
+    close: bool = False,
+    check_files: bool = True,
+    already_done: set[str] | None = None,
+) -> ValidationReport:
+    """Validate a v4 candidate. Mirrors v3 validation but accepts the execution block."""
+    report = ValidationReport()
+    _missing_fields(state, PROJECT_V4_FIELDS - {"predecessor"}, "project", report)
+    _unexpected_fields(state, PROJECT_V4_FIELDS, "project", report)
+
+    if state.get("schema_version") != 4:
+        report.errors.append("schema_version must be 4")
+
+    execution = state.get("execution")
+    if not isinstance(execution, dict):
+        report.errors.append("project: execution must be an object")
+    else:
+        _missing_fields(execution, EXECUTION_FIELDS, "execution", report)
+        _unexpected_fields(execution, EXECUTION_FIELDS, "execution", report)
+        protocol_version = execution.get("protocol_version")
+        if not isinstance(protocol_version, int) or isinstance(protocol_version, bool) or protocol_version < 1:
+            report.errors.append("execution: protocol_version must be a positive integer")
+        coordinator_run = execution.get("coordinator_run")
+        if coordinator_run is not None and not _non_empty_string(coordinator_run):
+            report.errors.append("execution: coordinator_run must be null or a non-empty string")
+        ownership_generation = execution.get("ownership_generation")
+        if (
+            not isinstance(ownership_generation, int)
+            or isinstance(ownership_generation, bool)
+            or ownership_generation < 0
+        ):
+            report.errors.append("execution: ownership_generation must be a non-negative integer")
+        attempts = execution.get("attempts")
+        if not isinstance(attempts, dict):
+            report.errors.append("execution: attempts must be an object")
+
+    for field_name in ("project", "title", "working_directory"):
+        if not _non_empty_string(state.get(field_name)):
+            report.errors.append(f"project: {field_name} must be a non-empty string")
+    if _non_empty_string(state.get("project")) and state.get("project") != project_dir.name:
+        report.errors.append("project field must match the project directory name")
+    if not is_canonical_project_id(project_dir.name):
+        report.warnings.append(
+            f"project directory name is not a canonical YYYY-MM-DD-NNN identifier: {project_dir.name}"
+        )
+    if "predecessor" in state and not _non_empty_string(state.get("predecessor")):
+        report.errors.append("project: predecessor must be a non-empty project ID when present")
+    for field_name in ("created", "updated"):
+        if not _is_timestamp(state.get(field_name)):
+            report.errors.append(f"project: {field_name} must be timezone-aware ISO-8601")
+    if (
+        not isinstance(state.get("revision"), int)
+        or isinstance(state.get("revision"), bool)
+        or state.get("revision", -1) < 0
+    ):
+        report.errors.append("project: revision must be a non-negative integer")
+
+    status = state.get("status")
+    if not _enum_string(status, PROJECT_STATUSES):
+        report.errors.append(
+            f"project: invalid status {status!r}; allowed: {', '.join(sorted(PROJECT_STATUSES))}"
+        )
+
+    working_directory_value = state.get("working_directory")
+    working_directory = Path(working_directory_value) if _non_empty_string(working_directory_value) else project_dir
+    if not working_directory.is_absolute():
+        report.errors.append("project: working_directory must be absolute")
+    elif check_files and not working_directory.is_dir():
+        report.errors.append(f"project: working_directory does not exist: {working_directory}")
+    elif check_files:
+        report.warnings.extend(self_location_warnings(working_directory))
+
+    current_tasks = state.get("current_tasks")
+    if not isinstance(current_tasks, list) or not all(_non_empty_string(item) for item in current_tasks):
+        report.errors.append("project: current_tasks must be a list of non-empty task IDs")
+        current_tasks = []
+    elif len(set(current_tasks)) != len(current_tasks):
+        report.errors.append("project: current_tasks contains duplicates")
+
+    review = state.get("review")
+    if not isinstance(review, dict):
+        report.errors.append("project: review must be an object")
+        review = {}
+    review_fields = {"cycle", "required", "status", "evidence"}
+    _missing_fields(review, review_fields, "review", report)
+    _unexpected_fields(review, review_fields, "review", report)
+    review_cycle = review.get("cycle")
+    if not isinstance(review_cycle, int) or isinstance(review_cycle, bool) or review_cycle < 0:
+        report.errors.append("review: cycle must be a non-negative integer")
+        review_cycle = 0
+    review_required = review.get("required")
+    if not isinstance(review_required, bool):
+        report.errors.append("review: required must be a boolean")
+    review_status = review.get("status")
+    if not _enum_string(review_status, REVIEW_STATUSES):
+        report.errors.append(
+            f"review: invalid status {review_status!r}; allowed: {', '.join(sorted(REVIEW_STATUSES))}"
+        )
+    if review_required is True and review_status == "not_required":
+        report.errors.append("review: required review cannot use status 'not_required'")
+    review_evidence = review.get("evidence")
+    if not isinstance(review_evidence, list):
+        report.errors.append("review: evidence must be a list")
+        review_evidence = []
+    for index, item in enumerate(review_evidence, start=1):
+        _validate_evidence_reference(
+            item,
+            f"review evidence #{index}",
+            project_dir,
+            working_directory,
+            require_exists=check_files,
+            report=report,
+        )
+    if _enum_string(review_status, {"accepted", "recorded"}) and (review_cycle < 1 or not review_evidence):
+        report.errors.append(f"review: status {review_status!r} requires a cycle and evidence")
+    if close and review_required is True and review_status != "accepted":
+        report.errors.append("project cannot close before the required review is accepted")
+    if close and review_status == "pending":
+        report.errors.append("project cannot close with a pending review")
+
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        report.errors.append("project: tasks must be a list")
+        tasks = []
+    if close and not tasks:
+        report.errors.append("project cannot close without at least one task")
+
+    tasks_by_id: dict[str, dict[str, Any]] = {}
+    for index, task in enumerate(tasks, start=1):
+        label = f"task #{index}"
+        if not isinstance(task, dict):
+            report.errors.append(f"{label}: task must be an object")
+            continue
+        _missing_fields(task, TASK_FIELDS, label, report)
+        _unexpected_fields(task, TASK_FIELDS, label, report)
+        task_id = task.get("id")
+        if not _non_empty_string(task_id):
+            report.errors.append(f"{label}: id must be a non-empty string")
+            continue
+        if task_id in tasks_by_id:
+            report.errors.append(f"duplicate task ID: {task_id}")
+            continue
+        tasks_by_id[task_id] = task
+
+    _check_dependencies(tasks_by_id, report)
+
+    for task_id, task in tasks_by_id.items():
+        label = f"task {task_id}"
+        task_status = task.get("status")
+        if not _enum_string(task_status, TASK_STATUSES):
+            report.errors.append(
+                f"{label}: invalid task status {task_status!r}; "
+                f"allowed: {', '.join(sorted(TASK_STATUSES))}"
+            )
+            task_status = None
+        for field_name in ("name", "success_criteria", "verification"):
+            if not _non_empty_string(task.get(field_name)):
+                report.errors.append(f"{label}: {field_name} must be a non-empty string")
+
+        outputs = task.get("outputs")
+        if not isinstance(outputs, list):
+            report.errors.append(f"{label}: outputs must be a list")
+            outputs = []
+        for index, output in enumerate(outputs, start=1):
+            _validate_output_reference(
+                output,
+                f"{label} output #{index}",
+                project_dir,
+                working_directory,
+                require_exists=check_files and task_status == "DONE",
+                report=report,
+                missing_is_error=already_done is None or task_id not in already_done,
+            )
+
+        evidence = task.get("evidence")
+        if not isinstance(evidence, list):
+            report.errors.append(f"{label}: evidence must be a list")
+            evidence = []
+        for index, item in enumerate(evidence, start=1):
+            _validate_evidence_reference(
+                item,
+                f"{label} evidence #{index}",
+                project_dir,
+                working_directory,
+                require_exists=check_files and task_status == "DONE",
+                report=report,
+            )
+        if task_status == "DONE" and not evidence:
+            report.errors.append(f"{label}: DONE task requires evidence")
+
+        effect_kind = _validate_effect(task.get("effect"), label, report)
+        _validate_authorization(task.get("authorization"), label, effect_kind, task_status, report)
+
+        receipts = task.get("receipts")
+        if not isinstance(receipts, list):
+            report.errors.append(f"{label}: receipts must be a list")
+            receipts = []
+        for index, receipt in enumerate(receipts, start=1):
+            _validate_receipt(receipt, f"{label} receipt #{index}", report)
+        if task_status == "DONE" and effect_kind == "external" and not receipts:
+            report.errors.append(f"{label}: completed external effect requires a durable receipt")
+
+        skip_reason = task.get("skip_reason")
+        block_reason = task.get("block_reason")
+        if task_status == "SKIPPED" and not _non_empty_string(skip_reason):
+            report.errors.append(f"{label}: SKIPPED task requires skip_reason")
+        elif task_status != "SKIPPED" and skip_reason is not None:
+            report.errors.append(f"{label}: skip_reason must be null unless task is SKIPPED")
+        if task_status == "BLOCKED" and not _non_empty_string(block_reason):
+            report.errors.append(f"{label}: BLOCKED task requires block_reason")
+        elif task_status != "BLOCKED" and block_reason is not None:
+            report.errors.append(f"{label}: block_reason must be null unless task is BLOCKED")
+
+    running_ids = sorted(task_id for task_id, task in tasks_by_id.items() if task.get("status") == "RUNNING")
+    recorded_running = sorted(current_tasks) if all(isinstance(item, str) for item in current_tasks) else []
+    if running_ids != recorded_running:
+        report.errors.append(f"current_tasks {recorded_running!r} does not match RUNNING tasks {running_ids!r}")
+    unknown_current = sorted(set(recorded_running) - set(tasks_by_id))
+    if unknown_current:
+        report.errors.append(f"current_tasks references unknown tasks: {', '.join(unknown_current)}")
+
+    cancellation_reason = state.get("cancellation_reason")
+    if status == "CANCELLED":
+        if not _non_empty_string(cancellation_reason):
+            report.errors.append("CANCELLED project requires cancellation_reason")
+        if running_ids:
+            report.errors.append("CANCELLED project cannot have RUNNING tasks")
+    elif cancellation_reason is not None:
+        report.errors.append("cancellation_reason must be null unless project is CANCELLED")
+    if _enum_string(status, {"ALIGNING", "PLANNING", "REVIEW", "BLOCKED", "DONE"}) and running_ids:
+        report.errors.append(f"{status} project cannot have RUNNING tasks")
+    if status == "BLOCKED" and not any(task.get("status") == "BLOCKED" for task in tasks_by_id.values()):
+        report.errors.append("BLOCKED project must contain at least one BLOCKED task")
+
+    if check_files and status != "ALIGNING":
+        spec_path = project_dir / "spec.md"
+        if spec_path.exists():
+            report.warnings.extend(spec_section_warnings(read_text(spec_path)))
+        briefing_path = project_dir / "briefing.md"
+        if briefing_path.exists():
+            report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
+
     if check_files and (close or _enum_string(status, {"DONE", "CANCELLED"})):
         report.warnings.extend(report_warnings(project_dir))
 
@@ -3112,6 +3390,11 @@ def _done_task_ids(state: dict[str, Any]) -> set[str]:
 
 
 SCHEMA_V3_REQUIRED = "transactional commits require schema v3; migrate the project first"
+SCHEMA_UNSUPPORTED = "project uses an unsupported schema version"
+READER_ONLY_REFUSAL = (
+    "this installation can read v4 projects but has no executor; "
+    "mutating commands are refused while execution.attempts is non-empty or coordinator_run is set"
+)
 IMMUTABLE_PROJECT_FIELDS = ("schema_version", "project", "created")
 
 
@@ -3161,9 +3444,17 @@ def check_candidate(
     candidate = load_json(candidate_path.resolve())
     current = load_json(project_dir / "project.json")
     report = ValidationReport()
-    if current.get("schema_version") != 3:
-        report.errors.append(SCHEMA_V3_REQUIRED)
+    schema_version = current.get("schema_version")
+    if schema_version not in (3, 4):
+        report.errors.append(SCHEMA_UNSUPPORTED)
         return report
+    if schema_version == 4:
+        curr_exec = current.get("execution")
+        if not isinstance(curr_exec, dict):
+            curr_exec = {}
+        if curr_exec.get("attempts") or curr_exec.get("coordinator_run") is not None:
+            report.errors.append(READER_ONLY_REFUSAL)
+            return report
     if expected_revision is None:
         # Defaulting is for the dry run only: a real commit must state the revision it read, since
         # that claim is what makes the transaction detect a concurrent write.
@@ -3178,8 +3469,9 @@ def check_candidate(
     simulated = copy.deepcopy(candidate)
     simulated["revision"] = expected_revision + 1
     simulated["updated"] = now_iso()
+    validator = validate_v4_state if schema_version == 4 else validate_v3_state
     report.extend(
-        validate_v3_state(
+        validator(
             simulated,
             project_dir,
             close=simulated.get("status") == "DONE",
@@ -3201,8 +3493,15 @@ def commit_candidate(
     candidate = load_json(candidate_path.resolve())
     with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
         current = load_json(project_dir / "project.json")
-        if current.get("schema_version") != 3:
-            raise WorkspaceError(SCHEMA_V3_REQUIRED)
+        schema_version = current.get("schema_version")
+        if schema_version not in (3, 4):
+            raise WorkspaceError(SCHEMA_UNSUPPORTED)
+        if schema_version == 4:
+            curr_exec = current.get("execution")
+            if not isinstance(curr_exec, dict):
+                curr_exec = {}
+            if curr_exec.get("attempts") or curr_exec.get("coordinator_run") is not None:
+                raise WorkspaceError(READER_ONLY_REFUSAL)
         conflicts = _revision_conflicts(current, candidate, expected_revision)
         if conflicts:
             raise WorkspaceConflict(conflicts[0])
@@ -3214,7 +3513,8 @@ def commit_candidate(
             raise WorkspaceError("; ".join(transition_errors))
         candidate["revision"] = expected_revision + 1
         candidate["updated"] = now_iso()
-        report = validate_v3_state(
+        validator = validate_v4_state if schema_version == 4 else validate_v3_state
+        report = validator(
             candidate,
             project_dir,
             close=candidate.get("status") == "DONE",
@@ -3618,3 +3918,153 @@ def apply_migration(project_dir: Path, *, lock_timeout: float = 5.0) -> Path:
         atomic_write_json(state_path, candidate)
     _rebuild_index_after_commit(project_dir.parent, "migration is committed", lock_timeout)
     return state_path
+
+
+def enable_execution(
+    project_dir: Path,
+    *,
+    expected_revision: int,
+    legacy_writers_quiesced: bool,
+    lock_timeout: float = 5.0,
+) -> None:
+    if not legacy_writers_quiesced:
+        raise WorkspaceError(
+            "R-LEGACY-WRITER: --legacy-writers-quiesced is required; attest that every installation "
+            "with write access to this workspace or working directory has been upgraded to schema v4"
+        )
+    project_dir = project_dir.resolve()
+    state_path = project_dir / "project.json"
+    config_path = project_dir / "execution" / "config.json"
+
+    current = load_json(state_path)
+    current_revision = current.get("revision")
+    if current_revision != expected_revision:
+        raise WorkspaceConflict(
+            f"revision conflict: expected {expected_revision}, found {current_revision}; "
+            "reload and reconcile"
+        )
+
+    if current.get("schema_version") == 4:
+        if not config_path.exists():
+            raise WorkspaceError(
+                "project is schema v4 but execution/config.json is missing; "
+                "the execution store may be corrupt — inspect manually"
+            )
+        generation: int = current.get("execution", {}).get("ownership_generation", 0)
+        print(f"already enabled at generation {generation}")
+        return
+
+    # Probe the store's filesystem from a scratch directory inside execution/.
+    scratch_dir = project_dir / "execution" / "scratch"
+    scratch_dir.mkdir(parents=True, exist_ok=True)
+    probe_src = scratch_dir / "probe_src.tmp"
+    probe_dst = scratch_dir / "probe_dst.tmp"
+    probe_case_upper = scratch_dir / "probe_CASE.tmp"
+    probe_case_lower = scratch_dir / "probe_case.tmp"
+
+    atomic_link = False
+    same_volume = False
+    case_sensitive = True
+    try:
+        probe_src.write_bytes(b"")
+        try:
+            os.unlink(probe_dst)
+        except OSError:
+            pass
+        try:
+            os.link(probe_src, probe_dst)
+            atomic_link = True
+        except OSError:
+            pass
+        same_volume = os.stat(scratch_dir).st_dev == os.stat(tempfile.gettempdir()).st_dev
+        probe_case_upper.write_bytes(b"")
+        case_sensitive = not probe_case_lower.exists()
+    finally:
+        for _p in (probe_src, probe_dst, probe_case_upper):
+            try:
+                os.unlink(_p)
+            except OSError:
+                pass
+        try:
+            os.rmdir(scratch_dir)
+        except OSError:
+            pass
+
+    if not atomic_link:
+        raise WorkspaceError(
+            "R-NO-ATOMIC-LINK: the store's filesystem cannot link a file without clobbering an "
+            "existing name; the parallel execution protocol is unavailable on this filesystem"
+        )
+    if not same_volume:
+        raise WorkspaceError(
+            "R-CROSS-VOLUME: the store's temporary directory is on a different volume from the "
+            "execution store; the parallel execution protocol requires them on the same volume"
+        )
+
+    expected_config: dict[str, Any] = {
+        "max_concurrent": 2,
+        "max_prepare": 2,
+        "project_lock_timeout": 5.0,
+        "registry_lock_timeout": 5.0,
+        "poll_interval": 2.0,
+        "heartbeat_interval": 30,
+        "stale_after": 900,
+        "stale_grace": 900,
+        "check_timeout": 1800,
+        "max_reruns": 16,
+        "max_consecutive_failures": 3,
+        "log_cap": 1048576,
+        "summary_cap": 4096,
+        "tmp_reap": 3600,
+        "atomic_link": atomic_link,
+        "same_volume": same_volume,
+        "case_sensitive": case_sensitive,
+        "legacy_writers_quiesced": True,
+    }
+
+    if config_path.exists():
+        existing_config = load_json(config_path)
+        if existing_config != expected_config:
+            raise WorkspaceError(
+                "config mismatch: execution/config.json exists but does not match what this call "
+                "would write; inspect config.json and remove it if it is stale before re-running"
+            )
+    else:
+        atomic_write_json(config_path, expected_config)
+
+    # Commit schema 3 → 4 under the project lock, bypassing _immutable_field_changes.
+    # This is the one permitted exception: enable_execution is the only path that may change
+    # schema_version, and it takes the lock and writes the migration directly.
+    with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
+        current = load_json(state_path)
+        if current.get("revision") != expected_revision:
+            if current.get("schema_version") == 4:
+                # A concurrent call committed the activation first (or a retry after signal).
+                generation = current.get("execution", {}).get("ownership_generation", 0)
+                print(f"already enabled at generation {generation}")
+                return
+            raise WorkspaceConflict(
+                f"revision conflict: expected {expected_revision}, found {current.get('revision')}; "
+                "reload and reconcile"
+            )
+        new_state = copy.deepcopy(current)
+        new_state["schema_version"] = 4
+        new_state["execution"] = {
+            "protocol_version": 1,
+            "coordinator_run": None,
+            "ownership_generation": 0,
+            "attempts": {},
+        }
+        new_state["revision"] = expected_revision + 1
+        new_state["updated"] = now_iso()
+        report = validate_v4_state(
+            new_state,
+            project_dir,
+            close=new_state.get("status") == "DONE",
+            check_files=True,
+            already_done=_done_task_ids(current),
+        )
+        if report.errors:
+            raise WorkspaceError("v4 state validation failed:\n- " + "\n- ".join(report.errors))
+        atomic_write_json(state_path, new_state)
+    _rebuild_index_after_commit(project_dir.parent, "schema v4 enabled at generation 0", lock_timeout)
