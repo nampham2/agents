@@ -8,6 +8,8 @@ import json
 import sys
 from pathlib import Path
 
+from execution_adapter import FakeAdapter
+from execution_ops import OperationError, run_sequential_task
 from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
@@ -216,6 +218,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     enable.add_argument("--lock-timeout", type=float, default=5.0)
 
+    run_once = subparsers.add_parser(
+        "run-once",
+        help="Run one READY task to completion using the parallel execution protocol",
+        epilog=(
+            "Acquires the coordinator run (O19), finds the first READY task, executes the "
+            "full O1-O16 lifecycle with a FakeAdapter, then relinquishes (O20). Exits 0 when "
+            "a task ran, exits 2 when no READY task exists. The project must have been "
+            "activated with enable-execution first."
+        ),
+    )
+    run_once.add_argument("project_directory", type=Path)
+    run_once.add_argument("--lock-timeout", type=float, default=5.0)
+
     return parser
 
 
@@ -414,7 +429,19 @@ def main() -> int:
                 lock_timeout=args.lock_timeout,
             )
             return 0
-    except WorkspaceError as error:
+
+        if args.command == "run-once":
+            ran = run_sequential_task(
+                args.project_directory,
+                FakeAdapter(),
+                lock_timeout=args.lock_timeout,
+            )
+            if ran:
+                print(f"Task completed: {args.project_directory.resolve()}")
+                return 0
+            print("No READY task found", file=sys.stderr)
+            return 2
+    except (WorkspaceError, OperationError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 
