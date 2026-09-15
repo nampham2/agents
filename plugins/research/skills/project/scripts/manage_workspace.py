@@ -8,8 +8,8 @@ import json
 import sys
 from pathlib import Path
 
-from execution_adapter import FakeAdapter
-from execution_ops import OperationError, run_sequential_task
+from execution_adapter import FakeAdapter, SubprocessAdapter
+from execution_ops import OperationError, run_parallel_tasks, run_sequential_task
 from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
@@ -231,6 +231,27 @@ def _build_parser() -> argparse.ArgumentParser:
     run_once.add_argument("project_directory", type=Path)
     run_once.add_argument("--lock-timeout", type=float, default=5.0)
 
+    run_parallel = subparsers.add_parser(
+        "run-parallel",
+        help="Run up to N READY tasks concurrently using real subprocess adapters",
+        epilog=(
+            "Acquires the coordinator run (O19), finds up to --concurrency READY tasks, "
+            "executes each in a thread with its own SubprocessAdapter, then relinquishes (O20). "
+            "Exits 0 when tasks ran, exits 2 when no READY task exists. The project must have "
+            "been activated with enable-execution first. Pass -- <command> to specify the "
+            "subprocess command; defaults to a no-op Python one-liner."
+        ),
+    )
+    run_parallel.add_argument("project_directory", type=Path)
+    run_parallel.add_argument("--concurrency", type=int, default=2)
+    run_parallel.add_argument("--lock-timeout", type=float, default=5.0)
+    run_parallel.add_argument(
+        "subprocess_command",
+        nargs="*",
+        metavar="command",
+        help="Command to run for each task (default: python -c 'pass')",
+    )
+
     return parser
 
 
@@ -438,6 +459,22 @@ def main() -> int:
             )
             if ran:
                 print(f"Task completed: {args.project_directory.resolve()}")
+                return 0
+            print("No READY task found", file=sys.stderr)
+            return 2
+
+        if args.command == "run-parallel":
+            cmd = list(args.subprocess_command) if args.subprocess_command else [
+                "python", "-c", "pass",
+            ]
+            done = run_parallel_tasks(
+                args.project_directory,
+                lambda: SubprocessAdapter(cmd),
+                max_concurrent=args.concurrency,
+                lock_timeout=args.lock_timeout,
+            )
+            if done:
+                print(f"Tasks completed: {done} task(s) in {args.project_directory.resolve()}")
                 return 0
             print("No READY task found", file=sys.stderr)
             return 2

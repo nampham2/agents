@@ -231,13 +231,71 @@ class MakeCommitFnTests(unittest.TestCase):
         finally:
             lock.rmdir()
 
-    # ---- revision conflict --------------------------------------------------
+    # ---- revision conflict: retries and succeeds ----------------------------
 
-    def test_revision_conflict_raises_operation_error(self) -> None:
+    def test_revision_mismatch_retries_and_succeeds(self) -> None:
         commit = _make_commit_fn(self.project_dir, lock_timeout=5.0)
-        with self.assertRaises(OperationError) as ctx:
-            commit("", "ACQUIRE", None, 99, None, None, {"coordinator_run": "r"})
-        self.assertIn("revision conflict", str(ctx.exception))
+        # Pass expected_revision=99 but actual is 0; retry reads actual and commits
+        rev, _ = commit("", "ACQUIRE", None, 99, None, None, {"coordinator_run": "r"})
+        self.assertEqual(1, rev)
+        self.assertEqual("r", self._read()["execution"]["coordinator_run"])
+
+    # ---- retry limit exceeded -----------------------------------------------
+
+    def test_retry_limit_exceeded_raises_operation_error(self) -> None:
+        call_count = [0]
+        original_read_bytes = Path.read_bytes
+
+        def always_new_revision(self_path: Path) -> bytes:
+            if self_path.name == "project.json":
+                call_count[0] += 1
+                state = {
+                    "schema_version": 4, "project": "proj",
+                    "revision": call_count[0] * 100,
+                    "updated": TIMESTAMP, "tasks": [], "current_tasks": [],
+                    "execution": {
+                        "protocol_version": 1, "coordinator_run": None,
+                        "ownership_generation": 0, "attempts": {},
+                    },
+                }
+                return json.dumps(state).encode()
+            return original_read_bytes(self_path)
+
+        with patch.object(Path, "read_bytes", always_new_revision):
+            commit = _make_commit_fn(self.project_dir, lock_timeout=5.0)
+            with self.assertRaises(OperationError) as ctx:
+                commit("", "ACQUIRE", None, 0, None, None, {"coordinator_run": "r"})
+        self.assertIn("exceeded retry limit", str(ctx.exception))
+
+    # ---- concurrent commits succeed via retry --------------------------------
+
+    def test_concurrent_commits_both_succeed(self) -> None:
+        import threading
+        self._reset_state({"tasks": [
+            {"id": "T01", "status": "TODO"},
+            {"id": "T02", "status": "TODO"},
+        ]})
+        commit = _make_commit_fn(self.project_dir, lock_timeout=5.0)
+
+        results: list = []
+        errors: list = []
+
+        def worker(task_id: str) -> None:
+            try:
+                rev, _ = commit(task_id, "RUNNING", f"att-{task_id}", 0, None, None, {})
+                results.append((task_id, rev))
+            except Exception as exc:
+                errors.append(exc)
+
+        t1 = threading.Thread(target=worker, args=("T01",))
+        t2 = threading.Thread(target=worker, args=("T02",))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        self.assertEqual([], errors)
+        self.assertEqual(2, len(results))
 
     # ---- lock retry sleep (line 2388) ---------------------------------------
 
@@ -408,6 +466,38 @@ class RunSequentialTaskTests(unittest.TestCase):
         result = run_sequential_task(project_dir, adapter)
         self.assertTrue(result)
         self.assertEqual("DONE", self._state(project_dir)["tasks"][0]["status"])
+
+    # ---- observe loop sleeps 0.1 s per iteration ---------------------------
+
+    def test_observe_loop_calls_sleep(self) -> None:
+        _, project_dir = _make_project(self.root)
+        adapter = FakeAdapter()
+        adapter.enqueue_start("h-1")
+        adapter.enqueue_observe("h-1", OBSERVE_RUNNING)
+        adapter.enqueue_observe("h-1", OBSERVE_UNKNOWN)
+        with patch("time.sleep") as mock_sleep:
+            run_sequential_task(project_dir, adapter)
+        mock_sleep.assert_called_with(0.1)
+
+    # ---- seal: AdapterError caught, other exceptions propagate -------------
+
+    def test_seal_adapter_error_swallowed(self) -> None:
+        _, project_dir = _make_project(self.root)
+        adapter = FakeAdapter()
+        adapter.enqueue_start("h-1")
+        adapter.enqueue_observe("h-1", OBSERVE_UNKNOWN)
+        # No seal enqueued → FakeAdapter raises AdapterError → swallowed
+        result = run_sequential_task(project_dir, adapter)
+        self.assertTrue(result)
+
+    def test_seal_non_adapter_error_propagates(self) -> None:
+        _, project_dir = _make_project(self.root)
+        adapter = FakeAdapter()
+        adapter.enqueue_start("h-1")
+        adapter.enqueue_observe("h-1", OBSERVE_UNKNOWN)
+        with patch.object(adapter, "seal", side_effect=RuntimeError("unexpected")):
+            with self.assertRaises(RuntimeError):
+                run_sequential_task(project_dir, adapter)
 
     # ---- evidence.md receipt appended by O12 --------------------------------
 
