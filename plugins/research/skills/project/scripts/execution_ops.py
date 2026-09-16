@@ -3528,7 +3528,15 @@ def _integrate_automatic_attempts(project_dir: Path, attempts: List[_AutomaticAt
     for attempt in attempts:
         if attempt.commit is None:
             raise WorkerError(f"task {attempt.task['id']} has no worker commit")
-        _git_automatic(integration, "cherry-pick", attempt.commit)
+        _git_automatic(
+            integration,
+            "-c",
+            "user.name=Research Project Integrator",
+            "-c",
+            "user.email=research-project-integrator@localhost",
+            "cherry-pick",
+            attempt.commit,
+        )
     for attempt in attempts:
         _run_plan_checks(attempt.plan, integration, target)
     for attempt in attempts:

@@ -3284,18 +3284,18 @@ def project_task_graph(project_dir: Path) -> TaskGraph:
     moment before anything has run, and a plan with no evidence renders every task as unmeasured,
     which is the truth about it.
 
-    Refused for anything but schema v3, because the columns a reader would trust — effect kind,
-    authorization status, dependency level — are v3 fields. A v2 project would render a table of
-    `unset` and look like a finding rather than a schema mismatch.
+    Refused for anything before schema v3, because the columns a reader would trust — effect kind,
+    authorization status, dependency level — were introduced in v3 and remain present in v4. A v2
+    project would render a table of `unset` and look like a finding rather than a schema mismatch.
     """
     directory = project_dir.resolve()
     if not directory.is_dir():
         raise WorkspaceError(f"project directory does not exist: {directory}")
     state = load_json(directory / "project.json")
     version = state.get("schema_version")
-    if version != 3:
+    if version not in (3, 4):
         raise WorkspaceError(
-            f"{directory} is schema v{version!r}, and the task graph needs v3 fields; "
+            f"{directory} is schema v{version!r}, and the task graph needs v3 or v4 fields; "
             "migrate it first with `research-project migrate`"
         )
     evidence_path = directory / "evidence.md"

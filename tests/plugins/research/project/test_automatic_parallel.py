@@ -160,6 +160,14 @@ def _worker(root: Path, *, mode: str = "write", delay: float = 0.0) -> Path:
 
 class AutomaticExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
+        # The runtime must supply every identity needed for its own commits. Ignore developer and
+        # machine Git configuration so these integration tests exercise the same condition as CI.
+        git_environment = patch.dict(
+            os.environ,
+            {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"},
+        )
+        git_environment.start()
+        self.addCleanup(git_environment.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
