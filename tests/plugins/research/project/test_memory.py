@@ -9,6 +9,7 @@ hand-maintained, and two projects promoting at once lose nothing.
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import unittest.mock
@@ -30,9 +31,11 @@ from workspace_lib import (
     memory_topic_body,
     parse_memory_frontmatter,
     parse_memory_topic,
+    postmortem_index_path,
     rebuild_index,
     render_memory_index,
     render_memory_topic,
+    render_postmortem_index,
     search_memory,
     validate_project,
 )
@@ -262,26 +265,53 @@ class IndexGenerationTests(MemoryRootTestCase):
         rendered = render_memory_index(self.workspace)
         self.assertNotIn("half-written", rendered)
 
-    def test_post_mortems_are_titled_from_canonical_state_not_from_their_headings(self) -> None:
-        project_dir = allocate_project(self.workspace, title="The canonical title", working_directory=self.target)
-        (project_dir / "reflection.md").write_text("# Some other heading entirely\n\nProse.\n", encoding="utf-8")
+    def test_an_absent_workspace_root_renders_a_header_and_nothing_else(self) -> None:
+        rendered = render_memory_index(self.root / "does-not-exist")
+        self.assertIn("# Cross-project memory", rendered)
+        self.assertNotIn("Project post-mortems", rendered)
+
+
+class PostmortemIndexTests(MemoryRootTestCase):
+    """The rows live in `POSTMORTEMS.md`, and the budgeted file gets one line however many there are.
+
+    They used to be rendered into `MEMORY.md`, one per project, which put a monotonic term inside the
+    only budget the design enforces — so the tests that used to assert them there assert them here.
+    """
+
+    def add_post_mortem(self, title: str, body: str = "# R\n\nProse.\n") -> Path:
+        project_dir = allocate_project(self.workspace, title=title, working_directory=self.target)
+        (project_dir / "reflection.md").write_text(body, encoding="utf-8")
+        return project_dir
+
+    def test_the_memory_index_holds_one_pointer_line_however_many_post_mortems_exist(self) -> None:
+        names = [self.add_post_mortem(f"Project {index}").name for index in range(3)]
         rendered = render_memory_index(self.workspace)
+        self.assertIn("- [POSTMORTEMS.md](POSTMORTEMS.md) — 3 project post-mortem(s)", rendered)
+        # The growing term is the count, not the line count: no project is named in the budgeted file.
+        for name in names:
+            self.assertNotIn(name, rendered)
+
+    def test_post_mortems_are_titled_from_canonical_state_not_from_their_headings(self) -> None:
+        project_dir = self.add_post_mortem("The canonical title", "# Some other heading entirely\n\nProse.\n")
+        rendered = render_postmortem_index(self.workspace)
         self.assertIn(f"- [{project_dir.name}]({project_dir.name}/reflection.md) — The canonical title", rendered)
         self.assertNotIn("Some other heading", rendered)
 
     def test_a_project_without_a_post_mortem_gets_no_pointer(self) -> None:
-        allocate_project(self.workspace, title="Unreflected", working_directory=self.target)
+        project_dir = allocate_project(self.workspace, title="Unreflected", working_directory=self.target)
+        self.assertNotIn(project_dir.name, render_postmortem_index(self.workspace))
         self.assertNotIn("Project post-mortems", render_memory_index(self.workspace))
 
     def test_an_empty_post_mortem_gets_no_pointer(self) -> None:
-        project_dir = allocate_project(self.workspace, title="Blank", working_directory=self.target)
-        (project_dir / "reflection.md").write_text("   \n", encoding="utf-8")
+        project_dir = self.add_post_mortem("Blank", "   \n")
+        self.assertNotIn(project_dir.name, render_postmortem_index(self.workspace))
         self.assertNotIn("Project post-mortems", render_memory_index(self.workspace))
 
     def test_a_post_mortem_without_canonical_state_gets_no_pointer(self) -> None:
         stray = self.workspace / "2026-01-01-001"
         stray.mkdir()
         (stray / "reflection.md").write_text("# Orphan\n\nProse.\n", encoding="utf-8")
+        self.assertNotIn(stray.name, render_postmortem_index(self.workspace))
         self.assertNotIn("Project post-mortems", render_memory_index(self.workspace))
 
     def test_an_unreadable_project_json_gets_no_pointer(self) -> None:
@@ -289,22 +319,44 @@ class IndexGenerationTests(MemoryRootTestCase):
         stray.mkdir()
         (stray / "reflection.md").write_text("# Orphan\n\nProse.\n", encoding="utf-8")
         (stray / "project.json").write_text("{not json", encoding="utf-8")
+        self.assertNotIn(stray.name, render_postmortem_index(self.workspace))
         self.assertNotIn("Project post-mortems", render_memory_index(self.workspace))
 
     def test_a_pipe_in_a_title_is_escaped_so_the_pointer_stays_one_line(self) -> None:
-        project_dir = allocate_project(self.workspace, title="A | B", working_directory=self.target)
-        (project_dir / "reflection.md").write_text("# R\n\nProse.\n", encoding="utf-8")
-        self.assertIn("A \\| B", render_memory_index(self.workspace))
+        self.add_post_mortem("A | B")
+        self.assertIn("A \\| B", render_postmortem_index(self.workspace))
 
     def test_hidden_directories_and_plain_files_are_skipped(self) -> None:
         (self.workspace / ".hidden").mkdir()
         (self.workspace / "loose.md").write_text("not a project", encoding="utf-8")
+        self.assertNotIn("reflection.md", render_postmortem_index(self.workspace))
         self.assertNotIn("Project post-mortems", render_memory_index(self.workspace))
 
-    def test_an_absent_workspace_root_renders_a_header_and_nothing_else(self) -> None:
-        rendered = render_memory_index(self.root / "does-not-exist")
-        self.assertIn("# Cross-project memory", rendered)
-        self.assertNotIn("Project post-mortems", rendered)
+    def test_generation_is_idempotent(self) -> None:
+        self.add_post_mortem("Twice")
+        self.assertEqual(render_postmortem_index(self.workspace), render_postmortem_index(self.workspace))
+
+    def test_an_absent_workspace_root_renders_a_header_and_no_rows(self) -> None:
+        rendered = render_postmortem_index(self.root / "does-not-exist")
+        self.assertIn("# Project post-mortems", rendered)
+        self.assertNotIn("reflection.md)", rendered)
+
+    def test_the_postmortem_index_carries_no_budget(self) -> None:
+        # The point of moving the rows: no number of projects may break the one budget the design
+        # enforces. These rows total well over 12 KB and must still produce no error. Written
+        # directly rather than through `allocate_project`, because the rows read only title and
+        # status and two hundred real allocations cost ten seconds for nothing.
+        for index in range(200):
+            project_dir = self.workspace / f"2026-01-{index // 30 + 1:02d}-{index % 30 + 1:03d}"
+            project_dir.mkdir()
+            (project_dir / "reflection.md").write_text("# R\n\nProse.\n", encoding="utf-8")
+            (project_dir / "project.json").write_text(
+                json.dumps({"title": f"Project number {index} with a title of ordinary length", "status": "DONE"}),
+                encoding="utf-8",
+            )
+        rebuild_index(self.workspace)
+        self.assertGreater(len(render_postmortem_index(self.workspace).encode("utf-8")), MEMORY_INDEX_MAX_BYTES)
+        self.assertEqual([e for e in memory_findings(self.workspace).errors if "above the" in e], [])
 
 
 class RebuildIndexTests(MemoryRootTestCase):
@@ -329,6 +381,25 @@ class RebuildIndexTests(MemoryRootTestCase):
         self.write_topic("half-written", content="---\nname: half-written\n")
         rebuild_index(self.workspace)
         self.assertTrue(memory_index_path(self.workspace).is_file())
+
+    def test_rebuilding_writes_the_postmortem_index_beside_the_memory_index(self) -> None:
+        project_dir = allocate_project(self.workspace, title="Recorded", working_directory=self.target)
+        (project_dir / "reflection.md").write_text("# R\n\nProse.\n", encoding="utf-8")
+        rebuild_index(self.workspace)
+        rendered = postmortem_index_path(self.workspace).read_text(encoding="utf-8")
+        self.assertIn(f"{project_dir.name}/reflection.md", rendered)
+        # The pointer in the budgeted file must never name a file that is not there.
+        self.assertIn("POSTMORTEMS.md", memory_index_path(self.workspace).read_text(encoding="utf-8"))
+
+    def test_a_root_with_no_memory_layer_at_all_gets_no_postmortem_index(self) -> None:
+        self.memory.rmdir()
+        rebuild_index(self.workspace)
+        self.assertFalse(postmortem_index_path(self.workspace).exists())
+
+    def test_a_postmortem_index_that_lost_its_projects_is_emptied_rather_than_left_stale(self) -> None:
+        postmortem_index_path(self.workspace).write_text("- [gone](gone/reflection.md) — Gone\n", encoding="utf-8")
+        rebuild_index(self.workspace)
+        self.assertNotIn("gone", postmortem_index_path(self.workspace).read_text(encoding="utf-8"))
 
 
 class TopicRenderingTests(unittest.TestCase):
@@ -626,6 +697,20 @@ class MemoryFindingsTests(MemoryRootTestCase):
         self.write_topic("uv-toolchain")
         memory_index_path(self.workspace).write_bytes(b"\xff\xfe")
         self.assertIn("is stale", " ".join(memory_findings(self.workspace, check_index=True).errors))
+
+    def test_check_index_catches_a_postmortem_index_that_disagrees_with_regeneration(self) -> None:
+        self.write_topic("uv-toolchain")
+        rebuild_index(self.workspace)
+        postmortem_index_path(self.workspace).write_text("# Project post-mortems\n", encoding="utf-8")
+        errors = [e for e in memory_findings(self.workspace, check_index=True).errors if "is stale" in e]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("POSTMORTEMS.md", errors[0])
+
+    def test_check_index_catches_an_unreadable_postmortem_index(self) -> None:
+        self.write_topic("uv-toolchain")
+        rebuild_index(self.workspace)
+        postmortem_index_path(self.workspace).write_bytes(b"\xff\xfe")
+        self.assertIn("POSTMORTEMS.md", " ".join(memory_findings(self.workspace, check_index=True).errors))
 
     def test_a_regenerated_index_satisfies_check_index(self) -> None:
         self.write_topic("uv-toolchain")

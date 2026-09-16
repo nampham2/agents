@@ -76,6 +76,7 @@ New projects use a dated project directory under the workspace:
 workspace/
 ├── INDEX.md
 ├── MEMORY.md
+├── POSTMORTEMS.md
 ├── memory/
 └── YYYY-MM-DD-NNN/
     ├── project.json

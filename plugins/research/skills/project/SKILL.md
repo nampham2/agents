@@ -88,6 +88,7 @@ Fresh projects use execution-enabled schema v4:
 workspace/
 ├── INDEX.md                 # Generated cache; never edit by hand
 ├── MEMORY.md                # Generated cache of memory pointers; never edit by hand
+├── POSTMORTEMS.md           # Generated index of project post-mortems; never edit by hand
 ├── memory/
 │   └── <slug>.md            # One cross-project lesson per file; any length
 └── YYYY-MM-DD-NNN/
@@ -237,7 +238,9 @@ root; do not search elsewhere for projects.
    exist unless `--create-root` is passed, which requires the user having asked for a new workspace.
 7. Read `workspace/MEMORY.md` in full — it is budgeted so that this always costs about the same —
    and then open only the `memory/<slug>.md` topic files whose description and scope match the
-   work at hand, usually none to three. When the pointers are not enough, run
+   work at hand, usually none to three. It ends with one pointer to `workspace/POSTMORTEMS.md`,
+   which is unbudgeted and read only when you are looking for how a named past project went; do not
+   read it at discovery. When the pointers are not enough, run
    `research-project search-memory <query>`, which prints where a match is rather than what it
    says, so a wide search costs you hits rather than files. A root with no `MEMORY.md` and no
    `memory/` has no memory yet, which is valid; do not create either by hand.
@@ -612,11 +615,17 @@ everybody loads it.
 | --- | --- | --- | --- |
 | 1 | `MEMORY.md` | Every session, in full | 120 lines and 12 KB; exceeding either is an error |
 | 2 | `memory/<slug>.md` | When a pointer or a search hit says it is relevant | None |
-| 3 | `<project>/reflection.md` | Rarely, by pointer or search | None |
+| 3 | `<project>/reflection.md`, indexed by `POSTMORTEMS.md` | Rarely, by pointer or search | None |
 
-`MEMORY.md` is generated from the topic files and canonical project state, exactly as `INDEX.md` is,
-and carries the same warning not to edit it. Regenerate it with `research-project rebuild-index`;
-every commit already does.
+`MEMORY.md` is generated from the topic files, exactly as `INDEX.md` is, and carries the same warning
+not to edit it. `POSTMORTEMS.md` is generated beside it from canonical project state, one line per
+project that wrote a post-mortem, and `MEMORY.md` links to it in a single line. Regenerate both with
+`research-project rebuild-index`; every commit already does.
+
+Only topic pointers live in the budgeted file, and that is deliberate. Post-mortem pointers used to
+live there too, one per project, generated and never retired — so the one remedy the budget error can
+name, "merge or retire topics", drained a finite pool against a term that only grew. What is always
+read now grows only when a person adds a topic, and shrinks when a person merges one.
 
 A topic file is one lesson, opening with six frontmatter fields — `name`, `description`, `kind`,
 `scope`, `sources`, `updated` — followed by a body of any length. `description` and `scope` carry
@@ -630,14 +639,17 @@ does. Never rewrite one from scratch: `promote-memory` amends the body, merges `
 what distinguishes a lesson from an opinion. Do not store secrets or project-specific operational
 detail that will not apply again.
 
-When the 120-line budget binds, merge topics or retire them. That instruction is not new — the flat
-file it replaces said the same thing — but here merging actually helps, because merging two topic
-files removes a pointer line. Under the old scheme, merging lowered the entry count the guardrail
-measured while raising the bytes the reader paid, which is how one always-read file reached 61 KB
-while validation reported it clean.
+When the budget binds, merge topics or retire them. That instruction is not new — the flat file it
+replaces said the same thing — but here merging actually helps, because merging two topic files
+removes a pointer line. Under the old scheme, merging lowered the entry count the guardrail measured
+while raising the bytes the reader paid, which is how one always-read file reached 61 KB while
+validation reported it clean. The byte bound is the one that usually binds first, and it is measured
+in bytes: a pointer line carries an em dash at three bytes, so sizing a reduction with a character
+count can read a file over its cap as under it.
 
 `research-validate` errors on a `MEMORY.md` over budget, on a topic file whose frontmatter cannot be
-parsed, and — under `--check-index` — on one that disagrees with regeneration. It warns about a
+parsed, and — under `--check-index` — on either generated memory file disagreeing with
+regeneration. It warns about a
 `sources` id naming no project in the root, a legacy flat `reflection.md` still in the root, and a
 `memory-staging.md` still holding staged lines at close. A malformed topic file never blocks a
 commit: memory is advisory, and a note nobody finished writing must not be able to refuse the record
