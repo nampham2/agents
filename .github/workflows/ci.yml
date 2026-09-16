@@ -5,6 +5,9 @@ on:
     branches: ["main"]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -36,6 +39,10 @@ jobs:
 
       - name: Test
         run: uv run pytest
+        env:
+          # Tests that create repositories must not inherit a developer or runner Git identity.
+          GIT_CONFIG_GLOBAL: /dev/null
+          GIT_CONFIG_NOSYSTEM: "1"
 
   python39-compat:
     # SKILL.md tells Claude to run the scripts with plain `python3`, which on many

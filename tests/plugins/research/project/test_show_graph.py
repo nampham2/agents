@@ -405,6 +405,11 @@ class ProjectReadingTests(unittest.TestCase):
         )
         self.assertEqual(project_task_graph(directory).nodes[0].span.entries, 1)
 
+    def test_schema_v4_project_uses_the_same_graph_fields(self) -> None:
+        state = _state(_task("T01"))
+        state["schema_version"] = 4
+        self.assertEqual(["T01"], [node.id for node in project_task_graph(self._project(state)).nodes])
+
     def test_a_missing_directory_is_refused_by_name(self) -> None:
         with self.assertRaises(WorkspaceError) as caught:
             project_task_graph(Path(tempfile.mkdtemp()) / "absent")
@@ -416,7 +421,7 @@ class ProjectReadingTests(unittest.TestCase):
         state["schema_version"] = 2
         with self.assertRaises(WorkspaceError) as caught:
             project_task_graph(self._project(state))
-        self.assertIn("needs v3 fields", str(caught.exception))
+        self.assertIn("needs v3 or v4 fields", str(caught.exception))
         self.assertIn("migrate", str(caught.exception))
 
 
