@@ -1,11 +1,10 @@
 # Parallel task execution
 
-> **Status: design awaiting implementation.** Nothing in this repository implements this protocol.
-> No script, schema field, MCP server, or `SKILL.md` step exists for it, and this document is not
-> linked from `SKILL.md` precisely so that no coordinator is told to follow a protocol the tooling
-> cannot execute. It is a specification for a successor project to build against. Until that project
-> ships, `research:project` executes tasks sequentially and delegation is out of policy. The order that
-> successor project builds in, and the one phase specified to the level a reviewer can implement, are in
+> **Status: implemented and verified for the 0.8.1 release candidate.**
+> Fresh projects initialize as schema v4, and `research-project run-auto` resolves immutable plans,
+> launches Claude Code or Codex CLI workers in isolated Git worktrees, verifies their outputs, and
+> serially integrates accepted commits. Unsupported shapes return precise sequential-fallback reasons.
+> The implementation sequence and remaining pilot gate are in
 > [`docs/parallel-execution-implementation-plan.md`](../../../../../docs/parallel-execution-implementation-plan.md)
 > (§20).
 >
@@ -264,8 +263,8 @@ Three refusals deserve their reason stated, because they cost real capability.
   whose success cannot be established by any executor, sequential or otherwise, so handing it to the
   sequential path would be handing over a task that cannot succeed.
 - `R-SELF-ASSESSMENT` replaces a worse rule. Revision 5 said an inline producer's `criteria` check
-  raises `human_review` and waits for an operator (§11.5), which — on the host §17.1 concludes v1 runs
-  inline on — made *every* judged task block on a human, and called that a safety property. It is not:
+  raises `human_review` and waits for an operator (§11.5), which made *every* judged task without an
+  independent assessor block on a human and called that a safety property. It is not:
   the coordinator already assesses its own `criteria` checks on the sequential path today, and doing so
   is not a regression the protocol needs to fix. So the protocol declines the task instead of changing
   how the task is judged. `human_review` remains what §11.5 uses when a *dispatched* attempt's
@@ -962,7 +961,7 @@ The plan is written by the coordinator at admission, before any reservation, and
 | `verification_text` | the exact `verification` string it interprets, so a later reader can see what was interpreted |
 | `instruction` | the exact text the worker is given: what to do, which paths it may write, and the contract it must return. Required and non-empty — without it the plan resolves how a task is *verified* and never says how it is *performed*, which is the one thing a worker cannot infer |
 | `checks[]` | ordered; each `{check_id, kind, argv or criteria, cwd, expect_exit, subjects[], reads[], writes[], executor}`. `check_id` matches `[A-Za-z0-9][A-Za-z0-9._-]{0,63}` (§7.3). `executor` is `worker` or `coordinator` and says which of the two runs it: a `criteria` check whose only available executor would be the coordinator itself is refused with `R-SELF-ASSESSMENT` (§11.5) |
-| `reads[]` | every path the **task** reads, beyond its dependencies' outputs |
+| `reads[]` | every path the **task** reads, including dependency outputs it consumes; the task's optional v4 `reads` declaration must enumerate this set explicitly |
 | `writes[]` | every path the task writes, which must equal the union of its declared `outputs` |
 | `enumerable` | bool; false means `R-UNENUMERABLE`, which is not admitted (§4) |
 | `definition_hash` | see below |
@@ -1503,8 +1502,8 @@ agent between tool calls — refuses at activation with **`R-NO-RUNNER`** (§4).
 unavailable there: no execution store is created, `enable-execution` refuses, and the project stays on
 the v3 sequential path. That is a narrower claim than revision 5 made, which described takeover proofs
 without ever saying what a run *is*, and so implied a design that worked on hosts where `pid_gone`
-means nothing. Which hosts can host a runner is a Phase 2 question (§20); this document states the
-requirement rather than surveying who meets it.
+means nothing. Phase 2 established that the supported Claude Code and Codex CLIs can host the POSIX
+subprocess runner (§17.1); activation still probes the local runtime instead of trusting that result.
 
 Three identifiers, with three different lifetimes:
 
@@ -2012,28 +2011,22 @@ documented and tested behaviour, and this table is where that is written down.
 
 ### 17.1 The matrix
 
-The Claude Code and Local subprocess rows are verified by the Phase 2 feasibility spike
-(`docs/parallel-execution-phase-2-spike.md`, 2026-09-14). Codex and Kimi Code remain
-uninvestigated.
+Claude Code and Codex are both hosted as non-interactive POSIX subprocesses. They share the same
+process-tree lifecycle adapter; host-specific command construction is limited to safe allowlisted
+arguments and each CLI's non-interactive isolation flags.
 
 | Host | Version | `start` | `observe` | `seal` | `terminate` | Consequence |
 |---|---|---|---|---|---|---|
-| Claude Code | 2.x | plausible via the Agent tool | plausible via agent listing | **not available** | plausible via task stop | `R-DETACHED-CHILD`: inline only |
-| Codex | current | not investigated | not investigated | not investigated | not investigated | `R-NO-ADAPTER`: inline only |
-| Kimi Code | current | not investigated | not investigated | not investigated | not investigated | `R-NO-ADAPTER`: inline only |
-| Local subprocess | POSIX | `posix_spawn` in a new process group | `waitpid` / `kill(pid, 0)` | plausible: process group reaped, no session leader left | `killpg` | the candidate an adapter phase would write first |
+| Claude Code CLI | discovered by `--version` | `Popen` in a new session | `waitpid` / `kill(pid, 0)` | process group reaped and exit attested | `killpg` | supported in an isolated Git worktree |
+| Codex CLI | discovered by `--version` | `Popen` in a new session | `waitpid` / `kill(pid, 0)` | process group reaped and exit attested | `killpg` | supported in an isolated Git worktree |
+| Local subprocess adapter | POSIX | `Popen` in a new session | `waitpid` / `kill(pid, 0)` | process group reaped and exit attested | `killpg` | shared lifecycle implementation |
 
-The Claude Code row is the load-bearing one, and it is not an argument from documentation. The
-evidence is the running host's own tool surface: a completed agent can be resumed by sending it a
-message, which resumes it from its transcript. A completion report from such a host therefore means
-"this agent is not currently producing output", not "this agent's execution has ended and cannot
-restart". `seal` requires both clauses, so it is unavailable, and by §3.1's Processes row every
-asynchronous attempt on that host refuses with `R-DETACHED-CHILD`.
-
-**The consequence is worth stating plainly: on the host this design is written for, v1 runs inline at
-capacity one.** Parallel dispatch is available only where an adapter can seal, which today means a
-local subprocess adapter that nobody has written. A design document that obscured this by describing
-subagent dispatch as the primary path would be describing something it cannot deliver.
+The sealable unit is the short-lived CLI process tree, not a resumable in-process agent session. The
+adapter retains the `Popen` object until observation and sealing are complete, starts a new process
+group, and attests the exit code only after reaping it. This is why both hosts can satisfy I2 without
+claiming that a host-native resumable conversation has terminated forever. If neither executable is
+available, admission returns `R-NO-ADAPTER` before dispatch and the coordinator uses the sequential
+path.
 
 ### 17.2 Ambiguous start does not license inline replay
 
@@ -2103,10 +2096,10 @@ marker fails, which counting markers would not catch.
 
 ## 20. Implementation phases
 
-Six phases, each separated from the next by a **review gate**, and each allowed to conclude that the
-phase after it is not worth building. This is a roadmap, not an approved backlog: only Phase 1 is
-specified to the level someone can implement, and phases 2 to 6 are expected to change once Phase 1 has
-been built and reviewed.
+Six phases, each separated from the next by a **review gate**, originally sequenced the implementation.
+The 0.8.1 release candidate contains all six phases. The controlled benchmark and fresh real-project
+pilot passed on 2026-09-16; the table remains as implementation provenance and as the acceptance
+contract future changes must preserve.
 
 | Phase | Deliverable | What stays disabled | Exit gate | Behaviour change |
 |---|---|---|---|---|
@@ -2117,10 +2110,9 @@ been built and reviewed.
 | 5 | `enable-execution` (§7.6), the v4 field, the reader-only refusal, and sequential integration at capacity one on a disposable project | concurrency | canonical commit, evidence, ownership and old-reader behaviour verified on every affected host | **yes** — a v4 project is unreadable by an installation without this phase, and activation is irreversible for the generation |
 | 6 | An opt-in pilot at `max_concurrent` 2, plus the measurement harness of §3.2 and §21.3 | unsupported task shapes; unattended retry of an ambiguous start | real overlap shown safe, useful and measured against a sequential baseline | **yes** — concurrency |
 
-Phase 1 is specified in full — module path, public surface, the validation it must refuse, the conflict
-matrix, the required tests, and its non-goals — in
+Phase 1's original implementation contract — module path, public surface, refusal validation,
+conflict matrix, tests, and non-goals — remains in
 [`docs/parallel-execution-implementation-plan.md`](../../../../../docs/parallel-execution-implementation-plan.md).
-Nothing in this document is a licence to build Phase 2 without reviewing Phase 1 first.
 
 Two phases change behaviour, and the earlier one is the one that matters. Phase 5 writes a schema field
 older installations must refuse, so it is behaviour-changing for every host that has not been upgraded,
@@ -2129,9 +2121,9 @@ explicitly conditional: if its measurement on real graphs shows no win, the corr
 at Phase 5 with a protocol that runs sequentially, correctly, and refuses visibly — which is a better
 result than concurrency nobody measured.
 
-Phase 2 sits where it does deliberately. §17.1 concludes that on the host this design was written for,
-no adapter can seal a subagent, so the whole asynchronous path rests on a host question no amount of
-prose settles. Answering it second, on a disposable project, is cheaper than discovering it in Phase 6.
+Phase 2 sat there deliberately because host lifetime was the first empirical uncertainty. The shipped
+implementation resolves it by sealing non-interactive CLI subprocess trees rather than trying to seal
+resumable host-native agent sessions (§17.1).
 
 ## 21. What is verified, and what is not
 
@@ -2251,21 +2243,24 @@ when §14.2 makes it project-wide.
 The suite is deliberately far smaller than revision 4's: 46 tests and 56 subtests here against 70 tests
 and 1,208 subtests there. That suite asserted label names, and its `apply_outcome` returned a constant
 regardless of the crash prefix it was given, so most of those subtests could not fail.
-**Passing this model does not establish that the protocol is correct.** It is a design-stage model of a
-design; there is no executor, no filesystem, and no adapter behind it, and the real validator it calls
+**Passing this model does not establish that the protocol is correct.** It remains a design-stage
+model rather than the shipped executor, filesystem store, and adapter. The real validator it calls
 checks a candidate's schema and transitions rather than a receipt's meaning, so the receipt half of I4
-is the model's own assertion.
+is the model's own assertion; implementation tests supply a separate layer of evidence.
 
 ### 21.3 The benchmark
 
-Not written. §3.2's figures come from a one-off script that is not committed, run on 2026-09-11 over 34
-graphs from one workspace that is not in this repository. Phase 6 (§20) commits the harness and the
-fixtures. When it does, the benchmark must report
-repeated runs rather than one, and must include a tiny-task case — a graph whose tasks each take under
-a second — because that is where per-attempt store overhead can exceed the concurrency win, and no
-current number addresses it.
+The implementation suite includes a real two-worker overlap fixture, isolated commits, serial
+integration, check reruns, and failure cases. A controlled one-second-task benchmark measured 3.865s
+at capacity one and 2.466s at capacity two: 1.567x faster with timestamps proving overlap. A fresh
+schema-v4 pilot then launched Claude Code 2.1.273 and Codex CLI 0.154.0 together; both produced useful,
+separately committed outputs, all checks passed after serial integration, and the target remained
+clean. The pilot exposed and fixed one fresh-store defect before dispatch: same-volume checking now
+walks to the nearest existing ancestor when `execution/runtime/tmp` does not yet exist.
 
-Nothing in this document is verified against a running implementation, because there is none.
+These results verify overlap and the end-to-end lifecycle on one machine. They do not establish a
+general performance factor: model latency, task duration, conflicts, and integration cost determine
+whether a real project benefits.
 
 ## 22. Deferred and out of scope
 
@@ -2302,37 +2297,37 @@ not that the sentence citing it is true.
 
 | Id | Source | Lines | Needle |
 |---|---|---|---|
-| C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1345-1352 | `does not match RUNNING tasks` |
-| C2 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3044-3066 | `def _dependency_levels(` |
-| C3 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3067-3095 | `def build_task_graph(` |
-| C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2963-2970 | `def levels(` |
-| C5 | `plugins/research/skills/project/SKILL.md` | 180-184 | `One coordinator owns writes to` |
+| C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1325-1333 | `does not match RUNNING tasks` |
+| C2 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3021-3041 | `def _dependency_levels(` |
+| C3 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3042-3070 | `def build_task_graph(` |
+| C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2955-2962 | `def levels(` |
+| C5 | `plugins/research/skills/project/SKILL.md` | 191-195 | `One coordinator owns writes to` |
 | C6 | `plugins/research/skills/project/references/workspace-schema.md` | 9-14 | `One coordinator is the sole writer` |
-| C7 | `plugins/research/skills/project/SKILL.md` | 382-386 | `Use a dependency graph only when independent work can run in parallel` |
+| C7 | `plugins/research/skills/project/SKILL.md` | 399-403 | `Use a dependency graph only when independent work can run in parallel` |
 | C8 | `plugins/research/skills/project/scripts/workspace_lib.py` | 319-352 | `class DirectoryLock` |
 | C9 | `plugins/research/skills/project/scripts/workspace_lib.py` | 296-312 | `def atomic_write_text(` |
 | C10 | `plugins/research/skills/project/scripts/workspace_lib.py` | 26-30 | `EFFECT_KINDS = {` |
 | C11 | `plugins/research/skills/project/scripts/workspace_lib.py` | 33-37 | `REFERENCE_ROOTS = {` |
-| C12 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2522-2530 | `unsupported schema_version` |
-| C13 | `plugins/research/skills/project/scripts/workspace_lib.py` | 455-472 | `def _validate_evidence_reference(` |
-| C14 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2823-2835 | `shell=False,` |
-| C15 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2831-2840 | `command timed out after` |
-| C16 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2863-2875 | `must not see a half-written one` |
+| C12 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2519-2527 | `unsupported schema_version` |
+| C13 | `plugins/research/skills/project/scripts/workspace_lib.py` | 454-471 | `def _validate_evidence_reference(` |
+| C14 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2815-2825 | `shell=False,` |
+| C15 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2823-2831 | `command timed out after` |
+| C16 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2855-2868 | `must not see a half-written one` |
 | C17 | `plugins/research/skills/project/scripts/workspace_lib.py` | 26-30 | `AUTHORIZATION_STATUSES = {` |
-| C18 | `plugins/research/skills/project/scripts/workspace_lib.py` | 538-544 | `non-required authorization must use status` |
-| C19 | `plugins/research/skills/project/scripts/workspace_lib.py` | 550-556 | `task requires explicit authorization` |
+| C18 | `plugins/research/skills/project/scripts/workspace_lib.py` | 528-536 | `non-required authorization must use status` |
+| C19 | `plugins/research/skills/project/scripts/workspace_lib.py` | 541-548 | `task requires explicit authorization` |
 | C20 | `plugins/research/skills/project/scripts/workspace_lib.py` | 59-65 | `TASK_TRANSITIONS = {` |
-| C21 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3395-3403 | `IMMUTABLE_PROJECT_FIELDS = (` |
+| C21 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3390-3398 | `IMMUTABLE_PROJECT_FIELDS = (` |
 | C22 | `plugins/research/skills/project/scripts/workspace_lib.py` | 24-30 | `TASK_STATUSES = {` |
-| C23 | `plugins/research/skills/project/scripts/workspace_lib.py` | 548-554 | `source and authorized_at must be null unless status is explicit` |
+| C23 | `plugins/research/skills/project/scripts/workspace_lib.py` | 538-545 | `source and authorized_at must be null unless status is explicit` |
 | C24 | `plugins/research/skills/project/scripts/workspace_lib.py` | 320-326 | `def __init__(self, path: Path, timeout: float = 5.0) -> None:` |
-| C25 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3487-3495 | `lock_timeout: float = 5.0,` |
+| C25 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3482-3490 | `lock_timeout: float = 5.0,` |
 | C26 | `plugins/research/skills/project/scripts/workspace_lib.py` | 417-435 | `required must be a boolean` |
-| C27 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1338-1346 | `BLOCKED task requires block_reason` |
+| C27 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1318-1326 | `BLOCKED task requires block_reason` |
 | C28 | `plugins/research/skills/project/scripts/workspace_lib.py` | 82-96 | `TASK_FIELDS = {` |
-| C29 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3492-3530 | `with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):` |
-| C30 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3525-3533 | `The commit already landed` |
-| C31 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1286-1292 | `"success_criteria", "verification"` |
+| C29 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3468-3506 | `with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):` |
+| C30 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3519-3527 | `The commit already landed` |
+| C31 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1268-1274 | `"success_criteria", "verification"` |
 | C32 | `plugins/research/skills/project/scripts/workspace_lib.py` | 494-500 | `_unexpected_fields(value, {"kind", "description"}, label, report)` |
 
 Eight rows are new in revision 5, and each exists because revision 4 asserted the constant without one:

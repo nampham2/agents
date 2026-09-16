@@ -22,7 +22,7 @@ from workspace_lib import (
     SPEC_CANONICAL_SECTIONS,
     allocate_project,
     spec_section_warnings,
-    validate_v3_state,
+    validate_v4_state,
 )
 
 CANONICAL_SPEC = (
@@ -168,26 +168,26 @@ class SpecSectionValidationTests(unittest.TestCase):
         return state
 
     def test_an_aligning_project_is_not_warned_about_its_skeleton(self) -> None:
-        report = validate_v3_state(self._state("ALIGNING"), self.project_dir)
+        report = validate_v4_state(self._state("ALIGNING"), self.project_dir)
         self.assertEqual([w for w in report.warnings if "Current specification" in w], [])
 
     def test_a_planning_project_with_a_skeleton_spec_is_warned(self) -> None:
-        report = validate_v3_state(self._state("PLANNING"), self.project_dir)
+        report = validate_v4_state(self._state("PLANNING"), self.project_dir)
         self.assertTrue([w for w in report.warnings if "Current specification" in w])
         self.assertTrue(report.valid, report.errors)
 
     def test_a_planning_project_with_a_complete_spec_is_not_warned(self) -> None:
         (self.project_dir / "spec.md").write_text(CANONICAL_SPEC, encoding="utf-8")
-        report = validate_v3_state(self._state("PLANNING"), self.project_dir)
+        report = validate_v4_state(self._state("PLANNING"), self.project_dir)
         self.assertEqual([w for w in report.warnings if "Current specification" in w], [])
 
     def test_a_missing_spec_file_is_not_a_crash(self) -> None:
         (self.project_dir / "spec.md").unlink()
-        report = validate_v3_state(self._state("PLANNING"), self.project_dir)
+        report = validate_v4_state(self._state("PLANNING"), self.project_dir)
         self.assertEqual([w for w in report.warnings if "Current specification" in w], [])
 
     def test_the_check_is_skipped_when_files_are_not_being_read(self) -> None:
-        report = validate_v3_state(self._state("PLANNING"), self.project_dir, check_files=False)
+        report = validate_v4_state(self._state("PLANNING"), self.project_dir, check_files=False)
         self.assertEqual([w for w in report.warnings if "Current specification" in w], [])
 
     def test_the_warning_reaches_the_cli_without_failing_it(self) -> None:
@@ -247,7 +247,7 @@ class UnwrittenSectionClosureTests(unittest.TestCase):
             CANONICAL_SPEC.replace("### Out of scope\n\nSettled.\n", "### Out of scope\n"), encoding="utf-8"
         )
 
-        report = validate_v3_state(self._closeable_state(), self.project_dir, close=True)
+        report = validate_v4_state(self._closeable_state(), self.project_dir, close=True)
 
         self.assertTrue(report.valid, report.errors)
         self.assertEqual([error for error in report.errors if "unwritten" in error], [])
@@ -256,7 +256,7 @@ class UnwrittenSectionClosureTests(unittest.TestCase):
     def test_a_complete_spec_closes_with_no_section_warning(self) -> None:
         (self.project_dir / "spec.md").write_text(CANONICAL_SPEC, encoding="utf-8")
 
-        report = validate_v3_state(self._closeable_state(), self.project_dir, close=True)
+        report = validate_v4_state(self._closeable_state(), self.project_dir, close=True)
 
         self.assertTrue(report.valid, report.errors)
         self.assertEqual([warning for warning in report.warnings if "spec.md" in warning], [])

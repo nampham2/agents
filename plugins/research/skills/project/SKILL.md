@@ -82,7 +82,7 @@ research-project find-roots
 
 ## Project layout and tools
 
-For new projects, use schema v3:
+Fresh projects use execution-enabled schema v4:
 
 ```text
 workspace/
@@ -101,11 +101,15 @@ workspace/
     │   ├── report.md        # Closing report: the plain technical record
     │   └── report.html      # Closing report: the same findings, presented, with charts
     ├── reviews/             # Sanitized review summaries
+    ├── execution/           # Immutable plans, attempt journal, worktrees, and runtime reports
     └── reflection.md        # Project post-mortem
 ```
 
 Read [references/workspace-schema.md](references/workspace-schema.md) before initializing,
 resuming, migrating, or closing a project. Read
+[references/parallel-execution.md](references/parallel-execution.md) when changing the executor or
+when a blocked/uncertain automatic attempt needs protocol recovery; the ordinary scheduling path is
+summarized in step 6 below. Read
 [references/memory-architecture.md](references/memory-architecture.md) before changing how memory
 is recorded or retrieved; `## Cross-project memory` below is the working summary of it. Read
 [references/report-design.md](references/report-design.md) at closure, before writing the report
@@ -159,6 +163,11 @@ research-project rebuild-index <workspace-root>
 research-project record-evidence <project-directory> --task <id> -- <command>
 # --step names a closure step instead of a task, for work no task owns. `report` is the only one.
 research-project record-evidence <project-directory> --step report -- <command>
+# Automatically execute eligible READY tasks; concurrency defaults to 2.
+research-project run-auto <project-directory> [--concurrency <n>]
+# Existing v3 projects require explicit activation and quiescence; never run this implicitly.
+research-project enable-execution <project-directory> --expected-revision <revision> \
+  --legacy-writers-quiesced
 # Memory: find where a lesson is recorded, then promote a staged one into a topic file.
 research-project search-memory <query> --workspace-root <workspace-root>
 research-project promote-memory <slug> --body "<lesson>" --source <project-id> \
@@ -223,7 +232,8 @@ root; do not search elsewhere for projects.
 4. If a completed project owns the maintained deliverable, reopen it as described below.
 5. If multiple projects might match, ask which one to resume. Do not silently create a duplicate.
 6. If no project matches, initialize one with `research-project init`; it atomically allocates the
-   next unused directory and creates the v3 skeleton. It refuses a workspace root that does not
+   next unused directory and creates the v4 skeleton plus a probed execution configuration. It
+   refuses a workspace root that does not
    exist unless `--create-root` is passed, which requires the user having asked for a new workspace.
 7. Read `workspace/MEMORY.md` in full — it is budgeted so that this always costs about the same —
    and then open only the `memory/<slug>.md` topic files whose description and scope match the
@@ -239,7 +249,12 @@ a matching project.
 
 Detect the schema before mutation:
 
-- v3 projects use the transactional commands in this skill.
+- v4 projects use the transactional commands and automatic executor in this skill.
+- v3 projects remain readable and writable through the sequential workflow. Never activate them
+  automatically. Schema-v4 activation requires the user's explicit approval and an operator
+  attestation that every legacy writer with access to the workspace and target has been upgraded
+  and quiesced. Then run `enable-execution` with the revision you read and
+  `--legacy-writers-quiesced`; this is the only supported v3 → v4 path.
 - v2 projects may be inspected and validated in place, but validation warns that concurrency and
   authorization guarantees are limited.
 - v1 projects use `00_meta.yaml` and `02_task_plan.md`; do not infer canonical completion from their
@@ -374,13 +389,17 @@ shape. Otherwise summarize the interpretation and continue.
 
 ## 4. Plan
 
-Represent every task exactly once in `project.json`. Each task needs all fields defined by the v3
+Represent every task exactly once in `project.json`. Each task needs all fields defined by the v4
 schema, including dependencies, rooted outputs and evidence, observable success criteria,
 verification, effect classification, authorization, receipts, and block/skip reasons.
 
 - Dependencies are hard prerequisites. A task may enter `RUNNING` or `DONE` only when every
   dependency is `DONE`; `SKIPPED` does not satisfy a dependency. Replan downstream tasks when a
   prerequisite is skipped.
+- For each schema-v4 task, add `reads` as the exhaustive list of target-relative input files. Use
+  `reads: []` only when the task is genuinely self-contained from its task text. Omit the field when
+  inputs cannot be enumerated; `run-auto` then records `R-UNENUMERABLE` and hands it to the
+  sequential path. Never infer reads only from dependency outputs.
 - Use a dependency graph only when independent work can run in parallel. Assign non-overlapping
   output paths and keep the coordinator as the only canonical-state writer.
 - Classify effects as `none`, `local_write`, `destructive`, or `external`. Destructive and external
@@ -428,7 +447,42 @@ to write that subsection from this command rather than by reading `project.json`
 
 ## 6. Execute and verify
 
-Before starting a task, confirm its dependencies are `DONE`. For authorization-required work,
+For a schema-v4 project, automatic execution is the default. Whenever `EXECUTING` has READY tasks,
+run `research-project run-auto <project-directory>` before doing any of them inline. Do not invoke it
+from a worker: nested coordination is refused. The command resolves and immutably publishes a
+task-specific plan, then dispatches at most two non-conflicting tasks by default to available Claude
+or Codex CLIs. Each worker receives only its declared target files in an isolated Git worktree. The
+coordinator verifies required outputs and checks there, serially cherry-picks verified commits into
+an integration worktree, reruns every check, and only then fast-forwards the clean target checkout
+and commits task evidence/status.
+
+Automatic admission is deliberately narrow. A task must have effect `none` or `local_write`, one or
+more file outputs rooted at `target`, a clean Git target, and verification made only of separate,
+read-only `test` or `[` commands that name every required output. Outputs, explicitly declared
+exhaustive reads, checks, worker kind, source revision, definition hash, and plan hash are frozen in
+the durable plan. Directory
+outputs, workspace/external outputs, destructive or external effects, composed or generic checks,
+conflicting claims, unavailable worker CLIs, and capacity overflow are never guessed around.
+
+Read the command's JSON report and act on each category:
+
+- `completed`: the command already verified, integrated, evidenced, and marked these tasks `DONE`;
+  reload canonical state rather than repeating them.
+- `deferred`: retry `run-auto` after the current wave; claim conflicts and the concurrency bound are
+  scheduling decisions, not failures.
+- `fallbacks`: state the recorded reason, then execute those tasks sequentially through the ordinary
+  coordinator path below. A fallback does not weaken authorization or verification. In particular,
+  `R-CHECK-UNCOVERED` requires correcting the task's verification before any executor may complete it.
+- `blocked`: preserve the attempt journal/worktree evidence and reconcile the failure before retrying;
+  do not mark the task done or silently replay its effects.
+
+Exit 2 means that this pass completed no task (only fallback/deferred work or no READY work), not
+that the project command crashed. `execution/runtime/automatic-run.json` is the durable summary. On
+restart, validate canonical state and the execution journal before resuming; never delete an attempt,
+grant, worktree, or integration branch merely to make the state look idle.
+
+For a v3 project, or for each schema-v4 task listed under `fallbacks`, use the sequential coordinator
+path. Before starting it, confirm its dependencies are `DONE`. For authorization-required work,
 confirm the stored authorization is explicit, current, and scoped to the exact action. Then commit
 the task to `RUNNING` before performing it.
 

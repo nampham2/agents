@@ -619,7 +619,7 @@ class PostCommitFilesystemFailureTests(unittest.TestCase):
         project_dir = next(
             child for child in self.workspace.iterdir() if child.is_dir() and is_canonical_project_id(child.name)
         )
-        self.assertEqual(3, detect_schema(project_dir))
+        self.assertEqual(4, detect_schema(project_dir))
 
     def test_commit_reports_the_revision_when_the_rebuild_hits_oserror(self) -> None:
         project_dir = workspace_lib.allocate_project(self.workspace, title="Ordered", working_directory=self.root)
@@ -728,12 +728,6 @@ class PluginManifestTests(unittest.TestCase):
         manifest = json.loads((REPO_ROOT / "plugins/research/.claude-plugin/plugin.json").read_text(encoding="utf-8"))
         self.assertNotIn("skills", manifest)
         self.assertEqual("research", manifest["name"])
-        self.assertIn("version", manifest)
-
-    def test_kimi_manifest_exposes_the_shared_skills_directory(self) -> None:
-        manifest = json.loads((REPO_ROOT / "plugins/research/.kimi-plugin/plugin.json").read_text(encoding="utf-8"))
-        self.assertEqual("research", manifest["name"])
-        self.assertEqual("./skills", manifest["skills"])
         self.assertIn("version", manifest)
 
     def test_every_skill_directory_carries_a_skill_md(self) -> None:
@@ -981,9 +975,7 @@ class MarketplaceGuardTests(unittest.TestCase):
         self.assertNotIn(f"plugin marketplace add {REPO_ROOT}", recorded)
 
     def test_force_replaces_the_declaration_and_says_so(self) -> None:
-        completed, recorded = self._run(
-            self._declared(source="github", repo="nampham2/agents"), "--force"
-        )
+        completed, recorded = self._run(self._declared(source="github", repo="nampham2/agents"), "--force")
         self.assertEqual(0, completed.returncode, completed.stderr)
         self.assertIn("replacing the 'agents' marketplace declaration", completed.stderr)
         self.assertIn(f"plugin marketplace add {REPO_ROOT}", recorded)

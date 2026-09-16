@@ -49,7 +49,7 @@ from workspace_lib import (
     allocate_project,
     report_findings,
     report_warnings,
-    validate_v3_state,
+    validate_v4_state,
 )
 
 from tests.conftest import REPO_ROOT, VALIDATOR
@@ -65,7 +65,7 @@ GOOD_MARKDOWN = "# Title — report\n\n" + "".join(
 )
 
 GOOD_HTML = (
-    "<!doctype html>\n<html lang=\"en\"><head><title>Title</title>\n"
+    '<!doctype html>\n<html lang="en"><head><title>Title</title>\n'
     '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">\n'
     "<style>\n"
     "/* comment */\n"
@@ -227,7 +227,7 @@ class ReportTriggerTests(unittest.TestCase):
         return state
 
     def _report_warnings(self, status: str, **kwargs: Any) -> "list[str]":
-        report = validate_v3_state(self._state(status), self.project_dir, **kwargs)
+        report = validate_v4_state(self._state(status), self.project_dir, **kwargs)
         self.assertTrue(report.valid, report.errors)
         return [warning for warning in report.warnings if "report.md" in warning or "report.html" in warning]
 
@@ -258,7 +258,7 @@ class ReportTriggerTests(unittest.TestCase):
     def test_the_finding_is_never_an_error_and_never_blocks_closure(self) -> None:
         # The whole reason this is a warning: every project that closed before the step existed must
         # stay valid, and stay reopenable for maintenance.
-        report = validate_v3_state(self._state("EXECUTING"), self.project_dir, close=True)
+        report = validate_v4_state(self._state("EXECUTING"), self.project_dir, close=True)
 
         self.assertTrue(report.valid, report.errors)
         self.assertEqual([error for error in report.errors if "report" in error], [])
@@ -348,10 +348,12 @@ class ReportCheckTests(unittest.TestCase):
         self.assertIn("loads an external stylesheet", errors[0])
 
     def test_a_stylesheet_link_with_no_href_is_named(self) -> None:
-        errors = _errors(html=GOOD_HTML.replace(
-            '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">',
-            '<link rel="stylesheet">',
-        ))
+        errors = _errors(
+            html=GOOD_HTML.replace(
+                '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">',
+                '<link rel="stylesheet">',
+            )
+        )
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("no href", errors[0])
 
@@ -426,9 +428,9 @@ class ReportCheckTests(unittest.TestCase):
         self.assertIn("outside a <figure>", errors[0])
 
     def test_a_chart_with_no_figcaption_is_named(self) -> None:
-        errors = _errors(html=GOOD_HTML.replace(
-            "<figcaption>The second run is four times the first.</figcaption>\n", ""
-        ))
+        errors = _errors(
+            html=GOOD_HTML.replace("<figcaption>The second run is four times the first.</figcaption>\n", "")
+        )
         self.assertEqual(len(errors), 1, errors)
         self.assertIn("no non-empty <figcaption>", errors[0])
 
@@ -568,8 +570,16 @@ class ReportEvidenceStepTests(unittest.TestCase):
 
     def test_the_cli_refuses_a_task_and_a_step_together(self) -> None:
         argv = [
-            "manage", "record-evidence", str(self.project_dir),
-            "--task", "T01", "--step", "report", "--", "/bin/echo", "x",
+            "manage",
+            "record-evidence",
+            str(self.project_dir),
+            "--task",
+            "T01",
+            "--step",
+            "report",
+            "--",
+            "/bin/echo",
+            "x",
         ]
         import manage_workspace
 

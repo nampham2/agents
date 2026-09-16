@@ -1512,7 +1512,8 @@ class AllocateProjectTests(unittest.TestCase):
         state = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
         self.assertEqual("Test Project", state["title"])
         self.assertEqual("ALIGNING", state["status"])
-        self.assertEqual(3, state["schema_version"])
+        self.assertEqual(4, state["schema_version"])
+        self.assertEqual({}, state["execution"]["attempts"])
 
     def test_sequential_allocation(self) -> None:
         first = allocate_project(self.workspace, title="First", working_directory=self.target)

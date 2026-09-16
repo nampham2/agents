@@ -50,7 +50,7 @@ the flag alone would still have let a plain-English "grill me on this plan" star
 session that no longer has anywhere to record its result.
 
 `user-invocable` is a Claude Code key. Codex parses only `name`, `description`, and
-`disable-model-invocation`, so `/research:grill` remains typable there; Kimi Code is unverified. See
+`disable-model-invocation`, so `/research:grill` remains typable there. See
 the cross-host plugin contract in the repository `AGENTS.md`.
 
 Two consequences for anyone editing this skill:

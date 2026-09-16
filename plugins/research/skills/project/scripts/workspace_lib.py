@@ -95,6 +95,7 @@ TASK_FIELDS = {
     "skip_reason",
     "block_reason",
 }
+TASK_V4_FIELDS = TASK_FIELDS | {"reads"}
 
 
 @dataclass
@@ -367,9 +368,7 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
 def _unexpected_fields(value: dict[str, Any], allowed: set[str], label: str, report: ValidationReport) -> None:
     extras = sorted(set(value) - allowed)
     if extras:
-        report.errors.append(
-            f"{label}: unexpected fields: {', '.join(extras)}; allowed: {', '.join(sorted(allowed))}"
-        )
+        report.errors.append(f"{label}: unexpected fields: {', '.join(extras)}; allowed: {', '.join(sorted(allowed))}")
 
 
 def _missing_fields(value: dict[str, Any], required: set[str], label: str, report: ValidationReport) -> None:
@@ -423,9 +422,7 @@ def _validate_output_reference(
     path = value.get("path")
     required = value.get("required")
     if not _enum_string(root, REFERENCE_ROOTS):
-        report.errors.append(
-            f"{label}: invalid root {root!r}; allowed: {', '.join(sorted(REFERENCE_ROOTS))}"
-        )
+        report.errors.append(f"{label}: invalid root {root!r}; allowed: {', '.join(sorted(REFERENCE_ROOTS))}")
         return
     if not _non_empty_string(path):
         report.errors.append(f"{label}: path must be a non-empty string")
@@ -472,9 +469,7 @@ def _validate_evidence_reference(
     path = value.get("path")
     anchor = value.get("anchor")
     if not _enum_string(root, REFERENCE_ROOTS):
-        report.errors.append(
-            f"{label}: invalid root {root!r}; allowed: {', '.join(sorted(REFERENCE_ROOTS))}"
-        )
+        report.errors.append(f"{label}: invalid root {root!r}; allowed: {', '.join(sorted(REFERENCE_ROOTS))}")
         return
     if not _non_empty_string(path):
         report.errors.append(f"{label}: path must be a non-empty string")
@@ -501,9 +496,7 @@ def _validate_effect(value: object, label: str, report: ValidationReport) -> str
     kind = value.get("kind")
     description = value.get("description")
     if not _enum_string(kind, EFFECT_KINDS):
-        report.errors.append(
-            f"{label}: invalid effect kind {kind!r}; allowed: {', '.join(sorted(EFFECT_KINDS))}"
-        )
+        report.errors.append(f"{label}: invalid effect kind {kind!r}; allowed: {', '.join(sorted(EFFECT_KINDS))}")
         return None
     if kind != "none" and not _non_empty_string(description):
         report.errors.append(f"{label}: non-none effects require a description")
@@ -532,8 +525,7 @@ def _validate_authorization(
         return
     if not _enum_string(status, AUTHORIZATION_STATUSES):
         report.errors.append(
-            f"{label}: invalid authorization status {status!r}; "
-            f"allowed: {', '.join(sorted(AUTHORIZATION_STATUSES))}"
+            f"{label}: invalid authorization status {status!r}; allowed: {', '.join(sorted(AUTHORIZATION_STATUSES))}"
         )
         return
     if effect_kind in {"destructive", "external"} and not required:
@@ -568,8 +560,7 @@ def _validate_receipt(value: object, label: str, report: ValidationReport) -> No
     if _non_empty_string(receipt_value) and not is_external_reference(receipt_value):
         report.errors.append(
             f"{label}: value must be an http(s) URL with a host, or a durable identifier "
-            f"prefixed with one of: "
-            + ", ".join(f"{prefix}:" for prefix in EXTERNAL_IDENTIFIER_PREFIXES)
+            f"prefixed with one of: " + ", ".join(f"{prefix}:" for prefix in EXTERNAL_IDENTIFIER_PREFIXES)
         )
     if not _is_timestamp(value.get("timestamp")):
         report.errors.append(f"{label}: timestamp must be timezone-aware ISO-8601")
@@ -688,7 +679,6 @@ def _briefing_skeleton(title: str) -> str:
         for canonical, _ in BRIEFING_CANONICAL_SECTIONS
     )
     return f"# {title} \u2014 briefing\n\n{sections}"
-
 
 
 def _level_two_sections(markdown: str) -> "list[tuple[str, str]]":
@@ -833,9 +823,7 @@ def _report_graph_findings(markdown: str, label: str) -> "list[str]":
     """
     canonical, recogniser = REPORT_GRAPH_SUBSECTION
     parent = next(pattern for name, pattern in REPORT_CANONICAL_SECTIONS if name == REPORT_GRAPH_PARENT)
-    bodies = [
-        body for heading, body in _level_two_sections(markdown) if re.search(parent, heading, re.IGNORECASE)
-    ]
+    bodies = [body for heading, body in _level_two_sections(markdown) if re.search(parent, heading, re.IGNORECASE)]
     if not bodies:
         return []
     for body in bodies:
@@ -1033,7 +1021,7 @@ def _chart_errors(html: str, label: str) -> "list[str]":
     for index, match in enumerate(_SVG_OPEN.finditer(html), start=1):
         attributes = _attributes(match.group(0))
         if attributes.get("role", "").strip() != "img":
-            errors.append(f"{label}: <svg> #{index} has no role=\"img\"")
+            errors.append(f'{label}: <svg> #{index} has no role="img"')
         if not attributes.get("aria-label", "").strip():
             errors.append(f"{label}: <svg> #{index} has no non-empty aria-label")
     figures = _FIGURE_BLOCK.findall(html)
@@ -1190,9 +1178,7 @@ def validate_v3_state(
 
     status = state.get("status")
     if not _enum_string(status, PROJECT_STATUSES):
-        report.errors.append(
-            f"project: invalid status {status!r}; allowed: {', '.join(sorted(PROJECT_STATUSES))}"
-        )
+        report.errors.append(f"project: invalid status {status!r}; allowed: {', '.join(sorted(PROJECT_STATUSES))}")
 
     working_directory_value = state.get("working_directory")
     working_directory = Path(working_directory_value) if _non_empty_string(working_directory_value) else project_dir
@@ -1226,9 +1212,7 @@ def validate_v3_state(
         report.errors.append("review: required must be a boolean")
     review_status = review.get("status")
     if not _enum_string(review_status, REVIEW_STATUSES):
-        report.errors.append(
-            f"review: invalid status {review_status!r}; allowed: {', '.join(sorted(REVIEW_STATUSES))}"
-        )
+        report.errors.append(f"review: invalid status {review_status!r}; allowed: {', '.join(sorted(REVIEW_STATUSES))}")
     if review_required is True and review_status == "not_required":
         report.errors.append("review: required review cannot use status 'not_required'")
     review_evidence = review.get("evidence")
@@ -1282,8 +1266,7 @@ def validate_v3_state(
         task_status = task.get("status")
         if not _enum_string(task_status, TASK_STATUSES):
             report.errors.append(
-                f"{label}: invalid task status {task_status!r}; "
-                f"allowed: {', '.join(sorted(TASK_STATUSES))}"
+                f"{label}: invalid task status {task_status!r}; allowed: {', '.join(sorted(TASK_STATUSES))}"
             )
             task_status = None
         for field_name in ("name", "success_criteria", "verification"):
@@ -1476,9 +1459,7 @@ def validate_v4_state(
 
     status = state.get("status")
     if not _enum_string(status, PROJECT_STATUSES):
-        report.errors.append(
-            f"project: invalid status {status!r}; allowed: {', '.join(sorted(PROJECT_STATUSES))}"
-        )
+        report.errors.append(f"project: invalid status {status!r}; allowed: {', '.join(sorted(PROJECT_STATUSES))}")
 
     working_directory_value = state.get("working_directory")
     working_directory = Path(working_directory_value) if _non_empty_string(working_directory_value) else project_dir
@@ -1512,9 +1493,7 @@ def validate_v4_state(
         report.errors.append("review: required must be a boolean")
     review_status = review.get("status")
     if not _enum_string(review_status, REVIEW_STATUSES):
-        report.errors.append(
-            f"review: invalid status {review_status!r}; allowed: {', '.join(sorted(REVIEW_STATUSES))}"
-        )
+        report.errors.append(f"review: invalid status {review_status!r}; allowed: {', '.join(sorted(REVIEW_STATUSES))}")
     if review_required is True and review_status == "not_required":
         report.errors.append("review: required review cannot use status 'not_required'")
     review_evidence = review.get("evidence")
@@ -1551,7 +1530,7 @@ def validate_v4_state(
             report.errors.append(f"{label}: task must be an object")
             continue
         _missing_fields(task, TASK_FIELDS, label, report)
-        _unexpected_fields(task, TASK_FIELDS, label, report)
+        _unexpected_fields(task, TASK_V4_FIELDS, label, report)
         task_id = task.get("id")
         if not _non_empty_string(task_id):
             report.errors.append(f"{label}: id must be a non-empty string")
@@ -1568,13 +1547,29 @@ def validate_v4_state(
         task_status = task.get("status")
         if not _enum_string(task_status, TASK_STATUSES):
             report.errors.append(
-                f"{label}: invalid task status {task_status!r}; "
-                f"allowed: {', '.join(sorted(TASK_STATUSES))}"
+                f"{label}: invalid task status {task_status!r}; allowed: {', '.join(sorted(TASK_STATUSES))}"
             )
             task_status = None
         for field_name in ("name", "success_criteria", "verification"):
             if not _non_empty_string(task.get(field_name)):
                 report.errors.append(f"{label}: {field_name} must be a non-empty string")
+
+        if "reads" in task:
+            reads = task.get("reads")
+            if not isinstance(reads, list) or not all(_non_empty_string(item) for item in reads):
+                report.errors.append(f"{label}: reads must be a list of non-empty target-relative paths")
+            elif len(reads) != len(set(reads)):
+                report.errors.append(f"{label}: reads contains duplicates")
+            else:
+                for read in reads:
+                    _resolved, error = _resolve_local_reference(
+                        project_dir,
+                        working_directory,
+                        "target",
+                        read,
+                    )
+                    if error is not None:
+                        report.errors.append(f"{label}: invalid read {read!r}: {error}")
 
         outputs = task.get("outputs")
         if not isinstance(outputs, list):
@@ -2522,6 +2517,8 @@ def validate_project(
             report = validate_v2_state(load_json(project_dir / "project.json"), project_dir, close=close)
         elif version == 3:
             report = validate_v3_state(load_json(project_dir / "project.json"), project_dir, close=close)
+        elif version == 4:
+            report = validate_v4_state(load_json(project_dir / "project.json"), project_dir, close=close)
         else:
             report = ValidationReport(errors=[f"unsupported schema_version: {version}"])
     except WorkspaceError as error:
@@ -2541,7 +2538,7 @@ def validate_project(
     # through `record-evidence` for an exit code.
     if check_report:
         report.extend(report_findings(project_dir))
-    if check_index and version in {2, 3}:
+    if check_index and version in {2, 3, 4}:
         expected = render_index(project_dir.parent)
         index_path = project_dir.parent / "INDEX.md"
         try:
@@ -2692,11 +2689,7 @@ SHELL_OPERATORS = ("|", "||", "&&", ";", ">", ">>")
 
 def _shell_operator_arguments(command: Sequence[str]) -> "list[tuple[int, str]]":
     """Argv elements that are bare shell operators, with their 1-based positions."""
-    return [
-        (position, argument)
-        for position, argument in enumerate(command, start=1)
-        if argument in SHELL_OPERATORS
-    ]
+    return [(position, argument) for position, argument in enumerate(command, start=1) if argument in SHELL_OPERATORS]
 
 
 def _refuse_shell_operators(command: Sequence[str]) -> None:
@@ -3055,9 +3048,7 @@ def _dependency_levels(dependencies: "dict[str, list[str]]") -> "dict[str, int]"
     levels: "dict[str, int]" = {}
     remaining = {task_id: list(deps) for task_id, deps in dependencies.items()}
     while remaining:
-        ready = sorted(
-            task_id for task_id, deps in remaining.items() if all(dep not in remaining for dep in deps)
-        )
+        ready = sorted(task_id for task_id, deps in remaining.items() if all(dep not in remaining for dep in deps))
         if not ready:
             break
         for task_id in ready:
@@ -3198,7 +3189,12 @@ def render_task_graph(graph: TaskGraph) -> str:
         ]
         if status_column is not None:
             row.append(node.status or "-")
-        row.extend([node.effect_kind or "-", "-" if node.authorization_status == "not_required" else node.authorization_status or "-"])
+        row.extend(
+            [
+                node.effect_kind or "-",
+                "-" if node.authorization_status == "not_required" else node.authorization_status or "-",
+            ]
+        )
         rows.append(row)
         for continuation in dependency_lines[1:]:
             wrapped = [""] * len(headers)
@@ -3573,7 +3569,7 @@ def allocate_project(
             (project_dir / directory).mkdir()
         timestamp = now_iso()
         state = {
-            "schema_version": 3,
+            "schema_version": 4,
             "project": project_dir.name,
             "title": title.strip(),
             "status": "ALIGNING",
@@ -3585,10 +3581,16 @@ def allocate_project(
             "review": {"cycle": 0, "required": False, "status": "not_required", "evidence": []},
             "cancellation_reason": None,
             "tasks": [],
+            "execution": {
+                "protocol_version": 1,
+                "coordinator_run": None,
+                "ownership_generation": 0,
+                "attempts": {},
+            },
         }
         # project.json is the commit point: write the skeleton first so an interrupted init leaves
         # an inert directory that detect_schema does not recognise and render_index skips, rather
-        # than a project that reports schema v3 while missing the files v3 requires.
+        # than a project that reports schema v4 while missing the files v4 requires.
         atomic_write_text(
             project_dir / "spec.md",
             f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n"
@@ -3597,6 +3599,8 @@ def allocate_project(
         atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))
         atomic_write_text(project_dir / "evidence.md", f"# Evidence\n\n{EVIDENCE_PLACEHOLDER}")
         atomic_write_text(project_dir / MEMORY_STAGING_FILENAME, MEMORY_STAGING_SKELETON)
+        execution_config = _probe_execution_config(project_dir, legacy_writers_quiesced=False)
+        atomic_write_json(project_dir / "execution" / "config.json", execution_config)
         # The flat cross-project `reflection.md` is no longer scaffolded. It is what the memory layer
         # replaces: one always-read file that grew to 61 KB while its guardrail, which counted
         # entries, still reported it clean. Existing ones stay valid and warn that they are legacy.
@@ -3604,6 +3608,9 @@ def allocate_project(
         # ends this function generates it as soon as `memory/` exists — so writing it here too would
         # be a second writer of a generated file, which is how INDEX.md drift used to happen.
         (workspace_root / MEMORY_DIRECTORY).mkdir(exist_ok=True)
+        report = validate_v4_state(state, project_dir, close=False, check_files=True)
+        if report.errors:
+            raise WorkspaceError("fresh v4 state validation failed:\n- " + "\n- ".join(report.errors))
         atomic_write_json(project_dir / "project.json", state)
         _rebuild_index_after_commit(workspace_root, f"project {project_dir} is initialized", lock_timeout)
     except BaseException:
@@ -3920,43 +3927,12 @@ def apply_migration(project_dir: Path, *, lock_timeout: float = 5.0) -> Path:
     return state_path
 
 
-def enable_execution(
-    project_dir: Path,
-    *,
-    expected_revision: int,
-    legacy_writers_quiesced: bool,
-    lock_timeout: float = 5.0,
-) -> None:
-    if not legacy_writers_quiesced:
-        raise WorkspaceError(
-            "R-LEGACY-WRITER: --legacy-writers-quiesced is required; attest that every installation "
-            "with write access to this workspace or working directory has been upgraded to schema v4"
-        )
-    project_dir = project_dir.resolve()
-    state_path = project_dir / "project.json"
-    config_path = project_dir / "execution" / "config.json"
-
-    current = load_json(state_path)
-    current_revision = current.get("revision")
-    if current_revision != expected_revision:
-        raise WorkspaceConflict(
-            f"revision conflict: expected {expected_revision}, found {current_revision}; "
-            "reload and reconcile"
-        )
-
-    if current.get("schema_version") == 4:
-        if not config_path.exists():
-            raise WorkspaceError(
-                "project is schema v4 but execution/config.json is missing; "
-                "the execution store may be corrupt — inspect manually"
-            )
-        generation: int = current.get("execution", {}).get("ownership_generation", 0)
-        print(f"already enabled at generation {generation}")
-        return
-
-    # Probe the store's filesystem from a scratch directory inside execution/.
+def _probe_execution_config(project_dir: Path, *, legacy_writers_quiesced: bool) -> dict[str, Any]:
+    """Probe execution prerequisites and return the immutable generation configuration."""
     scratch_dir = project_dir / "execution" / "scratch"
+    tmp_dir = project_dir / "execution" / "tmp"
     scratch_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir.mkdir(parents=True, exist_ok=True)
     probe_src = scratch_dir / "probe_src.tmp"
     probe_dst = scratch_dir / "probe_dst.tmp"
     probe_case_upper = scratch_dir / "probe_CASE.tmp"
@@ -3976,13 +3952,13 @@ def enable_execution(
             atomic_link = True
         except OSError:
             pass
-        same_volume = os.stat(scratch_dir).st_dev == os.stat(tempfile.gettempdir()).st_dev
+        same_volume = os.stat(scratch_dir).st_dev == os.stat(tmp_dir).st_dev
         probe_case_upper.write_bytes(b"")
         case_sensitive = not probe_case_lower.exists()
     finally:
-        for _p in (probe_src, probe_dst, probe_case_upper):
+        for probe_path in (probe_src, probe_dst, probe_case_upper):
             try:
-                os.unlink(_p)
+                os.unlink(probe_path)
             except OSError:
                 pass
         try:
@@ -4000,8 +3976,23 @@ def enable_execution(
             "R-CROSS-VOLUME: the store's temporary directory is on a different volume from the "
             "execution store; the parallel execution protocol requires them on the same volume"
         )
+    if os.name != "posix":
+        raise WorkspaceError("R-NO-RUNNER: automatic execution requires a POSIX subprocess runner")
+    import sys
 
-    expected_config: dict[str, Any] = {
+    try:
+        runner_probe = subprocess.run(
+            [sys.executable, "-c", "pass"],
+            check=False,
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise WorkspaceError(f"R-NO-RUNNER: local subprocess probe failed: {error}") from error
+    if runner_probe.returncode != 0:
+        raise WorkspaceError(f"R-NO-RUNNER: local subprocess probe exited with status {runner_probe.returncode}")
+
+    return {
         "max_concurrent": 2,
         "max_prepare": 2,
         "project_lock_timeout": 5.0,
@@ -4019,8 +4010,46 @@ def enable_execution(
         "atomic_link": atomic_link,
         "same_volume": same_volume,
         "case_sensitive": case_sensitive,
-        "legacy_writers_quiesced": True,
+        "runner": "posix_subprocess",
+        "legacy_writers_quiesced": legacy_writers_quiesced,
     }
+
+
+def enable_execution(
+    project_dir: Path,
+    *,
+    expected_revision: int,
+    legacy_writers_quiesced: bool,
+    lock_timeout: float = 5.0,
+) -> None:
+    project_dir = project_dir.resolve()
+    state_path = project_dir / "project.json"
+    config_path = project_dir / "execution" / "config.json"
+
+    current = load_json(state_path)
+    current_revision = current.get("revision")
+    if current_revision != expected_revision:
+        raise WorkspaceConflict(
+            f"revision conflict: expected {expected_revision}, found {current_revision}; reload and reconcile"
+        )
+
+    if current.get("schema_version") == 4:
+        if not config_path.exists():
+            raise WorkspaceError(
+                "project is schema v4 but execution/config.json is missing; "
+                "the execution store may be corrupt — inspect manually"
+            )
+        generation: int = current.get("execution", {}).get("ownership_generation", 0)
+        print(f"already enabled at generation {generation}")
+        return
+
+    if not legacy_writers_quiesced:
+        raise WorkspaceError(
+            "R-LEGACY-WRITER: --legacy-writers-quiesced is required; attest that every installation "
+            "with write access to this workspace or working directory has been upgraded to schema v4"
+        )
+
+    expected_config = _probe_execution_config(project_dir, legacy_writers_quiesced=True)
 
     if config_path.exists():
         existing_config = load_json(config_path)

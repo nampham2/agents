@@ -1,6 +1,6 @@
 # Project
 
-`project` is a Claude skill for substantial projects that should remain resumable and
+`project` is a Claude Code and Codex skill for substantial projects that should remain resumable and
 auditable across sessions. It keeps the specification, task state, evidence, reviews,
 deliverables, and project history in a persistent workspace.
 
@@ -14,7 +14,8 @@ none do:
 
 1. a path you give it in the prompt;
 2. the `RESEARCH_WORKSPACE` environment variable;
-3. a question to you.
+3. a bounded search for established roots, whose results it reports rather than adopting;
+4. a question to you.
 
 The current working directory is deliberately not a fallback. Guessing is what produces two
 workspaces holding divergent copies of the same project, and no later validation can reconcile them.
@@ -74,13 +75,15 @@ New projects use a dated project directory under the workspace:
 ```text
 workspace/
 ├── INDEX.md
-├── reflection.md
+├── MEMORY.md
+├── memory/
 └── YYYY-MM-DD-NNN/
     ├── project.json
     ├── briefing.md
     ├── spec.md
     ├── evidence.md
     ├── tasks/
+    ├── execution/
     ├── artifacts/
     │   ├── report.md
     │   └── report.html
@@ -92,6 +95,28 @@ workspace/
 status. `INDEX.md` is generated from
 that state and must not be edited by hand. The two files under `artifacts/` are the closing report,
 written when the project closes; see below.
+
+## Automatic parallel execution
+
+Fresh projects use schema v4 and automatically try eligible READY tasks through the guarded
+parallel executor. The default capacity is two. Independent tasks can overlap only when they have
+`none` or `local_write` effects, non-overlapping target-file outputs, a clean Git repository, and
+simple read-only checks that cover every required output.
+
+Each admitted task gets an immutable plan and its own Git worktree. A Claude Code or Codex worker
+edits only the declared files; the coordinator verifies and commits that isolated result. Verified
+worker commits are then integrated serially in a separate worktree, all checks are rerun, and the
+target branch advances only after the integrated result passes. Workers cannot start another project
+coordinator.
+
+Tasks outside that envelope are not forced into parallel execution. The run report gives a precise
+reason and the coordinator performs them sequentially with the same authorization and evidence
+requirements. Claim conflicts and capacity limits are deferred to another wave. A failed worker,
+missing output, failed check, or integration race blocks the task without publishing its changes.
+
+Existing schema-v3 projects stay schema v3 and use sequential execution. They are never upgraded
+automatically. Enabling v4 requires explicit user approval plus confirmation that every older writer
+with access to the workspace and target has been upgraded and stopped.
 
 ## Find, navigate, and resume projects
 
@@ -193,6 +218,9 @@ Schema-v2 migration preserves the previous canonical state as `project.v2.json`.
 migration preserves legacy files and imports historical tasks as `TODO`; it does not guess whether
 old work was completed. A v2 external task that was `RUNNING` is parked as `BLOCKED` for
 authorization reconciliation rather than being pre-authorized.
+
+Schema v3 → v4 is a separate execution activation, not part of legacy migration. Ask to enable
+automatic execution explicitly only after all legacy writers are quiescent.
 
 ## Good to know
 

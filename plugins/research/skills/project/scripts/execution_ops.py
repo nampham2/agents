@@ -4,6 +4,7 @@
 actions call it; no code in this module writes to the store by any other route
 (R5-07 structural guarantee).
 """
+
 from __future__ import annotations
 
 import concurrent.futures
@@ -13,6 +14,7 @@ import hashlib
 import json
 import os
 import secrets
+import shlex
 import shutil
 import subprocess
 import time
@@ -30,13 +32,16 @@ from typing import (
     Tuple,
 )
 
-from execution_adapter import AdapterError
+from execution_adapter import AdapterError, FakeAdapter
+from execution_claims import Claim, find_conflicts, normalize_claims
+from execution_plans import PlanError, build_plan, publish_plan
 from execution_serialization import (
     AttemptEnvelope,
     CommonEnvelope,
     ExecutionRecordError,
     decode_scope_id,
     encode_scope_id,
+    format_claim_string,
     validate_record,
 )
 from execution_serialization import (
@@ -49,6 +54,15 @@ from execution_serialization import (
     receipt_id as _compute_receipt_id,
 )
 from execution_store import GrantRegistry, publish_if_absent
+from execution_workers import (
+    NESTING_ENV,
+    WorkerError,
+    WorkerLaunch,
+    cleanup_worktree,
+    commit_worker_result,
+    discover_worker,
+    prepare_worker,
+)
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -114,30 +128,30 @@ class Facts:
     reserved: bool
     prepared: bool
     launched: bool
-    result: Optional[str]               # null | "success" | "failure" | "refused"
+    result: Optional[str]  # null | "success" | "failure" | "refused"
     declared_scopes: FrozenSet[str]
     sealed_scopes: FrozenSet[str]
-    open_scopes: FrozenSet[str]         # declared_scopes - sealed_scopes (derived)
-    open_causes: FrozenSet[str]         # holds with no matching resolution
-    stop_evidence: Optional[str]        # null | §13 kind string
-    classified: Optional[str]           # null | §14 class string
-    accepted: bool                      # terminal-intent mutation has intent.json
-    commit_observed: bool               # that mutation also has ack.json
-    released: bool                      # release.json is valid
+    open_scopes: FrozenSet[str]  # declared_scopes - sealed_scopes (derived)
+    open_causes: FrozenSet[str]  # holds with no matching resolution
+    stop_evidence: Optional[str]  # null | §13 kind string
+    classified: Optional[str]  # null | §14 class string
+    accepted: bool  # terminal-intent mutation has intent.json
+    commit_observed: bool  # that mutation also has ack.json
+    released: bool  # release.json is valid
 
     # start state
-    uncertain_start: bool               # start_outcome == "ambiguous"
+    uncertain_start: bool  # start_outcome == "ambiguous"
 
     # project-level
-    stop_requested: bool                # unmatched stop-request under control/
+    stop_requested: bool  # unmatched stop-request under control/
 
     # registry
     grant_present: bool
-    launch_capability: str              # "none" | "issued" | "consumed" | "revoked"
+    launch_capability: str  # "none" | "issued" | "consumed" | "revoked"
 
     # validity (§6.3)
     indeterminate: bool
-    indeterminate_path: Optional[str]   # store-relative path of the offending record
+    indeterminate_path: Optional[str]  # store-relative path of the offending record
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +164,7 @@ class TaskState:
     """Per-task project.json fields needed for projection."""
 
     task_id: str
-    attempt_id: Optional[str]          # bound_attempt; null when unbound
+    attempt_id: Optional[str]  # bound_attempt; null when unbound
     task_status: str
     authorization_in_force: bool
     receipt_present: bool
@@ -166,8 +180,8 @@ class TaskState:
 class Context:
     """Global execution context shared across all operations in a coordinator turn."""
 
-    execution_dir: Path                 # <project-dir>/execution/
-    workspace_root: Path                # parent of .execution-registry/
+    execution_dir: Path  # <project-dir>/execution/
+    workspace_root: Path  # parent of .execution-registry/
     project_id: str
     coordinator_run: Optional[str]
     ownership_generation: int
@@ -175,7 +189,7 @@ class Context:
     registry: GrantRegistry
     adapter: AdapterProtocol
     project_dir: Optional[Path] = None  # project directory (for evidence.md, O12)
-    commit_fn: Any = None               # Callable[[str,str,Optional[str],int,...], Tuple[int,int]]
+    commit_fn: Any = None  # Callable[[str,str,Optional[str],int,...], Tuple[int,int]]
 
 
 # ---------------------------------------------------------------------------
@@ -311,8 +325,13 @@ def _load_scope_ids(
         scope_id = decode_scope_id(f.stem)
         store_path = f"{dir_store_path}/{f.name}"
         rec = _read_record(
-            f, store_path, project_id, task_id, attempt_id,
-            current_generation, fenced_paths,
+            f,
+            store_path,
+            project_id,
+            task_id,
+            attempt_id,
+            current_generation,
+            fenced_paths,
         )
         if rec is not None:
             _, _, kind_rec = rec
@@ -344,8 +363,13 @@ def _compute_open_causes(
                 continue
             sp = f"{attempt_store_prefix}/resolutions/{rf.name}"
             rec = _read_record(
-                rf, sp, project_id, task_id, attempt_id,
-                current_generation, fenced_paths,
+                rf,
+                sp,
+                project_id,
+                task_id,
+                attempt_id,
+                current_generation,
+                fenced_paths,
             )
             if rec is not None:
                 _, _, kind_rec = rec
@@ -356,8 +380,13 @@ def _compute_open_causes(
             continue
         sp = f"{attempt_store_prefix}/holds/{hf.name}"
         rec = _read_record(
-            hf, sp, project_id, task_id, attempt_id,
-            current_generation, fenced_paths,
+            hf,
+            sp,
+            project_id,
+            task_id,
+            attempt_id,
+            current_generation,
+            fenced_paths,
         )
         if rec is not None:
             _, _, kind_rec = rec
@@ -392,8 +421,13 @@ def _compute_accepted_committed(
             continue
         sp = f"{mutations_store_prefix}/{receipt_dir.name}/intent.json"
         intent_rec = _read_record(
-            intent_path, sp, project_id, task_id, attempt_id,
-            current_generation, fenced_paths,
+            intent_path,
+            sp,
+            project_id,
+            task_id,
+            attempt_id,
+            current_generation,
+            fenced_paths,
         )
         assert intent_rec is not None  # exists() checked above; None only on FileNotFoundError
         _, _, kind_rec = intent_rec
@@ -406,8 +440,13 @@ def _compute_accepted_committed(
             continue
         ack_sp = f"{mutations_store_prefix}/{receipt_dir.name}/ack.json"
         ack_rec = _read_record(
-            ack_path, ack_sp, project_id, task_id, attempt_id,
-            current_generation, fenced_paths,
+            ack_path,
+            ack_sp,
+            project_id,
+            task_id,
+            attempt_id,
+            current_generation,
+            fenced_paths,
         )
         if ack_rec is not None:
             commit_observed = True
@@ -432,7 +471,13 @@ def _compute_stop_requested(
                 continue
             sp = f"control/clearances/{cf.name}"
             rec = _read_record(
-                cf, sp, project_id, None, None, current_generation, project_fences,
+                cf,
+                sp,
+                project_id,
+                None,
+                None,
+                current_generation,
+                project_fences,
             )
             if rec is not None:
                 _, _, kind_rec = rec
@@ -442,7 +487,13 @@ def _compute_stop_requested(
             continue
         sp = f"control/stop-requests/{rf.name}"
         rec = _read_record(
-            rf, sp, project_id, None, None, current_generation, project_fences,
+            rf,
+            sp,
+            project_id,
+            None,
+            None,
+            current_generation,
+            project_fences,
         )
         if rec is not None:
             _, _, kind_rec = rec
@@ -453,9 +504,7 @@ def _compute_stop_requested(
 
 def _read_grant(workspace_root: Path, attempt_id: str) -> Optional[Dict[str, Any]]:
     """Read the grant JSON for attempt_id from the registry directory."""
-    grant_path = (
-        workspace_root / ".execution-registry" / "grants" / f"{attempt_id}.json"
-    )
+    grant_path = workspace_root / ".execution-registry" / "grants" / f"{attempt_id}.json"
     try:
         raw_bytes = grant_path.read_bytes()
         data: Dict[str, Any] = json.loads(raw_bytes)
@@ -514,7 +563,10 @@ def project_facts(ctx: Context, task: TaskState) -> Facts:
     # stop_requested is a project-level fact (§6.1)
     try:
         stop_requested = _compute_stop_requested(
-            exec_dir, ctx.project_id, own_gen, project_fences,
+            exec_dir,
+            ctx.project_id,
+            own_gen,
+            project_fences,
         )
     except _IndeterminateError as exc:
         return _indeterminate_facts(task, ctx, exc.store_path)
@@ -583,20 +635,40 @@ def project_facts(ctx: Context, task: TaskState) -> Facts:
         rel_rec = _load("release.json")
         se_rec = _load("stop-evidence.json")
         declared_scopes = _load_scope_ids(
-            attempt_dir / "scopes", f"{pfx}/scopes",
-            ctx.project_id, task.task_id, attempt_id, own_gen, all_fences,
+            attempt_dir / "scopes",
+            f"{pfx}/scopes",
+            ctx.project_id,
+            task.task_id,
+            attempt_id,
+            own_gen,
+            all_fences,
         )
         sealed_scopes = _load_scope_ids(
-            attempt_dir / "sealed", f"{pfx}/sealed",
-            ctx.project_id, task.task_id, attempt_id, own_gen, all_fences,
+            attempt_dir / "sealed",
+            f"{pfx}/sealed",
+            ctx.project_id,
+            task.task_id,
+            attempt_id,
+            own_gen,
+            all_fences,
         )
         open_causes = _compute_open_causes(
-            attempt_dir, pfx,
-            ctx.project_id, task.task_id, attempt_id, own_gen, all_fences,
+            attempt_dir,
+            pfx,
+            ctx.project_id,
+            task.task_id,
+            attempt_id,
+            own_gen,
+            all_fences,
         )
         accepted, commit_observed = _compute_accepted_committed(
-            attempt_dir / "mutations", f"{pfx}/mutations",
-            ctx.project_id, task.task_id, attempt_id, own_gen, all_fences,
+            attempt_dir / "mutations",
+            f"{pfx}/mutations",
+            ctx.project_id,
+            task.task_id,
+            attempt_id,
+            own_gen,
+            all_fences,
         )
     except _IndeterminateError as exc:
         return _indeterminate_facts(task, ctx, exc.store_path)
@@ -724,9 +796,7 @@ def perform(
     """
     facts = project_facts(ctx, task)
     if facts.indeterminate:
-        raise OperationError(
-            f"attempt is indeterminate: {facts.indeterminate_path}"
-        )
+        raise OperationError(f"attempt is indeterminate: {facts.indeterminate_path}")
     guard_fn(facts)
     effect_fn(ctx, task)
 
@@ -757,7 +827,9 @@ def _read_host_identity() -> Dict[str, Any]:
         try:
             out = subprocess.run(
                 ["ioreg", "-rd1", "-c", "IOPlatformExpertDevice"],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True,
+                text=True,
+                timeout=2,
             ).stdout
             for line in out.splitlines():
                 if "IOPlatformUUID" in line:
@@ -771,14 +843,14 @@ def _read_host_identity() -> Dict[str, Any]:
     # boot_id: /proc/sys/kernel/random/boot_id (Linux) → sysctl (macOS) → ""
     boot_id = ""
     try:
-        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(
-            encoding="ascii", errors="replace"
-        ).strip()
+        boot_id = Path("/proc/sys/kernel/random/boot_id").read_text(encoding="ascii", errors="replace").strip()
     except OSError:
         try:
             boot_id = subprocess.run(
                 ["sysctl", "-n", "kern.bootuuid"],
-                capture_output=True, text=True, timeout=2,
+                capture_output=True,
+                text=True,
+                timeout=2,
             ).stdout.strip()
         except Exception:
             pass
@@ -786,18 +858,16 @@ def _read_host_identity() -> Dict[str, Any]:
     # process_start: /proc/<pid>/stat starttime (Linux) → _now() fallback
     process_start = _now()
     try:
-        stat_fields = Path(f"/proc/{pid}/stat").read_text(
-            encoding="ascii", errors="replace"
-        ).split()
+        stat_fields = Path(f"/proc/{pid}/stat").read_text(encoding="ascii", errors="replace").split()
         starttime_ticks = int(stat_fields[21])
         ticks_per_sec = os.sysconf("SC_CLK_TCK")
         uptime_text = Path("/proc/uptime").read_text(encoding="ascii", errors="replace")
         uptime_secs = float(uptime_text.split()[0])
         boot_epoch = time.time() - uptime_secs
         start_epoch = boot_epoch + starttime_ticks / ticks_per_sec
-        process_start = datetime.datetime.fromtimestamp(
-            start_epoch, tz=datetime.timezone.utc
-        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        process_start = datetime.datetime.fromtimestamp(start_epoch, tz=datetime.timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
     except Exception:
         pass
 
@@ -889,8 +959,10 @@ def _o1_reserve(ctx: Context, task: TaskState, new_attempt_id: str) -> None:
     def _effect(ctx: Context, task: TaskState) -> None:
         dest = ctx.execution_dir / "attempts" / new_attempt_id / "reservation.json"
         raw = _make_record(
-            ctx, "reservation",
-            task_id=task.task_id, attempt_id=new_attempt_id,
+            ctx,
+            "reservation",
+            task_id=task.task_id,
+            attempt_id=new_attempt_id,
             plan_hash=task.plan_hash or "",
             claims=[],
             counter=0,
@@ -964,8 +1036,10 @@ def _o3_prepare(
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
         # Step 2: publish scopes/worker.json
         scope_raw = _make_record(
-            ctx, "scope",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "scope",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             scope_id="worker",
             kind="worker",
             claims=sorted(scope_claims),
@@ -973,8 +1047,10 @@ def _o3_prepare(
         _publish_record(ctx, attempt_dir / "scopes" / "worker.json", scope_raw)
         # Step 3: publish prepared.json
         prep_raw = _make_record(
-            ctx, "prepared",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "prepared",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             **prepared_fields,
         )
         _publish_record(ctx, attempt_dir / "prepared.json", prep_raw)
@@ -988,6 +1064,9 @@ def _o4_dispatch(
     attempt_id: str,
     definition_hash: str,
     receipt_entry: Dict[str, Any],
+    plan: Optional[Dict[str, Any]] = None,
+    adapter_name: str = "fake",
+    adapter_version: str = "0",
 ) -> None:
     """O4 dispatch: 8-step sequence — intent/fence/commit/ack/capability/start/launch/consume (§8.1 O4)."""
 
@@ -1013,8 +1092,10 @@ def _o4_dispatch(
 
         # Step 1: publish intent.json
         intent_raw = _make_record(
-            ctx, "acceptance",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "acceptance",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=rid,
             intent="RUNNING",
             definition_hash=definition_hash,
@@ -1026,8 +1107,10 @@ def _o4_dispatch(
         # Step 2: publish fence
         seq = _next_fence_sequence(mutations_dir, rid)
         fence_raw = _make_record(
-            ctx, "fence",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "fence",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=rid,
             sequence=seq,
             expected_revision=ctx.revision,
@@ -1040,8 +1123,13 @@ def _o4_dispatch(
         # Step 3: commit (bind execution.attempts[task_id] = attempt_id)
         if ctx.commit_fn is not None:
             new_rev, ev_idx = ctx.commit_fn(
-                task.task_id, "RUNNING", attempt_id, ctx.revision,
-                None, None, {"receipt_id": rid, **receipt_entry},
+                task.task_id,
+                "RUNNING",
+                attempt_id,
+                ctx.revision,
+                None,
+                None,
+                {"receipt_id": rid, **receipt_entry},
             )
             ctx.revision = new_rev
         else:
@@ -1049,8 +1137,10 @@ def _o4_dispatch(
 
         # Step 4: ack
         ack_raw = _make_record(
-            ctx, "commit-observed",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "commit-observed",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=rid,
             fence_sequence=seq,
             committed_revision=ctx.revision,
@@ -1071,21 +1161,22 @@ def _o4_dispatch(
             cap_id = "cap-" + secrets.token_hex(16)
 
         # Step 6: call adapter start
-        plan: Dict[str, Any] = {}
         attempt_dir_str = str(attempt_dir)
-        handle = ctx.adapter.start(plan, attempt_dir_str)
+        handle = ctx.adapter.start(plan or {}, attempt_dir_str)
 
         # Step 7: publish launch.json
         start_outcome = "started" if handle != "ambiguous" else "ambiguous"
         launch_handle: Any = handle if handle != "ambiguous" else None
         launch_raw = _make_record(
-            ctx, "launch",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "launch",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             start_outcome=start_outcome,
             handle=launch_handle,
             capability_id=cap_id,
             started_at=_now(),
-            adapter={"name": "fake", "version": "0"},
+            adapter={"name": adapter_name, "version": adapter_version},
         )
         _publish_record(ctx, attempt_dir / "launch.json", launch_raw)
 
@@ -1109,15 +1200,15 @@ def _o5_record_result(
 
     def _guard(facts: Facts) -> None:
         if facts.launch_capability not in ("issued", "consumed") and not facts.uncertain_start:
-            raise PreconditionError(
-                f"O5: launch_capability is {facts.launch_capability!r} and not uncertain_start"
-            )
+            raise PreconditionError(f"O5: launch_capability is {facts.launch_capability!r} and not uncertain_start")
 
     def _effect(ctx: Context, task: TaskState) -> None:
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
         raw = _make_record(
-            ctx, "result",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "result",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             **result_fields,
         )
         _publish_record(ctx, attempt_dir / "result.json", raw)
@@ -1144,8 +1235,10 @@ def _o6_seal(
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
         encoded = encode_scope_id(scope_id)
         raw = _make_record(
-            ctx, "sealed",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "sealed",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             scope_id=scope_id,
             exit=exit_status,
             tree_exited=True,
@@ -1176,8 +1269,10 @@ def _o7_classify(
     def _effect(ctx: Context, task: TaskState) -> None:
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
         raw = _make_record(
-            ctx, "classification",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "classification",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             **{"class": cls},
             evidence=evidence,
         )
@@ -1203,8 +1298,10 @@ def _o8_hold(
     def _effect(ctx: Context, task: TaskState) -> None:
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
         raw = _make_record(
-            ctx, "hold",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "hold",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             cause_id=cause_id,
             cause_class=cause_class,
             detail=detail,
@@ -1244,8 +1341,10 @@ def _o9_resolve(
         if evidence is not None:
             fields["evidence"] = evidence
         raw = _make_record(
-            ctx, "resolution",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "resolution",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             **fields,
         )
         _publish_record(ctx, attempt_dir / "resolutions" / f"{cause_id}.json", raw)
@@ -1277,8 +1376,10 @@ def _o10_run_check(
 
         # Step 1: publish scope record BEFORE any process runs
         scope_raw = _make_record(
-            ctx, "scope",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "scope",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             scope_id=scope_id,
             kind="check",
             check_id=check_id,
@@ -1291,8 +1392,10 @@ def _o10_run_check(
 
         # Step 3: publish capture
         cap_raw = _make_record(
-            ctx, "capture",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "capture",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             check_id=check_id,
             sequence=sequence,
             **capture_fields,
@@ -1305,8 +1408,10 @@ def _o10_run_check(
 
         # Step 4: publish assessment
         asm_raw = _make_record(
-            ctx, "assessment",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "assessment",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             check_id=check_id,
             sequence=sequence,
             capture_id=cap_id,
@@ -1318,8 +1423,10 @@ def _o10_run_check(
 
         # Step 5: publish sealed/<scope-id>.json
         seal_raw = _make_record(
-            ctx, "sealed",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "sealed",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             scope_id=scope_id,
             exit=exit_status,
             tree_exited=True,
@@ -1343,9 +1450,7 @@ def _o11_accept(
 
     Returns the receipt_id so the caller can use it for O12.
     """
-    rid = _compute_receipt_id(
-        attempt_id, definition_hash, intent, accepted_snapshot, qualifying_captures
-    )
+    rid = _compute_receipt_id(attempt_id, definition_hash, intent, accepted_snapshot, qualifying_captures)
 
     def _guard(facts: Facts) -> None:
         if facts.open_causes:
@@ -1358,8 +1463,10 @@ def _o11_accept(
     def _effect(ctx: Context, task: TaskState) -> None:
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
         intent_raw = _make_record(
-            ctx, "acceptance",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "acceptance",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=rid,
             intent=intent,
             definition_hash=definition_hash,
@@ -1414,8 +1521,10 @@ def _o12_commit_acceptance(
         # Step 2: publish fence
         seq = _next_fence_sequence(mutations_dir, receipt_id_val)
         fence_raw = _make_record(
-            ctx, "fence",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "fence",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=receipt_id_val,
             sequence=seq,
             expected_revision=ctx.revision,
@@ -1432,8 +1541,13 @@ def _o12_commit_acceptance(
         # Step 3: commit
         if ctx.commit_fn is not None:
             new_rev, ev_idx = ctx.commit_fn(
-                task.task_id, target_status, None, ctx.revision,
-                block_reason, skip_reason, {"receipt_id": receipt_id_val, **receipt_entry},
+                task.task_id,
+                target_status,
+                None,
+                ctx.revision,
+                block_reason,
+                skip_reason,
+                {"receipt_id": receipt_id_val, **receipt_entry},
             )
             ctx.revision = new_rev
         else:
@@ -1441,8 +1555,10 @@ def _o12_commit_acceptance(
 
         # Step 4: ack
         ack_raw = _make_record(
-            ctx, "commit-observed",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "commit-observed",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=receipt_id_val,
             fence_sequence=seq,
             committed_revision=ctx.revision,
@@ -1485,8 +1601,10 @@ def _o13_withdraw(
 
         # Step 1: publish intent
         intent_raw = _make_record(
-            ctx, "acceptance",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "acceptance",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=rid,
             intent=intent,
             definition_hash=definition_hash,
@@ -1498,8 +1616,10 @@ def _o13_withdraw(
         # Step 2: publish fence
         seq = _next_fence_sequence(mutations_dir, rid)
         fence_raw = _make_record(
-            ctx, "fence",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "fence",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=rid,
             sequence=seq,
             expected_revision=ctx.revision,
@@ -1512,8 +1632,13 @@ def _o13_withdraw(
         # Step 3: commit
         if ctx.commit_fn is not None:
             new_rev, ev_idx = ctx.commit_fn(
-                task.task_id, target_status, None, ctx.revision,
-                block_reason, None, {"receipt_id": rid, **receipt_entry},
+                task.task_id,
+                target_status,
+                None,
+                ctx.revision,
+                block_reason,
+                None,
+                {"receipt_id": rid, **receipt_entry},
             )
             ctx.revision = new_rev
         else:
@@ -1521,8 +1646,10 @@ def _o13_withdraw(
 
         # Step 4: ack
         ack_raw = _make_record(
-            ctx, "commit-observed",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "commit-observed",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=rid,
             fence_sequence=seq,
             committed_revision=ctx.revision,
@@ -1557,8 +1684,10 @@ def _o14_retry(
 
         # Step 1: publish intent on new attempt
         intent_raw = _make_record(
-            ctx, "acceptance",
-            task_id=task.task_id, attempt_id=new_attempt_id,
+            ctx,
+            "acceptance",
+            task_id=task.task_id,
+            attempt_id=new_attempt_id,
             receipt_id=rid,
             intent="TODO",
             definition_hash=definition_hash,
@@ -1570,8 +1699,10 @@ def _o14_retry(
         # Step 2: publish fence
         seq = _next_fence_sequence(mutations_dir, rid)
         fence_raw = _make_record(
-            ctx, "fence",
-            task_id=task.task_id, attempt_id=new_attempt_id,
+            ctx,
+            "fence",
+            task_id=task.task_id,
+            attempt_id=new_attempt_id,
             receipt_id=rid,
             sequence=seq,
             expected_revision=ctx.revision,
@@ -1584,8 +1715,13 @@ def _o14_retry(
         # Step 3: commit (clear bound_attempt, block_reason; TODO transition)
         if ctx.commit_fn is not None:
             new_rev, ev_idx = ctx.commit_fn(
-                task.task_id, "TODO", None, ctx.revision,
-                None, None, {"receipt_id": rid, **receipt_entry},
+                task.task_id,
+                "TODO",
+                None,
+                ctx.revision,
+                None,
+                None,
+                {"receipt_id": rid, **receipt_entry},
             )
             ctx.revision = new_rev
         else:
@@ -1593,8 +1729,10 @@ def _o14_retry(
 
         # Step 4: ack
         ack_raw = _make_record(
-            ctx, "commit-observed",
-            task_id=task.task_id, attempt_id=new_attempt_id,
+            ctx,
+            "commit-observed",
+            task_id=task.task_id,
+            attempt_id=new_attempt_id,
             receipt_id=rid,
             fence_sequence=seq,
             committed_revision=ctx.revision,
@@ -1624,7 +1762,8 @@ def _o15_stop(
     def _effect(ctx: Context, task: TaskState) -> None:
         # Step 1: publish stop-request (project-level, no attempt envelope)
         sr_raw = _make_record(
-            ctx, "stop-request",
+            ctx,
+            "stop-request",
             sequence=stop_sequence,
             requested_by=requested_by,
             reason=reason,
@@ -1636,8 +1775,10 @@ def _o15_stop(
         # Step 2: publish hold with cause_class operator_stop
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
         hold_raw = _make_record(
-            ctx, "hold",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "hold",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             cause_id=cause_id,
             cause_class="operator_stop",
             detail=reason,
@@ -1649,8 +1790,10 @@ def _o15_stop(
         # (in practice we'd get the handle from the launch record; simplified here)
         # Step 4: publish stop-evidence
         se_raw = _make_record(
-            ctx, "stop-evidence",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "stop-evidence",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             kind=stop_kind,
             observed_at=_now(),
             detail=reason,
@@ -1674,9 +1817,7 @@ def _o16_release(
         if facts.open_scopes:
             raise PreconditionError(f"O16: open_scopes non-empty: {facts.open_scopes}")
         if facts.launch_capability not in ("consumed", "revoked"):
-            raise PreconditionError(
-                f"O16: launch_capability is {facts.launch_capability!r}, need consumed or revoked"
-            )
+            raise PreconditionError(f"O16: launch_capability is {facts.launch_capability!r}, need consumed or revoked")
         if facts.open_causes:
             raise PreconditionError(f"O16: open_causes non-empty: {facts.open_causes}")
         if facts.accepted and not facts.commit_observed:
@@ -1686,13 +1827,12 @@ def _o16_release(
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
 
         # Step 1: publish release.json (grant_removed=False at time of writing)
-        sealed_list = sorted(
-            encode_scope_id(s) for s in
-            (_read_scope_ids_for_release(ctx, attempt_id))
-        )
+        sealed_list = sorted(encode_scope_id(s) for s in (_read_scope_ids_for_release(ctx, attempt_id)))
         rel_raw = _make_record(
-            ctx, "release",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "release",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt=terminal_receipt_id,
             sealed_scopes=sealed_list,
             grant_removed=False,
@@ -1729,8 +1869,13 @@ def _o17_take_over(ctx: Context) -> None:
     if ctx.commit_fn is not None:
         new_gen = ctx.ownership_generation + 1
         new_rev, _ = ctx.commit_fn(
-            "", "TAKEOVER", None, ctx.revision,
-            None, None, {"coordinator_run": ctx.coordinator_run, "ownership_generation": new_gen},
+            "",
+            "TAKEOVER",
+            None,
+            ctx.revision,
+            None,
+            None,
+            {"coordinator_run": ctx.coordinator_run, "ownership_generation": new_gen},
         )
         ctx.revision = new_rev
         ctx.ownership_generation = new_gen
@@ -1746,7 +1891,8 @@ def _o17_take_over(ctx: Context) -> None:
     for p in exec_dir.glob("*.json"):
         root_records.append(p.name)
     root_fence_raw = _make_record(
-        ctx, "generation-fence",
+        ctx,
+        "generation-fence",
         generation=gen,
         taken_over_from=old_gen,
         scope="project",
@@ -1771,9 +1917,7 @@ def _o18_dispose(
 
     def _guard(facts: Facts) -> None:
         if facts.launch_capability != "none":
-            raise PreconditionError(
-                f"O18: launch_capability is {facts.launch_capability!r}, need none"
-            )
+            raise PreconditionError(f"O18: launch_capability is {facts.launch_capability!r}, need none")
 
     def _effect(ctx: Context, task: TaskState) -> None:
         attempt_dir = ctx.execution_dir / "attempts" / attempt_id
@@ -1793,8 +1937,10 @@ def _o18_dispose(
         for scope_id in sorted(open_scopes):
             encoded = encode_scope_id(scope_id)
             seal_raw = _make_record(
-                ctx, "sealed",
-                task_id=task.task_id, attempt_id=attempt_id,
+                ctx,
+                "sealed",
+                task_id=task.task_id,
+                attempt_id=attempt_id,
                 scope_id=scope_id,
                 exit={"variant": "not_started"},
                 tree_exited=True,
@@ -1803,13 +1949,12 @@ def _o18_dispose(
             _publish_record(ctx, attempt_dir / "sealed" / f"{encoded}.json", seal_raw)
 
         # Step 2: publish release.json
-        sealed_list = sorted(
-            encode_scope_id(s) for s in
-            (_read_scope_ids_for_release(ctx, attempt_id) | open_scopes)
-        )
+        sealed_list = sorted(encode_scope_id(s) for s in (_read_scope_ids_for_release(ctx, attempt_id) | open_scopes))
         rel_raw = _make_record(
-            ctx, "release",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "release",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt=None,
             sealed_scopes=sealed_list,
             grant_removed=False,
@@ -1836,7 +1981,8 @@ def _o19_acquire(ctx: Context, owner_fields: Dict[str, Any]) -> None:
     # Step 1: publish owners/<coordinator-run>.json
     new_run = "run-" + secrets.token_hex(16)
     owner_raw = _make_record(
-        ctx, "owner",
+        ctx,
+        "owner",
         **owner_fields,
         generation=ctx.ownership_generation + 1,
     )
@@ -1847,8 +1993,13 @@ def _o19_acquire(ctx: Context, owner_fields: Dict[str, Any]) -> None:
     new_gen = ctx.ownership_generation + 1
     if ctx.commit_fn is not None:
         new_rev, _ = ctx.commit_fn(
-            "", "ACQUIRE", None, ctx.revision,
-            None, None, {"coordinator_run": new_run, "ownership_generation": new_gen},
+            "",
+            "ACQUIRE",
+            None,
+            ctx.revision,
+            None,
+            None,
+            {"coordinator_run": new_run, "ownership_generation": new_gen},
         )
         ctx.revision = new_rev
     ctx.coordinator_run = new_run
@@ -1869,8 +2020,13 @@ def _o20_relinquish(ctx: Context) -> None:
     # Step 1: commit coordinator_run = null
     if ctx.commit_fn is not None:
         new_rev, _ = ctx.commit_fn(
-            "", "RELINQUISH", None, ctx.revision,
-            None, None, {"coordinator_run": None},
+            "",
+            "RELINQUISH",
+            None,
+            ctx.revision,
+            None,
+            None,
+            {"coordinator_run": None},
         )
         ctx.revision = new_rev
     ctx.coordinator_run = None
@@ -1954,8 +2110,10 @@ def _complete_o4_pre_commit(
         if not _has_fence(mutations_dir, dispatch_rid):
             seq = _next_fence_sequence(mutations_dir, dispatch_rid)
             fence_raw = _make_record(
-                ctx, "fence",
-                task_id=task.task_id, attempt_id=attempt_id,
+                ctx,
+                "fence",
+                task_id=task.task_id,
+                attempt_id=attempt_id,
                 receipt_id=dispatch_rid,
                 sequence=seq,
                 expected_revision=ctx.revision,
@@ -1968,15 +2126,22 @@ def _complete_o4_pre_commit(
         ev_idx = 0
         if ctx.commit_fn is not None:
             new_rev, ev_idx = ctx.commit_fn(
-                task.task_id, "RUNNING", attempt_id, ctx.revision,
-                None, None, {"receipt_id": dispatch_rid, "kind": "dispatch"},
+                task.task_id,
+                "RUNNING",
+                attempt_id,
+                ctx.revision,
+                None,
+                None,
+                {"receipt_id": dispatch_rid, "kind": "dispatch"},
             )
             ctx.revision = new_rev
         # Step 4: ack
         fence_seq = max(_next_fence_sequence(mutations_dir, dispatch_rid) - 1, 1)
         ack_raw = _make_record(
-            ctx, "commit-observed",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "commit-observed",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=dispatch_rid,
             fence_sequence=fence_seq,
             committed_revision=ctx.revision,
@@ -1995,8 +2160,10 @@ def _complete_o4_pre_commit(
         # Steps 6/7 skipped — adapter.start() is never retried in recovery.
         # Publish ambiguous launch so §13.2 can investigate.
         launch_raw = _make_record(
-            ctx, "launch",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "launch",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             start_outcome="ambiguous",
             handle=None,
             capability_id=cap_id,
@@ -2034,8 +2201,10 @@ def _complete_o4_post_commit(
         if not _has_ack(mutations_dir, dispatch_rid):
             fence_seq = max(_next_fence_sequence(mutations_dir, dispatch_rid) - 1, 1)
             ack_raw = _make_record(
-                ctx, "commit-observed",
-                task_id=task.task_id, attempt_id=attempt_id,
+                ctx,
+                "commit-observed",
+                task_id=task.task_id,
+                attempt_id=attempt_id,
                 receipt_id=dispatch_rid,
                 fence_sequence=fence_seq,
                 committed_revision=ctx.revision,
@@ -2055,8 +2224,10 @@ def _complete_o4_post_commit(
         cap_id: str = (grant2.get("capability_id") or new_cap_id) if grant2 else new_cap_id
         # Publish ambiguous launch
         launch_raw = _make_record(
-            ctx, "launch",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "launch",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             start_outcome="ambiguous",
             handle=None,
             capability_id=cap_id,
@@ -2082,16 +2253,16 @@ def _complete_o4_ambiguous_launch(
         if facts.launched:
             raise PreconditionError("O4/ambiguous-launch recovery: already launched")
         if facts.launch_capability != "issued":
-            raise PreconditionError(
-                f"O4/ambiguous-launch recovery: capability is {facts.launch_capability!r}"
-            )
+            raise PreconditionError(f"O4/ambiguous-launch recovery: capability is {facts.launch_capability!r}")
 
     def _effect(ctx: Context, _task: TaskState) -> None:
         grant = _read_grant(ctx.workspace_root, attempt_id)
         cap_id: str = (grant.get("capability_id") or "") if grant else ""
         launch_raw = _make_record(
-            ctx, "launch",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "launch",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             start_outcome="ambiguous",
             handle=None,
             capability_id=cap_id,
@@ -2114,9 +2285,7 @@ def _complete_o4_consume_capability(
         if not facts.launched:
             raise PreconditionError("O4/consume recovery: not launched")
         if facts.launch_capability != "issued":
-            raise PreconditionError(
-                f"O4/consume recovery: capability is {facts.launch_capability!r}"
-            )
+            raise PreconditionError(f"O4/consume recovery: capability is {facts.launch_capability!r}")
 
     def _effect(ctx: Context, _task: TaskState) -> None:
         grant = _read_grant(ctx.workspace_root, attempt_id)
@@ -2171,8 +2340,10 @@ def _complete_o12_ack(
     def _effect(ctx: Context, _task: TaskState) -> None:
         fence_seq = max(_next_fence_sequence(mutations_dir, rid) - 1, 1)
         ack_raw = _make_record(
-            ctx, "commit-observed",
-            task_id=task.task_id, attempt_id=attempt_id,
+            ctx,
+            "commit-observed",
+            task_id=task.task_id,
+            attempt_id=attempt_id,
             receipt_id=rid,
             fence_sequence=fence_seq,
             committed_revision=ctx.revision,
@@ -2246,17 +2417,23 @@ def _complete_prefix(
                 scope_claims = list(wj.get("claims", []))
             except (OSError, ValueError):
                 pass
-            _o3_prepare(ctx, task, attempt_id, scope_claims, {
-                "definition_hash": "",
-                "plan_hash": task.plan_hash or "",
-                "contract": {},
-                "baseline": {},
-                "instruction_digest": "",
-                "deadline_at": None,
-                "deadline_budget_s": 0,
-                "heartbeat_interval_s": 60,
-                "log_cap_bytes": 0,
-            })
+            _o3_prepare(
+                ctx,
+                task,
+                attempt_id,
+                scope_claims,
+                {
+                    "definition_hash": "",
+                    "plan_hash": task.plan_hash or "",
+                    "contract": {},
+                    "baseline": {},
+                    "instruction_digest": "",
+                    "deadline_at": None,
+                    "deadline_budget_s": 0,
+                    "heartbeat_interval_s": 60,
+                    "log_cap_bytes": 0,
+                },
+            )
         else:
             _o18_dispose(ctx, task, attempt_id, "recovery: plan no longer matches")
         return
@@ -2289,8 +2466,7 @@ def _complete_prefix(
     if facts.stop_evidence is not None and facts.open_scopes:
         for scope_id in sorted(facts.open_scopes):
             try:
-                _o6_seal(ctx, task, attempt_id, scope_id,
-                         {"variant": "stopped", "stop_kind": facts.stop_evidence})
+                _o6_seal(ctx, task, attempt_id, scope_id, {"variant": "stopped", "stop_kind": facts.stop_evidence})
             except (OperationError, PreconditionError):
                 pass
         return
@@ -2303,9 +2479,13 @@ def _complete_prefix(
     # O18 after 1: all scopes sealed, launch_capability=none, no release yet
     # Call O18 which handles release + grant removal (sealing loop is a no-op
     # when open_scopes is already empty).
-    if (not facts.released and facts.launch_capability == "none"
-            and facts.declared_scopes and not facts.open_scopes
-            and facts.grant_present):
+    if (
+        not facts.released
+        and facts.launch_capability == "none"
+        and facts.declared_scopes
+        and not facts.open_scopes
+        and facts.grant_present
+    ):
         _o18_dispose(ctx, task, attempt_id, "recovery: O18 after 1")
         return
 
@@ -2393,7 +2573,10 @@ def recover(
     project_fences = _load_gen_fences(exec_dir, None, ctx.project_id, ctx.ownership_generation)
     try:
         stop_requested = _compute_stop_requested(
-            exec_dir, ctx.project_id, ctx.ownership_generation, project_fences,
+            exec_dir,
+            ctx.project_id,
+            ctx.ownership_generation,
+            project_fences,
         )
     except _IndeterminateError:
         stop_requested = False
@@ -2479,6 +2662,16 @@ def _make_commit_fn(
                     for task in state.get("tasks", []):
                         if task.get("id") == task_id:
                             task["status"] = target_status
+                            receipt_id = receipt_entry.get("receipt_id")
+                            if target_status == "DONE" and receipt_id:
+                                evidence = task.setdefault("evidence", [])
+                                reference = {
+                                    "root": "workspace",
+                                    "path": "evidence.md",
+                                    "anchor": f"receipt: {receipt_id}",
+                                }
+                                if reference not in evidence:
+                                    evidence.append(reference)
                             if block_reason is not None:
                                 task["block_reason"] = block_reason
                             if skip_reason is not None:
@@ -2490,8 +2683,7 @@ def _make_commit_fn(
                     else:
                         attempts.pop(task_id, None)
                     state["current_tasks"] = sorted(
-                        t["id"] for t in state.get("tasks", [])
-                        if t.get("status") == "RUNNING"
+                        t["id"] for t in state.get("tasks", []) if t.get("status") == "RUNNING"
                     )
 
                 tmp = project_dir / f".project.json.{secrets.token_hex(8)}.tmp"
@@ -2514,8 +2706,7 @@ def _make_commit_fn(
                     pass
             return state["revision"], 0
         raise OperationError(
-            f"revision conflict: exceeded retry limit (expected {expected_revision}, "
-            f"last seen {_expected})"
+            f"revision conflict: exceeded retry limit (expected {expected_revision}, last seen {_expected})"
         )
 
     return _commit
@@ -2561,10 +2752,13 @@ def run_sequential_task(
 
     # O19: acquire coordinator run
     _identity = _read_host_identity()
-    _o19_acquire(ctx, {
-        **_identity,
-        "started_at": _now(),
-    })
+    _o19_acquire(
+        ctx,
+        {
+            **_identity,
+            "started_at": _now(),
+        },
+    )
 
     # Find first READY task: TODO with all depends_on in terminal states
     terminal_statuses = {"DONE", "SKIPPED", "BLOCKED"}
@@ -2585,54 +2779,64 @@ def run_sequential_task(
     task_id: str = ready["id"]
     plan_hash: Optional[str] = ready.get("plan_hash")
     auth: Dict[str, Any] = ready.get("authorization", {})
-    auth_in_force = (
-        not auth.get("required", False)
-        or auth.get("status") in ("explicit", "not_required")
-    )
+    auth_in_force = not auth.get("required", False) or auth.get("status") in ("explicit", "not_required")
     attempt_id = "att-" + secrets.token_hex(16)
     definition_hash = hashlib.sha256(task_id.encode()).hexdigest()
 
     # O1: reserve
     unbound = TaskState(
-        task_id=task_id, attempt_id=None, task_status="TODO",
-        authorization_in_force=auth_in_force, receipt_present=False,
+        task_id=task_id,
+        attempt_id=None,
+        task_status="TODO",
+        authorization_in_force=auth_in_force,
+        receipt_present=False,
         plan_hash=plan_hash,
     )
     _o1_reserve(ctx, unbound, attempt_id)
 
     # O2, O3, O4 use bound TaskState
     bound = TaskState(
-        task_id=task_id, attempt_id=attempt_id, task_status="TODO",
-        authorization_in_force=auth_in_force, receipt_present=False,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        task_status="TODO",
+        authorization_in_force=auth_in_force,
+        receipt_present=False,
         plan_hash=plan_hash,
     )
     _o2_grant(ctx, bound, attempt_id, [])
 
     now = _now()
-    _o3_prepare(ctx, bound, attempt_id, [], {
-        "definition_hash": definition_hash,
-        "plan_hash": plan_hash or "",
-        "contract": {},
-        "baseline": {},
-        "instruction_digest": "",
-        "deadline_at": now,
-        "deadline_budget_s": 3600,
-        "heartbeat_interval_s": 30,
-        "log_cap_bytes": 1048576,
-    })
+    _o3_prepare(
+        ctx,
+        bound,
+        attempt_id,
+        [],
+        {
+            "definition_hash": definition_hash,
+            "plan_hash": plan_hash or "",
+            "contract": {},
+            "baseline": {},
+            "instruction_digest": "",
+            "deadline_at": now,
+            "deadline_budget_s": 3600,
+            "heartbeat_interval_s": 30,
+            "log_cap_bytes": 1048576,
+        },
+    )
     _o4_dispatch(ctx, bound, attempt_id, definition_hash, {})
 
     # O4 committed task to RUNNING; use running TaskState for remaining ops
     running = TaskState(
-        task_id=task_id, attempt_id=attempt_id, task_status="RUNNING",
-        authorization_in_force=auth_in_force, receipt_present=True,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        task_status="RUNNING",
+        authorization_in_force=auth_in_force,
+        receipt_present=True,
         plan_hash=plan_hash,
     )
 
     # Read handle from launch.json written by O4
-    launch_rec: Dict[str, Any] = json.loads(
-        (execution_dir / "attempts" / attempt_id / "launch.json").read_bytes()
-    )
+    launch_rec: Dict[str, Any] = json.loads((execution_dir / "attempts" / attempt_id / "launch.json").read_bytes())
     handle: str = launch_rec.get("handle") or ""
 
     # Poll adapter until not RUNNING
@@ -2651,14 +2855,19 @@ def run_sequential_task(
             pass
 
     # O5: record result
-    _o5_record_result(ctx, running, attempt_id, {
-        "outcome": "success",
-        "produced": {},
-        "baseline_matched": True,
-        "captures": [],
-        "summary": "",
-        "refusal_code": None,
-    })
+    _o5_record_result(
+        ctx,
+        running,
+        attempt_id,
+        {
+            "outcome": "success",
+            "produced": {},
+            "baseline_matched": True,
+            "captures": [],
+            "summary": "",
+            "refusal_code": None,
+        },
+    )
 
     # O6: seal worker scope
     _o6_seal(ctx, running, attempt_id, "worker", attestation)
@@ -2674,8 +2883,11 @@ def run_sequential_task(
 
     # O16: release
     done = TaskState(
-        task_id=task_id, attempt_id=attempt_id, task_status="DONE",
-        authorization_in_force=auth_in_force, receipt_present=True,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        task_status="DONE",
+        authorization_in_force=auth_in_force,
+        receipt_present=True,
         plan_hash=plan_hash,
     )
     _o16_release(ctx, done, attempt_id, rid, "task_terminal")
@@ -2693,50 +2905,60 @@ def _run_task_in_ctx(ctx: Context, task: Dict[str, Any]) -> bool:
     task_id: str = task["id"]
     plan_hash: Optional[str] = task.get("plan_hash")
     auth: Dict[str, Any] = task.get("authorization", {})
-    auth_in_force = (
-        not auth.get("required", False)
-        or auth.get("status") in ("explicit", "not_required")
-    )
+    auth_in_force = not auth.get("required", False) or auth.get("status") in ("explicit", "not_required")
     attempt_id = "att-" + secrets.token_hex(16)
     definition_hash = hashlib.sha256(task_id.encode()).hexdigest()
 
     unbound = TaskState(
-        task_id=task_id, attempt_id=None, task_status="TODO",
-        authorization_in_force=auth_in_force, receipt_present=False,
+        task_id=task_id,
+        attempt_id=None,
+        task_status="TODO",
+        authorization_in_force=auth_in_force,
+        receipt_present=False,
         plan_hash=plan_hash,
     )
     _o1_reserve(ctx, unbound, attempt_id)
 
     bound = TaskState(
-        task_id=task_id, attempt_id=attempt_id, task_status="TODO",
-        authorization_in_force=auth_in_force, receipt_present=False,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        task_status="TODO",
+        authorization_in_force=auth_in_force,
+        receipt_present=False,
         plan_hash=plan_hash,
     )
     _o2_grant(ctx, bound, attempt_id, [])
 
     now = _now()
-    _o3_prepare(ctx, bound, attempt_id, [], {
-        "definition_hash": definition_hash,
-        "plan_hash": plan_hash or "",
-        "contract": {},
-        "baseline": {},
-        "instruction_digest": "",
-        "deadline_at": now,
-        "deadline_budget_s": 3600,
-        "heartbeat_interval_s": 30,
-        "log_cap_bytes": 1048576,
-    })
+    _o3_prepare(
+        ctx,
+        bound,
+        attempt_id,
+        [],
+        {
+            "definition_hash": definition_hash,
+            "plan_hash": plan_hash or "",
+            "contract": {},
+            "baseline": {},
+            "instruction_digest": "",
+            "deadline_at": now,
+            "deadline_budget_s": 3600,
+            "heartbeat_interval_s": 30,
+            "log_cap_bytes": 1048576,
+        },
+    )
     _o4_dispatch(ctx, bound, attempt_id, definition_hash, {})
 
     running = TaskState(
-        task_id=task_id, attempt_id=attempt_id, task_status="RUNNING",
-        authorization_in_force=auth_in_force, receipt_present=True,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        task_status="RUNNING",
+        authorization_in_force=auth_in_force,
+        receipt_present=True,
         plan_hash=plan_hash,
     )
 
-    launch_rec: Dict[str, Any] = json.loads(
-        (ctx.execution_dir / "attempts" / attempt_id / "launch.json").read_bytes()
-    )
+    launch_rec: Dict[str, Any] = json.loads((ctx.execution_dir / "attempts" / attempt_id / "launch.json").read_bytes())
     handle: str = launch_rec.get("handle") or ""
 
     if handle:
@@ -2752,22 +2974,30 @@ def _run_task_in_ctx(ctx: Context, task: Dict[str, Any]) -> bool:
         except AdapterError:
             pass
 
-    _o5_record_result(ctx, running, attempt_id, {
-        "outcome": "success",
-        "produced": {},
-        "baseline_matched": True,
-        "captures": [],
-        "summary": "",
-        "refusal_code": None,
-    })
+    _o5_record_result(
+        ctx,
+        running,
+        attempt_id,
+        {
+            "outcome": "success",
+            "produced": {},
+            "baseline_matched": True,
+            "captures": [],
+            "summary": "",
+            "refusal_code": None,
+        },
+    )
     _o6_seal(ctx, running, attempt_id, "worker", attestation)
     _o7_classify(ctx, running, attempt_id, "success", [])
     rid = _o11_accept(ctx, running, attempt_id, definition_hash, "DONE", {}, [])
     _o12_commit_acceptance(ctx, running, attempt_id, rid, definition_hash, {}, "DONE")
 
     done = TaskState(
-        task_id=task_id, attempt_id=attempt_id, task_status="DONE",
-        authorization_in_force=auth_in_force, receipt_present=True,
+        task_id=task_id,
+        attempt_id=attempt_id,
+        task_status="DONE",
+        authorization_in_force=auth_in_force,
+        receipt_present=True,
         plan_hash=plan_hash,
     )
     _o16_release(ctx, done, attempt_id, rid, "task_terminal")
@@ -2813,13 +3043,16 @@ def run_parallel_tasks(
         commit_fn=commit_fn,
     )
 
-    _o19_acquire(ctx, {
-        "host_id": "localhost",
-        "boot_id": "",
-        "pid": 0,
-        "process_start": _now(),
-        "started_at": _now(),
-    })
+    _o19_acquire(
+        ctx,
+        {
+            "host_id": "localhost",
+            "boot_id": "",
+            "pid": 0,
+            "process_start": _now(),
+            "started_at": _now(),
+        },
+    )
 
     terminal_statuses = {"DONE", "SKIPPED", "BLOCKED"}
     task_list: List[Dict[str, Any]] = state.get("tasks", [])
@@ -2865,3 +3098,625 @@ def run_parallel_tasks(
 
     _o20_relinquish(ctx)
     return done_count
+
+
+# ---------------------------------------------------------------------------
+# Automatic task-specific coordinator
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AutomaticRunReport:
+    """Outcome of one automatic scheduling pass."""
+
+    completed: List[str]
+    blocked: Dict[str, str]
+    fallbacks: Dict[str, str]
+    deferred: Dict[str, str]
+
+    def as_dict(self) -> Dict[str, Any]:
+        """Return a JSON-serializable deterministic representation."""
+        return {
+            "completed": sorted(self.completed),
+            "blocked": dict(sorted(self.blocked.items())),
+            "fallbacks": dict(sorted(self.fallbacks.items())),
+            "deferred": dict(sorted(self.deferred.items())),
+        }
+
+
+@dataclass
+class _AutomaticAttempt:
+    task: Dict[str, Any]
+    plan: Dict[str, Any]
+    attempt_id: str
+    launch: WorkerLaunch
+    ctx: Context
+    running: TaskState
+    handle: str
+    baseline: Dict[str, str]
+    attestation: Optional[Dict[str, Any]] = None
+    commit: Optional[str] = None
+
+
+_READ_ONLY_CHECKERS = frozenset({"[", "test"})
+
+
+def _ready_tasks(state: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if state.get("status") != "EXECUTING":
+        return []
+    tasks = state.get("tasks", [])
+    statuses = {task.get("id"): task.get("status") for task in tasks}
+    return [
+        task
+        for task in tasks
+        if task.get("status") == "TODO"
+        and all(statuses.get(dependency) == "DONE" for dependency in task.get("depends_on", []))
+        and (
+            task.get("effect", {}).get("kind") not in {"none", "local_write"}
+            or not task.get("authorization", {}).get("required", False)
+            or task.get("authorization", {}).get("status") == "explicit"
+        )
+    ]
+
+
+def _automatic_instruction(task: Dict[str, Any]) -> str:
+    outputs = [str(output.get("path")) for output in task.get("outputs", [])]
+    listed = "\n".join(f"- {path}" for path in outputs)
+    reads = task.get("reads", [])
+    read_list = "\n".join(f"- {path}" for path in reads) or "- none; use only the task text"
+    return (
+        f"{task.get('name')}\n\n"
+        f"Success criteria: {task.get('success_criteria')}\n\n"
+        "The complete declared input file set is:\n"
+        f"{read_list}\n\n"
+        "Create or update exactly these declared outputs:\n"
+        f"{listed}"
+    )
+
+
+def _automatic_checks(task: Dict[str, Any], target: Path) -> List[Dict[str, Any]]:
+    verification = task.get("verification")
+    if not isinstance(verification, str) or not verification.strip():
+        raise PlanError("R-UNENUMERABLE: verification is empty")
+    outputs = task.get("outputs", [])
+    required = [str(output.get("path")) for output in outputs if output.get("required") is True]
+    checks: List[Dict[str, Any]] = []
+    for index, line in enumerate(verification.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            argv = shlex.split(line)
+        except ValueError as error:
+            raise PlanError(f"R-UNENUMERABLE: cannot parse verification line {index}: {error}") from error
+        if not argv or any(token in {"&&", "||", "|", ";", ">", ">>"} for token in argv):
+            raise PlanError(f"R-UNENUMERABLE: composed verification line {index}")
+        executable = Path(argv[0]).name
+        if executable not in _READ_ONLY_CHECKERS:
+            raise PlanError(f"R-UNENUMERABLE: verification checker is not read-only: {argv[0]}")
+        subjects = [path for path in required if path in argv or str((target / path).resolve()) in argv]
+        checks.append(
+            {
+                "check_id": f"check-{index:02d}",
+                "kind": "command",
+                "argv": argv,
+                "criteria": None,
+                "cwd": str(target),
+                "expect_exit": 0,
+                "subjects": subjects,
+                "reads": subjects,
+                "writes": [],
+                "executor": "coordinator",
+            }
+        )
+    return checks
+
+
+def _automatic_reads(state: Dict[str, Any], task: Dict[str, Any]) -> List[str]:
+    del state
+    reads = task.get("reads")
+    if not isinstance(reads, list) or not all(isinstance(path, str) and path.strip() for path in reads):
+        raise PlanError("R-UNENUMERABLE: task has no exhaustive reads declaration")
+    if len(reads) != len(set(reads)):
+        raise PlanError("R-UNENUMERABLE: task reads contain duplicates")
+    return sorted(reads)
+
+
+def _plan_refusal(task: Dict[str, Any], target: Path) -> Optional[str]:
+    effect = task.get("effect", {}).get("kind")
+    if effect not in {"none", "local_write"}:
+        return "R-EFFECT-NOT-CONFINED"
+    outputs = task.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        return "R-UNENUMERABLE"
+    for output in outputs:
+        if output.get("root") == "external":
+            return "R-EXTERNAL-REFERENCE"
+        if output.get("root") != "target":
+            return "R-UNENUMERABLE"
+        path = Path(str(output.get("path", "")))
+        candidate = target / path
+        if not str(path) or str(path).endswith(os.sep) or (candidate.exists() and candidate.is_dir()):
+            return "R-DIRECTORY-SUBJECT"
+    return None
+
+
+def _resolve_automatic_plan(
+    state: Dict[str, Any], task: Dict[str, Any], project_dir: Path, worker_kind: str
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    target = Path(str(state.get("working_directory", ""))).expanduser().resolve()
+    refusal = _plan_refusal(task, target)
+    if refusal:
+        return None, refusal
+    try:
+        plan = build_plan(
+            state,
+            str(task["id"]),
+            project_dir=project_dir,
+            instruction=_automatic_instruction(task),
+            checks=_automatic_checks(task, target),
+            reads=_automatic_reads(state, task),
+            worker_kind=worker_kind,
+        )
+        publish_plan(project_dir, state, plan)
+        return plan, None
+    except PlanError as error:
+        message = str(error)
+        if "R-CHECK-UNCOVERED" in message or "not covered" in message:
+            return None, "R-CHECK-UNCOVERED"
+        return None, "R-UNENUMERABLE"
+
+
+def _plan_claims(plan: Dict[str, Any]) -> Tuple[Claim, ...]:
+    claims: List[Claim] = [Claim("local", str(path), "read") for path in plan.get("reads", [])]
+    claims.extend(Claim("local", str(path), "write") for path in plan.get("writes", []))
+    for check in plan.get("checks", []):
+        claims.extend(Claim("local", str(path), "read") for path in check.get("reads", []))
+        claims.extend(Claim("local", str(path), "write") for path in check.get("writes", []))
+    return normalize_claims(claims)
+
+
+def _plans_conflict(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    return bool(find_conflicts(_plan_claims(left), _plan_claims(right)))
+
+
+def _claim_strings(plan: Dict[str, Any]) -> List[str]:
+    return [format_claim_string(claim.namespace, claim.key, claim.access) for claim in _plan_claims(plan)]
+
+
+def _digest_automatic_path(path: Path) -> str:
+    if not path.exists():
+        return "absent"
+    if path.is_symlink() or not path.is_file():
+        raise WorkerError(f"automatic plan path is not a regular file: {path}")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _snapshot_automatic_plan(plan: Dict[str, Any]) -> Dict[str, str]:
+    paths = set(plan.get("reads", [])) | set(plan.get("writes", []))
+    for check in plan.get("checks", []):
+        paths.update(check.get("subjects", []))
+        paths.update(check.get("reads", []))
+        paths.update(check.get("writes", []))
+    return {str(path): _digest_automatic_path(Path(str(path))) for path in sorted(paths)}
+
+
+def _automatic_baseline_matches(attempt: _AutomaticAttempt) -> bool:
+    return _snapshot_automatic_plan(attempt.plan) == attempt.baseline
+
+
+def _automatic_context(
+    project_dir: Path,
+    state: Dict[str, Any],
+    coordinator_run: Optional[str],
+    ownership_generation: int,
+    adapter: AdapterProtocol,
+    lock_timeout: float,
+) -> Context:
+    return Context(
+        execution_dir=project_dir / "execution",
+        workspace_root=project_dir.parent,
+        project_id=str(state["project"]),
+        coordinator_run=coordinator_run,
+        ownership_generation=ownership_generation,
+        revision=int(state["revision"]),
+        registry=GrantRegistry(project_dir.parent),
+        adapter=adapter,
+        project_dir=project_dir,
+        commit_fn=_make_commit_fn(project_dir, lock_timeout),
+    )
+
+
+def _dispatch_automatic_attempt(
+    project_dir: Path,
+    state: Dict[str, Any],
+    coordinator: Context,
+    task: Dict[str, Any],
+    plan: Dict[str, Any],
+    launch: WorkerLaunch,
+    attempt_id: str,
+    lock_timeout: float,
+) -> _AutomaticAttempt:
+    current_state = json.loads((project_dir / "project.json").read_bytes())
+    ctx = _automatic_context(
+        project_dir,
+        current_state,
+        coordinator.coordinator_run,
+        coordinator.ownership_generation,
+        launch.adapter,
+        lock_timeout,
+    )
+    authorization = task.get("authorization", {})
+    authorization_in_force = not authorization.get("required", False) or authorization.get("status") in {
+        "explicit",
+        "not_required",
+    }
+    task_state = TaskState(
+        task_id=str(task["id"]),
+        attempt_id=None,
+        task_status="TODO",
+        authorization_in_force=authorization_in_force,
+        receipt_present=False,
+        plan_hash=str(plan["plan_hash"]),
+    )
+    baseline = _snapshot_automatic_plan(plan)
+    _o1_reserve(ctx, task_state, attempt_id)
+    running = TaskState(
+        task_id=str(task["id"]),
+        attempt_id=attempt_id,
+        task_status="TODO",
+        authorization_in_force=authorization_in_force,
+        receipt_present=False,
+        plan_hash=str(plan["plan_hash"]),
+    )
+    claims = _claim_strings(plan)
+    _o2_grant(ctx, running, attempt_id, claims)
+    _o3_prepare(
+        ctx,
+        running,
+        attempt_id,
+        claims,
+        {
+            "definition_hash": plan["definition_hash"],
+            "plan_hash": plan["plan_hash"],
+            "contract": {"writes": plan["writes"], "outputs": plan["outputs"]},
+            "baseline": baseline,
+            "instruction_digest": hashlib.sha256(str(plan["instruction"]).encode()).hexdigest(),
+            "deadline_at": _now(),
+            "deadline_budget_s": 3600,
+            "heartbeat_interval_s": 30,
+            "log_cap_bytes": 1048576,
+        },
+    )
+    _o4_dispatch(
+        ctx,
+        running,
+        attempt_id,
+        str(plan["definition_hash"]),
+        {},
+        plan=plan,
+        adapter_name=launch.capability.kind,
+        adapter_version=launch.capability.version,
+    )
+    launched = TaskState(
+        task_id=str(task["id"]),
+        attempt_id=attempt_id,
+        task_status="RUNNING",
+        authorization_in_force=authorization_in_force,
+        receipt_present=True,
+        plan_hash=str(plan["plan_hash"]),
+    )
+    launch_record = json.loads((project_dir / "execution" / "attempts" / attempt_id / "launch.json").read_bytes())
+    return _AutomaticAttempt(task, plan, attempt_id, launch, ctx, launched, str(launch_record["handle"]), baseline)
+
+
+def _wait_for_automatic_attempt(attempt: _AutomaticAttempt, timeout: float = 3600.0) -> Dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    observation = attempt.launch.adapter.observe(attempt.handle)
+    while observation == "running" and time.monotonic() < deadline:
+        time.sleep(0.1)
+        observation = attempt.launch.adapter.observe(attempt.handle)
+    if observation == "running":
+        attempt.launch.adapter.terminate(attempt.handle)
+        attempt.attestation = attempt.launch.adapter.seal(attempt.handle)
+        raise WorkerError("worker exceeded its deadline")
+    if observation == "unknown":
+        attempt.launch.adapter.terminate(attempt.handle)
+        attempt.attestation = attempt.launch.adapter.seal(attempt.handle)
+        raise WorkerError("worker liveness became unknown")
+    attestation = attempt.launch.adapter.seal(attempt.handle)
+    attempt.attestation = attestation
+    if attestation.get("exit_code") != 0:
+        raise WorkerError(f"worker exited with code {attestation.get('exit_code')}")
+    return attestation
+
+
+def _mapped_check_cwd(check: Dict[str, Any], target: Path, checkout: Path) -> Path:
+    try:
+        relative = Path(str(check["cwd"])).resolve().relative_to(target.resolve())
+    except ValueError as error:
+        raise WorkerError(f"check cwd is outside the target repository: {check['cwd']}") from error
+    return checkout / relative
+
+
+def _run_plan_checks(plan: Dict[str, Any], checkout: Path, target: Path) -> None:
+    for check in plan.get("checks", []):
+        if check.get("kind") not in {"command", "shell"}:
+            raise WorkerError(f"unsupported automatic check kind: {check.get('kind')}")
+        result = subprocess.run(
+            list(check["argv"]),
+            cwd=str(_mapped_check_cwd(check, target, checkout)),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        if result.returncode != check.get("expect_exit"):
+            detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            raise WorkerError(f"check {check['check_id']} failed: {detail}")
+
+
+def _record_automatic_result(attempt: _AutomaticAttempt, outcome: str, summary: str) -> None:
+    baseline_matched = _automatic_baseline_matches(attempt)
+    _o5_record_result(
+        attempt.ctx,
+        attempt.running,
+        attempt.attempt_id,
+        {
+            "outcome": outcome,
+            "produced": {"commit": attempt.commit} if attempt.commit else {},
+            "baseline_matched": baseline_matched,
+            "captures": [],
+            "summary": summary,
+            "refusal_code": None,
+        },
+    )
+    attestation = attempt.attestation or {"variant": "terminated", "exit_code": 1}
+    _o6_seal(attempt.ctx, attempt.running, attempt.attempt_id, "worker", attestation)
+    _o7_classify(attempt.ctx, attempt.running, attempt.attempt_id, outcome, [])
+
+
+def _block_automatic_attempt(attempt: _AutomaticAttempt, reason: str) -> None:
+    _record_automatic_result(attempt, "failure", reason)
+    _withdraw_automatic_attempt(attempt, reason)
+
+
+def _withdraw_automatic_attempt(attempt: _AutomaticAttempt, reason: str) -> None:
+    """Commit a classified attempt as BLOCKED and release its grant."""
+    _o13_withdraw(
+        attempt.ctx,
+        attempt.running,
+        attempt.attempt_id,
+        str(attempt.plan["definition_hash"]),
+        "BLOCKED",
+        {},
+        "BLOCKED",
+        reason,
+    )
+    blocked = TaskState(
+        task_id=str(attempt.task["id"]),
+        attempt_id=attempt.attempt_id,
+        task_status="BLOCKED",
+        authorization_in_force=True,
+        receipt_present=True,
+        plan_hash=str(attempt.plan["plan_hash"]),
+    )
+    _o16_release(attempt.ctx, blocked, attempt.attempt_id, None, "automatic task blocked")
+
+
+def _git_automatic(repository: Path, *arguments: str) -> str:
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=str(repository),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+        raise WorkerError(f"git {' '.join(arguments)} failed: {detail}")
+    return result.stdout.strip()
+
+
+def _integrate_automatic_attempts(project_dir: Path, attempts: List[_AutomaticAttempt]) -> Tuple[str, Path, str]:
+    target = attempts[0].launch.session.target.root
+    baseline = attempts[0].launch.session.target.head
+    token = secrets.token_hex(8)
+    integration = project_dir / "execution" / "integration" / token
+    integration.parent.mkdir(parents=True, exist_ok=True)
+    branch = f"research/integration/{project_dir.name}/{token}"
+    _git_automatic(target, "worktree", "add", "--no-track", "-b", branch, str(integration), baseline)
+    for attempt in attempts:
+        if attempt.commit is None:
+            raise WorkerError(f"task {attempt.task['id']} has no worker commit")
+        _git_automatic(integration, "cherry-pick", attempt.commit)
+    for attempt in attempts:
+        _run_plan_checks(attempt.plan, integration, target)
+    for attempt in attempts:
+        current_head = _git_automatic(target, "rev-parse", "HEAD")
+        current_status = _git_automatic(target, "status", "--porcelain=v1", "--untracked-files=all")
+        snapshot = attempt.launch.session.target
+        if current_head != snapshot.head or current_status != snapshot.status:
+            raise WorkerError("target repository changed before integration")
+    integrated_head = _git_automatic(integration, "rev-parse", "HEAD")
+    return integrated_head, integration, branch
+
+
+def _publish_automatic_integration(
+    attempts: List[_AutomaticAttempt], integrated_head: str, integration: Path, branch: str
+) -> None:
+    target = attempts[0].launch.session.target.root
+    for attempt in attempts:
+        if attempt.commit is None:
+            raise WorkerError(f"task {attempt.task['id']} has no accepted commit")
+        cleanup_worktree(attempt.launch.session, attempt.commit)
+    _git_automatic(target, "merge", "--ff-only", branch)
+    if _git_automatic(target, "rev-parse", "HEAD") != integrated_head:  # pragma: no cover - concurrent ref move
+        raise WorkerError("target did not reach the verified integration commit")
+    _git_automatic(target, "worktree", "remove", str(integration))
+    _git_automatic(target, "branch", "-D", branch)
+
+
+def _record_automatic_report(project_dir: Path, report: AutomaticRunReport) -> None:
+    runtime = project_dir / "execution" / "runtime"
+    runtime.mkdir(parents=True, exist_ok=True)
+    path = runtime / "automatic-run.json"
+    temporary = runtime / f".automatic-run.{secrets.token_hex(8)}.tmp"
+    payload = {"recorded_at": _now(), **report.as_dict()}
+    temporary.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+def run_automatic_tasks(
+    project_dir: Path,
+    *,
+    max_concurrent: int = 2,
+    lock_timeout: float = 5.0,
+    worker_executables: Optional[Dict[str, str]] = None,
+) -> AutomaticRunReport:
+    """Automatically run eligible READY tasks with bounded workers and serial integration."""
+    if os.environ.get(NESTING_ENV):
+        raise OperationError("nested automatic project coordination is forbidden")
+    if max_concurrent < 1:
+        raise OperationError("max_concurrent must be at least one")
+    project_dir = project_dir.resolve()
+    state: Dict[str, Any] = json.loads((project_dir / "project.json").read_bytes())
+    if state.get("schema_version") != 4:
+        raise OperationError("automatic execution requires a fresh schema-v4 project")
+    ready = _ready_tasks(state)
+    fallbacks: Dict[str, str] = {}
+    deferred: Dict[str, str] = {}
+    blocked: Dict[str, str] = {}
+    completed: List[str] = []
+
+    available: List[str] = []
+    for kind in ("claude", "codex"):
+        if worker_executables is not None and kind not in worker_executables:
+            continue
+        try:
+            discover_worker(kind, executable=(worker_executables or {}).get(kind))
+            available.append(kind)
+        except WorkerError:
+            continue
+    if not available:
+        fallbacks.update({str(task["id"]): "R-NO-ADAPTER" for task in ready})
+        report = AutomaticRunReport(completed, blocked, fallbacks, deferred)
+        _record_automatic_report(project_dir, report)
+        return report
+
+    selected: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+    worker_index = 0
+    for task in ready:
+        plan, refusal = _resolve_automatic_plan(state, task, project_dir, available[worker_index % len(available)])
+        if refusal:
+            fallbacks[str(task["id"])] = refusal
+            continue
+        if plan is None:  # pragma: no cover - resolver contract
+            raise OperationError(f"automatic plan resolver returned no plan or refusal for task {task['id']}")
+        if any(_plans_conflict(plan, existing_plan) for _existing_task, existing_plan in selected):
+            deferred[str(task["id"])] = "R-CLAIM-CONFLICT"
+            continue
+        if len(selected) >= max_concurrent:
+            deferred[str(task["id"])] = "R-CAPACITY"
+            continue
+        selected.append((task, plan))
+        worker_index += 1
+
+    if not selected:
+        report = AutomaticRunReport(completed, blocked, fallbacks, deferred)
+        _record_automatic_report(project_dir, report)
+        return report
+
+    coordinator = _automatic_context(
+        project_dir,
+        state,
+        state.get("execution", {}).get("coordinator_run"),
+        int(state.get("execution", {}).get("ownership_generation", 0)),
+        FakeAdapter(),
+        lock_timeout,
+    )
+    _o19_acquire(coordinator, {**_read_host_identity(), "started_at": _now()})
+    attempts: List[_AutomaticAttempt] = []
+    for task, plan in selected:
+        attempt_id = "att-" + secrets.token_hex(16)
+        try:
+            launch = prepare_worker(
+                plan,
+                project_dir,
+                attempt_id,
+                executable=(worker_executables or {}).get(str(plan["worker"]["kind"])),
+            )
+        except WorkerError as error:
+            fallbacks[str(task["id"])] = f"R-DISPATCH: {error}"
+            continue
+        try:
+            attempts.append(
+                _dispatch_automatic_attempt(
+                    project_dir, state, coordinator, task, plan, launch, attempt_id, lock_timeout
+                )
+            )
+        except (WorkerError, OperationError, PreconditionError) as error:
+            raise OperationError(
+                f"automatic dispatch for task {task['id']} stopped after durable preparation began; "
+                "preserve the attempt and run recovery"
+            ) from error
+
+    staged: List[_AutomaticAttempt] = []
+    target = Path(str(state["working_directory"])).resolve()
+    for attempt in attempts:
+        try:
+            _wait_for_automatic_attempt(attempt)
+            if not _automatic_baseline_matches(attempt):
+                raise WorkerError("declared task inputs or outputs changed while the worker was running")
+            _run_plan_checks(attempt.plan, attempt.launch.session.worktree, target)
+            attempt.commit = commit_worker_result(attempt.launch.session, attempt.plan)
+            _record_automatic_result(attempt, "success", "worker and isolated checks passed")
+            staged.append(attempt)
+        except (WorkerError, AdapterError, OSError, subprocess.SubprocessError) as error:
+            reason = str(error)
+            blocked[str(attempt.task["id"])] = reason
+            _block_automatic_attempt(attempt, reason)
+
+    if staged:
+        try:
+            integrated_head, integration, branch = _integrate_automatic_attempts(project_dir, staged)
+            _publish_automatic_integration(staged, integrated_head, integration, branch)
+            for attempt in staged:
+                snapshot = {"target_commit": integrated_head, "worker_commit": attempt.commit}
+                receipt_id = _o11_accept(
+                    attempt.ctx,
+                    attempt.running,
+                    attempt.attempt_id,
+                    str(attempt.plan["definition_hash"]),
+                    "DONE",
+                    snapshot,
+                    [],
+                )
+                _o12_commit_acceptance(
+                    attempt.ctx,
+                    attempt.running,
+                    attempt.attempt_id,
+                    receipt_id,
+                    str(attempt.plan["definition_hash"]),
+                    {"target_commit": integrated_head},
+                    "DONE",
+                )
+                done = TaskState(
+                    task_id=str(attempt.task["id"]),
+                    attempt_id=attempt.attempt_id,
+                    task_status="DONE",
+                    authorization_in_force=True,
+                    receipt_present=True,
+                    plan_hash=str(attempt.plan["plan_hash"]),
+                )
+                _o16_release(attempt.ctx, done, attempt.attempt_id, receipt_id, "task terminal")
+                completed.append(str(attempt.task["id"]))
+        except (WorkerError, OperationError, subprocess.SubprocessError) as error:
+            reason = f"integration failed: {error}"
+            for attempt in staged:
+                blocked[str(attempt.task["id"])] = reason
+                _withdraw_automatic_attempt(attempt, reason)
+
+    _o20_relinquish(coordinator)
+    report = AutomaticRunReport(completed, blocked, fallbacks, deferred)
+    _record_automatic_report(project_dir, report)
+    return report

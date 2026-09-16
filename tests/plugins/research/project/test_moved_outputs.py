@@ -19,7 +19,7 @@ from workspace_lib import (
     WorkspaceError,
     allocate_project,
     commit_candidate,
-    validate_v3_state,
+    validate_v4_state,
 )
 
 
@@ -111,7 +111,7 @@ class MovedOutputTests(unittest.TestCase):
         self._finish_the_task()
         self.deliverable.rename(self.target / "renamed.txt")
         state = self._state()
-        report = validate_v3_state(state, self.project_dir, already_done={"T01"})
+        report = validate_v4_state(state, self.project_dir, already_done={"T01"})
         self.assertEqual(report.errors, [])
         self.assertTrue(
             any("already terminal" in warning and "deliverable.txt" in warning for warning in report.warnings),
@@ -121,7 +121,7 @@ class MovedOutputTests(unittest.TestCase):
     def test_standalone_validation_still_reports_an_error(self) -> None:
         self._finish_the_task()
         self.deliverable.rename(self.target / "renamed.txt")
-        report = validate_v3_state(self._state(), self.project_dir)
+        report = validate_v4_state(self._state(), self.project_dir)
         self.assertTrue(
             any("required output does not exist" in error for error in report.errors),
             report.errors,
@@ -129,7 +129,7 @@ class MovedOutputTests(unittest.TestCase):
 
     def test_an_output_that_is_still_there_says_nothing(self) -> None:
         self._finish_the_task()
-        report = validate_v3_state(self._state(), self.project_dir, already_done={"T01"})
+        report = validate_v4_state(self._state(), self.project_dir, already_done={"T01"})
         self.assertEqual(report.errors, [])
         self.assertEqual([w for w in report.warnings if "required output" in w], [])
 

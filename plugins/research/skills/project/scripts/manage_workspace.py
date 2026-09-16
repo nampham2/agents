@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from execution_adapter import FakeAdapter, SubprocessAdapter
-from execution_ops import OperationError, run_parallel_tasks, run_sequential_task
+from execution_ops import OperationError, run_automatic_tasks, run_parallel_tasks, run_sequential_task
 from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
@@ -230,6 +230,19 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     run_once.add_argument("project_directory", type=Path)
     run_once.add_argument("--lock-timeout", type=float, default=5.0)
+
+    run_auto = subparsers.add_parser(
+        "run-auto",
+        help="Automatically run eligible READY tasks with Claude or Codex workers",
+        epilog=(
+            "Resolves immutable task plans, dispatches up to --concurrency non-conflicting "
+            "none/local_write tasks in isolated Git worktrees, verifies and serially integrates "
+            "their commits, and reports precise fallback reasons for ineligible tasks."
+        ),
+    )
+    run_auto.add_argument("project_directory", type=Path)
+    run_auto.add_argument("--concurrency", type=int, default=2)
+    run_auto.add_argument("--lock-timeout", type=float, default=5.0)
 
     run_parallel = subparsers.add_parser(
         "run-parallel",
@@ -463,10 +476,29 @@ def main() -> int:
             print("No READY task found", file=sys.stderr)
             return 2
 
+        if args.command == "run-auto":
+            report = run_automatic_tasks(
+                args.project_directory,
+                max_concurrent=args.concurrency,
+                lock_timeout=args.lock_timeout,
+            )
+            print(json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
+            if report.blocked:
+                return 1
+            if report.completed:
+                return 0
+            return 2
+
         if args.command == "run-parallel":
-            cmd = list(args.subprocess_command) if args.subprocess_command else [
-                "python", "-c", "pass",
-            ]
+            cmd = (
+                list(args.subprocess_command)
+                if args.subprocess_command
+                else [
+                    "python",
+                    "-c",
+                    "pass",
+                ]
+            )
             done = run_parallel_tasks(
                 args.project_directory,
                 lambda: SubprocessAdapter(cmd),

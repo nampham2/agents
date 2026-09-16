@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Instructions for Claude Code, Codex, Kimi Code, and other agents working in this repository.
+Instructions for Claude Code, Codex, and other agents working in this repository.
 
 ## Repository
 
@@ -10,7 +10,6 @@ source of truth; there is no importable `agents` package or build step.
 ```text
 .claude-plugin/  Claude Code marketplace
 .agents/plugins/ Codex marketplace
-.kimi-plugin/    Kimi Code marketplace
 plugins/         Shared plugin implementations
 tests/           pytest suite mirroring plugins/
 bin/             Repository helpers
@@ -38,14 +37,11 @@ placement. Keep these surfaces aligned:
 | --- | --- | --- | --- |
 | Claude Code | `.claude-plugin/marketplace.json` | `plugins/research/.claude-plugin/plugin.json` | `plugins/research/bin/` on `PATH` |
 | Codex | `.agents/plugins/marketplace.json` | `plugins/research/.codex-plugin/plugin.json` | launcher beside the loaded project skill |
-| Kimi Code | `.kimi-plugin/marketplace.json` | `plugins/research/.kimi-plugin/plugin.json` | launcher beside the loaded project skill in its managed copy |
 
-- A shared plugin change must work in Claude Code, Codex, and Kimi Code. Test every affected host
+- A shared plugin change must work in Claude Code and Codex. Test every affected host
   surface; success in one host does not imply compatibility with the others.
-- The Kimi repository root is a marketplace, not a plugin. Do not add root `kimi.plugin.json` or
-  `.kimi-plugin/plugin.json`; `.kimi-plugin/marketplace.json` publishes the nested plugins.
-- Claude invokes `research-project` and `research-validate` by name. Codex and Kimi resolve the
-  same executable launchers relative to the loaded `skills/project/SKILL.md`. Top-level wrappers
+- Claude invokes `research-project` and `research-validate` by name. Codex resolves the same
+  executable launchers relative to the loaded `skills/project/SKILL.md`. Top-level wrappers
   delegate to those skill-local launchers.
 - Never search plugin caches, infer a plugin root from the current directory, depend on
   `CLAUDE_PLUGIN_ROOT` in a session shell, or invoke `manage_workspace.py` and
@@ -56,14 +52,14 @@ placement. Keep these surfaces aligned:
 - Skill frontmatter is not portable. `user-invocable: false` — which hides a skill's slash command
   while leaving it reachable by the model through the Skill tool — is honoured by Claude Code only.
   Codex parses only `name`, `description`, and `disable-model-invocation`, so a skill hidden this way
-  still appears as a Codex slash command; Kimi Code's handling is unverified and assumed to ignore
-  the key. `skills/grill` relies on this: it is plugin-internal in Claude Code and still typable in
-  Codex, which is accepted drift rather than a bug to fix. Narrow such a skill's `description` too,
+  still appears as a Codex slash command. `skills/grill` relies on this: it is plugin-internal in
+  Claude Code and still typable in Codex, which is accepted drift rather than a bug to fix. Narrow
+  such a skill's `description` too,
   since the flag hides the command without stopping a plain-English request from reaching it. Never
   reach for `disable-model-invocation` instead: it is the opposite lever, it would break the skill
   that invokes the hidden one, and Codex rejects any value but `false`.
 - `pyproject.toml` `[project].version` is canonical. It must exactly match the `agents` package in
-  `uv.lock` and the Claude, Codex, and Kimi plugin manifests. Committed manifests use plain SemVer,
+  `uv.lock` and the Claude and Codex plugin manifests. Committed manifests use plain SemVer,
   without a Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:
   `uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py`.
 - Installed plugins are copied into host-managed caches. A release change needs a canonical version

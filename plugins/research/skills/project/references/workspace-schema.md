@@ -1,4 +1,4 @@
-# Workspace schema v3
+# Workspace schema v4
 
 Read this reference completely before creating, resuming, migrating, or closing an agentic
 workspace project.
@@ -9,21 +9,21 @@ workspace project.
 specification, evidence, reviews, and notes but must not duplicate canonical statuses.
 
 One coordinator is the sole writer of `project.json`, shared Markdown records, `INDEX.md`, and
-`MEMORY.md`.
-Workers own only assigned non-overlapping output paths and return results to the coordinator. State
-updates use `research-project commit` with an expected revision; direct edits are unsupported.
+`MEMORY.md`. Workers own only assigned non-overlapping target-file paths in isolated Git worktrees
+and return commits and attestations to the coordinator. State updates use guarded execution
+operations or `research-project commit` with an expected revision; direct edits are unsupported.
 
 `INDEX.md` is a deterministic cache generated from canonical state. A stale index is an error at
 close but does not supersede `project.json`. `MEMORY.md` is generated the same way and carries the
 same rule; see [Workspace root files](#workspace-root-files).
 
-## Canonical v3 state
+## Canonical v4 state
 
-Every listed field is required except `predecessor`:
+Every listed field is required except `predecessor` and the v4-only task `reads` declaration:
 
 ```json
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "project": "2026-08-28-001",
   "title": "Short project title",
   "status": "ALIGNING",
@@ -39,6 +39,12 @@ Every listed field is required except `predecessor`:
     "evidence": []
   },
   "cancellation_reason": null,
+  "execution": {
+    "protocol_version": 1,
+    "coordinator_run": null,
+    "ownership_generation": 0,
+    "attempts": {}
+  },
   "predecessor": "2026-08-20-001",
   "tasks": [
     {
@@ -46,6 +52,7 @@ Every listed field is required except `predecessor`:
       "name": "Produce the first deliverable",
       "status": "TODO",
       "depends_on": [],
+      "reads": ["relative/path/to/input"],
       "outputs": [
         {
           "root": "target",
@@ -80,6 +87,53 @@ timezone-aware ISO-8601 values. `working_directory` must be an existing absolute
 
 `revision` is a non-negative integer changed only by transactional commit. `current_tasks` is always
 an array and must equal the set of tasks in `RUNNING` state.
+
+The v4-only `execution` object is canonical coordination state. `protocol_version` is a positive
+integer. `coordinator_run` is null while no automatic pass owns the project; otherwise it is that
+run's non-empty id. `ownership_generation` is a non-negative fencing generation. `attempts` maps
+task ids to current attempt ids and must agree with running tasks and the durable execution journal.
+
+`execution/config.json` is immutable generation configuration created after probing atomic links,
+same-volume storage, case sensitivity, and a POSIX subprocess runner. Fresh projects create it during
+initialization. The execution store under `execution/` holds immutable plans, grants, attempts,
+worktrees, integration worktrees, runtime reports, and recovery records; it is protocol state, not a
+place for hand-authored project notes.
+
+The optional task `reads` field is an exhaustive list of target-relative input files for automatic
+execution. An empty list explicitly declares a self-contained task that uses only its task text.
+Omitting `reads` keeps the task valid but makes it `R-UNENUMERABLE`, so it follows the sequential
+path. This field is accepted only by schema v4; schema-v3 task objects remain unchanged.
+
+## Automatic task plans and workers
+
+`research-project run-auto <project-dir>` automatically considers READY tasks. Its default capacity
+is two and can be changed with `--concurrency`. Admission requires:
+
+- effect `none` or `local_write`;
+- one or more non-directory file outputs rooted at `target`;
+- an explicit exhaustive `reads` list, including an explicit empty list for a self-contained task;
+- a clean Git target checkout;
+- non-conflicting resolved read/write claims;
+- separate read-only `test` or `[` verification commands whose subjects cover every required output;
+- an available Claude Code or Codex CLI.
+
+The coordinator resolves these fields into an immutable, content-hashed plan bound to the exact
+project revision and task definition. Empty/generic instructions, no-op or composed checks,
+workspace/external outputs, directory subjects, uncovered required outputs, unsafe worker arguments,
+and protocol-owned paths are refused rather than inferred.
+
+Each admitted worker runs non-interactively in a coordinator-created Git worktree and may modify
+only the plan's declared files. `RESEARCH_PROJECT_WORKER=1` forbids nested coordination. The
+coordinator seals the process tree, rejects undeclared or missing outputs, runs the checks, and
+commits the isolated result. It serially cherry-picks all accepted worker commits into an integration
+worktree, reruns all checks, confirms the target still matches its clean baseline, and only then
+fast-forwards the target and commits canonical acceptance.
+
+The JSON report partitions tasks into `completed`, `blocked`, `fallbacks`, and `deferred`.
+Fallbacks carry precise refusal reasons and return to sequential coordinator execution; they are not
+permission to weaken checks or authorization. Claim conflicts and capacity overflow are deferred to
+a later pass. Failed workers, checks, outputs, or integration block their tasks and preserve durable
+attempt records for inspection and recovery.
 
 ## Project lifecycle
 
@@ -430,9 +484,8 @@ writing cannot refuse the record of work that is finished. Memory is advisory; `
 canonical. Second, **absence is never a finding**: a root with no `MEMORY.md` and no `memory/` is
 valid, and so is every project in it, with or without a `memory-staging.md`.
 
-`schema_version` therefore stays **3**. Nothing about canonical project state changes here — memory
-lives beside projects, not inside their schema — and bumping it would invalidate every existing
-project in order to add files next to them.
+The memory layer itself does not add canonical fields. Schema v4 exists for execution state; memory
+continues to live beside projects and remains compatible with schema v3.
 
 ## Transactional updates
 
@@ -473,7 +526,8 @@ across a call that regenerates the caches.
 
 The validator recognizes:
 
-- schema v3 with all guarantees in this document;
+- schema v4 with the execution state and automatic executor described above;
+- schema v3 with the transactional project guarantees in this document but no automatic executor;
 - schema v2 with strict checks for its documented fields and a warning that concurrency and
   authorization guarantees are limited;
 - schema v1 when `00_meta.yaml` and `02_task_plan.md` exist.
@@ -482,12 +536,25 @@ Migration is preview-only unless `--apply` is explicitly supplied. V2 applicatio
 state as `project.v2.json`. Pure v1 migration preserves legacy files and imports tasks as `TODO` in
 an `ALIGNING` v3 project; it never guesses historical task completion.
 
+Existing v3 projects never activate v4 implicitly. After explicit user approval, first establish
+that every pre-v4 installation with write access to the workspace or target has been upgraded and
+quiesced. Then run:
+
+```sh
+research-project enable-execution <project-dir> --expected-revision R \
+  --legacy-writers-quiesced
+```
+
+The command probes the execution store, writes `execution/config.json`, and atomically commits the
+v3 → v4 transition. Without the quiescence attestation it refuses with `R-LEGACY-WRITER`. There is no
+automatic migration and no supported downgrade for that generation.
+
 Unmigrated v1 closure requires `--allow-legacy-close`, a non-empty `reflection.md`, and a clear user
 warning that task completion could not be validated canonically.
 
 ## Completion invariant
 
-A v3 project may be `DONE` only when:
+A v4 or compatible v3 project may be `DONE` only when:
 
 - it contains at least one task;
 - every task is `DONE` or justified `SKIPPED`;

@@ -1,6 +1,6 @@
 # agents
 
-Cross-host research plugins for Claude Code, Codex, and Kimi Code.
+Cross-host research plugins for Claude Code and Codex.
 
 ## Install through a marketplace
 
@@ -29,22 +29,6 @@ codex plugin add research@agents
 ```
 
 Confirm with `codex plugin list`.
-
-### Kimi Code
-
-Kimi installs `research` from `.kimi-plugin/marketplace.json`, which points to the nested plugin at
-`plugins/research`. From a checkout, run this inside Kimi Code:
-
-```text
-/plugins marketplace /absolute/path/to/agents/.kimi-plugin/marketplace.json
-```
-
-Choose `research` in the marketplace, then run `/reload` or `/new`. Confirm with
-`/plugins info research`.
-
-Kimi's marketplace currently references the plugin by repository-relative path, so it needs a local
-checkout. The Claude Code and Codex marketplace routes above remain the recommended no-clone GitHub
-installation paths.
 
 ## Development from a clone
 
@@ -79,7 +63,7 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
-`pyproject.toml` owns the release version. `uv.lock` and the Claude Code, Codex, and Kimi Code plugin
+`pyproject.toml` owns the release version. `uv.lock` and the Claude Code and Codex plugin
 manifests must use exactly the same SemVer; CI enforces this contract.
 
 Claude Code caches installed plugins by version. After publishing a version bump:

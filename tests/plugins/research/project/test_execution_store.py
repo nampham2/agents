@@ -4,6 +4,7 @@ Every public function is covered at 100% line coverage.  Crash-injection tests
 verify that the 'created' / 'identical' / 'conflict' outcome is correct even when
 publish_if_absent is interrupted at each durable-effects boundary.
 """
+
 from __future__ import annotations
 
 import errno
@@ -266,6 +267,16 @@ class TestCheckSameVolume:
         # tmp_dir does not exist; _check_same_volume should stat its parent.
         _check_same_volume(final, tmp_dir)  # both backed by same real volume
 
+    def test_nested_tmp_ancestors_may_all_be_missing(self, tmp_path: Path) -> None:
+        final = tmp_path / "execution" / "owners" / "run.json"
+        tmp_dir = tmp_path / "execution" / "runtime" / "tmp"
+
+        _check_same_volume(final, tmp_dir)
+
+        outcome = publish_if_absent(final, _encode(_record()), tmp_dir)
+        assert outcome == "created"
+        assert final.is_file()
+
     def test_stat_os_error_propagates(self, tmp_path: Path) -> None:
         # p.exists() must succeed (so the while loop exits), then os.stat(str(p)) raises.
         # In Python 3.12, Path.exists() re-raises non-FileNotFound errors, so we must
@@ -313,8 +324,8 @@ class TestPublishIfAbsent:
         publish_if_absent(final, body, tmp_path / "tmp")
         # Second call with the same record (but may differ in writer-stamped fields).
         rec2 = dict(_record())
-        rec2["writer"] = "agent-2"           # writer-stamped; stripped by content_digest
-        rec2["written_at"] = "2026-01-02"    # writer-stamped
+        rec2["writer"] = "agent-2"  # writer-stamped; stripped by content_digest
+        rec2["written_at"] = "2026-01-02"  # writer-stamped
         body2 = _encode(rec2)
         outcome = publish_if_absent(final, body2, tmp_path / "tmp2")
         assert outcome == "identical"
@@ -389,6 +400,7 @@ class TestPublishIfAbsent:
         calls: list = []
 
         real_fsync = os.fsync
+
         def fake_fsync(fd: int) -> None:
             calls.append(fd)
             if len(calls) >= 2:
@@ -406,6 +418,7 @@ class TestPublishIfAbsent:
         calls: list = []
 
         real_fsync = os.fsync
+
         def fake_fsync(fd: int) -> None:
             calls.append(fd)
             if len(calls) >= 3:
@@ -458,6 +471,7 @@ class TestPublishIfAbsentCrashInjection:
         #   3: _write_tmp fsyncs the file fd
         #   4: fsync_dir(final.parent) -- crash here
         real_fsync = os.fsync
+
         def crash_on_dir_fsync(fd: int) -> None:
             calls.append(fd)
             if len(calls) >= 4:
@@ -484,6 +498,7 @@ class TestPublishIfAbsentCrashInjection:
 
         # fsync sequence: 1,2=mkdir fsyncs, 3=write_tmp, 4=final parent, 5=tmp_dir
         real_fsync = os.fsync
+
         def crash_on_third_fsync(fd: int) -> None:
             calls.append(fd)
             if len(calls) >= 5:
