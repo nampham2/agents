@@ -298,6 +298,28 @@ class SubprocessAdapterTests(unittest.TestCase):
         state = adapter._procs[handle]
         self.assertTrue(state.reaped)
 
+    def test_terminate_sigterm_failure_is_terminal(self) -> None:
+        adapter = SubprocessAdapter(_FAST_CMD)
+        handle = adapter.start({}, self.attempt_dir)
+        state = adapter._procs[handle]
+        state.process.wait(timeout=5)
+
+        with patch.object(execution_adapter.os, "killpg", side_effect=ProcessLookupError):
+            adapter.terminate(handle)
+
+        self.assertTrue(state.reaped)
+
+    def test_terminate_sigterm_permission_failure_is_terminal(self) -> None:
+        adapter = SubprocessAdapter(_FAST_CMD)
+        handle = adapter.start({}, self.attempt_dir)
+        state = adapter._procs[handle]
+        state.process.wait(timeout=5)
+
+        with patch.object(execution_adapter.os, "killpg", side_effect=PermissionError):
+            adapter.terminate(handle)
+
+        self.assertTrue(state.reaped)
+
     # ---- terminate: ChildProcessError in wait loop -------------------------
 
     def test_terminate_child_process_error_in_loop(self) -> None:
@@ -367,6 +389,30 @@ class SubprocessAdapterTests(unittest.TestCase):
             with patch.object(execution_adapter.time, "sleep"):
                 with patch.object(execution_adapter.os, "killpg"):
                     with patch.object(execution_adapter.os, "waitpid", side_effect=ChildProcessError):
+                        adapter.terminate(handle)
+
+        self.assertTrue(state.reaped)
+
+    def test_terminate_sigkill_failure_is_terminal(self) -> None:
+        adapter = SubprocessAdapter(_FAST_CMD)
+        handle = adapter.start({}, self.attempt_dir)
+        state = adapter._procs[handle]
+        state.process.wait(timeout=5)
+
+        call_num = [0]
+
+        def fast_mono() -> float:
+            call_num[0] += 1
+            return 0.0 if call_num[0] == 1 else 100.0
+
+        with patch.object(execution_adapter.time, "monotonic", fast_mono):
+            with patch.object(execution_adapter.time, "sleep"):
+                with patch.object(execution_adapter.os, "waitpid", return_value=(0, 0)):
+                    with patch.object(
+                        execution_adapter.os,
+                        "killpg",
+                        side_effect=[None, ProcessLookupError],
+                    ):
                         adapter.terminate(handle)
 
         self.assertTrue(state.reaped)
