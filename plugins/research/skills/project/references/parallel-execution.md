@@ -1052,7 +1052,8 @@ Three derivations that revision 4 got wrong or omitted:
   build writing artifacts: each is a `writes[]` entry on that check, part of the attempt's grant, and
   part of the conflict relation. A check whose writes cannot be listed makes the plan not enumerable.
 - **Protocol-owned paths are reserved.** `project.json`, `spec.md`, `evidence.md`, `briefing.md`,
-  `reflection.md`, `INDEX.md`, `MEMORY.md`, the `execution/` subtree, and the registry are
+  `reflection.md`, `INDEX.md`, `MEMORY.md`, `POSTMORTEMS.md`, the `execution/` subtree, and the
+  registry are
   coordinator-only. Derivation **rejects** a worker claim naming any of them, any ancestor of any of
   them, or any descendant of `execution/` outside that attempt's own `store:` namespace. A task whose
   declared output is one of these is refused at admission rather than handed to a worker with
@@ -2298,35 +2299,35 @@ not that the sentence citing it is true.
 | Id | Source | Lines | Needle |
 |---|---|---|---|
 | C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1325-1333 | `does not match RUNNING tasks` |
-| C2 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3021-3041 | `def _dependency_levels(` |
-| C3 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3042-3070 | `def build_task_graph(` |
-| C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2955-2962 | `def levels(` |
+| C2 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3071-3091 | `def _dependency_levels(` |
+| C3 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3092-3120 | `def build_task_graph(` |
+| C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3005-3012 | `def levels(` |
 | C5 | `plugins/research/skills/project/SKILL.md` | 191-195 | `One coordinator owns writes to` |
 | C6 | `plugins/research/skills/project/references/workspace-schema.md` | 9-14 | `One coordinator is the sole writer` |
-| C7 | `plugins/research/skills/project/SKILL.md` | 399-403 | `Use a dependency graph only when independent work can run in parallel` |
+| C7 | `plugins/research/skills/project/SKILL.md` | 402-406 | `Use a dependency graph only when independent work can run in parallel` |
 | C8 | `plugins/research/skills/project/scripts/workspace_lib.py` | 319-352 | `class DirectoryLock` |
 | C9 | `plugins/research/skills/project/scripts/workspace_lib.py` | 296-312 | `def atomic_write_text(` |
 | C10 | `plugins/research/skills/project/scripts/workspace_lib.py` | 26-30 | `EFFECT_KINDS = {` |
 | C11 | `plugins/research/skills/project/scripts/workspace_lib.py` | 33-37 | `REFERENCE_ROOTS = {` |
-| C12 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2519-2527 | `unsupported schema_version` |
+| C12 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2569-2577 | `unsupported schema_version` |
 | C13 | `plugins/research/skills/project/scripts/workspace_lib.py` | 454-471 | `def _validate_evidence_reference(` |
-| C14 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2815-2825 | `shell=False,` |
-| C15 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2823-2831 | `command timed out after` |
-| C16 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2855-2868 | `must not see a half-written one` |
+| C14 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2865-2875 | `shell=False,` |
+| C15 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2873-2881 | `command timed out after` |
+| C16 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2905-2918 | `must not see a half-written one` |
 | C17 | `plugins/research/skills/project/scripts/workspace_lib.py` | 26-30 | `AUTHORIZATION_STATUSES = {` |
 | C18 | `plugins/research/skills/project/scripts/workspace_lib.py` | 528-536 | `non-required authorization must use status` |
 | C19 | `plugins/research/skills/project/scripts/workspace_lib.py` | 541-548 | `task requires explicit authorization` |
 | C20 | `plugins/research/skills/project/scripts/workspace_lib.py` | 59-65 | `TASK_TRANSITIONS = {` |
-| C21 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3390-3398 | `IMMUTABLE_PROJECT_FIELDS = (` |
+| C21 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3447-3455 | `IMMUTABLE_PROJECT_FIELDS = (` |
 | C22 | `plugins/research/skills/project/scripts/workspace_lib.py` | 24-30 | `TASK_STATUSES = {` |
 | C23 | `plugins/research/skills/project/scripts/workspace_lib.py` | 538-545 | `source and authorized_at must be null unless status is explicit` |
 | C24 | `plugins/research/skills/project/scripts/workspace_lib.py` | 320-326 | `def __init__(self, path: Path, timeout: float = 5.0) -> None:` |
-| C25 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3482-3490 | `lock_timeout: float = 5.0,` |
+| C25 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3539-3547 | `lock_timeout: float = 5.0,` |
 | C26 | `plugins/research/skills/project/scripts/workspace_lib.py` | 417-435 | `required must be a boolean` |
 | C27 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1318-1326 | `BLOCKED task requires block_reason` |
 | C28 | `plugins/research/skills/project/scripts/workspace_lib.py` | 82-96 | `TASK_FIELDS = {` |
-| C29 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3468-3506 | `with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):` |
-| C30 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3519-3527 | `The commit already landed` |
+| C29 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3525-3563 | `with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):` |
+| C30 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3576-3584 | `The commit already landed` |
 | C31 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1268-1274 | `"success_criteria", "verification"` |
 | C32 | `plugins/research/skills/project/scripts/workspace_lib.py` | 494-500 | `_unexpected_fields(value, {"kind", "description"}, label, report)` |
 

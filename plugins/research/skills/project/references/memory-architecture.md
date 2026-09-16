@@ -52,18 +52,29 @@ every session, and it is the only memory file with a hard size budget:
 
 It is generated, never hand-edited, in exactly the way `INDEX.md` is generated
 (`references/workspace-schema.md:15`). It holds one line per topic file — the topic's name, its
-one-line description, its scope, and its path — grouped by `kind`; and one line per project
-post-mortem, listing the project id, its canonical title, and its status.
+one-line description, its scope, and its path — grouped by `kind`, and then **one** line pointing at
+`POSTMORTEMS.md` with the number of post-mortems it indexes.
 
-The post-mortem lines are built from `project.json` `title`, `status`, and `updated` — the same
-canonical fields `render_index` reads at `scripts/workspace_lib.py:1428` — and never from headings
-inside the post-mortem itself. Canonical titles cannot drift from canonical state; document
-headings demonstrably have.
+The budget is what makes the layer honest, and what the budget is applied to is what makes it
+payable. Everything in this file is a topic pointer, and a topic pointer is the one thing a person
+can merge or retire — so when the budget binds, the remedy the error names is a remedy the reader
+actually holds.
 
-The budget is what makes the layer honest. A pointer costs about one line, so 120 lines is on the
-order of 40 topics plus 40 post-mortems while staying under 3,000 tokens. When the budget binds,
-the fix is to merge topics or retire them — the same editorial instruction as before, except now
-merging *helps*, because merging two topic files removes a pointer line.
+An earlier version of this design put the post-mortem pointers here too, one line per project. That
+was wrong in a way worth recording, because it was only visible in measurement. Those lines are
+generated from canonical state, one per project directory, and **nothing retires them**: the term
+was monotonic. Measured on a real root at the moment it first went over budget, of 12,393 bytes the
+25 topic pointers held 5,480 (mean 219 B) and the 49 post-mortem pointers held 6,577 (mean 134 B).
+So the only prescribed remedy drained a finite, purposeful pool at roughly 200 bytes a merge against
+a growth term of ~134 bytes per project — about one and a half future projects bought per editorial
+act, and the instruction ran out before the workspace did. The same numbers show the two bounds were
+never calibrated to each other either: at that mean line width the byte cap binds near **74** lines,
+so the 120-line bound could not be reached and the "40 topics plus 40 post-mortems" capacity this
+document once claimed was never available.
+
+Post-mortems therefore render into their own generated file, described with Layer 3 below, and the
+budgeted file links to it in one line. What is always read now grows only when a person adds a
+topic, and shrinks when a person merges one.
 
 ### Layer 2 — `memory/<slug>.md`, one topic per file, read by pointer
 
@@ -117,9 +128,19 @@ distinguishes a lesson from an opinion.
 (`SKILL.md:443`), required non-empty for closure (`references/workspace-schema.md:368`). Its format
 does not change.
 
-What changes is that it becomes reachable. `MEMORY.md` lists it by canonical project title, and
-`search-memory` searches its body. It is the deep archive: the place a specific past project's
-reasoning can be recovered, without any of it being loaded by default.
+What changes is that it becomes reachable. `<workspace-root>/POSTMORTEMS.md` lists it by canonical
+project title, and `search-memory` searches its body. It is the deep archive: the place a specific
+past project's reasoning can be recovered, without any of it being loaded by default.
+
+`POSTMORTEMS.md` is generated exactly as `MEMORY.md` is — in full, under `.index.lock`, written
+whenever `MEMORY.md` is written, so the pointer in `MEMORY.md` never names a file that is not there.
+It carries **no size budget**, and that is the point: it is read on demand, by a reader who has
+already decided a named project is worth opening, so its growth costs nothing at discovery. One line
+per project directory holding a readable `reflection.md`.
+
+Those lines are built from `project.json` `title` and `status` — the same canonical fields
+`render_index` reads — and never from headings inside the post-mortem itself. Canonical titles cannot
+drift from canonical state; document headings demonstrably have.
 
 A lesson that generalizes beyond its project is promoted out of a post-mortem into a Layer 2 topic
 file. A lesson that does not generalize stays in the post-mortem, which is now indexed rather than
@@ -209,10 +230,11 @@ here is a read-modify-write under a lock, which is exactly how `record_evidence`
 | Path | Shared | Lock | Why that suffices |
 | --- | --- | --- | --- |
 | `MEMORY.md` | yes | `.index.lock` | Read and write both happen inside it |
+| `POSTMORTEMS.md` | yes | `.index.lock` | Generated in full beside `MEMORY.md` |
 | `memory/<slug>.md` | yes | `.memory.lock` | Read-modify-write is serialized |
 | `<project>/memory-staging.md` | no | `.project.lock` | Only one project can write it |
 
-**`MEMORY.md` needs no discipline of its own.** `rebuild_index` calls `render_index` *inside*
+**The generated files need no discipline of their own.** `rebuild_index` calls `render_index` *inside*
 `.index.lock` (`scripts/workspace_lib.py:1727`) and replaces the file atomically, so there is
 neither a torn read nor a torn write. Because generation reads the whole root rather than applying
 a delta, the loser of a race regenerates from a filesystem that already holds the winner's work:
@@ -256,11 +278,16 @@ already in flight can leave `MEMORY.md` momentarily stale. That is an error only
 Errors — a project cannot validate, and cannot close, while one stands:
 
 - **`MEMORY.md` exceeds 120 lines or 12 KB.** This is the one budget the whole design rests on, and
-  the measured failure above is what happens when it is advisory.
+  the measured failure above is what happens when it is advisory. The bound is measured in **bytes**,
+  as `len(content.encode("utf-8"))`: a pointer line holds an em dash at three bytes, so a character
+  count reads a file over its cap as comfortably under it. `POSTMORTEMS.md` has no budget and cannot
+  raise this one.
 - **A topic file has missing or malformed frontmatter.** An unparseable pointer is an unreachable
   topic, so the body might as well not exist.
-- **`MEMORY.md` disagrees with regeneration.** An error only under `--check-index`, exactly as
-  `INDEX.md` is treated (`references/workspace-schema.md:15`).
+- **`MEMORY.md` or `POSTMORTEMS.md` disagrees with regeneration.** An error only under
+  `--check-index`, exactly as `INDEX.md` is treated (`references/workspace-schema.md:15`). Both are
+  checked, for the same reason: a stale one is a reader following a pointer to something no longer
+  true.
 
 Warnings — reported, never blocking:
 
@@ -274,8 +301,8 @@ Warnings — reported, never blocking:
 
 And one non-finding, stated because it is load-bearing:
 
-> **A workspace root with no `MEMORY.md` and no `memory/` directory is valid, and so is every
-> project in it, with or without a `memory-staging.md`.**
+> **A workspace root with no `MEMORY.md`, no `POSTMORTEMS.md` and no `memory/` directory is valid,
+> and so is every project in it, with or without a `memory-staging.md`.**
 
 Every project created before this architecture existed must stay valid and stay reopenable. That is
 the same reason `briefing.md` is absent from the closure requirements
@@ -288,6 +315,7 @@ about canonical project state changes here. Memory lives beside projects, not in
 workspace/
 ├── INDEX.md                 # Generated: projects, canonical status
 ├── MEMORY.md                # Generated under .index.lock; 120 lines / 12 KB
+├── POSTMORTEMS.md           # Generated under .index.lock; no budget, read on demand
 ├── memory/
 │   └── <slug>.md            # One topic; amended under .memory.lock; any length
 └── YYYY-MM-DD-NNN/
@@ -295,7 +323,7 @@ workspace/
     ├── evidence.md          # Appended under .project.lock
     ├── memory-staging.md    # Appended under .project.lock; drained at close
     ├── ...
-    └── reflection.md        # Project post-mortem: unchanged format, now indexed
+    └── reflection.md        # Project post-mortem: unchanged format, indexed by POSTMORTEMS.md
 ```
 
 `research-project init` scaffolds `MEMORY.md` and `memory/` — the same place the flat file was
@@ -303,7 +331,7 @@ created, at `scripts/workspace_lib.py:1988` — and adds either if missing from 
 scaffolds `memory-staging.md` into each new project skeleton instead, beside `evidence.md`. Nothing
 is created anywhere else, and no absence is ever repaired implicitly by validation.
 
-`MEMORY.md` and `memory/` live under the `workspace_root` output root
+`MEMORY.md`, `POSTMORTEMS.md` and `memory/` live under the `workspace_root` output root
 (`references/workspace-schema.md:137`): they are shared records belonging to no single project, so
 a task that writes one declares it there. `memory-staging.md` belongs to its project and is
 declared under `workspace`, exactly like `evidence.md`.
@@ -370,7 +398,8 @@ hooks ever become portable across the three hosts.
 
 **Automatic clustering or merging of topic files.** Merging is an editorial judgement about
 meaning. Under this design the budget makes the pressure to merge visible at the moment it matters,
-and a person merges.
+and a person merges. This is also why the budgeted file may hold only what merging can fix: pressure
+a reader cannot relieve by any act the design offers is not pressure, it is a wall.
 
 **A `schema_version` bump.** Nothing in canonical project state changes here. Bumping it would
 invalidate every existing project in order to add a file beside them.
