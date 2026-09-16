@@ -336,14 +336,14 @@ is migrated implicitly.
 Two prior architectures informed this design, and most of what makes each of them powerful is
 absent here. The reason is almost always the same, so it is worth stating once:
 
-> A shared plugin change must work in **Claude Code, Codex, and Kimi Code** (`AGENTS.md:43`), and
+> A shared plugin change must work in **Claude Code and Codex** (`AGENTS.md:41`), and
 > shipped scripts must run on stock macOS **Python 3.9** using **only the standard library**
 > (`AGENTS.md:74`). Anything that needs a host-specific hook, a background process, a model, or a
 > compiled extension either works on one host or works nowhere.
 
 **A vector index, embeddings, or semantic search.** Needs a model and either a background daemon or
 a compiled extension. Lexical matching over `description` and `scope` is what remains available on
-all three hosts, which is precisely why those two fields carry the retrieval weight.
+both hosts, which is precisely why those two fields carry the retrieval weight.
 
 **SQLite FTS5 with `sqlite-vec`.** FTS5 is not guaranteed in a stock `python3` build and
 `sqlite-vec` is a compiled extension. A search index that fails to open on one host is worse than

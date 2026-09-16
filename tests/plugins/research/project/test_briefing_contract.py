@@ -28,7 +28,7 @@ from workspace_lib import (
     BRIEFING_SECTION_PROMPTS,
     allocate_project,
     briefing_section_warnings,
-    validate_v3_state,
+    validate_v4_state,
 )
 
 CANONICAL_BRIEFING = "# Title — briefing\n\n" + "".join(
@@ -129,9 +129,7 @@ class BriefingSkeletonTests(unittest.TestCase):
         self.workspace.mkdir()
         self.target = self.root / "target"
         self.target.mkdir()
-        self.project_dir = allocate_project(
-            self.workspace, title="Briefing demo", working_directory=self.target
-        )
+        self.project_dir = allocate_project(self.workspace, title="Briefing demo", working_directory=self.target)
         self.briefing = (self.project_dir / "briefing.md").read_text(encoding="utf-8")
 
     def test_init_creates_the_briefing_file(self) -> None:
@@ -152,9 +150,7 @@ class BriefingSkeletonTests(unittest.TestCase):
     def test_every_canonical_section_has_a_prompt(self) -> None:
         # A heading whose prompt was forgotten would raise a KeyError while rendering, so the
         # mapping and the contract must stay in step.
-        self.assertEqual(
-            sorted(BRIEFING_SECTION_PROMPTS), sorted(c for c, _ in BRIEFING_CANONICAL_SECTIONS)
-        )
+        self.assertEqual(sorted(BRIEFING_SECTION_PROMPTS), sorted(c for c, _ in BRIEFING_CANONICAL_SECTIONS))
 
     def test_the_existing_skeleton_files_are_still_written(self) -> None:
         for name in ("project.json", "spec.md", "evidence.md"):
@@ -180,7 +176,7 @@ class BriefingValidationTests(unittest.TestCase):
         return state
 
     def _briefing_warnings(self, status: str, **kwargs: Any) -> list[str]:
-        report = validate_v3_state(self._state(status), self.project_dir, **kwargs)
+        report = validate_v4_state(self._state(status), self.project_dir, **kwargs)
         self.assertTrue(report.valid, report.errors)
         return [warning for warning in report.warnings if "briefing.md" in warning]
 
@@ -230,7 +226,7 @@ class BriefingValidationTests(unittest.TestCase):
             }
         ]
         (self.project_dir / "reflection.md").write_text("# Reflection\n\nWent fine.\n", encoding="utf-8")
-        report = validate_v3_state(state, self.project_dir, close=True)
+        report = validate_v4_state(state, self.project_dir, close=True)
         self.assertTrue(report.valid, report.errors)
         self.assertEqual([error for error in report.errors if "briefing" in error], [])
         self.assertTrue([warning for warning in report.warnings if "briefing.md" in warning])
@@ -238,7 +234,7 @@ class BriefingValidationTests(unittest.TestCase):
     def test_an_unreadable_briefing_is_reported_rather_than_raised(self) -> None:
         (self.project_dir / "briefing.md").write_bytes(b"# T\n\n## Stated requirements\n\n\xff\xfe\n")
         with self.assertRaises(Exception) as caught:
-            validate_v3_state(self._state("PLANNING"), self.project_dir)
+            validate_v4_state(self._state("PLANNING"), self.project_dir)
         self.assertIn("briefing.md", str(caught.exception))
 
     def test_the_warning_reaches_the_cli_without_failing_it(self) -> None:

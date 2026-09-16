@@ -177,6 +177,23 @@ class ValidateV4StateTests(unittest.TestCase):
         report = validate_v4_state(s, self.project_dir, close=True, check_files=True)
         self.assertEqual([], report.errors)
 
+    def test_v4_task_reads_are_optional_but_must_be_unique_safe_relative_paths(self) -> None:
+        task = _base_task("T01", "TODO")
+        task["reads"] = ["src/input.py"]
+        self.assertEqual([], validate_v4_state(self._state(tasks=[task]), self.project_dir).errors)
+
+        cases = [
+            ("src/input.py", "reads must be a list"),
+            (["src/input.py", "src/input.py"], "reads contains duplicates"),
+            (["../input.py"], "invalid read"),
+        ]
+        for reads, message in cases:
+            with self.subTest(reads=reads):
+                changed = _base_task("T01", "TODO")
+                changed["reads"] = reads
+                report = validate_v4_state(self._state(tasks=[changed]), self.project_dir)
+                self.assertTrue(any(message in error for error in report.errors))
+
     # ---- schema_version -------------------------------------------------------
 
     def test_schema_version_not_4_rejected(self) -> None:
@@ -739,8 +756,9 @@ class EnableExecutionTests(unittest.TestCase):
         self._config_path().parent.mkdir(parents=True, exist_ok=True)
         self._config_path().write_text(json.dumps({"stub": True}), encoding="utf-8")
         import io
+
         with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
-            enable_execution(self.project_dir, expected_revision=1, legacy_writers_quiesced=True)
+            enable_execution(self.project_dir, expected_revision=1, legacy_writers_quiesced=False)
             self.assertIn("already enabled", mock_out.getvalue())
 
     def test_already_v4_without_config_raises(self) -> None:
@@ -768,9 +786,9 @@ class EnableExecutionTests(unittest.TestCase):
 
         def fake_stat(path, **kwargs):
             result = real_stat(path, **kwargs)
-            # Return a stat result with a different st_dev for tempfile.gettempdir()
-            import tempfile
-            if str(path) == tempfile.gettempdir():
+            # Return a stat result with a different st_dev for the execution tmp directory.
+            if str(path).endswith("/execution/tmp"):
+
                 class _FakeStat:
                     def __init__(self, real):
                         self.__dict__.update(real.__class__.__dict__)
@@ -839,6 +857,7 @@ class EnableExecutionTests(unittest.TestCase):
             return v4_state
 
         import io
+
         with patch("workspace_lib.load_json", side_effect=fake_load):
             with patch("sys.stdout", new_callable=io.StringIO) as mock_out:
                 enable_execution(self.project_dir, expected_revision=0, legacy_writers_quiesced=True)
@@ -905,7 +924,8 @@ class EnableExecutionCliTests(unittest.TestCase):
             [
                 "enable-execution",
                 str(self.project_dir),
-                "--expected-revision", "0",
+                "--expected-revision",
+                "0",
                 "--legacy-writers-quiesced",
             ]
         )
@@ -918,7 +938,8 @@ class EnableExecutionCliTests(unittest.TestCase):
             [
                 "enable-execution",
                 str(self.project_dir),
-                "--expected-revision", "0",
+                "--expected-revision",
+                "0",
                 # no --legacy-writers-quiesced → R-LEGACY-WRITER error
             ]
         )

@@ -5,7 +5,7 @@ Read this reference at closure, when writing a project's `artifacts/report.md` a
 is built from, the chart rules, and the arithmetic check that stands in for looking at the result.
 
 It is deliberately self-contained and host-agnostic. It names no host skill and depends on none, so
-the closure step behaves the same in Claude Code, Codex and Kimi Code. Where it restates guidance
+the closure step behaves the same in Claude Code and Codex. Where it restates guidance
 that a host also provides, the restatement is the authority here.
 
 ## What the report is for

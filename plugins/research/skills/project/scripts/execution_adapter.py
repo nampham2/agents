@@ -8,13 +8,14 @@ ships two implementations:
 
 Phase 4/5 used FakeAdapter.  Phase 6 introduces SubprocessAdapter for production use.
 """
+
 from __future__ import annotations
 
 import os
 import signal
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 # ---------------------------------------------------------------------------
 # Exceptions
@@ -29,7 +30,7 @@ class AdapterError(RuntimeError):
 # Return-value sentinels (§17, §8.2)
 # ---------------------------------------------------------------------------
 
-START_AMBIGUOUS = "ambiguous"   # start returned ambiguous; capability was consumed
+START_AMBIGUOUS = "ambiguous"  # start returned ambiguous; capability was consumed
 
 OBSERVE_RUNNING = "running"
 OBSERVE_FINISHED = "finished"
@@ -68,10 +69,10 @@ class FakeAdapter:
         self._terminate_raises: Optional[AdapterError] = None
 
         # Inspection records — tests may assert on these.
-        self.started: List[Dict[str, Any]] = []     # one entry per start call
-        self.observed: List[str] = []               # handles passed to observe
-        self.sealed: List[str] = []                 # handles passed to seal
-        self.terminated: List[str] = []             # handles passed to terminate
+        self.started: List[Dict[str, Any]] = []  # one entry per start call
+        self.observed: List[str] = []  # handles passed to observe
+        self.sealed: List[str] = []  # handles passed to seal
+        self.terminated: List[str] = []  # handles passed to terminate
 
     # ------------------------------------------------------------------
     # Queue-loading helpers
@@ -167,10 +168,11 @@ def _file_size(path: str) -> int:
 
 
 class _ProcState:
-    __slots__ = ("attempt_dir", "exit_code", "pgid", "pid", "reaped")
+    __slots__ = ("attempt_dir", "exit_code", "pgid", "pid", "process", "reaped")
 
-    def __init__(self, pid: int, pgid: int, attempt_dir: str) -> None:
-        self.pid = pid
+    def __init__(self, process: subprocess.Popen[Any], pgid: int, attempt_dir: str) -> None:
+        self.process = process
+        self.pid = process.pid
         self.pgid = pgid
         self.reaped: bool = False
         self.exit_code: Optional[int] = None
@@ -188,25 +190,36 @@ class SubprocessAdapter:
     perspective.
     """
 
-    def __init__(self, command: List[str]) -> None:
+    def __init__(
+        self,
+        command: List[str],
+        *,
+        cwd: Optional[str] = None,
+        env: Optional[Mapping[str, str]] = None,
+    ) -> None:
         self._command = list(command)
+        self._cwd = cwd
+        self._env = dict(env or {})
         self._procs: Dict[str, _ProcState] = {}
 
     def start(self, plan: Dict[str, Any], attempt_dir: str) -> str:
         stdout_path = os.path.join(attempt_dir, "stdout.txt")
         stderr_path = os.path.join(attempt_dir, "stderr.txt")
+        child_env = os.environ.copy()
+        child_env.update(self._env)
         with open(stdout_path, "w") as stdout_fh, open(stderr_path, "w") as stderr_fh:
             proc = subprocess.Popen(
                 self._command,
                 stdout=stdout_fh,
                 stderr=stderr_fh,
                 start_new_session=True,
-                cwd=attempt_dir,
+                cwd=self._cwd or attempt_dir,
+                env=child_env,
             )
         pid = proc.pid
         pgid = os.getpgid(pid)
         handle = f"pid:{pid}:pgid:{pgid}"
-        self._procs[handle] = _ProcState(pid, pgid, attempt_dir)
+        self._procs[handle] = _ProcState(proc, pgid, attempt_dir)
         return handle
 
     def observe(self, handle: str) -> str:

@@ -149,19 +149,21 @@ def publish_if_absent(final: Path, body: bytes, tmp_dir: Path) -> str:
 
 
 def _check_same_volume(final: Path, tmp_dir: Path) -> None:
-    # Walk up to the nearest existing ancestor for the stat when the parent does not yet exist.
-    p = final.parent
-    while not p.exists():
-        p = p.parent
+    # Walk up to the nearest existing ancestor for either path. Fresh projects have neither the
+    # destination family nor runtime/tmp yet; both are created only after this safety check.
+    final_ancestor = final.parent
+    while not final_ancestor.exists():
+        final_ancestor = final_ancestor.parent
+    tmp_ancestor = tmp_dir
+    while not tmp_ancestor.exists():
+        tmp_ancestor = tmp_ancestor.parent
     try:
-        dev_final = os.stat(str(p)).st_dev
-        dev_tmp = os.stat(str(tmp_dir)).st_dev if tmp_dir.exists() else os.stat(str(tmp_dir.parent)).st_dev
+        dev_final = os.stat(str(final_ancestor)).st_dev
+        dev_tmp = os.stat(str(tmp_ancestor)).st_dev
     except OSError as exc:
         _to_store_error(exc)
     if dev_final != dev_tmp:
-        raise StoreError(
-            f"final ({final.parent}) and tmp_dir ({tmp_dir}) are on different volumes"
-        )
+        raise StoreError(f"final ({final.parent}) and tmp_dir ({tmp_dir}) are on different volumes")
 
 
 def _write_tmp(body: bytes, tmp_dir: Path) -> Path:
@@ -251,8 +253,7 @@ class _RegistryLock:
             except FileExistsError:
                 if time.monotonic() >= deadline:
                     raise GrantRegistryError(
-                        f"registry lock busy: {self._path}; "
-                        "inspect the directory before removing a stale lock"
+                        f"registry lock busy: {self._path}; inspect the directory before removing a stale lock"
                     ) from None
                 time.sleep(0.05)
 
