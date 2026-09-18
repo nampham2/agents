@@ -2,17 +2,17 @@
 name: grill
 user-invocable: false
 description: >
-  Use when the project skill reaches its alignment step and needs an agreed objective rather than an
-  assumed one, or when review feedback changes a requirement and the change needs agreeing rather
-  than assuming. Interviews the user in rounds until the goal is genuinely shared, then stops. This
+  Use within a project when substantial unresolved scope decisions need an interview, or the user
+  requests one. Clear requests and ordinary feedback do not need this step. Interviews the user
+  in rounds until the open decisions are settled, then stops. This
   is an internal component of the project lifecycle: do not invoke it to ask an ordinary clarifying
   question, and do not invoke it outside a project.
 ---
 
 # Grill
 
-A component of the `project` skill, not a command. `project` invokes it at its alignment step and
-again when review feedback changes a requirement; there is no user-facing entry point.
+An optional component of the `project` skill. Invoke it for substantial ambiguity, not as a routine
+checkpoint. Claude hides its slash command; Codex still exposes it.
 
 Interview the user until the goal is shared rather than assumed, then stop and hand back. The
 subject need not be code: a plan, a design, a piece of writing, or a business call all grill.
@@ -70,11 +70,11 @@ Every question, in either format, carries your **recommended answer**. A recomme
 makes a round answerable in one pass and disagreement cheap; withholding one to seem neutral just
 moves the work back to the user.
 
-For closed-ended choices, use `AskUserQuestion`: two to four concrete options per question, up to
-four questions per call, each option describing its trade-off rather than restating its label. Put
+For closed-ended choices, use the host's available question tool (or plain text): concrete options,
+within the tool's question limit, each option describing its trade-off rather than restating its label. Put
 the recommended option first and mark it `(Recommended)`. Use option previews for anything the user
 would rather see than read — a layout, a path structure, a resolution order, a snippet. Split a
-frontier wider than four questions across successive calls in the same round.
+frontier across successive calls only when the tool limit requires it.
 
 For open-ended questions, ask in plain text:
 
@@ -121,9 +121,9 @@ one confirmation.
 
 The consensus is state, not conversation, and recording it is part of the session:
 
-- Read `briefing.md` first. The briefing step recorded the user's stated requirements, the facts it
+- Read the current specification and `briefing.md` if present. An optional briefing records requirements, the facts it
   verified with their sources, the assumptions it had to correct, and the background the user was
-  missing. Those facts are settled: restate them as facts if a round needs them, but do not spend a
+  missing. Use current, supported facts if a round needs them, but do not spend a
   question or a second lookup re-establishing them. Its `## Open questions for grill` section is your
   starting frontier — the questions the briefing could not settle are exactly the ones that need the
   user. A fact the interview later contradicts is a correction to make out loud and to record as a

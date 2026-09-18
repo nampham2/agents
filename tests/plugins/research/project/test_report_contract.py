@@ -105,17 +105,12 @@ class ReportSectionContractTests(unittest.TestCase):
     def test_a_written_pair_warns_about_nothing(self) -> None:
         self.assertEqual(report_warnings(_project()), [])
 
-    def test_an_absent_pair_names_both_files_rather_than_the_directory(self) -> None:
-        # A missing `artifacts/` is not its own diagnosis: `init` creates the directory, and an
-        # absent report file is the finding either way.
-        warnings = report_warnings(_project(markdown=None, html=None))
-        self.assertEqual(
-            warnings,
-            [
-                f"no closing report at {REPORT_DIRECTORY}/{REPORT_MARKDOWN_FILENAME}",
-                f"no closing report at {REPORT_DIRECTORY}/{REPORT_HTML_FILENAME}",
-            ],
-        )
+    def test_an_absent_optional_pair_is_silent(self) -> None:
+        self.assertEqual(report_warnings(_project(markdown=None, html=None)), [])
+
+    def test_a_partial_pair_still_names_the_missing_file(self) -> None:
+        self.assertEqual(report_warnings(_project(markdown=None)), ["no closing report at artifacts/report.md"])
+        self.assertEqual(report_warnings(_project(html=None)), ["no closing report at artifacts/report.html"])
 
     def test_a_missing_markdown_section_is_named_as_missing(self) -> None:
         warnings = report_warnings(_project(markdown=GOOD_MARKDOWN.replace("## Open work\n\nWritten.\n\n", "")))
@@ -239,18 +234,14 @@ class ReportTriggerTests(unittest.TestCase):
             with self.subTest(status=status):
                 self.assertEqual(self._report_warnings(status), [])
 
-    def test_closing_warns_once_per_missing_file(self) -> None:
-        self.assertEqual(len(self._report_warnings("EXECUTING", close=True)), 2)
+    def test_closing_without_optional_reports_is_silent(self) -> None:
+        self.assertEqual(self._report_warnings("EXECUTING", close=True), [])
 
-    def test_an_already_done_project_warns_without_the_close_flag(self) -> None:
-        # Re-validating a closed project is how a reader finds out it has no report; `--close` is not
-        # available to them, because they are not the one closing it.
-        self.assertEqual(len(self._report_warnings("DONE")), 2)
+    def test_an_already_done_project_needs_no_report(self) -> None:
+        self.assertEqual(self._report_warnings("DONE"), [])
 
-    def test_a_cancelled_project_warns_too(self) -> None:
-        # The step runs on the cancelled path as well: what was abandoned and why is exactly what a
-        # successor needs, and it is the case most likely to be skipped.
-        self.assertEqual(len(self._report_warnings("CANCELLED")), 2)
+    def test_a_cancelled_project_needs_no_report(self) -> None:
+        self.assertEqual(self._report_warnings("CANCELLED"), [])
 
     def test_the_check_is_skipped_when_files_are_not_being_read(self) -> None:
         self.assertEqual(self._report_warnings("DONE", check_files=False), [])
@@ -642,10 +633,8 @@ class DocumentedContractTests(unittest.TestCase):
     """
 
     SURFACES = (
-        "plugins/research/skills/project/SKILL.md",
         "plugins/research/skills/project/references/report-design.md",
         "plugins/research/skills/project/references/workspace-schema.md",
-        "plugins/research/skills/project/README.md",
     )
 
     def _documented(self, path: Path) -> "list[list[str]]":
@@ -675,16 +664,8 @@ class DocumentedContractTests(unittest.TestCase):
                 for name, _ in REPORT_CANONICAL_SECTIONS:
                     self.assertNotIn(f"### {name}", content)
 
-    def test_the_skill_documents_the_step_on_the_cancelled_path_too(self) -> None:
-        # The path most likely to skip the report is the one where nobody feels like writing one.
-        content = (REPO_ROOT / "plugins/research/skills/project/SKILL.md").read_text(encoding="utf-8")
-        closure = content[content.index("## 8. Cancel, block, or close") :]
-        cancellation = closure[: closure.index("Before successful closure:")]
-
-        self.assertIn("report", cancellation)
-
     def test_the_documented_invocations_match_the_implemented_flags(self) -> None:
-        content = (REPO_ROOT / "plugins/research/skills/project/SKILL.md").read_text(encoding="utf-8")
+        content = (REPO_ROOT / "plugins/research/skills/project/references/commands.md").read_text(encoding="utf-8")
 
         for step in CLOSURE_STEPS:
             self.assertIn(f"--step {step}", content)
@@ -694,7 +675,7 @@ class DocumentedContractTests(unittest.TestCase):
         documented = [line for line in content.splitlines() if "record-evidence" in line and "--step" in line]
         self.assertTrue(documented)
         for line in documented:
-            self.assertIn("<project-directory>", line)
+            self.assertIn("<project-dir>", line)
 
 
 if __name__ == "__main__":  # pragma: no cover

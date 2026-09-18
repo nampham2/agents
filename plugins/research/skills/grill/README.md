@@ -5,10 +5,9 @@ about a plan, design, or decision until the goal is genuinely shared, then stops
 exists because the expensive failure in agent work is not bad code: it is an agent that was
 confidently building the wrong thing, and a plan the user nodded at rather than decided.
 
-This page is for contributors to this repository. Users do not invoke `grill`; `project` does, at its
-alignment step and again when review feedback changes a requirement. There is no user-facing entry
-point, and adding one back is a decision to make deliberately rather than by accident — see
-[Why it is hidden](#why-it-is-hidden).
+This page is for contributors. `project` invokes `grill` only for substantial unresolved scope
+decisions or a requested interview. Clear requests and routine feedback skip it. Claude hides its
+slash command; Codex still exposes it — see [Why it is hidden](#why-it-is-hidden).
 
 ## How a session runs
 
@@ -18,8 +17,8 @@ on an answer nobody has given yet. Answers push the frontier outward and the nex
 that unblocked. A dozen questions usually land in about three rounds.
 
 Every question carries a recommended answer, so the user can agree, disagree, or answer by number
-without reconstructing the reasoning first. Closed-ended choices go through `AskUserQuestion` with
-previews; open-ended ones are numbered text.
+without reconstructing the reasoning first. Closed-ended choices use the host's available question
+tool, falling back to plain text; open-ended ones are numbered text.
 
 Facts are the agent's job: anything the filesystem, the repository, or the documentation can settle
 gets looked up rather than asked, and is reported with its source so a wrong one can be corrected.
@@ -39,12 +38,13 @@ Everything `grill` records lands in the project workspace, never here:
 - nothing at all in `briefing.md`, which the briefing step owns. A fact the interview contradicts is
   a dated correction in `spec.md`, not a rewrite of the briefing.
 
-The project may not leave `ALIGNING` until the confirmation is on record.
+When an interview is needed, its unresolved decisions require confirmation before leaving
+`ALIGNING`. Projects with a clear user request proceed without an interview.
 
 ## Why it is hidden
 
 `SKILL.md` carries `user-invocable: false`, which hides the slash command while leaving the skill
-reachable by the model through the Skill tool — so `project`'s three invocation sites are unaffected.
+reachable by the model through the Skill tool — so `project` can invoke it when needed.
 The frontmatter `description` was narrowed to project-lifecycle triggers at the same time, because
 the flag alone would still have let a plain-English "grill me on this plan" start a standalone
 session that no longer has anywhere to record its result.

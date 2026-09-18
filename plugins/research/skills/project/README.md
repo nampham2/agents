@@ -1,244 +1,96 @@
 # Project
 
-`project` is a Claude Code and Codex skill for substantial projects that should remain resumable and
-auditable across sessions. It keeps the specification, task state, evidence, reviews,
-deliverables, and project history in a persistent workspace.
+A Claude Code and Codex skill for work that needs to survive across sessions. Invoke
+`/research:project` with the outcome and workspace location, or set `RESEARCH_WORKSPACE` once.
 
-Use it through prompts with `/research:project`. Claude manages the workspace state and supporting
-tools while preserving explicit authorization boundaries for destructive and external actions.
+```text
+/research:project Use /path/to/workspace. Implement the parser fix in /path/to/repo,
+verify malformed-input handling, and leave the change ready for review.
+```
 
-## Say where the workspace is
+The skill keeps a short specification, canonical task state, and verification evidence. It asks
+about unresolved decisions and proceeds when your request is clear. Ordinary one-turn changes
+usually do not need a persistent project.
 
-The skill never guesses the workspace root. It takes the first of these that exists, and asks if
-none do:
+## Defaults
 
-1. a path you give it in the prompt;
-2. the `RESEARCH_WORKSPACE` environment variable;
-3. a bounded search for established roots, whose results it reports rather than adopting;
-4. a question to you.
+- Sequential work, with a few tasks representing deliverable milestones.
+- Compact resume context instead of loading all task history, logs, and memory.
+- Small revision-checked updates; code maintains the full JSON state.
+- Real command evidence captured by the tool.
+- A brief closure/handoff note. Reports, charts, task-graph presentations, memory promotion,
+  alignment interviews, and parallel workers are optional.
 
-The current working directory is deliberately not a fallback. Guessing is what produces two
-workspaces holding divergent copies of the same project, and no later validation can reconcile them.
+Use the supplied workspace path, otherwise `RESEARCH_WORKSPACE`. Without either, the skill
+searches established roots, uses a unique result, and asks if discovery is ambiguous or empty.
+A new root is created only at the location you request. The skill states the root before writing.
 
-Set the variable once and every session finds the same workspace:
+## Start, resume, review
+
+```text
+/research:project Start a project to produce an onboarding guide in docs/onboarding.md.
+Audience: new analysts. Verify every command.
+
+/research:project Resume project 2026-09-18-001 and implement the next task.
+
+/research:project Record this feedback and revise the guide: <feedback>
+
+/research:project Validate the project and close it when the required work is complete.
+```
+
+Clear feedback updates the specification directly. Substantial ambiguity can use the internal
+`grill` interview. Review checkpoints are required when requested, not for every project.
+Maintenance reopens the project that owns the deliverable and appends new tasks; completed
+history remains immutable.
+
+Repository outputs stay in the target repository. Workspace notes remain in the project directory.
+Destructive and external actions need authorization for the exact scope; already authorized work
+does not need repeated confirmation. Completed external work also records a durable receipt.
+A requested code change does not automatically add publishing, pushing, or merging.
+
+## Commands
+
+Both hosts use the same stdlib Python implementation. Claude invokes the commands from `PATH`;
+Codex uses launchers beside the loaded skill.
 
 ```sh
-export RESEARCH_WORKSPACE=/path/to/workspace
+research-project init /path/to/workspace --title "Parser fix" --working-directory /path/to/repo
+research-project context /path/to/project
+research-project context /path/to/project --task T01
+research-project update /path/to/project /path/to/patch.json --expected-revision 2
+research-project record-evidence /path/to/project --task T01 -- uv run pytest -q
+research-validate /path/to/project --close --check-index
 ```
 
-Or name it in the prompt when you want a different one:
+See [references/commands.md](references/commands.md) for patch examples and optional executor use.
+`update` uses the existing commit guards and automatically derives `current_tasks`; omitted tasks
+and fields remain unchanged. It does not bypass dependencies, evidence, authorization, or revision
+checks. A stale revision requires reloading and reconciling.
 
-```text
-/research:project Use the workspace at ~/research/workspace and list its projects.
-```
+`context` checks structure and returns task counts, up to five active summaries/ready IDs, the
+current specification (up to 6,000 characters), and review/execution state. Truncation is explicit.
+`--task` returns one task in full. Run the validator on resume to check filesystem evidence too.
 
-A workspace root that does not exist is an error rather than something created behind your back. To
-start a genuinely new workspace, say so:
+New projects remain schema v4 for compatibility, but initialization does not dispatch workers.
+`init --briefing` adds the optional discovery template. Older v3 projects remain sequential;
+migration and execution activation still require explicit authorization.
 
-```text
-/research:project Create a new workspace at ~/research/workspace and start a project there.
-```
+## Optional extras
 
-## Create a project
+Use `show-graph` when dependencies are worth visualizing. Choose `run-auto` only when workers
+are authorized and its narrow admission rules fit the work; it is not a prerequisite for sequential
+execution. Existing executor state and recovery guarantees remain supported.
 
-Describe the outcome, audience, important constraints, deliverables, and what success looks like:
+Write a report when it is part of the deliverable, in the format the user needs. The historical
+Markdown/HTML pair and `research-validate --report` remain available; no report files means no
+report warning at closure. A short `reflection.md` remains required by the existing schema.
 
-```text
-/research:project Create a new project to produce an onboarding guide for data analysts.
-The audience is non-technical, the guide belongs in docs/onboarding.md, and every command must have
-a verification step.
-```
+Cross-project memory is searched on demand. Promoting a useful lesson is optional; every commit
+still regenerates indexes. If index generation fails after a commit, run the recovery command it
+prints instead of repeating the mutation.
 
-The skill discovers the relevant context, agrees the goal with you, creates a persistent project,
-establishes its specification and plan, performs the work, and records verification evidence.
+Installed plugins are copied into host-managed caches. Updating this source tree does not change
+an installed copy; update/reinstall through the host marketplace to use the new release.
 
-Before the interview, the skill briefs the problem. You state your requirements; it then reads the
-code and the environment and writes down what it found: the claims it could confirm and where, the
-assumptions of yours that turned out to be wrong, and the background you may not have had. Not
-knowing the background of a problem you want solved is the normal case, and the corrections are the
-point of the step. All of it goes into the project's `briefing.md`, so the reasoning survives the
-session rather than living in a transcript, and the questions it could not settle become the
-interview's opening round.
-
-Agreement is a real step, not a formality. The skill hands alignment to the [`grill`](../grill/)
-skill, which interviews you in rounds about the decisions that are actually unsettled, recommends an
-answer to each one, and then states its understanding back and asks you to confirm it. Nothing
-reaches the planning stage until you have. The confirmation and every decision behind it are written
-into the project's `spec.md`, so a later session can see what was agreed and when — not just what
-was built.
-
-Review feedback that changes a requirement, rather than an implementation detail, goes back through
-the same interview, scoped to the part it affects. Settled decisions stay settled.
-
-New projects use a dated project directory under the workspace:
-
-```text
-workspace/
-├── INDEX.md
-├── MEMORY.md
-├── POSTMORTEMS.md
-├── memory/
-└── YYYY-MM-DD-NNN/
-    ├── project.json
-    ├── briefing.md
-    ├── spec.md
-    ├── evidence.md
-    ├── tasks/
-    ├── execution/
-    ├── artifacts/
-    │   ├── report.md
-    │   └── report.html
-    ├── reviews/
-    └── reflection.md
-```
-
-`briefing.md` holds the briefing; `project.json` is the canonical source for project and task
-status. `INDEX.md` is generated from
-that state and must not be edited by hand. The two files under `artifacts/` are the closing report,
-written when the project closes; see below.
-
-## Automatic parallel execution
-
-Fresh projects use schema v4 and automatically try eligible READY tasks through the guarded
-parallel executor. The coordinator must invoke `research-project run-auto` before any inline task
-work and after each completed wave; a schema-v4 project is not evidence of automatic execution.
-The default capacity is two. Independent tasks can overlap only when they have
-`none` or `local_write` effects, non-overlapping target-file outputs, a clean Git repository, and
-simple read-only checks that cover every required output.
-
-Each admitted task gets an immutable plan and its own Git worktree. A Claude Code or Codex worker
-edits only the declared files; the coordinator verifies and commits that isolated result. Verified
-worker commits are then integrated serially in a separate worktree, all checks are rerun, and the
-target branch advances only after the integrated result passes. Workers cannot start another project
-coordinator.
-
-Tasks outside that envelope are not forced into parallel execution. The run report gives a precise
-reason and the coordinator performs them sequentially with the same authorization and evidence
-requirements. Claim conflicts and capacity limits are deferred to another wave. A failed worker,
-missing output, failed check, or integration race blocks the task without publishing its changes.
-
-Existing schema-v3 projects stay schema v3 and use sequential execution. They are never upgraded
-automatically. Enabling v4 requires explicit user approval plus confirmation that every older writer
-with access to the workspace and target has been upgraded and stopped.
-
-## Find, navigate, and resume projects
-
-Use the project ID when you know it, or describe the deliverable when you do not:
-
-```text
-/research:project List the projects in this workspace and summarize their status.
-
-/research:project Resume project 2026-08-28-001 and tell me what is complete, what remains,
-and what you recommend doing next.
-
-/research:project Show the current specification, task dependencies, deliverables, and
-verification evidence for the onboarding-guide project.
-
-/research:project Show the latest review and summarize which feedback was accepted.
-```
-
-The skill validates recorded state against the filesystem before relying on it. If multiple
-projects could match, it asks which one to resume instead of silently creating a duplicate.
-
-## Make additional changes
-
-Identify the project or its deliverable and describe the desired change:
-
-```text
-/research:project Update the onboarding guide with the new access-request process. Keep the
-existing audience and structure, and reopen the project that owns the guide.
-
-/research:project Apply this feedback to project 2026-08-28-001: shorten the prerequisites,
-add a troubleshooting example, and verify every internal link.
-
-/research:project Correct the false verification record for task T04, preserve the original
-history, and re-run the check.
-```
-
-Maintenance of the same deliverable reopens its completed project and appends tasks, decisions,
-evidence, and reviews. A materially different objective, audience, output, owner, or lifecycle
-creates a linked successor project instead.
-
-State changes use revision-checked commits. Terminal task history is preserved, and completed
-tasks are not rewritten.
-
-## Review, deliver, and close
-
-```text
-/research:project Prepare the current project for review. Summarize the outputs, verification
-results, unresolved items, and pending external actions. Do not publish anything yet.
-
-/research:project Record this review feedback, update the current specification, and revise
-the deliverable: <feedback>
-
-/research:project Publish the approved onboarding guide to <destination>. This authorization
-applies only to that publication.
-
-/research:project Validate the project and close it when all required work, evidence, reviews,
-and delivery receipts are complete.
-```
-
-The skill does not report a project as `DONE` while required work, outputs, verification, review
-acceptance, authorization, or delivery receipts are missing.
-
-Closing also writes a report of the work, in two files under `artifacts/`: `report.md`, the plain
-technical record, and `report.html`, the same findings presented, with charts where something is
-being compared. Neither is generated from the other, and both carry the same five sections:
-
-```text
-## Summary
-## What was done
-## Findings and evidence
-## Limitations and what was not proven
-## Open work
-```
-
-The report is written for someone who was not in the session, which is what neither `evidence.md` (a
-command log) nor `reflection.md` (a post-mortem addressed to future sessions) is for. It is written
-on the way to `CANCELLED` too, where the summary states why the work stopped and `## Open work`
-carries what a successor would pick up. A missing report is a warning at close and never an error,
-so a project closed before this step existed stays valid and stays reopenable.
-
-Project statuses are `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, `BLOCKED`, `DONE`, and
-`CANCELLED`.
-
-Destructive and external actions require authorization scoped to the exact action. External work
-also records a durable receipt. Authorization does not carry over to a reopened project,
-replacement task, or later delivery.
-
-## Migrate an older project
-
-Migration is never applied silently. Ask for a preview, then authorize it explicitly after review:
-
-```text
-/research:project Inspect project 2026-08-28-001 and preview its migration to schema v3.
-Do not change the project yet.
-
-/research:project Apply the reviewed schema-v3 migration to project 2026-08-28-001.
-```
-
-Schema-v2 migration preserves the previous canonical state as `project.v2.json`. Schema-v1
-migration preserves legacy files and imports historical tasks as `TODO`; it does not guess whether
-old work was completed. A v2 external task that was `RUNNING` is parked as `BLOCKED` for
-authorization reconciliation rather than being pre-authorized.
-
-Schema v3 → v4 is a separate execution activation, not part of legacy migration. Ask to enable
-automatic execution explicitly only after all legacy writers are quiescent.
-
-## Good to know
-
-- Use this skill for complex or multi-session work; ordinary one-turn edits usually do not need it.
-- Set `RESEARCH_WORKSPACE` in your shell profile so no session has to ask where the workspace is.
-- Expect to be asked questions before work starts, and expect to be asked to confirm the goal.
-  Answering "your call" to a question is a valid answer; it is recorded as your decision.
-- Describe the desired outcome and authorization boundary instead of editing `project.json` or
-  `INDEX.md` yourself.
-- Generated repository files stay in their requested repository paths; workspace-native notes and
-  artifacts remain with the project.
-- Keep outputs and evidence rooted explicitly as `workspace`, `target`, or `external` references.
-- Do not store credentials, tokens, private keys, or unnecessary personal data in the workspace.
-- If an index rebuild fails after a state commit, the commit remains valid; run the named
-  `rebuild-index` recovery command rather than repeating the original mutation.
-
-For the complete workflow and state model, see [`SKILL.md`](SKILL.md) and
-[`references/workspace-schema.md`](references/workspace-schema.md).
+See [SKILL.md](SKILL.md) for the workflow and
+[references/workspace-schema.md](references/workspace-schema.md) for the stored format.

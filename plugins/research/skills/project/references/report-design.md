@@ -1,6 +1,6 @@
 # Closing report design
 
-Read this reference at closure, when writing a project's `artifacts/report.md` and
+Read this reference only when the optional paired-report format is requested, for `artifacts/report.md` and
 `artifacts/report.html`. It carries the section contract both files share, the CSS baseline the HTML
 is built from, the chart rules, and the arithmetic check that stands in for looking at the result.
 
@@ -26,7 +26,7 @@ one of them:
   act on, because they cannot tell which of their questions it answers. This is why
   `## Limitations and what was not proven` is a required section rather than a courtesy.
 
-The step runs on the cancelled path too. There the summary states the cancellation reason and
+When a report is requested on the cancelled path, the summary states the cancellation reason and
 `## Open work` carries what a successor would pick up. Cancellation is never presented as successful
 completion.
 
@@ -35,10 +35,8 @@ completion.
 `artifacts/report.md` is the plain technical record: readable in a terminal, greppable, diffable.
 `artifacts/report.html` is the same findings and the same numbers, presented, with charts.
 
-**Neither is generated from the other.** The shipped scripts are stdlib-only, so a converter would
-have to be hand-written, and its output would be chartless generic HTML — which is exactly the value
-the HTML form exists to add. Two authored views is more writing and it is the point: the Markdown
-gets to be terse, the HTML gets to be visual, and neither is a degraded rendering of the other.
+Reuse shared content or generate one view from the other when helpful. The plugin does not ship a
+converter. Add charts only when they improve the requested report.
 
 They must not disagree. A figure, a verdict, or a limitation in one belongs in the other.
 
@@ -224,9 +222,8 @@ nowhere for its caption to go.
 
 ### Verify the geometry arithmetically
 
-No screenshot tool is available at closure. You cannot look at the chart, so the chart has to be
-right by construction, and the way to make it right is to write the scale down and check every
-coordinate against it.
+Check the scale and coordinates against the viewBox. When visual inspection tools are available,
+also inspect the rendered chart; arithmetic alone cannot establish readability.
 
 State the scale in an SVG comment, then verify each mark:
 
@@ -394,8 +391,9 @@ for them:
 - whether the prose is readable, or the limitations honest.
 
 Separately, `research-validate --close` and validation of a project already `DONE` or `CANCELLED`
-**warn** when a report is missing, unwritten, missing sections, or missing the task-graph
+**warn** when a report pair is incomplete, unwritten, missing sections, or missing the task-graph
 subsection. That is a warning and never an
 error, on the same reasoning as `briefing.md`: the report postdates every project already in a
-workspace, and a closed project must stay valid and stay reopenable. Nothing warns before close — a
+workspace, and a closed project must stay valid and stay reopenable. No report files means no report
+warning at closure. Nothing warns before close — a
 report cannot exist before the work it reports on.
