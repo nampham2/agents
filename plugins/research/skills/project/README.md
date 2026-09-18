@@ -100,7 +100,9 @@ written when the project closes; see below.
 ## Automatic parallel execution
 
 Fresh projects use schema v4 and automatically try eligible READY tasks through the guarded
-parallel executor. The default capacity is two. Independent tasks can overlap only when they have
+parallel executor. The coordinator must invoke `research-project run-auto` before any inline task
+work and after each completed wave; a schema-v4 project is not evidence of automatic execution.
+The default capacity is two. Independent tasks can overlap only when they have
 `none` or `local_write` effects, non-overlapping target-file outputs, a clean Git repository, and
 simple read-only checks that cover every required output.
 
