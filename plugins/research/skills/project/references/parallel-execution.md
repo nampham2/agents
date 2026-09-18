@@ -98,9 +98,9 @@ which is shipped and tested today.
   useful for *presentation*; §10 schedules on satisfied dependencies, not on level barriers.
 - **The ownership model is already normative.** One coordinator owns writes to `project.json`, shared
   records and `INDEX.md`; workers may write only assigned non-overlapping output paths and must not
-  edit canonical state [C5], stated identically in the schema reference [C6]. The planner is already
-  told to use a dependency graph only where independent work can run in parallel, to assign
-  non-overlapping outputs, and to keep one canonical writer [C7].
+  edit canonical state [C5][C6]. The default workflow is sequential; worker execution is selected
+  only when requested/authorized and useful [C7]. Parallel admission below still requires declared,
+  non-conflicting claims.
 - **Cross-process exclusion already exists.** A `mkdir`-based `DirectoryLock` [C8] plus
   `commit --expected-revision` gives optimistic concurrency: two writers means one loses, reloads and
   reconciles. Its default timeout is 5.0 seconds [C24], and `commit_candidate` inherits that default
@@ -2052,7 +2052,7 @@ The protocol refuses rather than guesses, so whether a project gets any parallel
 by how its tasks are written. Five rules, each of which maps to a refusal code.
 
 1. **Declare every output with its root**, and mark it `required` when success depends on it
-   [C5][C6][C7]. An undeclared output is invisible to the conflict relation (§9.3) and to
+   [C6]. An undeclared output is invisible to the conflict relation (§9.3) and to
    reconciliation (§13.3). An output that is `required: true` and covered by no check refuses
    admission (`R-CHECK-UNCOVERED`).
 2. **Write `verification` as commands, one per line**, with no `&&`, `||`, pipelines, redirection or
@@ -2298,13 +2298,13 @@ not that the sentence citing it is true.
 
 | Id | Source | Lines | Needle |
 |---|---|---|---|
-| C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1325-1333 | `does not match RUNNING tasks` |
+| C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1327-1335 | `does not match RUNNING tasks` |
 | C2 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3071-3091 | `def _dependency_levels(` |
 | C3 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3092-3120 | `def build_task_graph(` |
 | C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3005-3012 | `def levels(` |
-| C5 | `plugins/research/skills/project/SKILL.md` | 191-195 | `One coordinator owns writes to` |
+| C5 | `plugins/research/skills/project/SKILL.md` | 35-39 | `One coordinator owns canonical state` |
 | C6 | `plugins/research/skills/project/references/workspace-schema.md` | 9-14 | `One coordinator is the sole writer` |
-| C7 | `plugins/research/skills/project/SKILL.md` | 402-406 | `Use a dependency graph only when independent work can run in parallel` |
+| C7 | `plugins/research/skills/project/SKILL.md` | 130-138 | `Stay sequential unless parallel work is requested/authorized` |
 | C8 | `plugins/research/skills/project/scripts/workspace_lib.py` | 319-352 | `class DirectoryLock` |
 | C9 | `plugins/research/skills/project/scripts/workspace_lib.py` | 296-312 | `def atomic_write_text(` |
 | C10 | `plugins/research/skills/project/scripts/workspace_lib.py` | 26-30 | `EFFECT_KINDS = {` |
@@ -2324,7 +2324,7 @@ not that the sentence citing it is true.
 | C24 | `plugins/research/skills/project/scripts/workspace_lib.py` | 320-326 | `def __init__(self, path: Path, timeout: float = 5.0) -> None:` |
 | C25 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3539-3547 | `lock_timeout: float = 5.0,` |
 | C26 | `plugins/research/skills/project/scripts/workspace_lib.py` | 417-435 | `required must be a boolean` |
-| C27 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1318-1326 | `BLOCKED task requires block_reason` |
+| C27 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1320-1328 | `BLOCKED task requires block_reason` |
 | C28 | `plugins/research/skills/project/scripts/workspace_lib.py` | 82-96 | `TASK_FIELDS = {` |
 | C29 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3525-3563 | `with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):` |
 | C30 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3576-3584 | `The commit already landed` |

@@ -844,6 +844,8 @@ def report_warnings(project_dir: Path) -> "list[str]":
     to have yet.
     """
     markdown_path, html_path = _report_paths(project_dir)
+    if not markdown_path.exists() and not html_path.exists():
+        return []  # Reports are optional; --report still requires both files when explicitly requested.
     warnings = []
     for path, label in ((markdown_path, REPORT_MARKDOWN_FILENAME), (html_path, REPORT_HTML_FILENAME)):
         relative = f"{REPORT_DIRECTORY}/{label}"
@@ -3590,6 +3592,7 @@ def allocate_project(
     working_directory: Path,
     lock_timeout: float = 5.0,
     create_root: bool = False,
+    briefing: bool = False,
 ) -> Path:
     workspace_root = workspace_root.expanduser()
     if not _non_empty_string(title):
@@ -3653,7 +3656,8 @@ def allocate_project(
             f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n"
             "## Decision history\n\n- Project initialized; requirements pending alignment.\n",
         )
-        atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))
+        if briefing:
+            atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))
         atomic_write_text(project_dir / "evidence.md", f"# Evidence\n\n{EVIDENCE_PLACEHOLDER}")
         atomic_write_text(project_dir / MEMORY_STAGING_FILENAME, MEMORY_STAGING_SKELETON)
         execution_config = _probe_execution_config(project_dir, legacy_writers_quiesced=False)

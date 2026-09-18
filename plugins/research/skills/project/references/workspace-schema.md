@@ -1,7 +1,8 @@
 # Workspace schema v4
 
-Read this reference completely before creating, resuming, migrating, or closing an agentic
-workspace project.
+Consult this reference for migration, unusual state repairs, and exact field/transition rules.
+Routine work uses `context` and `update`; see [commands.md](commands.md). This describes the stored
+format, not a requirement to read the schema or use every optional feature on each session.
 
 ## Authority and writers
 
@@ -104,8 +105,9 @@ execution. An empty list explicitly declares a self-contained task that uses onl
 Omitting `reads` keeps the task valid but makes it `R-UNENUMERABLE`, so it follows the sequential
 path. This field is accepted only by schema v4; schema-v3 task objects remain unchanged.
 
-## Automatic task plans and workers
+## Optional automatic task plans and workers
 
+Sequential coordination is the default, including for v4. When explicitly selected,
 `research-project run-auto <project-dir>` automatically considers READY tasks. Its default capacity
 is two and can be changed with `--concurrency`. Admission requires:
 
@@ -284,7 +286,7 @@ current specification for all accepted requirement changes.
 ## Briefing, specification, and evidence files
 
 `briefing.md` records the briefing step: what the user asked for, and what checking it established.
-It holds these five `##` sections, in this order, which `init` writes as a skeleton:
+It is optional. `init --briefing` writes these five `##` sections as a skeleton:
 
 ```markdown
 # Project title — briefing
@@ -376,7 +378,8 @@ Redact credentials, tokens, private data, and unnecessary command output from ev
 
 ## The closing report
 
-Closure writes a report of the work into the `artifacts/` directory that `init` already created:
+Reports are optional deliverables, not closure requirements. When the legacy paired-report format
+is requested, it uses the `artifacts/` directory that `init` already created:
 
 ```text
 YYYY-MM-DD-NNN/
@@ -385,7 +388,7 @@ YYYY-MM-DD-NNN/
     └── report.html          # The same findings, presented, with charts
 ```
 
-Both files are authored; neither is generated from the other, and nothing in this plugin converts
+Both carry the same findings and may share generated content; nothing in this plugin converts
 between them. Both carry the same five `##` sections, in this order:
 
 ```text
@@ -414,7 +417,7 @@ stated rather than worked around.
 
 Validation severities for the report:
 
-- **Warning** — a report that is missing, still at its placeholder, or missing sections, reported by
+- **Warning** — an incomplete report pair, still at its placeholder, or missing sections, reported by
   `--close` and by validating a project already `DONE` or `CANCELLED`.
 - **Not a finding at all** — the same conditions in `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, or
   `BLOCKED`. A report cannot exist before the work it reports on does, which is why this rule differs
@@ -424,11 +427,12 @@ Validation severities for the report:
   reopening a closed project for maintenance. `report.md` and `report.html` are not in the list of
   files required non-empty at close.
 
-Errors are still possible, but only under `--report`, which nothing runs unless it was asked for:
+No report files means no ordinary closure warning. Errors are still possible, but only under
+`--report`, which nothing runs unless it was asked for:
 that flag exists to make a broken report fail loudly for the author writing it, and it is run through
 `record-evidence --step report` so its exit code becomes a record rather than a claim.
 
-The report is written on the way to `CANCELLED` as well as `DONE`. There the summary states the
+If a report is requested for `CANCELLED`, its summary states the
 cancellation reason and `## Open work` carries what a successor would pick up; the rule that
 cancellation must never be presented as successful completion continues to bind.
 
@@ -458,7 +462,8 @@ per project directory with a readable `reflection.md`, taking its titles and sta
 from canonical state and document headings demonstrably do.
 
 `MEMORY.md` is the only memory file with a size budget: **120 lines and 12 KB**, whichever binds
-first, because it is read in full every session. It is measured in bytes, as
+first, to keep discovery cheap when needed. Memory is consulted on demand, not read every session.
+It is measured in bytes, as
 `len(content.encode("utf-8"))`. A topic file has no budget at all, since nothing loads one until a
 pointer says it is relevant, and neither does `POSTMORTEMS.md`, which is read only once a reader has
 decided a named project is worth opening. The budgeted file therefore holds only what a person can
@@ -496,8 +501,8 @@ continues to live beside projects and remains compatible with schema v3.
 
 ## Transactional updates
 
-Do not write `project.json` directly. Starting from revision `R`, construct a complete candidate and
-run:
+Do not write `project.json` directly. Prefer `update` with a small patch; it constructs the candidate
+and derives `current_tasks`. For a full candidate, starting from revision `R`, run:
 
 ```sh
 research-project commit <project-dir> <candidate.json> \

@@ -129,7 +129,9 @@ class BriefingSkeletonTests(unittest.TestCase):
         self.workspace.mkdir()
         self.target = self.root / "target"
         self.target.mkdir()
-        self.project_dir = allocate_project(self.workspace, title="Briefing demo", working_directory=self.target)
+        self.project_dir = allocate_project(
+            self.workspace, title="Briefing demo", working_directory=self.target, briefing=True
+        )
         self.briefing = (self.project_dir / "briefing.md").read_text(encoding="utf-8")
 
     def test_init_creates_the_briefing_file(self) -> None:
@@ -168,7 +170,7 @@ class BriefingValidationTests(unittest.TestCase):
         self.workspace.mkdir()
         self.target = self.root / "target"
         self.target.mkdir()
-        self.project_dir = allocate_project(self.workspace, title="Brief", working_directory=self.target)
+        self.project_dir = allocate_project(self.workspace, title="Brief", working_directory=self.target, briefing=True)
 
     def _state(self, status: str) -> dict[str, Any]:
         state = json.loads((self.project_dir / "project.json").read_text(encoding="utf-8"))

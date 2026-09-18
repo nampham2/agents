@@ -35,7 +35,7 @@ Two further facts shaped the design:
   Reflection`) and name no project at all, and the rest diverge in wording from the canonical
   `title` in `project.json`. None carry frontmatter, so they cannot be self-indexed.
 
-The design below therefore separates **what is always loaded** from **what is loaded on demand**,
+The design below therefore separates **cheap discovery pointers** from **detail loaded on demand**,
 and enforces a budget on the first in the unit that actually costs the reader: bytes and lines.
 
 ## Layers
@@ -43,10 +43,10 @@ and enforces a budget on the first in the unit that actually costs the reader: b
 Three layers, ordered by how often each is loaded. Each layer is optional: a workspace root missing
 every one of these files stays valid, and so do its projects.
 
-### Layer 1 — `MEMORY.md`, generated, always read
+### Layer 1 — `MEMORY.md`, generated, consulted on demand
 
 `<workspace-root>/MEMORY.md` is a generated index of pointers. It is read in full at discovery,
-every session, and it is the only memory file with a hard size budget:
+when relevant to the work, and it is the only memory file with a hard size budget:
 
 - **120 lines** and **12 KB**, whichever binds first. Exceeding either is an **error**.
 
@@ -73,7 +73,7 @@ so the 120-line bound could not be reached and the "40 topics plus 40 post-morte
 document once claimed was never available.
 
 Post-mortems therefore render into their own generated file, described with Layer 3 below, and the
-budgeted file links to it in one line. What is always read now grows only when a person adds a
+budgeted file links to it in one line. The discovery index grows only when a person adds a
 topic, and shrinks when a person merges one.
 
 ### Layer 2 — `memory/<slug>.md`, one topic per file, read by pointer
@@ -405,6 +405,6 @@ a reader cannot relieve by any act the design offers is not pressure, it is a wa
 invalidate every existing project in order to add a file beside them.
 
 What both prior architectures converged on is what survived here, and it is the whole design: layer
-by load frequency, budget the always-loaded layer, keep the substrate plain text a human can read
+by load frequency, budget the discovery layer, keep the substrate plain text a human can read
 and `grep`, index by pointer rather than by summary, make retrieval explicit, and never let
 advisory memory block canonical state.

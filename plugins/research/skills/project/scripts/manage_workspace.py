@@ -36,13 +36,14 @@ from workspace_lib import (
     validate_v3_state,
     vcs_warnings,
 )
+from workspace_session import project_context, update_project
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    initialize = subparsers.add_parser("init", help="Atomically allocate and initialize a v3 project")
+    initialize = subparsers.add_parser("init", help="Atomically allocate and initialize a v4 project")
     initialize.add_argument(
         "workspace_root",
         nargs="?",
@@ -57,6 +58,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="create the workspace root when it does not exist; without this a missing root is an error",
     )
     initialize.add_argument("--lock-timeout", type=float, default=5.0)
+    initialize.add_argument("--briefing", action="store_true", help="also scaffold an optional discovery briefing")
+
+    context = subparsers.add_parser("context", help="Print bounded resume context without completed task history")
+    context.add_argument("project_directory", type=Path)
+    context.add_argument("--limit", type=int, default=5)
+    context.add_argument("--task", help="include one complete task definition")
+
+    update = subparsers.add_parser("update", help="Merge a small JSON patch through the guarded commit path")
+    update.add_argument("project_directory", type=Path)
+    update.add_argument("patch_json", type=Path)
+    update.add_argument("--expected-revision", type=int, required=True)
+    update.add_argument("--lock-timeout", type=float, default=5.0)
 
     commit = subparsers.add_parser("commit", help="Commit a complete candidate project.json transactionally")
     commit.add_argument("project_directory", type=Path)
@@ -301,6 +314,7 @@ def main() -> int:
                 working_directory=args.working_directory,
                 lock_timeout=args.lock_timeout,
                 create_root=args.create_root,
+                briefing=args.briefing,
             )
             # Warned at init as well as at validation, because this is the moment someone chooses
             # where the record of the work will live. Checked after allocation, since --create-root
@@ -308,6 +322,18 @@ def main() -> int:
             for warning in vcs_warnings(workspace_root):
                 print(f"WARNING: {warning}", file=sys.stderr)
             print(project_dir)
+            return 0
+
+        if args.command == "context":
+            print(json.dumps(project_context(args.project_directory, limit=args.limit, task_id=args.task), indent=2))
+            return 0
+
+        if args.command == "update":
+            state = update_project(
+                args.project_directory, args.patch_json,
+                expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
+            )
+            print(f"Committed revision {state['revision']}: {args.project_directory.resolve()}")
             return 0
 
         if args.command == "commit":
