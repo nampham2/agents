@@ -450,9 +450,18 @@ to write that subsection from this command rather than by reading `project.json`
 
 ## 6. Execute and verify
 
-For a schema-v4 project, automatic execution is the default. Whenever `EXECUTING` has READY tasks,
-run `research-project run-auto <project-directory>` before doing any of them inline. Do not invoke it
-from a worker: nested coordination is refused. The command resolves and immutably publishes a
+For a schema-v4 project, automatic execution is the default and a required dispatch step, not a
+recommendation. The first action after the project enters `EXECUTING`, and the first action after
+each completed wave, is to reload `project.json` and run:
+
+```sh
+research-project run-auto <project-directory>
+```
+
+Do this before reading task notes, writing task outputs, or performing any task inline. Do not invoke
+it from a worker: nested coordination is refused. A pass is considered attempted only when
+`execution/runtime/automatic-run.json` has been created or updated; if the command was skipped, do
+not continue with task work—run it first. The command resolves and immutably publishes a
 task-specific plan, then dispatches at most two non-conflicting tasks by default to available Claude
 or Codex CLIs. Each worker receives only its declared target files in an isolated Git worktree. The
 coordinator verifies required outputs and checks there, serially cherry-picks verified commits into
@@ -467,7 +476,9 @@ the durable plan. Directory
 outputs, workspace/external outputs, destructive or external effects, composed or generic checks,
 conflicting claims, unavailable worker CLIs, and capacity overflow are never guessed around.
 
-Read the command's JSON report and act on each category:
+Read the command's JSON report and act on each category. Do not infer that automatic execution was
+used from a schema-v4 field, a `RUNNING` status, or a successful project completion; the report and
+the attempt journal are the evidence of dispatch.
 
 - `completed`: the command already verified, integrated, evidenced, and marked these tasks `DONE`;
   reload canonical state rather than repeating them.
@@ -476,6 +487,9 @@ Read the command's JSON report and act on each category:
 - `fallbacks`: state the recorded reason, then execute those tasks sequentially through the ordinary
   coordinator path below. A fallback does not weaken authorization or verification. In particular,
   `R-CHECK-UNCOVERED` requires correcting the task's verification before any executor may complete it.
+  Do not spend another coordination pass trying to admit a task whose refusal is structural:
+  `R-UNENUMERABLE`, `R-DIRECTORY-SUBJECT`, `R-EXTERNAL-REFERENCE`, `R-EFFECT-NOT-CONFINED`, and
+  `R-SELF-ASSESSMENT` are deliberate sequential handoffs. Record the refusal once and continue.
 - `blocked`: preserve the attempt journal/worktree evidence and reconcile the failure before retrying;
   do not mark the task done or silently replay its effects.
 
