@@ -31,6 +31,10 @@ def main() -> int:
         help="Require and check only the selected report format(s)",
     )
     parser.add_argument(
+        "--report-profile", choices=("concise", "execution"),
+        help="concise omits task-graph accounting; execution retains the legacy report contract",
+    )
+    parser.add_argument(
         "--allow-legacy-close",
         action="store_true",
         help="Acknowledge the limited guarantees of closing an unmigrated schema-v1 project",
@@ -43,6 +47,7 @@ def main() -> int:
         check_index=args.check_index,
         check_report=args.report,
         report_format=args.report_format,
+        report_profile=args.report_profile,
         allow_legacy_close=args.allow_legacy_close,
     )
     for warning in report.warnings:

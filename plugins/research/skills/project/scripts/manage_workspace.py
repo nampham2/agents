@@ -36,7 +36,7 @@ from workspace_lib import (
     validate_v3_state,
     vcs_warnings,
 )
-from workspace_session import project_context, update_project
+from workspace_session import list_projects, project_context, read_project_text, update_project
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -67,6 +67,26 @@ def _build_parser() -> argparse.ArgumentParser:
     context.add_argument(
         "--worker", action="store_true", help="return only the selected task and dependency references"
     )
+    context.add_argument(
+        "--task-only", action="store_true", help="coordinator task view without repeating resume context"
+    )
+
+    read = subparsers.add_parser("read", help="Read a bounded specification section or evidence excerpt")
+    read.add_argument("project_directory", type=Path)
+    read.add_argument("document", choices=("spec", "evidence"))
+    read.add_argument("--section", help="exact specification heading; default excludes decision history")
+    read_owner = read.add_mutually_exclusive_group()
+    read_owner.add_argument("--task")
+    read_owner.add_argument("--step", choices=CLOSURE_STEPS)
+    read.add_argument("--offset", type=int, default=0, help="character offset within selected text")
+    read.add_argument("--max-chars", type=int, default=4000)
+
+    listing = subparsers.add_parser("list-projects", help="Find projects without loading the full workspace index")
+    listing.add_argument("workspace_root", nargs="?", type=Path)
+    listing.add_argument("--query", default="")
+    listing.add_argument("--status")
+    listing.add_argument("--limit", type=int, default=10)
+    listing.add_argument("--offset", type=int, default=0)
 
     update = subparsers.add_parser("update", help="Merge a small JSON patch through the guarded commit path")
     update.add_argument("project_directory", type=Path)
@@ -166,6 +186,8 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     search.add_argument("query", help="case-insensitive substring to look for")
+    search.add_argument("--limit", type=int, help="return bounded JSON results instead of all matching lines")
+    search.add_argument("--offset", type=int, default=0)
     search.add_argument(
         "--workspace-root",
         type=Path,
@@ -329,9 +351,24 @@ def main() -> int:
 
         if args.command == "context":
             print(json.dumps(
-                project_context(args.project_directory, limit=args.limit, task_id=args.task, worker=args.worker),
+                project_context(args.project_directory, limit=args.limit, task_id=args.task,
+                                worker=args.worker, task_only=args.task_only),
                 indent=2,
             ))
+            return 0
+
+        if args.command == "read":
+            print(json.dumps(read_project_text(
+                args.project_directory, args.document, section=args.section, task_id=args.task, step=args.step,
+                offset=args.offset, max_chars=args.max_chars,
+            ), indent=2))
+            return 0
+
+        if args.command == "list-projects":
+            print(json.dumps(list_projects(
+                resolve_workspace_root(args.workspace_root), query=args.query, status=args.status,
+                limit=args.limit, offset=args.offset,
+            ), indent=2))
             return 0
 
         if args.command == "update":
@@ -438,8 +475,23 @@ def main() -> int:
             return 0
 
         if args.command == "search-memory":
+            if args.offset < 0 or (args.limit is not None and not 1 <= args.limit <= 100):
+                raise WorkspaceError("limit must be between 1 and 100; offset must be nonnegative")
             workspace_root = resolve_workspace_root(args.workspace_root)
             hits = search_memory(workspace_root, args.query)
+            if args.limit is not None:
+                page = hits[args.offset:args.offset + args.limit]
+                print(json.dumps({
+                    "matches": [
+                        {"path": str(path.relative_to(workspace_root)), "line": number,
+                         "excerpt": line[:300], "truncated": len(line) > 300}
+                        for path, number, line in page
+                    ],
+                    "total": len(hits), "offset": args.offset,
+                    "next_offset": args.offset + args.limit if args.offset + args.limit < len(hits) else None,
+                }, indent=2))
+                return 0
+            hits = hits[args.offset:]
             for path, number, line in hits:
                 print(f"{path.relative_to(workspace_root)}:{number}: {line}")
             if not hits:

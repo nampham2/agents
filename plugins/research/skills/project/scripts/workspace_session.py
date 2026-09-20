@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import copy
+import re
 import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 from workspace_lib import (
+    CLOSURE_STEPS,
     WorkspaceError,
     atomic_write_json,
     commit_candidate,
@@ -63,7 +65,8 @@ def _worker_context(project_dir: Path, state: dict[str, Any], task: dict[str, An
 
 
 def project_context(
-    project_dir: Path, *, limit: int = 5, task_id: str | None = None, worker: bool = False
+    project_dir: Path, *, limit: int = 5, task_id: str | None = None, worker: bool = False,
+    task_only: bool = False,
 ) -> dict[str, Any]:
     """Read one canonical snapshot; omit terminal history and cap the normal resume payload.
 
@@ -75,6 +78,10 @@ def project_context(
         raise WorkspaceError("context limit must be between 1 and 20")
     if worker and task_id is None:
         raise WorkspaceError("context --worker requires --task")
+    if task_only and task_id is None:
+        raise WorkspaceError("context --task-only requires --task")
+    if task_only and worker:
+        raise WorkspaceError("choose --task-only or --worker")
     project_dir = project_dir.resolve()
     state = _load_state(project_dir)
     tasks = state["tasks"]
@@ -83,8 +90,11 @@ def project_context(
         selected = next((task for task in tasks if task["id"] == task_id), None)
         if selected is None:
             raise WorkspaceError(f"unknown task: {task_id}")
-        if worker:
-            return _worker_context(project_dir, state, selected)
+        if worker or task_only:
+            result = _worker_context(project_dir, state, selected)
+            if task_only:
+                result["role"] = "coordinator"
+            return result
     done = {task["id"] for task in tasks if task["status"] == "DONE"}
     active = [task for task in tasks if task["status"] not in ("DONE", "SKIPPED")]
     ready = [
@@ -134,6 +144,119 @@ def project_context(
     if selected is not None:
         result["selected_task"] = selected
     return result
+
+
+def _headings(text: str) -> list[tuple[int, str, int]]:
+    """Return ATX headings outside fenced code, including their character offsets."""
+    headings = []
+    fence = ""
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        if fence:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
+                fence = ""
+        elif marker:
+            fence = marker[1]
+        else:
+            heading = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+            if heading:
+                headings.append((len(heading[1]), heading[2], offset))
+        offset += len(line)
+    return headings
+
+
+def read_project_text(
+    project_dir: Path, document: str, *, section: str | None = None,
+    task_id: str | None = None, step: str | None = None, offset: int = 0, max_chars: int = 4000,
+) -> dict[str, Any]:
+    """Page selected specification sections or actual evidence; never summarize the source."""
+    if document not in ("spec", "evidence"):
+        raise WorkspaceError("document must be spec or evidence")
+    if offset < 0 or not 1 <= max_chars <= 20000:
+        raise WorkspaceError("offset must be nonnegative; max-chars must be between 1 and 20000")
+    if (document == "spec" and (task_id is not None or step is not None)) or (
+        document == "evidence" and section is not None
+    ) or (task_id is not None and step is not None):
+        raise WorkspaceError("use --section for spec; --task or --step for evidence")
+    project_dir = project_dir.resolve()
+    state = _load_state(project_dir)
+    if task_id is not None and not any(task["id"] == task_id for task in state["tasks"]):
+        raise WorkspaceError(f"unknown task: {task_id}")
+    if step is not None and step not in CLOSURE_STEPS:
+        raise WorkspaceError(f"unknown closure step: {step}")
+    path = project_dir / f"{document}.md"
+    text = read_text(path)
+    headings = _headings(text)
+    if document == "spec":
+        # Ordinary reads exclude decision history. It remains explicitly retrievable.
+        history = next((pos for level, title, pos in headings if level == 2 and title == "Decision history"), len(text))
+        if section != "Decision history":
+            text = text[:history]
+            headings = [heading for heading in headings if heading[2] < history]
+        if section is not None:
+            matches = [(level, pos) for level, title, pos in headings if title == section]
+            if len(matches) != 1:
+                raise WorkspaceError(f"section must match exactly one heading: {section}")
+            level, start = matches[0]
+            end = next((pos for depth, _, pos in headings if pos > start and depth <= level), len(text))
+            text = text[start:end]
+    elif task_id is not None or step is not None:
+        owner = task_id if task_id is not None else step
+        entries = [(title, pos) for level, title, pos in headings if level == 2]
+        text = "".join(
+            text[pos:entries[index + 1][1] if index + 1 < len(entries) else len(text)]
+            for index, (title, pos) in enumerate(entries)
+            if title == owner or title.startswith(f"{owner} — ")
+        )
+    if offset > len(text):
+        raise WorkspaceError("offset is beyond the selected text; reload after source changes")
+    end = min(len(text), offset + max_chars)
+    return {
+        "path": str(path), "revision": state["revision"], "text": text[offset:end],
+        "total_chars": len(text), "offset": offset, "next_offset": end if end < len(text) else None,
+        "truncated": offset > 0 or end < len(text),
+    }
+
+
+def list_projects(
+    workspace_root: Path, *, query: str = "", status: str | None = None, limit: int = 10, offset: int = 0,
+) -> dict[str, Any]:
+    """Bound discovery output without trusting the generated index or hiding unreadable records."""
+    if not 1 <= limit <= 100 or offset < 0:
+        raise WorkspaceError("limit must be between 1 and 100; offset must be nonnegative")
+    rows: list[dict[str, Any]] = []
+    try:
+        for directory in sorted(workspace_root.resolve().iterdir(), reverse=True):
+            if not directory.is_dir() or directory.name.startswith("."):
+                continue
+            if (directory / "project.json").is_file():
+                try:
+                    state = load_json(directory / "project.json")
+                    fields = ("project", "title", "status", "working_directory")
+                    if any(not isinstance(state.get(key), str) or not state[key].strip() for key in fields):
+                        raise WorkspaceError("missing or malformed discovery fields")
+                    row = {key: state[key] for key in fields}
+                except WorkspaceError:
+                    row = {"project": directory.name, "title": "Unreadable project.json", "status": "INVALID"}
+            elif (directory / "00_meta.yaml").is_file() and (directory / "02_task_plan.md").is_file():
+                row = {"project": directory.name, "title": "Legacy project; inspect files", "status": "LEGACY"}
+            else:
+                continue
+            row["path"] = str(directory)
+            if row["status"] not in ("INVALID", "LEGACY") and (
+                (status is not None and row["status"] != status)
+                or query.casefold() not in " ".join(row.values()).casefold()
+            ):
+                continue
+            rows.append({
+                **{key: value[:500] for key, value in row.items() if key != "path"}, "path": row["path"],
+                "truncated_fields": [key for key, value in row.items() if key != "path" and len(value) > 500],
+            })
+    except OSError as error:
+        raise WorkspaceError(f"cannot list projects: {error}") from error
+    return {"projects": rows[offset:offset + limit], "total": len(rows), "offset": offset,
+            "next_offset": offset + limit if offset + limit < len(rows) else None}
 
 
 def _merge(destination: dict[str, Any], changes: dict[str, Any]) -> None:

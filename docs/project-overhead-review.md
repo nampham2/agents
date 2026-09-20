@@ -111,3 +111,79 @@ the CLI was not logged in. Host guidance also references official subagent docum
 documentation nor launcher tests substitute for those uncompleted live checks.
 
 Release manifests and lockfile are aligned at `0.11.0`. Installed host caches are unchanged.
+
+## Follow-up — 0.12.0, 2026-09-20
+
+The user confirmed lean defaults with advanced features retained, existing formats preserved,
+total-token priority with bounded coordinator context, selective delegation, and lifecycle trials.
+
+The entrypoint now contains 792 words, down from 1,526 (48%). Entry instructions plus routine
+commands total 1,282 words, down from 2,515 (49%). Including native worker instructions totals
+1,703 words, down from 3,284 (48%). Counts use whitespace-delimited words, not model tokens.
+Short memory and executor operation guides avoid loading design history for routine operations.
+The full architecture, protocol, schema and HTML references remain available on demand.
+
+New additive commands/projections:
+
+- `context --task T01 --task-only` retains the complete assignment and direct dependency references
+  without repeating the general resume view; legacy `--task` and `--worker` behavior is preserved.
+- `read <project> spec --section <heading>` and `read <project> evidence --task T01` return bounded,
+  paged source text. Fenced output cannot masquerade as a heading. Truncation and continuation are
+  explicit; selected requirements and failed command results are never rewritten as summaries.
+- `list-projects` filters/paginates discovery; `search-memory --limit` returns bounded excerpts.
+  Legacy memory search remains available. Discovery identifies truncated metadata and unreadable
+  records; it does not replace project validation.
+- `--report-profile concise` makes task-graph accounting optional for requested reports. The
+  execution profile and omitted-profile legacy commands retain strict checks. Ordinary closure
+  no longer warns about omitted optional graphs. Required outputs and real evidence remain guarded.
+
+Delegation now depends on investigation volume and useful independence. Small, related work can
+reuse context. The coordinator retains ownership, canonical updates, and acceptance evidence;
+worker recovery information remains durable. A valid recorded check can be reused for unchanged
+outputs; a worker summary is still not command evidence.
+
+### Representative lifecycle measurements
+
+Reproduce with:
+
+```sh
+uv run pytest -q -s --no-cov -o log_cli=false tests/plugins/research/project/test_lifecycle_payloads.py
+```
+
+Each trial executes planning, three dependent tasks, real command verification, state updates,
+and closure through CLI entrypoints. The resumed scenario includes a failed check, reloading
+context, validation, evidence inspection, and correction. The fixtures use existing v3 state;
+the independent native-agent trial below exercises new v4 initialization.
+
+The baseline uses the preserved pre-change `context --task` projection and a full evidence read;
+the lean trial uses task-only context and selected evidence. Both load the same current
+specification at resume and finish with the same verified output and terminal task state.
+Paths are normalized for comparison. The table measures emitted tool-result bytes, not total
+conversation context, input/output model tokens, cache savings, or billed usage.
+
+| Scenario | Results observed | Baseline bytes | Lean bytes | Reduction | Largest result, before → after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Small, three tasks | 14 | 19,408 | 9,697 | 50.0% | 5,117 → 3,820 |
+| 200 completed tasks, three new tasks | 14 | 19,448 | 9,716 | 50.0% | 5,134 → 3,839 |
+| 200 completed tasks, failure and simulated resume | 18 | 24,918 | 14,938 | 40.1% | 5,134 → 4,262 |
+
+Counts of observed results remain equal before/after. The failure baseline includes one direct
+evidence-file read in those observations. Regression tests enforce at least 20% less aggregate
+payload on these fixtures, lossless requirement/evidence retrieval, and instruction-size budgets.
+These fixtures isolate retrieval overhead; they do not model large-scale implementation work or
+prove a universal reduction. Neither total model tokens nor peak agent context was exposed by
+this session's tools, so both remain unmeasured.
+
+A separate fresh native agent followed the revised skill in an isolated temporary workspace:
+v4 initialization, planning, execution, recorded exact-byte verification, simulated resume, and
+closure all passed in ten lifecycle CLI invocations. Its only warnings concerned the intentionally
+unversioned fixture workspace. The coordinator independently checked its output and closure and
+ran task-only, specification and discovery commands through the launcher under Python 3.9.6.
+This is a current-workflow forward test, not a controlled before/after model-token experiment or
+a real cross-session restart. No live Claude model trial was run; both launcher surfaces were
+tested, including concise/strict report behavior.
+
+Final validation: 1,560 tests and 220 subtests passed, 3 skipped; 100% shipped-script statement
+coverage; repository-wide Ruff and ty; lock/version checks; both host launcher surfaces; strict
+Claude marketplace/plugin validation; project skill validation. Versions are aligned at `0.12.0`.
+Installed marketplace copies were not updated; they require a host update/reinstall.

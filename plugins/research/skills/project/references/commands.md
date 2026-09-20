@@ -1,147 +1,76 @@
-# Routine project commands
+# Routine commands
 
-Use the launcher pair resolved by `SKILL.md`. Paths below are absolute. Commands work on v3 and v4
-unless stated otherwise. No MCP server or background service is needed.
+Use the resolved launchers and absolute paths. Commands support v3 and v4.
 
-## Compact state updates
+## Retrieve
 
-`context <project-dir>` reports the current revision and a small working set; `--task T01` includes
-one full task. `--limit 10` shows more active summaries (maximum 20). It does not load evidence,
-old decisions, or completed task definitions unless that task is explicitly selected. Truncation
-is reported, not silently treated as a complete specification.
+`context <project-dir>` gives revision, active summaries, ready IDs, review/executor status and
+up to 6,000 specification characters. `--limit` changes summary count (1–20).
+`--task T01 --task-only` gives the full task and direct dependency references without rereading
+specification or logs. `--worker` gives the same assignment with the worker role; the coordinator
+supplies applicable constraints, decisions, and inputs. Neither view authorizes or starts work.
+Legacy `--task T01` still adds a full task to the general resume view.
 
-`context <project-dir> --task T01 --worker` returns only the full task, direct dependency statuses
-and artifact references, roots, revision, and executor activity. It does not read specification text
-or logs. The coordinator supplies relevant constraints, decisions, input references, and dependency
-findings; the projection cannot select them automatically. No requirements are truncated to fit a
-budget. `--worker` requires `--task`; `--limit` applies only to the normal resume summaries.
-See [task-workers.md](task-workers.md) for native delegation and recovery. This read-only command
-does not dispatch work, grant authorization, or take ownership.
+`read <project-dir> spec --section "Constraints and important assumptions"` selects an exact heading.
+Without a section, it returns the current document before Decision history; that history can be
+explicitly selected. `read <project-dir> evidence --task T01` retrieves that task's actual entries;
+`--step report` selects report-check evidence. Omit the owner for all evidence.
+Reads return up to 4,000 characters with `total_chars`, `truncated`, and `next_offset`.
+Continue with `--offset <next_offset>`; `--max-chars` accepts 1–20,000. These are excerpts, not summaries.
+File edits can change offsets; reload when the source changes.
 
-Write a small JSON file and pass it to:
+`list-projects <root> --query "<text>" [--status EXECUTING]` searches identity, title and target.
+It returns 10 matches by default; `--limit` (1–100) and `--offset` page results. Invalid and legacy
+records remain visible for inspection even when filters cannot establish a match.
+
+## Update
+
+Write a small patch and run:
 
 ```sh
 research-project update <project-dir> <patch.json> --expected-revision 0
 ```
 
-Allowed project fields: `title`, `status`, `review`, `cancellation_reason`, `predecessor`, `tasks`.
-Objects merge recursively; arrays and scalar values replace the supplied field; null remains null.
-The `tasks` array is special: each entry updates the task with that ID or appends a new task.
-Unmentioned tasks/fields remain unchanged. Tasks cannot be removed. Unknown fields are rejected.
-
-For example, leave alignment and add a task:
-
 ```json
-{
-  "status": "PLANNING",
-  "tasks": [{
-    "id": "T01",
-    "name": "Implement and verify the requested parser fix",
-    "success_criteria": "Malformed input returns a finding without crashing",
-    "verification": "Run the parser regression suite and repository lint/type checks",
-    "outputs": [{"root": "target", "path": "src/parser.py", "required": true}],
-    "effect": {"kind": "local_write", "description": "Edit the requested parser and its tests"}
-  }]
-}
+{"status":"PLANNING","tasks":[{
+  "id":"T01","name":"Implement and verify parser fix",
+  "success_criteria":"Malformed input produces a finding without crashing",
+  "verification":"Run parser regressions and repository checks",
+  "effect":{"kind":"local_write","description":"Edit parser and tests"},
+  "outputs":[{"root":"target","path":"src/parser.py","required":true}]
+}]}
 ```
 
 New tasks require `id`, `name`, `success_criteria`, `verification`, and explicit `effect.kind`.
-Declare outputs that matter to success; this example shows one. The tool supplies `TODO`, empty
-dependencies/evidence/receipts/outputs, null block/skip reasons, and authorization defaults.
-`none` effects need no description; all others do. `destructive` and `external` default to required,
-pending authorization; the tool never invents consent. Other effects default to `not_required`.
-Changing an existing effect does not silently change its authorization: update both explicitly.
+The tool defaults status to `TODO`, lists to empty, and block/skip reasons to null. Non-`none`
+effects need a description. Destructive/external effects default to pending authorization.
+Roots: `target` for repository outputs, `workspace` for project files, `workspace_root` for shared
+records, `external` for remote outputs.
 
-Start work with a second patch at the returned revision:
-
-```json
-{"status": "EXECUTING", "tasks": [{"id": "T01", "status": "RUNNING"}]}
-```
-
-After work and passing verification, finish it and optionally start a planned successor:
+Start with `{"status":"EXECUTING","tasks":[{"id":"T01","status":"RUNNING"}]}`.
+After passing checks, finish and optionally start a planned successor:
 
 ```json
-{
-  "tasks": [
-    {"id": "T01", "status": "DONE", "evidence": [
-      {"root": "workspace", "path": "evidence.md", "anchor": "T01"}
-    ]},
-    {"id": "T02", "status": "RUNNING"}
-  ]
-}
+{"tasks":[
+  {"id":"T01","status":"DONE","evidence":[{"root":"workspace","path":"evidence.md","anchor":"T01"}]},
+  {"id":"T02","status":"RUNNING"}
+]}
 ```
 
-`T02` must already have a complete definition. It can depend on `T01` because both changes commit
-together. `current_tasks` is derived automatically. Block/skip reasons are not inferred: include
-`block_reason` for `BLOCKED`, `skip_reason` for `SKIPPED`, and clear them with null when leaving
-those states. Terminal task history, dependency, authorization, output and evidence checks are
-the same as `commit`; the patch command constructs a candidate and uses that transaction.
+Objects merge; lists/scalars replace. Task entries merge by ID; omitted fields/tasks stay unchanged.
+Allowed project fields: `title`, `status`, `review`, `cancellation_reason`, `predecessor`, `tasks`.
+Include `block_reason` for `BLOCKED`, `skip_reason` for `SKIPPED`; clear them with null when leaving.
+Terminal history is immutable. Use full `commit` only for changes outside these fields.
+After a post-commit index failure, run the printed `rebuild-index` recovery; do not repeat the update.
 
-Revision conflicts require reload and reconciliation. If index generation fails after the commit,
-follow the reported `rebuild-index` recovery; the revision already landed. Use
-`commit <project-dir> <candidate.json> --expected-revision R [--dry-run]` only when a complete
-candidate is needed. Neither command changes execution protocol state.
+## Evidence and effects
 
-## Evidence and authorization
+`record-evidence <project-dir> --task T01 -- <command>` records actual exit code and output tail;
+failure returns nonzero. `--tail-lines` adjusts stored output. References have `root`, `path`, `anchor`
+(or null). Keep commands free of secrets. Do not rerun a check solely to duplicate existing evidence.
 
-```sh
-research-project record-evidence <project-dir> --task T01 -- uv run pytest -q
-```
-
-Runs in `working_directory`, directly without a shell. Use an explicit shell for pipelines and
-absolute paths for workspace files. The command records the actual exit status and output tail;
-a failing run returns nonzero. `--tail-lines` bounds stored output. Verify that commands do not
-print secrets before recording them. Evidence references name `root`, `path`, and `anchor` (or null).
-
-For an authorized task, record the user's actual scope and source, for example:
-
-```json
-{"tasks": [{"id": "T03", "authorization": {
-  "required": true, "status": "explicit",
-  "scope": "Publish the approved guide to the specified staging site",
-  "source": "User instruction in this session, 2026-09-18",
-  "authorized_at": "2026-09-18T12:00:00+00:00"
-}}]}
-```
-
-Use the real timestamp. Authorization must still apply when the action runs. Completed external
-tasks need a receipt with `kind`, `value`, `destination`, `timestamp`. A value is an HTTP(S) URL or
-a nonempty identifier prefixed by `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:`,
-or `commit:`. Do not invent a receipt for an ordinary local change.
-
-## Optional executor
-
-Only use `run-auto <project-dir> [--concurrency N]` when worker execution is authorized and useful.
-Default capacity is two. Admission requires v4, a clean Git target, `none`/`local_write` effects,
-target-file outputs, explicit exhaustive `reads` (empty only for a self-contained task), separate
-read-only `test`/`[` checks covering every required output, and an available Claude or Codex CLI.
-Normal test-suite commands and unenumerable inputs do not fit this executor. Continue sequentially
-in those cases; do not weaken verification to obtain admission.
-
-Workers use isolated worktrees; the coordinator verifies and integrates accepted changes. Read
-`execution/runtime/automatic-run.json`: `completed` is already evidenced and committed; `deferred`
-can run in another wave; `fallbacks` gives a sequential handoff; `blocked` needs recovery without
-replaying uncertain effects. Exit 2 means no task completed. Do not rerun structural refusals.
-Nested coordination is prohibited. Never delete execution records/worktrees to clear a failure.
-
-Existing v3 projects can use sequential native task workers without migration. Parallel executor
-activation still requires `enable-execution` and the legacy-writer quiescence attestation.
-See `workspace-schema.md` for migration and
-`parallel-execution.md` for protocol recovery.
-
-## Optional reports
-
-Reports are requested deliverables, defaulting to Markdown when no format is specified. A single
-format does not require a counterpart. The structural checker accepts `--report-format markdown`,
-`html`, or `both`; the historical bare `--report` still requires both. The two flags are mutually
-exclusive. Load [report-design.md](report-design.md) for the content contract and its HTML reference
-only when producing HTML.
-
-```sh
-research-project record-evidence <project-dir> --step report -- \
-  research-validate <project-dir> --report-format markdown
-```
-
-Use the resolved validator launcher and absolute project path in the recorded command. `--step`
-and `--task` are mutually exclusive; `report` is the only closure-step name. Plain deliverable
-reports can use the user's preferred format and normal task verification instead.
+For destructive/external work, update authorization explicitly: `required: true`, `status: explicit`,
+the actual `scope`, user-instruction `source`, and real `authorized_at` timestamp. Changing an effect
+does not update authorization automatically. External completion also needs a receipt with `kind`,
+`value`, `destination`, `timestamp`; value is an HTTP(S) URL or a nonempty identifier prefixed by
+`receipt:`, `deployment:`, `message:`, `purchase:`, `publish:`, or `commit:`.
