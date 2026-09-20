@@ -736,7 +736,8 @@ class DocumentedContractTests(unittest.TestCase):
                     self.assertNotIn(f"### {name}", content)
 
     def test_the_documented_invocations_match_the_implemented_flags(self) -> None:
-        content = (REPO_ROOT / "plugins/research/skills/project/references/commands.md").read_text(encoding="utf-8")
+        path = REPO_ROOT / "plugins/research/skills/project/references/report-design.md"
+        content = path.read_text(encoding="utf-8")
 
         for step in CLOSURE_STEPS:
             self.assertIn(f"--step {step}", content)

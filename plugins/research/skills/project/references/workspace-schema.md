@@ -407,8 +407,9 @@ a new measurement.
 
 `research-validate <project-directory> --report-format markdown|html|both` requires and checks only
 the selected formats. Bare `--report` retains the legacy paired check and cannot be combined with
-`--report-format`. Each checked file needs written sections and a task-graph subsection under What
-was done. HTML checks additionally cover tags, resources, colour tokens, themes, and chart labels
+`--report-format`. Each checked file needs written sections. Add `--report-profile concise` for
+ordinary requested reports; `execution` (the legacy default when omitted) additionally requires a
+task-graph subsection under What was done. HTML checks cover tags, resources, colour tokens, themes, and chart labels
 and captions. See [report-design.md](report-design.md) for the shared content contract and
 [report-html.md](report-html.md) only for HTML work. Mechanical checks do not establish that prose
 is true or charts look right.
@@ -425,7 +426,7 @@ Validation severities for the report:
   reopening a closed project for maintenance. `report.md` and `report.html` are not in the list of
   files required non-empty at close.
 
-Neither an absent report nor an absent counterpart produces a warning. Explicit `--report` or
+Neither an absent report, an absent counterpart, nor an omitted optional task graph produces a warning. Explicit `--report` or
 `--report-format` checks report errors for missing or invalid selected files; record the command
 with `record-evidence --step report`. Required report deliverables still belong in task outputs,
 where the normal completion guards enforce their existence.

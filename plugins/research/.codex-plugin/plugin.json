@@ -1,6 +1,6 @@
 {
   "name": "research",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Persistent workspace management for research projects, with goal alignment built into the project lifecycle.",
   "author": {
     "name": "Nam Pham"
@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "Research",
     "shortDescription": "Manage research projects and align goals.",
-    "longDescription": "Resumable project work with fresh task agents, compact context, small transactional state updates, recorded verification, and optional reports and parallel execution.",
+    "longDescription": "Lean, resumable project work with targeted context, scoped task agents, transactional updates, recorded verification, and advanced features on demand.",
     "developerName": "Nam Pham",
     "category": "Productivity",
     "capabilities": [

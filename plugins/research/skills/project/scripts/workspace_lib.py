@@ -833,7 +833,7 @@ def _report_graph_findings(markdown: str, label: str) -> "list[str]":
     return [f"{label} has no written '### {canonical}' subsection under '## {REPORT_GRAPH_PARENT}'"]
 
 
-def report_warnings(project_dir: Path) -> "list[str]":
+def report_warnings(project_dir: Path, *, require_graph: bool = True) -> "list[str]":
     """Warn about incomplete existing closing reports, at close and never before.
 
     Warnings only, on the same reasoning as `briefing.md`: the report postdates every project already
@@ -860,7 +860,8 @@ def report_warnings(project_dir: Path) -> "list[str]":
         if path is html_path:
             content = _html_headings_as_markdown(content)
         warnings.extend(_report_section_findings(content, relative))
-        warnings.extend(_report_graph_findings(content, relative))
+        if require_graph:
+            warnings.extend(_report_graph_findings(content, relative))
     return warnings
 
 
@@ -1044,7 +1045,7 @@ def _chart_errors(html: str, label: str) -> "list[str]":
     return errors
 
 
-def report_findings(project_dir: Path, report_format: str = "both") -> ValidationReport:
+def report_findings(project_dir: Path, report_format: str = "both", *, require_graph: bool = True) -> ValidationReport:
     """Check the requested report format(s) mechanically, as errors rather than warnings.
 
     This is what `--report` runs, and it is deliberately harsher than the close-time warning: the
@@ -1077,7 +1078,8 @@ def report_findings(project_dir: Path, report_format: str = "both") -> Validatio
         if path is html_path:
             headings = _html_headings_as_markdown(content)
             report.errors.extend(_report_section_findings(headings, relative))
-            report.errors.extend(_report_graph_findings(headings, relative))
+            if require_graph:
+                report.errors.extend(_report_graph_findings(headings, relative))
             report.errors.extend(_tag_balance_errors(content, relative))
             report.errors.extend(_external_resource_errors(content, relative))
             report.errors.extend(_colour_token_errors(content, relative))
@@ -1085,7 +1087,8 @@ def report_findings(project_dir: Path, report_format: str = "both") -> Validatio
             report.errors.extend(_chart_errors(content, relative))
         else:
             report.errors.extend(_report_section_findings(content, relative))
-            report.errors.extend(_report_graph_findings(content, relative))
+            if require_graph:
+                report.errors.extend(_report_graph_findings(content, relative))
     return report
 
 
@@ -1376,7 +1379,7 @@ def validate_v3_state(
     # why. Unlike the section check above this cannot key off "has left ALIGNING", because a report
     # cannot exist before the work it reports on.
     if check_files and (close or _enum_string(status, {"DONE", "CANCELLED"})):
-        report.warnings.extend(report_warnings(project_dir))
+        report.warnings.extend(report_warnings(project_dir, require_graph=False))
 
     if close or status == "DONE":
         incomplete = sorted(
@@ -1665,7 +1668,7 @@ def validate_v4_state(
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
 
     if check_files and (close or _enum_string(status, {"DONE", "CANCELLED"})):
-        report.warnings.extend(report_warnings(project_dir))
+        report.warnings.extend(report_warnings(project_dir, require_graph=False))
 
     if close or status == "DONE":
         incomplete = sorted(
@@ -2565,7 +2568,12 @@ def validate_project(
     check_report: bool = False,
     allow_legacy_close: bool = False,
     report_format: str | None = None,
+    report_profile: str | None = None,
 ) -> ValidationReport:
+    if report_profile not in (None, "concise", "execution"):
+        return ValidationReport(errors=[f"unknown report profile: {report_profile}"])
+    if report_profile is not None and not (check_report or report_format is not None):
+        return ValidationReport(errors=["report profile requires --report-format or --report"])
     project_dir = project_dir.resolve()
     try:
         version = detect_schema(project_dir)
@@ -2599,7 +2607,10 @@ def validate_project(
     # through `record-evidence` for an exit code.
     # Explicit format selection enables the check itself; legacy check_report requests both.
     if check_report or report_format is not None:
-        report.extend(report_findings(project_dir, report_format if report_format is not None else "both"))
+        report.extend(report_findings(
+            project_dir, report_format if report_format is not None else "both",
+            require_graph=report_profile != "concise",
+        ))
     if check_index and version in {2, 3, 4}:
         expected = render_index(project_dir.parent)
         index_path = project_dir.parent / "INDEX.md"
