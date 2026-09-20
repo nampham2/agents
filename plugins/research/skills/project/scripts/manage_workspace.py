@@ -64,6 +64,9 @@ def _build_parser() -> argparse.ArgumentParser:
     context.add_argument("project_directory", type=Path)
     context.add_argument("--limit", type=int, default=5)
     context.add_argument("--task", help="include one complete task definition")
+    context.add_argument(
+        "--worker", action="store_true", help="return only the selected task and dependency references"
+    )
 
     update = subparsers.add_parser("update", help="Merge a small JSON patch through the guarded commit path")
     update.add_argument("project_directory", type=Path)
@@ -325,7 +328,10 @@ def main() -> int:
             return 0
 
         if args.command == "context":
-            print(json.dumps(project_context(args.project_directory, limit=args.limit, task_id=args.task), indent=2))
+            print(json.dumps(
+                project_context(args.project_directory, limit=args.limit, task_id=args.task, worker=args.worker),
+                indent=2,
+            ))
             return 0
 
         if args.command == "update":

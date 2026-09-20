@@ -75,3 +75,39 @@ cross-host contract and tests explicitly retain that accepted host difference.
 
 Release manifests and lockfile are aligned at `0.10.0`. Installed host caches are unchanged; a
 marketplace update/reinstall is needed to activate the revised skill in a new session.
+
+## Follow-up — 0.11.0, 2026-09-20
+
+Reports now have independent Markdown and HTML checks through `--report-format markdown|html|both`.
+Bare `--report` retains the legacy paired contract. A missing counterpart no longer produces a
+closure warning; requested reports remain required task outputs. HTML instructions are loaded from
+`report-html.md` only for HTML work, so Markdown reporting does not load CSS or chart geometry.
+
+Substantial tasks now use fresh native agents sequentially when the host permits this. The
+coordinator retains specification decisions, canonical writes, and recorded acceptance checks;
+workers receive one task and return short results with artifact references. Trivial work stays inline,
+as does work on hosts without fresh-context, observation, or stopping capabilities. The existing
+parallel executor and v3/v4 state formats are unchanged.
+
+`context --task T01 --worker` returns the complete task, direct dependency references, roots, revision,
+and executor activity without reading specification text or evidence logs. The coordinator supplies
+relevant constraints, decisions, inputs, and the assignment's relationship to the user's authorized
+outcome. Requirements are not truncated. A regression fixture verifies that adding 200 unrelated
+completed tasks leaves this projection exactly unchanged. This is a payload property, not a measured
+reduction in total model tokens; worker startup and repeated discovery still have costs.
+
+Native worker handles and launch intent are recorded in coordinator-owned task notes for recovery.
+Unknown ownership blocks redispatch. These are workflow instructions, not the parallel executor's
+durable process supervision, and `execution_active` does not track native agents.
+
+Validation: 1,537 tests and 220 subtests passed, 3 skipped, 100% shipped-script statement coverage;
+repository-wide Ruff and ty; lockfile/version consistency; both host launcher surfaces; Claude strict
+marketplace/plugin validation; project skill frontmatter validation. Fresh Codex agents were used for
+the actual implementation and a separate workflow trial. The temporary trial reached task planning
+and a fresh worker launch, but automatic approval review rejected its fixture utility as outside the
+authorized scope, including a retry with additional context. No fixture utility was written and no
+successful end-to-end trial is claimed. The Claude live context-isolation check could not start because
+the CLI was not logged in. Host guidance also references official subagent documentation; neither
+documentation nor launcher tests substitute for those uncompleted live checks.
+
+Release manifests and lockfile are aligned at `0.11.0`. Installed host caches are unchanged.
