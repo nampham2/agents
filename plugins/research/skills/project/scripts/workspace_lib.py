@@ -11,6 +11,7 @@ import shlex
 import subprocess
 import tempfile
 import time
+import uuid
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ from urllib.parse import urlparse
 
 if TYPE_CHECKING:  # TypeGuard is 3.10+; the scripts must still import on system python 3.9.
     from collections.abc import Sequence
-    from typing import TypeGuard
+    from typing import Callable, TypeGuard
 
 PROJECT_STATUSES = {"ALIGNING", "PLANNING", "EXECUTING", "REVIEW", "BLOCKED", "DONE", "CANCELLED"}
 TASK_STATUSES = {"TODO", "RUNNING", "DONE", "BLOCKED", "SKIPPED"}
@@ -2703,6 +2704,30 @@ EVIDENCE_PLACEHOLDER = "No task evidence recorded yet.\n"
 EVIDENCE_HEADING_MAX_CHARS = 100
 
 
+@dataclass(frozen=True)
+class EvidenceResult:
+    """A command result that was durably appended to `evidence.md`."""
+
+    record_id: str
+    owner_kind: str
+    owner_id: str
+    exit_code: int
+    working_directory: str
+    reference: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "operation": "record-evidence",
+            "recorded": True,
+            "record_id": self.record_id,
+            "owner": {"kind": self.owner_kind, "id": self.owner_id},
+            "exit_code": self.exit_code,
+            "passed": self.exit_code == 0,
+            "working_directory": self.working_directory,
+            "reference": self.reference,
+        }
+
+
 def _fence_for(text: str) -> str:
     """Return a backtick fence long enough to contain `text`.
 
@@ -2845,6 +2870,28 @@ def record_evidence(
     exist in `project.json`; a step name must come from `CLOSURE_STEPS`. Both are closed sets, so
     neither route can open a heading for something that does not exist.
     """
+    return record_evidence_result(
+        project_dir,
+        task_id,
+        command,
+        step=step,
+        tail_lines=tail_lines,
+        timeout=timeout,
+        lock_timeout=lock_timeout,
+    ).exit_code
+
+
+def record_evidence_result(
+    project_dir: Path,
+    task_id: "str | None",
+    command: Sequence[str],
+    *,
+    step: "str | None" = None,
+    tail_lines: int = EVIDENCE_TAIL_LINES,
+    timeout: float | None = None,
+    lock_timeout: float = 5.0,
+) -> EvidenceResult:
+    """Run and durably record a command, returning its selectable evidence identity."""
     project_dir = project_dir.resolve()
     if task_id is not None and step is not None:
         raise WorkspaceError("record-evidence takes --task or --step, not both")
@@ -2902,10 +2949,14 @@ def record_evidence(
     outcome = "passed" if completed.returncode == 0 else "FAILED"
     joined = shlex.join(command)
     heading = _evidence_heading_command(joined)
+    record_id = f"ev-{uuid.uuid4().hex}"
+    anchor = f"evidence-{record_id[3:]}"
     lines = [
         "",
         f"## {task_id or step} — {heading}",
         "",
+        f'<a id="{anchor}"></a>',
+        f"- Record ID: {record_id}",
         f"- Recorded: {now_iso()}",
         f"- Working directory: {working_directory}",
         f"- Exit code: {completed.returncode} ({outcome})",
@@ -2922,7 +2973,14 @@ def record_evidence(
         lines.extend(["No output.", ""])
 
     _append_evidence_entry(project_dir, lines, lock_timeout=lock_timeout)
-    return completed.returncode
+    return EvidenceResult(
+        record_id=record_id,
+        owner_kind="task" if task_id is not None else "step",
+        owner_id=task_id or step or "",
+        exit_code=completed.returncode,
+        working_directory=working_directory,
+        reference={"root": "workspace", "path": "evidence.md", "anchor": anchor},
+    )
 
 
 def _append_evidence_entry(project_dir: Path, lines: "list[str]", *, lock_timeout: float) -> None:
@@ -3567,6 +3625,25 @@ def commit_candidate(
 ) -> dict[str, Any]:
     project_dir = project_dir.resolve()
     candidate = load_json(candidate_path.resolve())
+    return commit_state(
+        project_dir,
+        candidate,
+        expected_revision=expected_revision,
+        lock_timeout=lock_timeout,
+    )
+
+
+def commit_state(
+    project_dir: Path,
+    candidate_state: dict[str, Any],
+    *,
+    expected_revision: int,
+    lock_timeout: float = 5.0,
+    locked_guard: "Callable[[dict[str, Any]], None] | None" = None,
+) -> dict[str, Any]:
+    """Commit an in-memory candidate through the canonical guarded transaction."""
+    project_dir = project_dir.resolve()
+    candidate = copy.deepcopy(candidate_state)
     with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
         current = load_json(project_dir / "project.json")
         schema_version = current.get("schema_version")
@@ -3581,6 +3658,8 @@ def commit_candidate(
         conflicts = _revision_conflicts(current, candidate, expected_revision)
         if conflicts:
             raise WorkspaceConflict(conflicts[0])
+        if locked_guard is not None:
+            locked_guard(current)
         immutable_changes = _immutable_field_changes(current, candidate)
         if immutable_changes:
             raise WorkspaceError(immutable_changes[0])

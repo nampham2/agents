@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
-import tempfile
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -12,10 +12,10 @@ from typing import Any
 from workspace_lib import (
     CLOSURE_STEPS,
     WorkspaceError,
-    atomic_write_json,
-    commit_candidate,
+    commit_state,
     load_json,
     read_text,
+    validate_project,
     validate_v3_state,
     validate_v4_state,
 )
@@ -143,6 +143,38 @@ def project_context(
     }
     if selected is not None:
         result["selected_task"] = selected
+    return result
+
+
+def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str, Any]:
+    """Return bounded resume context plus full project validation findings."""
+    project_dir = project_dir.resolve()
+    result = project_context(project_dir, limit=limit)
+    report = validate_project(project_dir)
+    after = _load_state(project_dir)
+    if after["revision"] != result["revision"]:
+        raise WorkspaceError("project changed while context was validated; reload context")
+    documents: dict[str, Any] = {}
+    for name in ("spec", "evidence", "reflection"):
+        path = project_dir / f"{name}.md"
+        if path.exists():
+            content = read_text(path)
+            documents[name] = {
+                "path": str(path),
+                "exists": True,
+                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+            }
+        else:
+            documents[name] = {"path": str(path), "exists": False, "sha256": "missing"}
+    result.update({
+        "roots": {
+            "target": result["working_directory"],
+            "workspace": str(project_dir),
+            "workspace_root": str(project_dir.parent),
+        },
+        "documents": documents,
+        "validation": {"valid": report.valid, "errors": report.errors, "warnings": report.warnings},
+    })
     return result
 
 
@@ -303,8 +335,28 @@ def update_project(
 ) -> dict[str, Any]:
     """Apply only named changes, then use the existing transaction and all its guards."""
     project_dir = project_dir.resolve()
-    state = _load_state(project_dir)
     changes = load_json(patch_path)
+    return update_project_data(
+        project_dir,
+        changes,
+        expected_revision=expected_revision,
+        lock_timeout=lock_timeout,
+    )
+
+
+def update_project_data(
+    project_dir: Path,
+    patch: dict[str, Any],
+    *,
+    expected_revision: int,
+    lock_timeout: float = 5.0,
+) -> dict[str, Any]:
+    """Apply a mapping patch without requiring the caller to create a temporary file."""
+    project_dir = project_dir.resolve()
+    state = _load_state(project_dir)
+    if not isinstance(patch, dict):
+        raise WorkspaceError("update patch must be a JSON object")
+    changes = copy.deepcopy(patch)
     unknown = changes.keys() - {"title", "status", "review", "cancellation_reason", "predecessor", "tasks"}
     if unknown:
         raise WorkspaceError("unsupported update fields: " + ", ".join(sorted(unknown)))
@@ -326,15 +378,9 @@ def update_project(
             state["tasks"].append(_new_task(change))
     _merge(state, changes)
     state["current_tasks"] = [task["id"] for task in state["tasks"] if task.get("status") == "RUNNING"]
-    try:
-        with tempfile.TemporaryDirectory(prefix="research-update-") as temporary:
-            candidate = Path(temporary) / "candidate.json"
-            atomic_write_json(candidate, state)
-            return commit_candidate(
-                project_dir,
-                candidate,
-                expected_revision=expected_revision,
-                lock_timeout=lock_timeout,
-            )
-    except OSError as error:
-        raise WorkspaceError(f"cannot prepare project update: {error}") from error
+    return commit_state(
+        project_dir,
+        state,
+        expected_revision=expected_revision,
+        lock_timeout=lock_timeout,
+    )

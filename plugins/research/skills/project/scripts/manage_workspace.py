@@ -10,6 +10,8 @@ from pathlib import Path
 
 from execution_adapter import FakeAdapter, SubprocessAdapter
 from execution_ops import OperationError, run_automatic_tasks, run_parallel_tasks, run_sequential_task
+from workspace_documents import append_record, document_snapshot, edit_document
+from workspace_evidence import evidence_entries
 from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
@@ -29,14 +31,22 @@ from workspace_lib import (
     project_task_graph,
     read_text,
     rebuild_index,
-    record_evidence,
+    record_evidence_result,
     render_task_graph,
     resolve_workspace_root,
     search_memory,
     validate_v3_state,
     vcs_warnings,
 )
-from workspace_session import list_projects, project_context, read_project_text, update_project
+from workspace_operations import CloseOperationError, close_project, task_operation
+from workspace_session import (
+    list_projects,
+    project_context,
+    read_project_text,
+    update_project,
+    update_project_data,
+    validated_project_context,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -70,16 +80,21 @@ def _build_parser() -> argparse.ArgumentParser:
     context.add_argument(
         "--task-only", action="store_true", help="coordinator task view without repeating resume context"
     )
+    context.add_argument("--validate", action="store_true", help="include full project validation findings")
 
     read = subparsers.add_parser("read", help="Read a bounded specification section or evidence excerpt")
     read.add_argument("project_directory", type=Path)
-    read.add_argument("document", choices=("spec", "evidence"))
+    read.add_argument("document", choices=("spec", "evidence", "reflection", "notes"))
     read.add_argument("--section", help="exact specification heading; default excludes decision history")
     read_owner = read.add_mutually_exclusive_group()
     read_owner.add_argument("--task")
     read_owner.add_argument("--step", choices=CLOSURE_STEPS)
     read.add_argument("--offset", type=int, default=0, help="character offset within selected text")
     read.add_argument("--max-chars", type=int, default=4000)
+    read.add_argument("--outline", action="store_true", help="return document headings without their bodies")
+    read.add_argument("--entries", action="store_true", help="return structured evidence entry metadata")
+    read.add_argument("--entry", help="select one generated evidence record ID")
+    read.add_argument("--limit", type=int, default=20, help="maximum structured evidence entries")
 
     listing = subparsers.add_parser("list-projects", help="Find projects without loading the full workspace index")
     listing.add_argument("workspace_root", nargs="?", type=Path)
@@ -93,6 +108,47 @@ def _build_parser() -> argparse.ArgumentParser:
     update.add_argument("patch_json", type=Path)
     update.add_argument("--expected-revision", type=int, required=True)
     update.add_argument("--lock-timeout", type=float, default=5.0)
+    update.add_argument("--json", action="store_true", help="print a compact structured mutation result")
+
+    edit = subparsers.add_parser("edit", help="Guardedly replace project-owned Markdown content")
+    edit.add_argument("project_directory", type=Path)
+    edit.add_argument("document", choices=("spec", "reflection"))
+    edit.add_argument("--section", help="exact specification heading to replace")
+    edit.add_argument("--sections-json", type=Path, help="JSON heading-to-body mapping, or '-' for stdin")
+    edit_body = edit.add_mutually_exclusive_group()
+    edit_body.add_argument("--body")
+    edit_body.add_argument("--body-file", type=Path)
+    edit.add_argument("--expected-sha256", required=True)
+    edit.add_argument("--lock-timeout", type=float, default=5.0)
+
+    append = subparsers.add_parser("append", help="Append a decision or task finding idempotently")
+    append.add_argument("project_directory", type=Path)
+    append.add_argument("kind", choices=("decision", "finding"))
+    append.add_argument("--task")
+    append_body = append.add_mutually_exclusive_group(required=True)
+    append_body.add_argument("--body")
+    append_body.add_argument("--body-file", type=Path)
+    append.add_argument("--entry-id")
+    append.add_argument("--lock-timeout", type=float, default=5.0)
+
+    task = subparsers.add_parser("task", help="Apply one guarded task transition")
+    task.add_argument("project_directory", type=Path)
+    task.add_argument("action", choices=("start", "finish", "block", "skip"))
+    task.add_argument("task_id")
+    task.add_argument("--expected-revision", type=int, required=True)
+    task.add_argument("--reason")
+    task.add_argument("--evidence", action="append", default=[], dest="evidence_records")
+    task.add_argument("--start-next")
+    task.add_argument("--lock-timeout", type=float, default=5.0)
+
+    close = subparsers.add_parser("close", help="Write an optional reflection and guardedly close a project")
+    close.add_argument("project_directory", type=Path)
+    close.add_argument("--expected-revision", type=int, required=True)
+    close_body = close.add_mutually_exclusive_group()
+    close_body.add_argument("--reflection")
+    close_body.add_argument("--reflection-file", type=Path)
+    close.add_argument("--expected-reflection-sha256")
+    close.add_argument("--lock-timeout", type=float, default=5.0)
 
     commit = subparsers.add_parser("commit", help="Commit a complete candidate project.json transactionally")
     commit.add_argument("project_directory", type=Path)
@@ -138,6 +194,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     record.add_argument("--tail-lines", type=int, default=EVIDENCE_TAIL_LINES)
     record.add_argument("--timeout", type=float, default=None, help="seconds before the command is abandoned")
+    record.add_argument("--json", action="store_true", help="print the selectable evidence record as JSON")
 
     graph = subparsers.add_parser(
         "show-graph",
@@ -313,6 +370,17 @@ def _read_body(path: Path) -> str:
     return read_text(path)
 
 
+def _read_json_object(path: Path) -> dict[str, object]:
+    """Read a JSON object from a file or stdin, normalizing parse/type failures."""
+    try:
+        value = json.loads(_read_body(path))
+    except json.JSONDecodeError as error:
+        raise WorkspaceError(f"cannot decode JSON input: {error}") from error
+    if not isinstance(value, dict):
+        raise WorkspaceError("JSON input must be an object")
+    return value
+
+
 def _split_at_separator(raw: list[str]) -> tuple[list[str], list[str]]:
     """Cut the argument list at the first bare `--`, returning (options, command).
 
@@ -350,14 +418,33 @@ def main() -> int:
             return 0
 
         if args.command == "context":
-            print(json.dumps(
-                project_context(args.project_directory, limit=args.limit, task_id=args.task,
-                                worker=args.worker, task_only=args.task_only),
-                indent=2,
-            ))
+            if args.validate:
+                if args.task is not None or args.worker or args.task_only:
+                    raise WorkspaceError("context --validate cannot be combined with task projections")
+                result = validated_project_context(args.project_directory, limit=args.limit)
+                print(json.dumps(result, indent=2))
+                return 0 if result["validation"]["valid"] else 1
+            print(json.dumps(project_context(
+                args.project_directory, limit=args.limit, task_id=args.task,
+                worker=args.worker, task_only=args.task_only,
+            ), indent=2))
             return 0
 
         if args.command == "read":
+            if args.document == "evidence" and (args.entries or args.entry is not None):
+                print(json.dumps(evidence_entries(
+                    args.project_directory, task_id=args.task, step=args.step, record_id=args.entry,
+                    offset=args.offset, limit=args.limit, include_text=args.entry is not None,
+                ), indent=2))
+                return 0
+            if args.document in ("reflection", "notes") or args.outline:
+                if args.section is not None or args.step is not None:
+                    raise WorkspaceError("outline/reflection/notes reads do not accept --section or --step")
+                print(json.dumps(document_snapshot(
+                    args.project_directory, args.document, task_id=args.task, outline=args.outline,
+                    offset=args.offset, max_chars=args.max_chars,
+                ), indent=2))
+                return 0
             print(json.dumps(read_project_text(
                 args.project_directory, args.document, section=args.section, task_id=args.task, step=args.step,
                 offset=args.offset, max_chars=args.max_chars,
@@ -372,12 +459,82 @@ def main() -> int:
             return 0
 
         if args.command == "update":
-            state = update_project(
-                args.project_directory, args.patch_json,
-                expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
-            )
+            if str(args.patch_json) == "-":
+                patch = _read_json_object(args.patch_json)
+                state = update_project_data(
+                    args.project_directory, patch,
+                    expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
+                )
+            else:
+                state = update_project(
+                    args.project_directory, args.patch_json,
+                    expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
+                )
+            if args.json:
+                print(json.dumps({
+                    "operation": "project.update", "project_directory": str(args.project_directory.resolve()),
+                    "committed": True, "revision": state["revision"], "status": state["status"],
+                    "current_tasks": state["current_tasks"],
+                }, indent=2))
+                return 0
             print(f"Committed revision {state['revision']}: {args.project_directory.resolve()}")
             return 0
+
+        if args.command == "edit":
+            if args.sections_json is not None:
+                if args.section is not None or args.body is not None or args.body_file is not None:
+                    raise WorkspaceError("--sections-json cannot be combined with --section or body options")
+                raw_sections = _read_json_object(args.sections_json)
+                if not all(isinstance(key, str) and isinstance(value, str) for key, value in raw_sections.items()):
+                    raise WorkspaceError("sections JSON must map heading strings to body strings")
+                sections = {str(key): str(value) for key, value in raw_sections.items()}
+                body = None
+            else:
+                if args.document == "spec" and args.section is None:
+                    raise WorkspaceError("spec edit requires --section or --sections-json")
+                if args.document == "reflection" and args.section is not None:
+                    raise WorkspaceError("reflection edit does not accept --section")
+                if args.body is None and args.body_file is None:
+                    raise WorkspaceError("edit requires --body or --body-file")
+                body = args.body if args.body is not None else _read_body(args.body_file)
+                sections = {args.section: body} if args.section is not None else None
+            print(json.dumps(edit_document(
+                args.project_directory, args.document, expected_sha256=args.expected_sha256,
+                body=body if args.document == "reflection" else None, sections=sections,
+                lock_timeout=args.lock_timeout,
+            ), indent=2))
+            return 0
+
+        if args.command == "append":
+            if args.kind == "finding" and args.task is None:
+                raise WorkspaceError("finding append requires --task")
+            if args.kind == "decision" and args.task is not None:
+                raise WorkspaceError("decision append does not accept --task")
+            body = args.body if args.body is not None else _read_body(args.body_file)
+            print(json.dumps(append_record(
+                args.project_directory, args.kind, body, task_id=args.task, entry_id=args.entry_id,
+                lock_timeout=args.lock_timeout,
+            ), indent=2))
+            return 0
+
+        if args.command == "task":
+            print(json.dumps(task_operation(
+                args.project_directory, args.action, args.task_id, expected_revision=args.expected_revision,
+                reason=args.reason, evidence_record_ids=args.evidence_records, start_next=args.start_next,
+                lock_timeout=args.lock_timeout,
+            ), indent=2))
+            return 0
+
+        if args.command == "close":
+            reflection = args.reflection
+            if args.reflection_file is not None:
+                reflection = _read_body(args.reflection_file)
+            result = close_project(
+                args.project_directory, expected_revision=args.expected_revision, reflection=reflection,
+                expected_reflection_sha256=args.expected_reflection_sha256, lock_timeout=args.lock_timeout,
+            )
+            print(json.dumps(result, indent=2))
+            return 0 if result["validation"]["valid"] else 1
 
         if args.command == "commit":
             if args.dry_run:
@@ -429,7 +586,7 @@ def main() -> int:
                 )
                 return 1
             owner = args.task or args.step
-            exit_code = record_evidence(
+            result = record_evidence_result(
                 args.project_directory,
                 args.task,
                 command_argv,
@@ -437,6 +594,10 @@ def main() -> int:
                 tail_lines=args.tail_lines,
                 timeout=args.timeout,
             )
+            exit_code = result.exit_code
+            if args.json:
+                print(json.dumps(result.as_dict(), indent=2))
+                return 0 if exit_code == 0 else 1
             evidence_path = args.project_directory.resolve() / "evidence.md"
             if exit_code == 0:
                 print(f"Recorded a passing result for {owner} in {evidence_path}")
@@ -594,6 +755,10 @@ def main() -> int:
                 return 0
             print("No READY task found", file=sys.stderr)
             return 2
+    except CloseOperationError as error:
+        print(json.dumps(error.result, indent=2))
+        print(f"ERROR: {error}", file=sys.stderr)
+        return 1
     except (WorkspaceError, OperationError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

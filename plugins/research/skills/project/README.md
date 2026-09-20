@@ -26,13 +26,15 @@ Claude uses launchers on `PATH`; Codex resolves them beside the loaded skill.
 
 ```sh
 research-project list-projects /path/to/workspace --query parser
-research-project context /path/to/project
-research-project context /path/to/project --task T01 --task-only
-research-project read /path/to/project spec --section "Constraints and important assumptions"
-research-project read /path/to/project evidence --task T01
-research-project update /path/to/project /path/to/patch.json --expected-revision 2
-research-project record-evidence /path/to/project --task T01 -- uv run pytest -q
-research-validate /path/to/project --close --check-index
+research-project context /path/to/project --validate
+research-project read /path/to/project spec --outline
+research-project edit /path/to/project spec --sections-json - --expected-sha256 TOKEN
+research-project update /path/to/project - --expected-revision 2 --json
+research-project task /path/to/project start T01 --expected-revision 3
+research-project record-evidence /path/to/project --task T01 --json -- uv run pytest -q
+research-project task /path/to/project finish T01 --evidence RECORD_ID --expected-revision 4
+research-project close /path/to/project --expected-revision 5 --reflection-file - \
+  --expected-reflection-sha256 missing
 ```
 
 Resume context bounds active tasks and specification text. Task-only and worker views preserve the
@@ -40,7 +42,9 @@ complete task and direct dependency references without loading the specification
 applicable constraints before acting. Paged reads explicitly report truncation and the next offset;
 follow pages until relevant requirements are complete. Validation still checks filesystem evidence.
 
-Updates preserve revision, transition, dependency, authorization, output and evidence guards.
+Guarded Markdown edits use document hashes to reject stale writes. Decisions and task findings append
+without custom rewrite scripts. Updates preserve revision, transition, dependency, authorization,
+output and evidence guards.
 Only the coordinator writes canonical state. Destructive/external effects need current scoped
 authorization; prior user authorization counts. External completion records a receipt.
 Already completed task history remains immutable; maintenance appends new tasks.

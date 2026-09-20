@@ -187,3 +187,32 @@ Final validation: 1,560 tests and 220 subtests passed, 3 skipped; 100% shipped-s
 coverage; repository-wide Ruff and ty; lock/version checks; both host launcher surfaces; strict
 Claude marketplace/plugin validation; project skill validation. Versions are aligned at `0.12.0`.
 Installed marketplace copies were not updated; they require a host update/reinstall.
+
+## Follow-up — 0.13.0, 2026-09-20
+
+Routine project writes now use guarded operations instead of coordinator-authored temporary files or
+Markdown rewrite programs. `update ... -` accepts a patch on stdin. Specification sections and
+reflections use whole-document SHA-256 conflict tokens; decisions and findings append under the
+project lock. Task start returns the complete assignment and dependencies. Recorded commands return
+stable evidence IDs, and task completion accepts explicit passing IDs while retaining failed checks.
+Validated resume and closure each have one combined command.
+
+The controlled three-task fixture now uses 10 observed CLI results, versus 14 in the 0.12.0 lean
+fixture: 28.6% fewer interactions. It emits 10,971 result bytes versus 9,697, a 13.1% increase. The
+increase comes from structured evidence identities, complete assignments returned by task transitions,
+and structured closure findings. The comparison does not count the old workflow's temporary patch
+and reflection-file authoring, so it understates the removed input work. These are deterministic
+payload and interaction measurements, not model tokens, billing, or universal wall-time savings.
+Reproduce the new measurement with:
+
+```sh
+uv run pytest -q -s --no-cov -o log_cli=false \
+  tests/plugins/research/project/test_workflow_automation.py::test_automated_cli_lifecycle_interaction_budget
+```
+
+The MCP stage is deferred. After the higher-level operations, a local MCP adapter would mainly remove
+launcher syntax and multiline quoting; it would not remove another semantic lifecycle step. The
+improved CLI remains usable by both hosts, Python 3.9, scripts and CI without adding a protocol runtime
+or dependency policy. Reconsider MCP if live agent trials show malformed CLI calls or launcher
+resolution remain a material source of retries. No claim is made about MCP host latency because no
+adapter or live cross-host MCP trial was run.
