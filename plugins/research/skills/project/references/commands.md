@@ -10,6 +10,14 @@ one full task. `--limit 10` shows more active summaries (maximum 20). It does no
 old decisions, or completed task definitions unless that task is explicitly selected. Truncation
 is reported, not silently treated as a complete specification.
 
+`context <project-dir> --task T01 --worker` returns only the full task, direct dependency statuses
+and artifact references, roots, revision, and executor activity. It does not read specification text
+or logs. The coordinator supplies relevant constraints, decisions, input references, and dependency
+findings; the projection cannot select them automatically. No requirements are truncated to fit a
+budget. `--worker` requires `--task`; `--limit` applies only to the normal resume summaries.
+See [task-workers.md](task-workers.md) for native delegation and recovery. This read-only command
+does not dispatch work, grant authorization, or take ownership.
+
 Write a small JSON file and pass it to:
 
 ```sh
@@ -116,18 +124,22 @@ can run in another wave; `fallbacks` gives a sequential handoff; `blocked` needs
 replaying uncertain effects. Exit 2 means no task completed. Do not rerun structural refusals.
 Nested coordination is prohibited. Never delete execution records/worktrees to clear a failure.
 
-Existing v3 projects remain sequential unless explicitly activated with `enable-execution` and the
-legacy-writer quiescence attestation. See `workspace-schema.md` for migration and
+Existing v3 projects can use sequential native task workers without migration. Parallel executor
+activation still requires `enable-execution` and the legacy-writer quiescence attestation.
+See `workspace-schema.md` for migration and
 `parallel-execution.md` for protocol recovery.
 
-## Optional paired report
+## Optional reports
 
-The historical paired format has Markdown and HTML, five shared sections, and a task-graph
-subsection. Its structural checker deliberately still requires both formats:
+Reports are requested deliverables, defaulting to Markdown when no format is specified. A single
+format does not require a counterpart. The structural checker accepts `--report-format markdown`,
+`html`, or `both`; the historical bare `--report` still requires both. The two flags are mutually
+exclusive. Load [report-design.md](report-design.md) for the content contract and its HTML reference
+only when producing HTML.
 
 ```sh
 research-project record-evidence <project-dir> --step report -- \
-  research-validate <project-dir> --report
+  research-validate <project-dir> --report-format markdown
 ```
 
 Use the resolved validator launcher and absolute project path in the recorded command. `--step`

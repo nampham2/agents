@@ -1158,7 +1158,7 @@ def run_checks(reference: str, decisions: str, repo_root: Path) -> "Dict[str, Li
 # holes review 04 found in its replacement.
 MUTATIONS = (
     ("citations", "reference",
-     "| C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1327-1335 "
+     "| C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1335-1343 "
      "| `does not match RUNNING tasks` |\n", "",
      "R3-17: delete C1's row while the body still cites [C1]"),
     ("citations", "reference", "| `class DirectoryLock` |", "| `class CrossProcessLock` |",

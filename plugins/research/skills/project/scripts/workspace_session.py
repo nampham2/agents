@@ -30,17 +30,61 @@ def _load_state(project_dir: Path) -> dict[str, Any]:
     return state
 
 
-def project_context(project_dir: Path, *, limit: int = 5, task_id: str | None = None) -> dict[str, Any]:
+def _worker_context(project_dir: Path, state: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
+    """Project one assignment without loading specification text, logs, or unrelated tasks."""
+    by_id = {item["id"]: item for item in state["tasks"]}
+    return {
+        "role": "worker",
+        "project": state["project"],
+        "status": state["status"],
+        "revision": state["revision"],
+        "schema_version": state["schema_version"],
+        "working_directory": state["working_directory"],
+        "roots": {
+            "target": state["working_directory"],
+            "workspace": str(project_dir),
+            "workspace_root": str(project_dir.parent),
+        },
+        "selected_task": task,
+        "dependencies": [
+            {key: by_id[task_id][key] for key in ("id", "name", "status", "outputs", "evidence", "receipts")}
+            for task_id in task["depends_on"]
+        ],
+        "specification": {"root": "workspace", "path": "spec.md", "anchor": "Current specification"},
+        "context_required": (
+            "Coordinator must supply applicable specification constraints, user decisions, input references, "
+            "and dependency findings. This projection does not select them or grant authorization."
+        ),
+        "execution_active": bool(
+            state.get("execution", {}).get("coordinator_run") or state.get("execution", {}).get("attempts")
+        ),
+        "validation": "structure only; coordinator checks files, current authorization, and ownership before dispatch",
+    }
+
+
+def project_context(
+    project_dir: Path, *, limit: int = 5, task_id: str | None = None, worker: bool = False
+) -> dict[str, Any]:
     """Read one canonical snapshot; omit terminal history and cap the normal resume payload.
 
     Structural validation precedes traversal. This is a context view, not a substitute for file,
     evidence, or execution-journal validation. An explicitly selected task is returned in full.
+    Worker mode omits the general resume view and returns only the task and direct dependency references.
     """
     if not 1 <= limit <= 20:
         raise WorkspaceError("context limit must be between 1 and 20")
+    if worker and task_id is None:
+        raise WorkspaceError("context --worker requires --task")
     project_dir = project_dir.resolve()
     state = _load_state(project_dir)
     tasks = state["tasks"]
+    selected = None
+    if task_id is not None:
+        selected = next((task for task in tasks if task["id"] == task_id), None)
+        if selected is None:
+            raise WorkspaceError(f"unknown task: {task_id}")
+        if worker:
+            return _worker_context(project_dir, state, selected)
     done = {task["id"] for task in tasks if task["status"] == "DONE"}
     active = [task for task in tasks if task["status"] not in ("DONE", "SKIPPED")]
     ready = [
@@ -87,10 +131,7 @@ def project_context(project_dir: Path, *, limit: int = 5, task_id: str | None = 
         "spec_truncated": len(spec) > 6000,
         "validation": "structure only; run research-validate on resume and at closure",
     }
-    if task_id is not None:
-        selected = next((task for task in tasks if task["id"] == task_id), None)
-        if selected is None:
-            raise WorkspaceError(f"unknown task: {task_id}")
+    if selected is not None:
         result["selected_task"] = selected
     return result
 

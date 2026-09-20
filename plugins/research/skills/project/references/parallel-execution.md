@@ -2298,37 +2298,37 @@ not that the sentence citing it is true.
 
 | Id | Source | Lines | Needle |
 |---|---|---|---|
-| C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1327-1335 | `does not match RUNNING tasks` |
-| C2 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3071-3091 | `def _dependency_levels(` |
-| C3 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3092-3120 | `def build_task_graph(` |
-| C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3005-3012 | `def levels(` |
+| C1 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1335-1343 | `does not match RUNNING tasks` |
+| C2 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3081-3101 | `def _dependency_levels(` |
+| C3 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3102-3130 | `def build_task_graph(` |
+| C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3015-3022 | `def levels(` |
 | C5 | `plugins/research/skills/project/SKILL.md` | 35-39 | `One coordinator owns canonical state` |
 | C6 | `plugins/research/skills/project/references/workspace-schema.md` | 9-14 | `One coordinator is the sole writer` |
-| C7 | `plugins/research/skills/project/SKILL.md` | 130-138 | `Stay sequential unless parallel work is requested/authorized` |
+| C7 | `plugins/research/skills/project/SKILL.md` | 143-149 | `Stay sequential unless parallel work is requested/authorized` |
 | C8 | `plugins/research/skills/project/scripts/workspace_lib.py` | 319-352 | `class DirectoryLock` |
 | C9 | `plugins/research/skills/project/scripts/workspace_lib.py` | 296-312 | `def atomic_write_text(` |
 | C10 | `plugins/research/skills/project/scripts/workspace_lib.py` | 26-30 | `EFFECT_KINDS = {` |
 | C11 | `plugins/research/skills/project/scripts/workspace_lib.py` | 33-37 | `REFERENCE_ROOTS = {` |
-| C12 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2569-2577 | `unsupported schema_version` |
+| C12 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2578-2586 | `unsupported schema_version` |
 | C13 | `plugins/research/skills/project/scripts/workspace_lib.py` | 454-471 | `def _validate_evidence_reference(` |
-| C14 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2865-2875 | `shell=False,` |
-| C15 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2873-2881 | `command timed out after` |
-| C16 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2905-2918 | `must not see a half-written one` |
+| C14 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2875-2885 | `shell=False,` |
+| C15 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2883-2891 | `command timed out after` |
+| C16 | `plugins/research/skills/project/scripts/workspace_lib.py` | 2915-2928 | `must not see a half-written one` |
 | C17 | `plugins/research/skills/project/scripts/workspace_lib.py` | 26-30 | `AUTHORIZATION_STATUSES = {` |
 | C18 | `plugins/research/skills/project/scripts/workspace_lib.py` | 528-536 | `non-required authorization must use status` |
 | C19 | `plugins/research/skills/project/scripts/workspace_lib.py` | 541-548 | `task requires explicit authorization` |
 | C20 | `plugins/research/skills/project/scripts/workspace_lib.py` | 59-65 | `TASK_TRANSITIONS = {` |
-| C21 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3447-3455 | `IMMUTABLE_PROJECT_FIELDS = (` |
+| C21 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3457-3465 | `IMMUTABLE_PROJECT_FIELDS = (` |
 | C22 | `plugins/research/skills/project/scripts/workspace_lib.py` | 24-30 | `TASK_STATUSES = {` |
 | C23 | `plugins/research/skills/project/scripts/workspace_lib.py` | 538-545 | `source and authorized_at must be null unless status is explicit` |
 | C24 | `plugins/research/skills/project/scripts/workspace_lib.py` | 320-326 | `def __init__(self, path: Path, timeout: float = 5.0) -> None:` |
-| C25 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3539-3547 | `lock_timeout: float = 5.0,` |
+| C25 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3549-3557 | `lock_timeout: float = 5.0,` |
 | C26 | `plugins/research/skills/project/scripts/workspace_lib.py` | 417-435 | `required must be a boolean` |
-| C27 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1320-1328 | `BLOCKED task requires block_reason` |
+| C27 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1328-1336 | `BLOCKED task requires block_reason` |
 | C28 | `plugins/research/skills/project/scripts/workspace_lib.py` | 82-96 | `TASK_FIELDS = {` |
-| C29 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3525-3563 | `with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):` |
-| C30 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3576-3584 | `The commit already landed` |
-| C31 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1268-1274 | `"success_criteria", "verification"` |
+| C29 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3535-3573 | `with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):` |
+| C30 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3586-3594 | `The commit already landed` |
+| C31 | `plugins/research/skills/project/scripts/workspace_lib.py` | 1276-1284 | `"success_criteria", "verification"` |
 | C32 | `plugins/research/skills/project/scripts/workspace_lib.py` | 494-500 | `_unexpected_fields(value, {"kind", "description"}, label, report)` |
 
 Eight rows are new in revision 5, and each exists because revision 4 asserted the constant without one:

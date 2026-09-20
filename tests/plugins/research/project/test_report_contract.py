@@ -108,9 +108,19 @@ class ReportSectionContractTests(unittest.TestCase):
     def test_an_absent_optional_pair_is_silent(self) -> None:
         self.assertEqual(report_warnings(_project(markdown=None, html=None)), [])
 
-    def test_a_partial_pair_still_names_the_missing_file(self) -> None:
-        self.assertEqual(report_warnings(_project(markdown=None)), ["no closing report at artifacts/report.md"])
-        self.assertEqual(report_warnings(_project(html=None)), ["no closing report at artifacts/report.html"])
+    def test_either_format_is_independently_optional(self) -> None:
+        self.assertEqual(report_warnings(_project(markdown=None)), [])
+        self.assertEqual(report_warnings(_project(html=None)), [])
+
+    def test_a_report_path_that_is_a_directory_still_warns(self) -> None:
+        project_dir = _project(html=None)
+        (project_dir / REPORT_DIRECTORY / REPORT_HTML_FILENAME).mkdir()
+        self.assertEqual(report_warnings(project_dir), ["no closing report at artifacts/report.html"])
+
+    def test_a_lone_report_still_receives_section_checks(self) -> None:
+        warnings = report_warnings(_project(markdown="# Title\n", html=None))
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("no '##' sections", warnings[0])
 
     def test_a_missing_markdown_section_is_named_as_missing(self) -> None:
         warnings = report_warnings(_project(markdown=GOOD_MARKDOWN.replace("## Open work\n\nWritten.\n\n", "")))
@@ -471,6 +481,67 @@ class ReportCheckCliTests(unittest.TestCase):
     def test_the_flag_fails_a_broken_pair(self) -> None:
         self._write_reports(html=GOOD_HTML.replace('role="img" ', ""))
         self.assertEqual(self._validate(self.project_dir, "--report"), 1)
+
+    def test_each_explicit_format_accepts_a_lone_valid_report(self) -> None:
+        for format_name, filename, content in (
+            ("markdown", REPORT_MARKDOWN_FILENAME, GOOD_MARKDOWN),
+            ("html", REPORT_HTML_FILENAME, GOOD_HTML),
+        ):
+            with self.subTest(format=format_name):
+                path = self.project_dir / REPORT_DIRECTORY / filename
+                path.write_text(content, encoding="utf-8")
+                self.assertEqual(self._validate(self.project_dir, "--report-format", format_name), 0)
+                self.assertEqual(self._validate(self.project_dir, "--report"), 1)
+                self.assertEqual(self._validate(self.project_dir, "--report-format", "both"), 1)
+                path.unlink()
+
+    def test_explicit_formats_fail_when_requested_reports_are_absent(self) -> None:
+        for format_name in ("markdown", "html", "both"):
+            with self.subTest(format=format_name):
+                self.assertEqual(self._validate(self.project_dir, "--report-format", format_name), 1)
+
+    def test_explicit_both_accepts_a_valid_pair(self) -> None:
+        self._write_reports()
+        self.assertEqual(self._validate(self.project_dir, "--report-format", "both"), 0)
+
+    def test_format_selection_ignores_an_invalid_unrequested_file(self) -> None:
+        self._write_reports(html="<html>")
+        self.assertEqual(self._validate(self.project_dir, "--report-format", "markdown"), 0)
+        self.assertEqual(self._validate(self.project_dir, "--report-format", "html"), 1)
+        (self.project_dir / REPORT_DIRECTORY / REPORT_MARKDOWN_FILENAME).write_text("# Broken", encoding="utf-8")
+        (self.project_dir / REPORT_DIRECTORY / REPORT_HTML_FILENAME).write_text(GOOD_HTML, encoding="utf-8")
+        self.assertEqual(self._validate(self.project_dir, "--report-format", "html"), 0)
+        self.assertEqual(self._validate(self.project_dir, "--report-format", "markdown"), 1)
+
+    def test_conflicting_or_unknown_format_flags_are_rejected(self) -> None:
+        for flags in (("--report", "--report-format", "markdown"), ("--report-format", "pdf")):
+            with self.subTest(flags=flags), self.assertRaises(SystemExit) as raised:
+                self._validate(self.project_dir, *flags)
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_unknown_api_format_is_a_finding(self) -> None:
+        self.assertEqual(report_findings(self.project_dir, "pdf").errors, ["unknown report format: pdf"])
+
+    def test_both_host_launchers_support_independent_formats(self) -> None:
+        for format_name, filename, content in (
+            ("markdown", REPORT_MARKDOWN_FILENAME, GOOD_MARKDOWN),
+            ("html", REPORT_HTML_FILENAME, GOOD_HTML),
+        ):
+            path = self.project_dir / REPORT_DIRECTORY / filename
+            path.write_text(content, encoding="utf-8")
+            for surface in ("bin", "skills/project/scripts"):
+                launcher = REPO_ROOT / "plugins/research" / surface / "research-validate"
+                with self.subTest(format=format_name, surface=surface):
+                    result = subprocess.run(
+                        [str(launcher), str(self.project_dir), "--report-format", format_name],
+                        text=True, capture_output=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    legacy = subprocess.run(
+                        [str(launcher), str(self.project_dir), "--report"], text=True, capture_output=True,
+                    )
+                    self.assertEqual(legacy.returncode, 1)
+            path.unlink()
 
     def test_the_launcher_exposes_the_flag(self) -> None:
         self._write_reports()

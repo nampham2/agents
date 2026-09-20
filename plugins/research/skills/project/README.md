@@ -14,7 +14,7 @@ usually do not need a persistent project.
 
 ## Defaults
 
-- Sequential work, with a few tasks representing deliverable milestones.
+- A fresh subagent for each substantial task, sequentially by default; trivial work stays inline.
 - Compact resume context instead of loading all task history, logs, and memory.
 - Small revision-checked updates; code maintains the full JSON state.
 - Real command evidence captured by the tool.
@@ -57,6 +57,7 @@ Codex uses launchers beside the loaded skill.
 research-project init /path/to/workspace --title "Parser fix" --working-directory /path/to/repo
 research-project context /path/to/project
 research-project context /path/to/project --task T01
+research-project context /path/to/project --task T01 --worker
 research-project update /path/to/project /path/to/patch.json --expected-revision 2
 research-project record-evidence /path/to/project --task T01 -- uv run pytest -q
 research-validate /path/to/project --close --check-index
@@ -71,9 +72,16 @@ checks. A stale revision requires reloading and reconciling.
 current specification (up to 6,000 characters), and review/execution state. Truncation is explicit.
 `--task` returns one task in full. Run the validator on resume to check filesystem evidence too.
 
+`--task T01 --worker` omits the general resume summary and specification text. It returns the task,
+direct dependency references, and roots; the coordinator adds relevant constraints and decisions.
+Native agents start without conversation history and return concise handoffs. The coordinator owns
+canonical state and recorded acceptance checks. See [references/task-workers.md](references/task-workers.md).
+If fresh native agents are unavailable, work continues inline. Context isolation can reduce coordinator
+growth; total token savings depend on worker overhead and should be measured across all agents.
+
 New projects remain schema v4 for compatibility, but initialization does not dispatch workers.
-`init --briefing` adds the optional discovery template. Older v3 projects remain sequential;
-migration and execution activation still require explicit authorization.
+`init --briefing` adds the optional discovery template. Older v3 projects can use sequential native
+agents without migration; parallel executor activation still requires explicit authorization.
 
 ## Optional extras
 
@@ -81,9 +89,11 @@ Use `show-graph` when dependencies are worth visualizing. Choose `run-auto` only
 are authorized and its narrow admission rules fit the work; it is not a prerequisite for sequential
 execution. Existing executor state and recovery guarantees remain supported.
 
-Write a report when it is part of the deliverable, in the format the user needs. The historical
-Markdown/HTML pair and `research-validate --report` remain available; no report files means no
-report warning at closure. A short `reflection.md` remains required by the existing schema.
+Write a report when it is part of the deliverable, defaulting to Markdown. HTML is generated only
+when requested or agreed in the specification. `research-validate --report-format markdown|html|both`
+checks the selected formats; bare `--report` retains the historical paired check. Neither a missing
+optional report nor a missing counterpart produces a closure warning. Required report outputs are
+still enforced as task deliverables. A short `reflection.md` remains required by the existing schema.
 
 Cross-project memory is searched on demand. Promoting a useful lesson is optional; every commit
 still regenerates indexes. If index generation fails after a commit, run the recovery command it

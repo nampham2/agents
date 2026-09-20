@@ -12,7 +12,8 @@ description: >
 Invoke with `/research:project [problem statement]`.
 
 Keep enough durable state to resume the work. Spend the session on the deliverable; bookkeeping
-belongs at meaningful task boundaries. Sequential execution is the default for both v3 and v4.
+belongs at meaningful task boundaries. Delegate substantial tasks to fresh subagents, one task at
+a time by default, on both v3 and v4. Keep trivial work and bookkeeping in the coordinator.
 
 ## Resolve tools and location once
 
@@ -112,11 +113,20 @@ unresolved choice actually needs it.
 
 ## Execute and verify
 
+Never bypass a live executor attempt: if context says `execution_active`, inspect the journal
+before task work or mutation. Resolve any previous native worker's ownership before resuming too.
 Read the selected task, check that its dependencies are `DONE`, and record `RUNNING` before work.
 Destructive and external actions need explicit, current authorization for that exact scope;
 existing user authorization counts. A skipped dependency is not satisfied.
 
-Do the work and verification in the target. Run command checks through:
+For substantial work, read [references/task-workers.md](references/task-workers.md) on first
+delegation. Use `context <project-dir> --task T01 --worker` for the task-only assignment; add the
+applicable constraints, decisions, and input references. Start a fresh native agent without
+conversation inheritance for each task. Reuse it only for corrections to that task. Continue inline
+when fresh agents are unavailable or prohibited. Workers return concise results and artifact paths;
+the coordinator alone updates canonical state and shared records.
+
+Do the work in the target. The coordinator checks the result and records acceptance commands through:
 ```sh
 research-project record-evidence <project-dir> --task T01 -- <command>
 ```
@@ -130,12 +140,12 @@ tasks also need a durable receipt. Batch finishing and starting adjacent tasks i
 truthful. Optional task notes hold only investigation or handoff detail that does not belong in the
 specification or evidence. Record lessons only when they will change future work.
 
-Stay sequential unless parallel work is requested/authorized and will save time. Do not run
+Stay sequential unless parallel work is requested/authorized and will save time. Native task
+delegation does not require the optional parallel executor or v3 migration. Do not run
 `run-auto` just to obtain a refusal. For opted-in execution, first read the short executor section
 in [references/commands.md](references/commands.md). Read
 [references/parallel-execution.md](references/parallel-execution.md) only for executor development
-or recovery. Never bypass a live attempt: if context says `execution_active`, inspect the journal
-before any task work or mutation.
+or recovery.
 
 ## Review and close
 
@@ -158,9 +168,11 @@ research-validate <project-dir> --close --check-index
 The commit already checks completion invariants; do not add a routine pre-close validation loop.
 Fix errors and report the outcome, verification, limitations, and project path.
 
-Reports are optional deliverables. Write Markdown or HTML only when the user needs that format.
-The legacy paired-report format and `--report` check remain available when requested; read
-[references/report-design.md](references/report-design.md) only then. No report, chart, graph
+Reports are optional deliverables. If requested without a format, use Markdown; generate HTML only
+when requested or specified as a deliverable. Record required report outputs as tasks. Read
+[references/report-design.md](references/report-design.md) only for a requested report; load its
+HTML reference only for HTML work. Use `--report-format markdown|html|both` for format-specific
+validation; bare `--report` retains the legacy paired check. No report, chart, graph
 presentation, memory sweep, or interview is required simply to close a project.
 
 Use `BLOCKED` only when progress needs input, authority, or external state; preserve evidence and

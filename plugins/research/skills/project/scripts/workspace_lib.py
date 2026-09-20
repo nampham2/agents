@@ -834,7 +834,7 @@ def _report_graph_findings(markdown: str, label: str) -> "list[str]":
 
 
 def report_warnings(project_dir: Path) -> "list[str]":
-    """Warn about a missing or incomplete closing report, at close and never before.
+    """Warn about incomplete existing closing reports, at close and never before.
 
     Warnings only, on the same reasoning as `briefing.md`: the report postdates every project already
     in a workspace, and a closed project must stay valid and stay reopenable. The trigger differs
@@ -844,10 +844,10 @@ def report_warnings(project_dir: Path) -> "list[str]":
     to have yet.
     """
     markdown_path, html_path = _report_paths(project_dir)
-    if not markdown_path.exists() and not html_path.exists():
-        return []  # Reports are optional; --report still requires both files when explicitly requested.
     warnings = []
     for path, label in ((markdown_path, REPORT_MARKDOWN_FILENAME), (html_path, REPORT_HTML_FILENAME)):
+        if not path.exists():
+            continue  # Each report format is independently optional.
         relative = f"{REPORT_DIRECTORY}/{label}"
         if not path.is_file():
             warnings.append(f"no closing report at {relative}")
@@ -1044,19 +1044,27 @@ def _chart_errors(html: str, label: str) -> "list[str]":
     return errors
 
 
-def report_findings(project_dir: Path) -> ValidationReport:
-    """Check both report files mechanically, as errors rather than warnings.
+def report_findings(project_dir: Path, report_format: str = "both") -> ValidationReport:
+    """Check the requested report format(s) mechanically, as errors rather than warnings.
 
     This is what `--report` runs, and it is deliberately harsher than the close-time warning: the
-    warning nudges a project that has not written a report, while this is the check the step runs
+    warning checks only existing reports, while this also requires the requested files. The step runs
     through `record-evidence` so its exit code becomes a record instead of a claim. What it can
     check is structure — sections, tags, tokens, themes, labels, captions. What it cannot check is
     whether the report is true, or whether a chart's bars are the length its numbers imply; the
     first is the reader's job and the second is arithmetic the author verifies against the `viewBox`.
     """
     report = ValidationReport()
+    if report_format not in {"markdown", "html", "both"}:
+        report.errors.append(f"unknown report format: {report_format}")
+        return report
     markdown_path, html_path = _report_paths(project_dir)
-    for path, label in ((markdown_path, REPORT_MARKDOWN_FILENAME), (html_path, REPORT_HTML_FILENAME)):
+    for format_name, path, label in (
+        ("markdown", markdown_path, REPORT_MARKDOWN_FILENAME),
+        ("html", html_path, REPORT_HTML_FILENAME),
+    ):
+        if report_format not in {format_name, "both"}:
+            continue
         relative = f"{REPORT_DIRECTORY}/{label}"
         if not path.is_file():
             report.errors.append(f"no report at {relative}")
@@ -2556,6 +2564,7 @@ def validate_project(
     check_index: bool = False,
     check_report: bool = False,
     allow_legacy_close: bool = False,
+    report_format: str | None = None,
 ) -> ValidationReport:
     project_dir = project_dir.resolve()
     try:
@@ -2588,8 +2597,9 @@ def validate_project(
     # than replacing it, so `--close --report` is one run and `--report` alone still validates the
     # project around the report. Errors, not warnings, because this is the check the closure step runs
     # through `record-evidence` for an exit code.
-    if check_report:
-        report.extend(report_findings(project_dir))
+    # Explicit format selection enables the check itself; legacy check_report requests both.
+    if check_report or report_format is not None:
+        report.extend(report_findings(project_dir, report_format if report_format is not None else "both"))
     if check_index and version in {2, 3, 4}:
         expected = render_index(project_dir.parent)
         index_path = project_dir.parent / "INDEX.md"

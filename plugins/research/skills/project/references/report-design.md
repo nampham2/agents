@@ -1,48 +1,27 @@
-# Closing report design
+# Report design
 
-Read this reference only when the optional paired-report format is requested, for `artifacts/report.md` and
-`artifacts/report.html`. It carries the section contract both files share, the CSS baseline the HTML
-is built from, the chart rules, and the arithmetic check that stands in for looking at the result.
-
-It is deliberately self-contained and host-agnostic. It names no host skill and depends on none, so
-the closure step behaves the same in Claude Code and Codex. Where it restates guidance
-that a host also provides, the restatement is the authority here.
+Read this reference only when a report is requested. Markdown and HTML are independent deliverables:
+write `artifacts/report.md` for Markdown, `artifacts/report.html` for HTML, or both when both are
+requested. Read [report-html.md](report-html.md) only for HTML output; it contains the CSS, theme, chart, and geometry
+guidance. No report is required to close a project.
 
 ## What the report is for
 
-A finished project leaves its findings spread across three documents, none of which is a report.
-`evidence.md` is a command log. `reflection.md` is an inward post-mortem addressed to future
-sessions. `project.json` is a state machine. A reader who was not in the session and wants to know
-what was done, what it found, and what it did not settle has nowhere to look.
+The report is for a reader outside the session who wants to know what was done, what it found, and
+what it did not settle. Cite existing evidence rather than introducing new measurements. Every figure
+traces to `evidence.md`, an `artifacts/` file, or a receipt. State what was not proven and distinguish
+mechanical checks from observations.
 
-The report is that document. Its audience is a reader outside the session — a colleague, a reviewer,
-the same person in six months. Two consequences follow, and most authoring mistakes are a failure of
-one of them:
+For a cancelled project, the summary states the cancellation reason and Open work describes what a
+successor would pick up. Do not present cancellation as successful completion.
 
-- **It cites rather than measures.** Every figure in the report traces to `evidence.md`, an
-  `artifacts/` file, or a receipt. Closure is not the time to run a new measurement, and a number
-  that appears for the first time in the report is a number nothing checked.
-- **It states what was not proven.** A report that only lists what worked is the one a reader cannot
-  act on, because they cannot tell which of their questions it answers. This is why
-  `## Limitations and what was not proven` is a required section rather than a courtesy.
-
-When a report is requested on the cancelled path, the summary states the cancellation reason and
-`## Open work` carries what a successor would pick up. Cancellation is never presented as successful
-completion.
-
-## Two files, one spine
-
-`artifacts/report.md` is the plain technical record: readable in a terminal, greppable, diffable.
-`artifacts/report.html` is the same findings and the same numbers, presented, with charts.
-
-Reuse shared content or generate one view from the other when helpful. The plugin does not ship a
-converter. Add charts only when they improve the requested report.
-
-They must not disagree. A figure, a verdict, or a limitation in one belongs in the other.
+Markdown is the plain technical record, readable in a terminal and suitable for diffs. HTML presents
+the same kind of findings with optional charts. When both are requested, they must agree on figures,
+verdicts, and limitations; reuse shared content when helpful. The plugin ships no converter.
 
 ## The section contract
 
-Both files carry these five sections, at `##` in Markdown and `<h2>` in HTML:
+Each requested file carries these five sections, at `##` in Markdown and `<h2>` in HTML:
 
 ```text
 ## Summary
@@ -52,348 +31,69 @@ Both files carry these five sections, at `##` in Markdown and `<h2>` in HTML:
 ## Open work
 ```
 
-`research-validate --report` recognises reworded headings — `## Abstract` for the summary,
-`## Method`, `## Results`, `## Caveats`, `## Next steps` — so a report is not forced into wording
-that fits it badly. What it will not accept is a missing section, a section still holding a
-placeholder, or a section demoted to `###`/`<h3>`. Subsections below the five are free.
+The validator recognises reworded headings such as Abstract, Method, Results, Caveats, and Next steps.
+A section must be present and written, and cannot be demoted to `###` or `<h3>`.
 
-What each section owes the reader:
-
-- **Summary** — the verdict, in a few sentences, including the part a reader would be annoyed to
-  find only at the bottom. Not a table of contents.
-- **What was done** — method and scope, enough that the reader can judge whether the finding
-  transfers to their case. Task ids are useful shorthand here; a task list is not a method.
-- **Findings and evidence** — the substance, each claim next to what backs it. Cite by file and
-  anchor (`evidence.md`, `## T04 — …`) rather than by assertion.
-- **Limitations and what was not proven** — the boundary of the claim. Include what was checked
-  mechanically but not observed, what a fixture proves and a real run does not, and any measurement
-  the environment made impossible.
-- **Open work** — what a successor picks up, and where it is already recorded (a follow-up project,
-  a staged memory lesson, an unresolved review comment).
+- **Summary** — the verdict in a few sentences, including the qualification a reader needs first.
+- **What was done** — method and scope, enough to judge whether the finding transfers to another case.
+  Task ids can support the explanation; a task list alone is not a method.
+- **Findings and evidence** — each claim beside its evidence, cited by file and anchor.
+- **Limitations and what was not proven** — the boundary of the claim, including checks the
+  environment prevented and what fixtures establish compared with real runs.
+- **Open work** — what a successor picks up and where any follow-up work is already recorded.
 
 ## Technical style
 
-Concise but readable. The reader is technical and busy; neither padding nor compression serves them.
-
-- Prose in sentences, not bullet fragments, wherever the point has a because in it. Bullets for
-  genuinely parallel items.
-- Numbers with their units and their basis: "−0.97% on 368 million rows" rather than "close enough".
-- Exact values in tables, comparisons in charts. A table of three numbers wants no chart; a chart of
-  a value the reader will quote wants a table beside it.
-- Name the thing that went wrong. A report that reads as though nothing was ever unclear is a report
-  whose method the reader cannot audit.
-- No em-dash-and-emoji decoration in the Markdown, no restating the section heading as the first
-  sentence, and no "as mentioned above".
-
-## The HTML: what it may load
-
-**Nothing, with one exception.** The report is opened from disk, often long after the work, so a
-dead CDN link is a report that renders wrong for reasons nobody will diagnose. All CSS is inline in
-`<style>`; all charts are inline SVG; no external script; no `@import`.
-
-The single exception is a web-font stylesheet from `https://fonts.googleapis.com/`, and every family
-it loads needs a real fallback stack so the page is right when the font does not arrive.
-`research-validate --report` enforces exactly this: an external script, any other stylesheet host, or
-an `@import` is an error.
-
-## The CSS baseline
-
-Colour lives in custom properties and nowhere else. That is what lets the three theme blocks
-redefine the palette without touching a rule, and `--report` treats a colour literal in any
-colour-carrying property outside a `--*` definition as an error.
-
-Three theme blocks, all three required, in this order:
-
-```css
-/* 1. The light palette, on bare :root. Every token is defined here and only redefined below. */
-:root {
-  --ground: #f7f8fa;        /* page */
-  --surface: #ffffff;       /* cards, tables */
-  --surface-sunk: #eef0f4;  /* table stripes, code */
-  --ink: #101418;           /* body text */
-  --ink-soft: #3a444f;      /* secondary text */
-  --slate: #5c6673;         /* labels */
-  --slate-faint: #8b95a1;   /* axis ticks */
-  --rule: #dce0e7;          /* hairlines, gridlines */
-  --rule-strong: #c3c9d2;   /* axes */
-  --accent: #0f6e6a;        /* the quantity that matters */
-  --accent-soft: #e2f0ef;
-  --pass: #1a7f4f;
-  --pass-soft: #e3f2e9;
-  --note: #a86518;          /* caution, not failure */
-  --note-soft: #f8eddd;
-  --esc: #b03a2e;           /* escalation, failure */
-  --esc-soft: #fae9e6;
-  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
-  --serif: "Source Serif 4", Georgia, "Times New Roman", serif;
-  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-}
-
-/* 2. The viewer's system preference, guarded so an explicit light choice still wins. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --ground: #0d1014;  --surface: #151a20;  --surface-sunk: #1c2229;
-    --ink: #e6eaef;     --ink-soft: #c3cbd4;
-    --slate: #9aa4b0;   --slate-faint: #6d7783;
-    --rule: #262d36;    --rule-strong: #38414c;
-    --accent: #45b8ad;  --accent-soft: #10312f;
-    --pass: #4cc287;    --pass-soft: #102a1e;
-    --note: #d99a45;    --note-soft: #2e2314;
-    --esc: #e2705f;     --esc-soft: #2f1714;
-  }
-}
-
-/* 3. An explicit dark choice, which must win in both directions. Same values as block 2. */
-:root[data-theme="dark"] {
-  --ground: #0d1014;  --surface: #151a20;  --surface-sunk: #1c2229;
-  --ink: #e6eaef;     --ink-soft: #c3cbd4;
-  --slate: #9aa4b0;   --slate-faint: #6d7783;
-  --rule: #262d36;    --rule-strong: #38414c;
-  --accent: #45b8ad;  --accent-soft: #10312f;
-  --pass: #4cc287;    --pass-soft: #102a1e;
-  --note: #d99a45;    --note-soft: #2e2314;
-  --esc: #e2705f;     --esc-soft: #2f1714;
-}
-```
-
-Two blocks are not enough and the reason is not obvious. Block 2 alone leaves a viewer who has
-chosen dark on a light system stuck in light; block 3 alone ignores the system preference of every
-viewer who has chosen nothing. Both, with block 2 guarded, cover all four combinations.
-
-Give `body` an explicit `background: var(--ground)`. A transparent body borrows whatever ground the
-viewer's browser paints, which is how a dark-mode page ends up with black text on black.
-
-The palette above is a starting point, not a house style. Change the hues; keep the token names, the
-role each token plays, and all three blocks.
-
-## Typography and layout
-
-```css
-* { box-sizing: border-box; }
-body {
-  background: var(--ground);
-  color: var(--ink);
-  font-family: var(--serif);
-  font-size: 16.5px;
-  line-height: 1.62;
-  margin: 0;
-}
-.wrap { max-width: 1080px; margin: 0 auto; padding: 0 28px 96px; }
-.col  { max-width: 660px; }   /* prose only; tables and charts use the full wrap */
-h1, h2, h3 { font-family: var(--sans); }
-.num, code, pre { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-```
-
-- **Serif body, sans headings, mono numerals.** The serif is what makes several hundred words of
-  prose readable; the mono with `tabular-nums` is what makes a column of figures comparable down the
-  page.
-- **Prose is measured, tables and charts are not.** Prose in a `max-width: 660px` column — roughly
-  70 characters — while a table or a chart gets the full 1080px. A full-width paragraph is the single
-  most common way a technical page becomes unreadable.
-- **`<h2>` earns its space.** The five contract sections are the page's skeleton; set them apart
-  (a rule above, generous margin) so the reader can scan to one.
-- **Tables**: right-align numbers, left-align labels, hairline rules in `var(--rule)`, no vertical
-  borders. Wrap a wide table in its own `overflow-x: auto` container so the page body never scrolls
-  sideways.
-- **Phone width (~400px)** has to work: relative units, a side gutter of at least 16px, and nothing
-  with a `min-width` wider than the screen.
-
-## Charts
-
-**When.** Prefer a chart when the report compares a quantity across three or more categories, or
-over a series. Prefer a table when exact values are what the reader needs — and a chart plus a table
-is often right, the chart carrying the shape and the table the figures. Use neither when nothing is
-being compared: a chart of one number is decoration, and decoration in a technical report costs
-credibility.
-
-**How — these rules are absolute, and `--report` checks every one of them:**
-
-- **Hand-authored inline SVG.** No charting library, no image file, no `<canvas>`.
-- **Every colour a `var(--…)` token**, on `fill` and `stroke` alike, so the chart follows the theme.
-- **`role="img"` and a non-empty `aria-label`** on every `<svg>`. The label carries the finding in
-  words, not the chart's title: a reader on a screen reader, in a terminal, or looking at a printout
-  should learn the same thing a viewer does.
-- **Every chart inside a `<figure>` with a non-empty `<figcaption>`.** The caption carries the
-  *interpretation* — what the shape means — rather than restating the heading. A `<figcaption>`
-  holding only whitespace or only markup counts as absent.
-
-An `<svg>` outside a `<figure>` is an error even when its labels are perfect, because there is
-nowhere for its caption to go.
-
-### Verify the geometry arithmetically
-
-Check the scale and coordinates against the viewBox. When visual inspection tools are available,
-also inspect the rendered chart; arithmetic alone cannot establish readability.
-
-State the scale in an SVG comment, then verify each mark:
-
-```html
-<svg viewBox="0 0 640 250" role="img"
-     aria-label="Relative difference in mean prediction, DQS versus production: bha exactly zero, the three steps spread from minus 5.0 to plus 6.1 percent, the composed prediction minus 0.97 percent.">
-  <!-- scale: 1% = 18px, zero at x=400 -->
-  <line x1="400" y1="20" x2="400" y2="200" stroke="var(--rule-strong)" stroke-width="1.5"/>
-  <rect x="310"   y="72"  width="90"   height="16" fill="var(--note)"/>   <!-- −5.0% -->
-  <rect x="400"   y="106" width="50.4" height="16" fill="var(--note)"/>   <!-- +2.8% -->
-  <rect x="382.5" y="174" width="17.5" height="16" fill="var(--accent)"/> <!-- −0.97% -->
-</svg>
-```
-
-Every one of those is checkable without rendering anything: `5.0 × 18 = 90` and a negative bar starts
-at `400 − 90 = 310`; `2.8 × 18 = 50.4` from `x = 400`; `0.97 × 18 = 17.46 ≈ 17.5` from
-`400 − 17.5 = 382.5`. Do this for bars, tick positions, and label anchors. Two failures this catches
-that nothing else will: a bar whose length does not match its printed value, and a bar that runs off
-the `viewBox`.
-
-Keep every mark inside the `viewBox` with room for labels — the reference chart plots to `y=200` and
-puts axis ticks at `y=216` and a caption line at `y=240` inside a 250-high box. Use
-`text-anchor="end"` for labels left of an axis and `middle` for ticks under one, and check that a
-label at `x=150` with `text-anchor="end"` has 150px of room for its longest string.
-
-**Bar, dot, or line, and nothing else.** A horizontal bar chart for categories, a dot for an exact
-point on a scale, a line for a series. No pie charts: the report's readers compare magnitudes, and
-angles are the worst encoding for that.
+Use concise, readable sentences. Use bullets for parallel items, tables for exact values, and charts
+when comparisons benefit from a picture. Give numbers their units and basis, and explain what went
+wrong when it matters to the method. Avoid decorative emoji, heading repetition, and padding.
 
 ## The task-graph subsection
 
-Both files carry one `###` subsection under `## What was done`, holding the project's task graph
-annotated with what execution did to it. A subsection and not a sixth `##` section, because the
-five-section spine is closed and because a graph supports the method narrative rather than replacing
-it: the prose says what was done and why, and the graph shows how the work was ordered and how it
-actually ran.
-
-The heading, at `###` in Markdown and `<h3>` in HTML:
+Each requested report carries a written subsection under What was done:
 
 ```text
 ### Task graph
 ```
 
-`research-validate --report` recognises `### Task graph`, `### The task graph`,
-`### Dependency graph`, `### Task dependency graph`, and `### Plan and execution graph`, the same
-reworded-heading tolerance the five sections get. A heading that does not say graph is not this
-subsection, however well it reads: the check finds the subsection by its heading or not at all.
+In HTML use `<h3>`. Deeper headings are accepted too. Recognised alternatives include The task graph,
+Dependency graph, Task dependency graph, and Plan and execution graph. The subsection must sit under
+What was done; the same heading under another section does not satisfy the contract.
 
-Where it sits is checked too. The subsection must be inside `## What was done`; the same heading under
-another section does not satisfy the contract. A heading deeper than `###` is accepted — `####` in
-Markdown, `<h4>` through `<h6>` in HTML — because both readers accept `###`-or-deeper, and a report
-should not pass as one file and fail as the other over a nesting depth the contract does not care
-about.
+Use `research-project show-graph <project-directory>` as the source. Include a table with one row per
+task: id and name, dependency level, dependencies, status at the report check, effect kind, authorization status,
+recorded evidence pass/fail counts, and measured span or `unmeasured`. Explain how dependencies shaped
+the work and what execution changed. Markdown needs the table and prose; HTML chart guidance is in
+`report-html.md`.
 
-Absence is an **error** under `--report` and a **warning** under `--close` and for a project already
-`DONE` or `CANCELLED`, so every report written before this contract stays valid and its project stays
-reopenable. A heading with nothing written under it counts as absent.
+Label the table's revision or snapshot time. A report task can still be RUNNING while its report is
+being checked; say so instead of predicting completion. The canonical task state records later acceptance.
 
-`research-project show-graph <project-directory>` prints the same graph as text. Write the subsection
-from its output rather than reading `project.json` again by eye: the console form and the report form
-come from one model in code, and the figures in the subsection should be the figures the command
-printed.
+A span measures recorded verification, not total work: it runs from the task's first to last readable
+`- Recorded:` evidence stamp and is a lower bound. Tasks without recorded commands remain in the table
+as `unmeasured`, never as zero duration. If both formats are requested, their task tables must agree.
 
-### What the subsection carries
+## Validation and evidence
 
-Three parts in HTML, in this order; the third alone in Markdown:
-
-1. **A dependency-level profile** — one horizontal bar per dependency level, its length the number of
-   tasks at that level. This is the shape of the plan: a profile of mostly-one bars is a chain, and a
-   wide bar is work that could have run in parallel.
-2. **An execution timeline** — one horizontal bar per measured task, positioned inside the project's
-   measured window. This is what happened to that shape.
-3. **A table** — one row per task, carrying the exact values: id and name, dependency level,
-   dependencies, final status, effect kind, authorization status, recorded evidence pass/fail counts,
-   and the task's measured span or `unmeasured`.
-
-That split is the chart/table rule above applied to one subject: the figures carry the shape, the
-table carries the values, and the table is what the two files must agree on row for row. The Markdown
-twin carries the table and the prose and not the figures — it is the plain technical record, and an
-ASCII rendering of a bar chart is neither plain nor a record.
-
-**A span measures verification, not work, and is a lower bound.** It is derived from `evidence.md`
-`- Recorded:` stamps, so it runs from a task's first recorded command to its last and knows nothing
-about the time before the first one. Say that in the subsection rather than letting a reader take it
-for a duration. A task with no recorded command is **unmeasured**: it renders as `unmeasured` in the
-table, never as a zero-length span, and it is never dropped from the table because it cannot be
-plotted.
-
-### The profile's geometry
-
-```text
-row pitch      28px, bar height 16px, first bar at y=40
-label gutter   x=0..112, level labels text-anchor="end" at x=104
-plot area      x=120..600, so 480px wide
-scale          480 / (tasks at the widest level) px per task
-height         28 x levels + 54
-```
-
-Worked, for the 14-task graph of this contract's own project — 7 levels, widest level 3 tasks:
-
-- `height = 28 x 7 + 54 = 250`, so `viewBox="0 0 640 250"`.
-- `scale = 480 / 3 = 160` px per task.
-- The widest level, 3 tasks: `x=120`, `width = 3 x 160 = 480`, right edge `120 + 480 = 600`, exactly
-  the plot edge and inside the `viewBox`.
-- A level holding 1 task: `width = 160`, right edge `280`.
-- Row tops are `40, 68, 96, 124, 152, 180, 208`; the last bar's bottom is `208 + 16 = 224`, leaving
-  `250 - 224 = 26px` for the caption line.
-
-No bar can leave the `viewBox`, because the widest level is what set the scale.
-
-### The timeline's geometry
-
-```text
-row pitch      28px, bar height 16px, first bar at y=40
-label gutter   x=0..112, task ids text-anchor="end" at x=104
-plot area      x=120..600 spanning the whole measured window
-scale          480 / window minutes px per minute
-bar            x = 120 + (task start - window start) x scale
-               width = max(3, span x scale), then x = min(x, 597)
-height         28 x measured tasks + 54
-```
-
-Worked, for the predecessor project `2026-09-10-002` — window 11:12 to 12:27, 75 minutes, 15 tasks
-all measured:
-
-- `scale = 480 / 75 = 6.4` px per minute; `height = 28 x 15 + 54 = 474`.
-- A task spanning 11:12 to 11:17 — minute 0 to 5: `x = 120 + 0 x 6.4 = 120`,
-  `width = 5 x 6.4 = 32`.
-- A task spanning 12:22 to 12:27 — minute 70 to 75: `x = 120 + 70 x 6.4 = 568`, `width = 32`, right
-  edge `600`.
-- A task with a single recorded command at 11:40 — minute 28, span 0: `x = 120 + 28 x 6.4 = 299.2`,
-  `width = max(3, 0) = 3`. Without that floor a single-entry task draws nothing at all, which reads
-  as "did not run" rather than "ran once".
-- The floor is the only way a bar can overrun: a single entry at the very end of the window would
-  start at `x=600` and draw to `603`. Clamping the start to `x=597` keeps it inside, which is why the
-  clamp is written down rather than left to whoever notices.
-
-The window itself is the first and last readable stamp in the whole project, so the leftmost bar
-starts at `x=120` and the rightmost ends at `x=600` by construction. State the window's real clock
-times in the `aria-label` and the count of unmeasured tasks in the `<figcaption>`: a timeline that
-silently plots 11 of 15 tasks is a chart that lies by omission.
-
-## What the check does and does not cover
-
-`research-validate --report <project-dir>` is opt-in, and the closure step runs it through
-`record-evidence --step report` so its exit code becomes a record rather than a claim:
+Select the requested output explicitly:
 
 ```sh
 research-project record-evidence <project-dir> --step report -- \
-  research-validate <project-dir> --report
+  research-validate <project-dir> --report-format markdown
 ```
 
-It checks, as errors: both files exist and are readable; all five sections are present and written in
-each; the HTML's tags balance; no external script, no non-font stylesheet, no `@import`; no colour
-literal outside a `--*` definition; all three theme blocks present; every `<svg>` carrying
-`role="img"` and a non-empty `aria-label`; every chart inside a `<figure>` with a non-empty
-`<figcaption>`; the task-graph subsection present under `## What was done` in both files.
+Use `--report-format html` or `--report-format both` for those requests. The selected files must exist
+and be readable, with all five sections and the task-graph subsection written. HTML selection also
+checks tag balance, resource loading, colour tokens, theme blocks, and chart accessibility against
+`report-html.md`. An unselected counterpart is not required or mechanically checked by this option.
+Bare `--report` keeps the legacy requirement for both files; it cannot be combined with
+`--report-format`.
 
-It cannot check the things that actually make the report good, and no amount of passing it substitutes
-for them:
+The check cannot establish whether findings are true, figures trace to evidence, charts are readable
+or geometrically accurate, two requested formats agree, or limitations are honest. Verify those
+properties separately and state what was not observed.
 
-- whether the report is **true**, or whether its figures trace to recorded evidence;
-- whether a chart's bars are the length its numbers imply — that is the arithmetic above;
-- whether the two files **agree** with each other;
-- whether the prose is readable, or the limitations honest.
-
-Separately, `research-validate --close` and validation of a project already `DONE` or `CANCELLED`
-**warn** when a report pair is incomplete, unwritten, missing sections, or missing the task-graph
-subsection. That is a warning and never an
-error, on the same reasoning as `briefing.md`: the report postdates every project already in a
-workspace, and a closed project must stay valid and stay reopenable. No report files means no report
-warning at closure. Nothing warns before close — a
-report cannot exist before the work it reports on.
+At closure, and for a project already DONE or CANCELLED, existing report files receive warnings for
+unreadable content, unwritten or missing sections, and a missing task-graph subsection. Each format is
+independently optional: a missing counterpart produces no warning. These warnings do not prevent
+closure or reopening. Reports are not checked before closure unless explicitly requested.

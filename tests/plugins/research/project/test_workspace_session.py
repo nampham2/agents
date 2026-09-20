@@ -185,6 +185,56 @@ def test_context_missing_spec_and_invalid_state(fixture: WorkspaceFixture) -> No
         project_context(fixture.project_dir)
 
 
+def test_worker_context_keeps_task_and_direct_dependencies_only(fixture: WorkspaceFixture) -> None:
+    state = fixture.state("EXECUTING")
+    dependency = fixture.task("D01")
+    selected = fixture.task("T01", "RUNNING")
+    selected.update(depends_on=["D01"], success_criteria="Important requirement. " * 400)
+    state.update(tasks=[dependency, selected], current_tasks=["T01"])
+    atomic_write_json(fixture.project_dir / "project.json", state)
+    # Neither the specification nor evidence contents belong in a worker projection.
+    (fixture.project_dir / "spec.md").write_bytes(b"\xff")
+    (fixture.project_dir / "evidence.md").write_bytes(b"\xff")
+    before = (fixture.project_dir / "project.json").read_bytes()
+    result = project_context(fixture.project_dir, task_id="T01", worker=True)
+    assert result["selected_task"] == selected  # Requirements must never be silently truncated.
+    assert result["dependencies"] == [
+        {key: dependency[key] for key in ("id", "name", "status", "outputs", "evidence", "receipts")}
+    ]
+    assert result["roots"] == {
+        "target": str(fixture.target_dir),
+        "workspace": str(fixture.project_dir),
+        "workspace_root": str(fixture.workspace_root),
+    }
+    assert result["revision"] == 0
+    assert result["specification"]["path"] == "spec.md"
+    assert result["context_required"]
+    assert not {"spec", "tasks", "task_counts", "ready", "review"} & result.keys()
+    assert (fixture.project_dir / "project.json").read_bytes() == before
+    state["tasks"].extend(fixture.task(f"H{i}") for i in range(200))
+    atomic_write_json(fixture.project_dir / "project.json", state)
+    assert project_context(fixture.project_dir, task_id="T01", worker=True) == result
+
+
+def test_worker_context_preserves_pending_authorization_and_unsatisfied_dependencies(fixture: WorkspaceFixture) -> None:
+    external = task("T02")
+    external.update(effect={"kind": "external", "description": "Publish"}, depends_on=["T01"])
+    change(fixture, {"tasks": [task(), external]}, 0)
+    result = project_context(fixture.project_dir, task_id="T02", worker=True)
+    assert result["selected_task"]["authorization"]["status"] == "pending"
+    assert result["dependencies"][0]["status"] == "TODO"
+    assert result["status"] == "PLANNING"
+    with pytest.raises(WorkspaceError, match="requires --task"):
+        project_context(fixture.project_dir, worker=True)
+    with pytest.raises(WorkspaceError, match="unknown task"):
+        project_context(fixture.project_dir, task_id="absent", worker=True)
+    state = fixture.state("PLANNING")
+    state["tasks"] = [None]
+    atomic_write_json(fixture.project_dir / "project.json", state)
+    with pytest.raises(WorkspaceError, match="invalid project state"):
+        project_context(fixture.project_dir, task_id="T01", worker=True)
+
+
 def test_temporary_filesystem_failure_is_workspace_error(fixture: WorkspaceFixture) -> None:
     with patch("workspace_session.tempfile.TemporaryDirectory", side_effect=OSError("disk full")):
         with pytest.raises(WorkspaceError, match="cannot prepare project update"):
@@ -194,12 +244,13 @@ def test_temporary_filesystem_failure_is_workspace_error(fixture: WorkspaceFixtu
 def test_v4_updates_remain_guarded_by_executor_ownership(fixture: WorkspaceFixture) -> None:
     project = allocate_project(fixture.workspace_root, title="V4", working_directory=fixture.target_dir)
     path = fixture.workspace_root / "patch.json"
-    atomic_write_json(path, {"status": "PLANNING"})
+    atomic_write_json(path, {"status": "PLANNING", "tasks": [task()]})
     update_project(project, path, expected_revision=0)
     state = json.loads((project / "project.json").read_text())
     state["execution"]["coordinator_run"] = "live-run"
     atomic_write_json(project / "project.json", state)
     assert project_context(project)["execution_active"] is True
+    assert project_context(project, task_id="T01", worker=True)["execution_active"] is True
     with pytest.raises(WorkspaceError, match="mutating commands are refused"):
         update_project(project, path, expected_revision=1)
 
@@ -235,3 +286,18 @@ def test_both_host_launchers_support_small_updates(tmp_path: Path, surface: str)
     subprocess.run([str(launcher), "update", str(project), str(path), "--expected-revision", "0"], check=True)
     result = subprocess.run([str(launcher), "context", str(project)], text=True, capture_output=True, check=True)
     assert json.loads(result.stdout)["ready"] == ["T01"]
+    worker = subprocess.run(
+        [str(launcher), "context", str(project), "--task", "T01", "--worker"],
+        text=True, capture_output=True, check=True,
+    )
+    assignment = json.loads(worker.stdout)
+    assert assignment["role"] == "worker"
+    assert assignment["selected_task"]["id"] == "T01"
+    assert assignment["dependencies"] == []
+    assert assignment["execution_active"] is False
+    assert "spec" not in assignment
+    rejected = subprocess.run(
+        [str(launcher), "context", str(project), "--worker"], text=True, capture_output=True,
+    )
+    assert rejected.returncode != 0
+    assert "requires --task" in rejected.stderr

@@ -378,18 +378,18 @@ Redact credentials, tokens, private data, and unnecessary command output from ev
 
 ## The closing report
 
-Reports are optional deliverables, not closure requirements. When the legacy paired-report format
-is requested, it uses the `artifacts/` directory that `init` already created:
+Reports are optional deliverables, not closure requirements. Each format can be requested independently
+in the `artifacts/` directory that `init` already created; an unspecified format defaults to Markdown:
 
 ```text
 YYYY-MM-DD-NNN/
 └── artifacts/
     ├── report.md            # The plain technical record
-    └── report.html          # The same findings, presented, with charts
+    └── report.html          # Only when HTML is requested
 ```
 
-Both carry the same findings and may share generated content; nothing in this plugin converts
-between them. Both carry the same five `##` sections, in this order:
+When both are requested they carry the same findings and may share generated content; nothing in this
+plugin converts between them. Each requested file carries five sections (`##` in Markdown, `<h2>` in HTML):
 
 ```text
 ## Summary
@@ -405,32 +405,30 @@ post-mortem addressed to future sessions. The report cites rather than measures 
 traces to `evidence.md`, an `artifacts/` file, or a receipt — because closure is not the time to run
 a new measurement.
 
-`research-validate <project-directory> --report` checks both files mechanically and is opt-in, so an
-ordinary validation run is unchanged by the report's absence. It asserts that both files exist, that
-each carries all five sections written rather than left at a placeholder, that the HTML's tags
-balance and it loads no external script, no external stylesheet other than a font link, and no CSS
-`@import`, that every colour outside a `--*` definition is a `var(--…)` reference and all three theme
-blocks are present, and that every `<svg>` carries `role="img"` and a non-empty `aria-label` and sits
-inside a `<figure>` whose `<figcaption>` has text in it. What it cannot check is whether the charts
-look right or whether the prose is true; no screenshot tool is available, and that limitation is
-stated rather than worked around.
+`research-validate <project-directory> --report-format markdown|html|both` requires and checks only
+the selected formats. Bare `--report` retains the legacy paired check and cannot be combined with
+`--report-format`. Each checked file needs written sections and a task-graph subsection under What
+was done. HTML checks additionally cover tags, resources, colour tokens, themes, and chart labels
+and captions. See [report-design.md](report-design.md) for the shared content contract and
+[report-html.md](report-html.md) only for HTML work. Mechanical checks do not establish that prose
+is true or charts look right.
 
 Validation severities for the report:
 
-- **Warning** — an incomplete report pair, still at its placeholder, or missing sections, reported by
+- **Warning** — an existing report that is unreadable, still at its placeholder, or missing sections, reported by
   `--close` and by validating a project already `DONE` or `CANCELLED`.
 - **Not a finding at all** — the same conditions in `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, or
   `BLOCKED`. A report cannot exist before the work it reports on does, which is why this rule differs
   from the briefing's; `briefing.md` warns from the moment a project leaves `ALIGNING`.
-- **Never an error** — in any status, including at close. The reasoning is the one stated for
+- **No ordinary report error** — in any status, including at close. The reasoning is the one stated for
   `briefing.md` above: requiring a new file at close would invalidate valid history and block
   reopening a closed project for maintenance. `report.md` and `report.html` are not in the list of
   files required non-empty at close.
 
-No report files means no ordinary closure warning. Errors are still possible, but only under
-`--report`, which nothing runs unless it was asked for:
-that flag exists to make a broken report fail loudly for the author writing it, and it is run through
-`record-evidence --step report` so its exit code becomes a record rather than a claim.
+Neither an absent report nor an absent counterpart produces a warning. Explicit `--report` or
+`--report-format` checks report errors for missing or invalid selected files; record the command
+with `record-evidence --step report`. Required report deliverables still belong in task outputs,
+where the normal completion guards enforce their existence.
 
 If a report is requested for `CANCELLED`, its summary states the
 cancellation reason and `## Open work` carries what a successor would pick up; the rule that

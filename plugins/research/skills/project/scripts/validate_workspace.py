@@ -19,10 +19,16 @@ def main() -> int:
         action="store_true",
         help="Require the parent workspace INDEX.md to match canonical project state",
     )
-    parser.add_argument(
+    report_options = parser.add_mutually_exclusive_group()
+    report_options.add_argument(
         "--report",
         action="store_true",
         help="Also check artifacts/report.md and artifacts/report.html against the report contract",
+    )
+    report_options.add_argument(
+        "--report-format",
+        choices=("markdown", "html", "both"),
+        help="Require and check only the selected report format(s)",
     )
     parser.add_argument(
         "--allow-legacy-close",
@@ -36,6 +42,7 @@ def main() -> int:
         close=args.close,
         check_index=args.check_index,
         check_report=args.report,
+        report_format=args.report_format,
         allow_legacy_close=args.allow_legacy_close,
     )
     for warning in report.warnings:
