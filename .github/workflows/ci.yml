@@ -59,13 +59,15 @@ jobs:
       - name: Smoke-test the shipped scripts on Python 3.9
         working-directory: plugins/research/skills/project/scripts
         run: |
-          python -c "import workspace_lib"
+          python -c "import workspace_documents, workspace_evidence, workspace_lib, workspace_operations, workspace_session"
           workdir="$(mktemp -d)"
           # init refuses to create a workspace root implicitly, so a fresh root is explicit here and
           # resolution from the environment is exercised in the same breath.
           project="$(python manage_workspace.py init "$workdir/ws" --create-root \
             --title "CI smoke" --working-directory "$workdir")"
           python validate_workspace.py "$project"
+          python manage_workspace.py context "$project" --validate
+          python manage_workspace.py read "$project" spec --outline
           RESEARCH_WORKSPACE="$workdir/ws" python manage_workspace.py rebuild-index
           # show-graph renders text a user reads, so importing the module is not enough. The project
           # above is fresh and has no tasks, so this reaches the dispatch and the empty-plan render

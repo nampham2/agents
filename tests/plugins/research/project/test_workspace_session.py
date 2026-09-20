@@ -12,7 +12,7 @@ from unittest.mock import patch
 import manage_workspace
 import pytest
 from workspace_lib import WorkspaceError, allocate_project, atomic_write_json, record_evidence, validate_project
-from workspace_session import project_context, update_project
+from workspace_session import project_context, update_project, update_project_data
 
 from tests.conftest import REPO_ROOT
 from tests.plugins.research.project.test_workspace import WorkspaceFixture
@@ -235,10 +235,11 @@ def test_worker_context_preserves_pending_authorization_and_unsatisfied_dependen
         project_context(fixture.project_dir, task_id="T01", worker=True)
 
 
-def test_temporary_filesystem_failure_is_workspace_error(fixture: WorkspaceFixture) -> None:
-    with patch("workspace_session.tempfile.TemporaryDirectory", side_effect=OSError("disk full")):
-        with pytest.raises(WorkspaceError, match="cannot prepare project update"):
-            change(fixture, {"title": "New"}, 0)
+def test_mapping_update_does_not_mutate_the_callers_patch(fixture: WorkspaceFixture) -> None:
+    changes = {"title": "New", "tasks": [task()]}
+    original = json.loads(json.dumps(changes))
+    update_project_data(fixture.project_dir, changes, expected_revision=0)
+    assert changes == original
 
 
 def test_v4_updates_remain_guarded_by_executor_ownership(fixture: WorkspaceFixture) -> None:
