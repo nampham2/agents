@@ -8,17 +8,28 @@ verify malformed-input handling, and leave the change ready for review.
 ```
 
 Keep a concise specification, canonical tasks, real verification evidence, and a short handoff.
-Ordinary one-turn changes usually do not need a persistent project. Clear requests proceed directly;
-substantial uncertainty can use the internal grill interview.
+Ordinary one-turn changes usually do not need a persistent project. Within a project, requirements
+grill and architecture review are mandatory before task planning. Clear requirements can use zero
+question rounds, followed by a shared summary and explicit confirmation.
 
-The default lifecycle minimizes repeated context and bookkeeping. Investigation-heavy or independent
+The alignment loop is iterative: grill requirements, review architecture and effort, revisit affected
+requirements, and repeat until agent and user agree. The required `architecture.md` records modules,
+code organization, interfaces and flows, edge cases, trade-offs, verification, and effort ranges with
+assumptions. Reviews prioritize editable diagrams: module relationships, key flows, a directory tree,
+and additional sequence or state diagrams where useful. Only then are implementation tasks planned.
+On resume, reuse current agreement; changes to requirements or design reopen the affected review. See
+[architecture-review.md](references/architecture-review.md) for the document and agreement contract.
+
+The lifecycle minimizes repeated context and bookkeeping. Investigation-heavy or independent
 work can use fresh native agents; small, related work stays together when context reuse is cheaper.
-Reports, graphs, memory promotion, interviews, separate review checkpoints, and parallel execution
+Reports, task graphs, memory promotion, separate delivery review checkpoints, and parallel execution
 remain available on demand. Total token consumption and peak context are separate measurements.
 
 Use the supplied workspace, otherwise `RESEARCH_WORKSPACE`, otherwise discover established roots.
 A unique root is used and stated; ambiguous or missing roots need a choice. New roots use the user's
-requested location. Existing v3/v4 projects need no migration for ordinary work.
+requested location. Existing v3/v4 projects need no schema migration; missing architecture records
+and agreement are completed before new planning or affected implementation. These are skill-level
+requirements; CLI validation does not enforce conversational agreement or require the new document.
 
 ## Commands
 

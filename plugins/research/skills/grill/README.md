@@ -5,8 +5,9 @@ about a plan, design, or decision until the goal is genuinely shared, then stops
 exists because the expensive failure in agent work is not bad code: it is an agent that was
 confidently building the wrong thing, and a plan the user nodded at rather than decided.
 
-This page is for contributors. `project` invokes `grill` only for substantial unresolved scope
-decisions or a requested interview. Clear requests and routine feedback skip it. Claude hides its
+This page is for contributors. `project` invokes `grill` for every project's initial requirements
+alignment and revisits affected decisions during iterative architecture review. Clear requests use
+zero question rounds, a shared summary, and explicit confirmation. Claude hides its
 slash command; Codex still exposes it — see [Why it is hidden](#why-it-is-hidden).
 
 ## How a session runs
@@ -38,13 +39,16 @@ Everything `grill` records lands in the project workspace, never here:
 - nothing at all in `briefing.md`, which the briefing step owns. A fact the interview contradicts is
   a dated correction in `spec.md`, not a rewrite of the briefing.
 
-When an interview is needed, its unresolved decisions require confirmation before leaving
-`ALIGNING`. Projects with a clear user request proceed without an interview.
+Requirements confirmation hands back to `project` for architecture review. The review can reopen
+requirements and return to grill until both agent and user agree on the architecture and effort.
+The initial project stays in `ALIGNING` until both confirmations are recorded and the agreed
+`architecture.md` is produced. Grill updates requirements; project maintains the architecture document.
+See [the architecture review procedure](../project/references/architecture-review.md).
 
 ## Why it is hidden
 
 `SKILL.md` carries `user-invocable: false`, which hides the slash command while leaving the skill
-reachable by the model through the Skill tool — so `project` can invoke it when needed.
+reachable by the model through the Skill tool — so `project` can invoke it during alignment.
 The frontmatter `description` was narrowed to project-lifecycle triggers at the same time, because
 the flag alone would still have let a plain-English "grill me on this plan" start a standalone
 session that no longer has anywhere to record its result.

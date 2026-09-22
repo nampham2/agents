@@ -2304,7 +2304,7 @@ not that the sentence citing it is true.
 | C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3100-3107 | `def levels(` |
 | C5 | `plugins/research/skills/project/SKILL.md` | 25-28 | `Only the coordinator writes canonical state` |
 | C6 | `plugins/research/skills/project/references/workspace-schema.md` | 9-14 | `One coordinator is the sole writer` |
-| C7 | `plugins/research/skills/project/SKILL.md` | 89-92 | `Delegate only when isolation outweighs` |
+| C7 | `plugins/research/skills/project/SKILL.md` | 94-96 | `Delegate only when isolation outweighs` |
 | C8 | `plugins/research/skills/project/scripts/workspace_lib.py` | 327-360 | `class DirectoryLock` |
 | C9 | `plugins/research/skills/project/scripts/workspace_lib.py` | 304-320 | `def atomic_write_text(` |
 | C10 | `plugins/research/skills/project/scripts/workspace_lib.py` | 27-31 | `EFFECT_KINDS = {` |
