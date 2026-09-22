@@ -81,6 +81,7 @@ content conflicts. Decisions and findings are not command evidence.
 `record-evidence <project-dir> --task T01 --json -- <command>` records actual exit code and output tail;
 failure returns nonzero. `--tail-lines` adjusts stored output. References have `root`, `path`, `anchor`
 (or null). Keep commands free of secrets. Do not rerun a check solely to duplicate existing evidence.
+Output is decoded as UTF-8; undecodable bytes appear as `\xNN` escapes in the recorded tail.
 
 Start work with `task <project-dir> start T01 --expected-revision N`; its JSON includes the complete
 task, direct dependencies and roots. Finish only after judging success criteria:

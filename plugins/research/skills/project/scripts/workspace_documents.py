@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import re
 import uuid
 from pathlib import Path
@@ -14,24 +13,15 @@ from workspace_lib import (
     WorkspaceConflict,
     WorkspaceError,
     atomic_write_text,
+    document_sha256,
     now_iso,
+    read_text,
 )
 from workspace_session import _headings, _load_state
 
 ENTRY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 ENTRY_MARKER_PATTERN = re.compile(r"^<!-- research-entry: (?P<id>[a-z0-9][a-z0-9-]{0,63}) -->$", re.MULTILINE)
 ENTRY_BODY_PATTERN = re.compile(r"^<!-- research-body-sha256: (?P<digest>[0-9a-f]{64}) -->$", re.MULTILINE)
-
-
-def _exact_text(path: Path) -> str:
-    try:
-        return path.read_bytes().decode("utf-8")
-    except (OSError, UnicodeDecodeError) as error:
-        raise WorkspaceError(f"cannot read {path} as UTF-8: {error}") from error
-
-
-def document_sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _managed_path(project_dir: Path, document: str, task_id: str | None = None) -> Path:
@@ -76,7 +66,7 @@ def document_snapshot(
             "path": str(path), "revision": state["revision"], "exists": False, "document_sha256": "missing",
             "text": "", "total_chars": 0, "offset": 0, "next_offset": None, "truncated": False,
         }
-    text = _exact_text(path)
+    text = read_text(path, preserve_newlines=True)
     if outline:
         rows = [{"level": level, "title": title} for level, title, _ in _headings(text)]
         return {
@@ -183,7 +173,7 @@ def edit_document(
             if state.get("execution", {}).get("coordinator_run") or state.get("execution", {}).get("attempts"):
                 raise WorkspaceError("project execution is active; resolve executor ownership before editing documents")
             exists = path.exists()
-            current = _exact_text(path) if exists else ""
+            current = read_text(path, preserve_newlines=True) if exists else ""
             actual = document_sha256(current) if exists else "missing"
             if actual != expected_sha256:
                 raise WorkspaceConflict(f"document conflict: expected {expected_sha256}, found {actual}")
@@ -233,7 +223,7 @@ def append_record(
             state = _load_state(project_dir)
             if state.get("execution", {}).get("coordinator_run") or state.get("execution", {}).get("attempts"):
                 raise WorkspaceError("project execution is active; resolve executor ownership before appending records")
-            current = _exact_text(path) if path.exists() else f"# Task {task_id} notes\n"
+            current = read_text(path, preserve_newlines=True) if path.exists() else f"# Task {task_id} notes\n"
             existing_ids = [match.group("id") for match in ENTRY_MARKER_PATTERN.finditer(current)]
             if entry_id in existing_ids:
                 start = current.index(marker)

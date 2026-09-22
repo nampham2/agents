@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -29,7 +30,7 @@ from workspace_lib import (
 from workspace_operations import CloseOperationError, close_project, task_operation
 from workspace_session import update_project_data, validated_project_context
 
-from tests.conftest import MANAGER
+from tests.conftest import MANAGER, REPO_ROOT
 
 
 def invoke(arguments: list[str], *, stdin: str = "") -> tuple[int, str, str]:
@@ -79,6 +80,95 @@ def plan(project: Path) -> dict[str, object]:
         {"status": "PLANNING", "tasks": [task("T01"), task("T02", depends_on=["T01"])]},
         expected_revision=0,
     )
+
+
+@pytest.fixture(params=["bin", "skills/project/scripts"])
+def launcher(request: pytest.FixtureRequest) -> Path:
+    return REPO_ROOT / "plugins/research" / request.param / "research-project"
+
+
+def test_resume_context_keeps_constraints_after_heading_examples(project: Path, launcher: Path) -> None:
+    plan(project)
+    snapshot = document_snapshot(project, "spec")
+    example = (
+        "```markdown\n## Decision history\nExample only.\n```\n\n"
+        "~~~markdown\n## Decision history\nAnother example.\n~~~\n\n"
+        "### Decision history\nA nested heading.\n\n"
+        "### Decision history examples\nA longer heading.\n"
+    )
+    constraint = "Preserve original input files."
+    edit_document(project, "spec", expected_sha256=snapshot["document_sha256"], sections={
+        "Current specification": example + "\n### Constraints\n" + constraint,
+    })
+    result = subprocess.run(
+        [str(launcher), "context", str(project), "--validate"],
+        text=True, capture_output=True, check=True,
+    )
+    context = json.loads(result.stdout)
+    assert context["validation"]["valid"] is True
+    assert example in context["spec"]
+    assert constraint in context["spec"]
+    assert "Project initialized" not in context["spec"]
+    assert context["spec_truncated"] is False
+
+
+def test_context_crlf_tokens_allow_guarded_edits_and_close(project: Path, launcher: Path) -> None:
+    plan(project)
+    task_operation(project, "start", "T01", expected_revision=1)
+    first = record_evidence_result(project, "T01", [sys.executable, "-c", "pass"])
+    task_operation(
+        project, "finish", "T01", expected_revision=2, evidence_record_ids=[first.record_id], start_next="T02",
+    )
+    second = record_evidence_result(project, "T02", [sys.executable, "-c", "pass"])
+    task_operation(project, "finish", "T02", expected_revision=3, evidence_record_ids=[second.record_id])
+    edit_document(project, "reflection", expected_sha256="missing", body="# Reflection\n\nComplete.")
+    for name in ("spec", "evidence", "reflection"):
+        path = project / f"{name}.md"
+        path.write_bytes(path.read_bytes().replace(b"\n", b"\r\n"))
+    result = subprocess.run(
+        [str(launcher), "context", str(project), "--validate"],
+        text=True, capture_output=True, check=True,
+    )
+    context = json.loads(result.stdout)
+    for name in ("spec", "evidence", "reflection"):
+        assert context["documents"][name]["sha256"] == hashlib.sha256((project / f"{name}.md").read_bytes()).hexdigest()
+    subprocess.run(
+        [str(launcher), "edit", str(project), "spec", "--section", "Objective and audience",
+         "--body", "Deliver verified work to maintainers.",
+         "--expected-sha256", context["documents"]["spec"]["sha256"]],
+        text=True, capture_output=True, check=True,
+    )
+    result = subprocess.run(
+        [str(launcher), "close", str(project), "--expected-revision", str(context["revision"]),
+         "--reflection", "# Reflection\n\nVerified and complete.",
+         "--expected-reflection-sha256", context["documents"]["reflection"]["sha256"]],
+        text=True, capture_output=True, check=True,
+    )
+    assert json.loads(result.stdout)["validation"]["valid"] is True
+
+
+@pytest.mark.parametrize("exit_code", [0, 3])
+def test_evidence_records_non_utf8_output_and_real_exit_code(project: Path, launcher: Path, exit_code: int) -> None:
+    plan(project)
+    script = (
+        "import sys; sys.stdout.buffer.write(b'caf\\xc3\\xa9 \\xff\\n'); "
+        "sys.stderr.buffer.write(b'error \\xfe\\n'); "
+        f"sys.exit({exit_code})"
+    )
+    result = subprocess.run(
+        [str(launcher), "record-evidence", str(project), "--task", "T01", "--json", "--",
+         sys.executable, "-c", script],
+        text=True, capture_output=True,
+    )
+    assert result.returncode == (0 if exit_code == 0 else 1), result.stderr
+    record = json.loads(result.stdout)
+    assert record["exit_code"] == exit_code
+    assert record["passed"] is (exit_code == 0)
+    entry = evidence_entries(project, record_id=record["record_id"], include_text=True)["entries"][0]
+    assert entry["selectable"] is True
+    assert entry["passed"] is (exit_code == 0)
+    assert "café \\xff" in entry["text"]
+    assert "error \\xfe" in entry["text"]
 
 
 def test_complete_lifecycle_uses_structured_evidence_and_one_finish_transition(project: Path) -> None:
@@ -366,7 +456,7 @@ def test_document_and_evidence_error_contracts(project: Path) -> None:
 def test_document_filesystem_and_active_execution_errors(project: Path) -> None:
     spec = project / "spec.md"
     spec.write_bytes(b"\xff")
-    with pytest.raises(WorkspaceError, match="UTF-8"):
+    with pytest.raises(WorkspaceError, match="cannot read"):
         document_snapshot(project, "spec")
     spec.write_text("# x\n\n## Current specification\n\nx\n\n## Decision history\n\nx\n", encoding="utf-8")
     state = json.loads((project / "project.json").read_text(encoding="utf-8"))
