@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
@@ -262,7 +263,7 @@ def is_external_reference(value: str) -> bool:
     return bool(re.fullmatch(rf"(?:{prefixes}):\S+", value))
 
 
-def read_text(path: Path) -> str:
+def read_text(path: Path, *, preserve_newlines: bool = False) -> str:
     """Read UTF-8 text, turning both I/O and decode failures into WorkspaceError.
 
     `UnicodeDecodeError` is a `ValueError`, not an `OSError`, so a file holding invalid UTF-8
@@ -270,9 +271,16 @@ def read_text(path: Path) -> str:
     through here so a corrupt file is reported, not raised as a traceback at the caller.
     """
     try:
+        if preserve_newlines:
+            return path.read_bytes().decode("utf-8")
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as error:
         raise WorkspaceError(f"cannot read {path}: {error}") from error
+
+
+def document_sha256(text: str) -> str:
+    """Hash exact document content without normalizing line endings."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -2936,6 +2944,8 @@ def record_evidence_result(
             cwd=working_directory,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="backslashreplace",
             timeout=timeout,
             shell=False,
         )
@@ -2960,6 +2970,7 @@ def record_evidence_result(
         f"- Recorded: {now_iso()}",
         f"- Working directory: {working_directory}",
         f"- Exit code: {completed.returncode} ({outcome})",
+        "- Output decoding: UTF-8; undecodable bytes escaped as \\xNN",
         "",
     ]
     if heading != joined:

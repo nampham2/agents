@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import re
 from collections import Counter
 from pathlib import Path
@@ -13,6 +12,7 @@ from workspace_lib import (
     CLOSURE_STEPS,
     WorkspaceError,
     commit_state,
+    document_sha256,
     load_json,
     read_text,
     validate_project,
@@ -120,7 +120,10 @@ def project_context(
     spec_path = project_dir / "spec.md"
     spec = read_text(spec_path) if spec_path.exists() else ""
     # Old decision history need not be loaded to resume current work.
-    spec = spec.split("\n## Decision history", 1)[0]
+    history = next(
+        (pos for level, title, pos in _headings(spec) if level == 2 and title == "Decision history"), len(spec)
+    )
+    spec = spec[:history]
     result: dict[str, Any] = {
         "project": state["project"],
         "title": state["title"][:200],
@@ -158,11 +161,11 @@ def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str,
     for name in ("spec", "evidence", "reflection"):
         path = project_dir / f"{name}.md"
         if path.exists():
-            content = read_text(path)
+            content = read_text(path, preserve_newlines=True)
             documents[name] = {
                 "path": str(path),
                 "exists": True,
-                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "sha256": document_sha256(content),
             }
         else:
             documents[name] = {"path": str(path), "exists": False, "sha256": "missing"}
