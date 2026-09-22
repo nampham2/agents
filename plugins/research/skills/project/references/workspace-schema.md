@@ -142,6 +142,13 @@ attempt records for inspection and recovery.
 Project statuses are `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, `BLOCKED`, `DONE`, and
 `CANCELLED`.
 
+At the skill level, `ALIGNING` includes mandatory requirements grill and iterative architecture
+review. Requirements, design, edge cases, and effort are revisited until agent and user agree;
+record the agreement and finalize the required workspace `architecture.md` before task planning.
+This uses specification and decision records, not a new JSON state or the delivery `review` field.
+The CLI does not enforce conversational agreement or require `architecture.md` for legacy validity.
+See [architecture-review.md](architecture-review.md) for the document contract and resume behavior.
+
 Allowed transitions are:
 
 ```text

@@ -2,7 +2,7 @@
 name: project
 description: >
   Start, resume, review, or close a persistent project workspace for complex or multi-session
-  work. Keeps specification, task state, and evidence across sessions. Use when explicitly
+  work. Requires grill and architecture agreement before task planning. Use when explicitly
   requested; ordinary one-turn changes and reviews do not need this workflow.
 ---
 
@@ -10,8 +10,7 @@ description: >
 
 Invoke with `/research:project [problem statement]`.
 
-Keep a concise specification, canonical tasks, real evidence, and a short handoff. Retrieve only
-what the next action needs; keep history and long findings in files.
+Keep records concise; retrieve only needed context.
 
 ## Resolve once
 
@@ -35,9 +34,8 @@ needs no discovery. Check objective and ownership, then run:
 research-project context <project-dir> --validate
 ```
 
-Resolve validation errors and contradictions before work. The result contains bounded active
-context, roots, revision, document tokens, and validation findings. Follow explicit truncation with
-targeted `read` calls. Do not reload unchanged context.
+Resolve validation errors and contradictions first. Context includes roots, revision and document
+tokens; follow truncation with targeted `read` calls. Do not reload unchanged context.
 
 Create a project with:
 
@@ -45,13 +43,14 @@ Create a project with:
 research-project init <root> --title "<title>" --working-directory <target>
 ```
 
-Report version-control warnings. Do not initialize or commit a workspace repository implicitly.
+Report version-control warnings; never initialize or commit repositories implicitly.
 
-## Specify and plan
+## Align requirements and architecture
 
-Record clear requests directly. Ask about material unresolved decisions; invoke internal `grill`
-only for substantial ambiguity or a requested interview. Write these sections under
-`## Current specification`, in this order:
+Every project requires [grill](../grill/SKILL.md), then
+[architecture review](references/architecture-review.md); read and follow both before planning.
+Clear requirements need confirmation, even with zero question rounds. Write these sections under
+`## Current specification`, in order:
 
 ```markdown
 ### Objective and audience
@@ -67,24 +66,30 @@ Use `read <project-dir> spec --outline` for the content token, then one guarded 
 --sections-json ... --expected-sha256 ...` for initial or batched changes. Append consequential
 decisions with `append ... decision`; avoid transcripts and duplicate task narratives.
 
-Plan a few deliverable milestones with success criteria, verification, effects, dependencies and
-rooted outputs. Only plan publication, pushes, or commits when requested. Read
+Iterate requirements, grill, and architecture until agent and user explicitly agree. Prioritize
+diagrams; cover modules, code organization, flows, edge cases, and effort. Record agreement and
+produce the required workspace `architecture.md` before leaving `ALIGNING` or planning tasks.
+On resume, reuse current agreement; missing records or material changes reopen the affected loop.
+Follow the architecture reference's persistence and legal-transition rules.
+
+## Plan tasks
+
+After agreement, enter `PLANNING` and derive milestones from `architecture.md` with success criteria,
+verification, effects, dependencies and rooted outputs. Only plan publication, pushes, or commits when requested. Read
 [commands.md](references/commands.md) on the first update. Send a compact patch through stdin:
 
 ```sh
 research-project update <project-dir> - --expected-revision <revision> --json
 ```
 
-The tool applies task defaults, derives `current_tasks`, and preserves all commit guards. Reload and
-reconcile revision conflicts. Do not write temporary patch files for routine updates.
+Updates default tasks, derive `current_tasks`, and preserve commit guards. Reconcile revision
+conflicts. Avoid temporary patch files.
 
 ## Execute and verify
 
-Start explicit work with `task <project-dir> start T01 --expected-revision <revision>`. Its result
-contains the complete assignment, direct dependencies and roots, so no separate task read is needed.
-Supply any applicable specification constraints omitted from the task. Dependencies must be `DONE`,
-not `SKIPPED`. Destructive/external effects need current explicit authorization; existing user
-authorization counts.
+Start with `task <project-dir> start T01 --expected-revision <revision>`; it returns the assignment,
+dependencies and roots. Supply omitted specification constraints. Dependencies must be `DONE`, not
+`SKIPPED`. Destructive/external effects need current explicit authorization; existing authorization counts.
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
 [executor-operations.md](references/executor-operations.md). Delegate only when isolation outweighs
@@ -96,27 +101,26 @@ Work in the target and record acceptance checks:
 research-project record-evidence <project-dir> --task T01 --json -- <command>
 ```
 
-Commands run directly in the target. Use an explicit shell for pipelines. Inspect failures with
-`read ... evidence --entry <record-id>`; never rewrite failures as passes. When criteria are met,
-finish with explicit passing record IDs. `--start-next T02` atomically starts a planned successor
-and returns its assignment. A zero exit code does not itself decide that success criteria are met.
-Use `append ... finding --task T01` for unique prose findings; findings are not command evidence.
+Commands run in the target; pipelines need an explicit shell. Inspect failures with
+`read ... evidence --entry <record-id>`; never rewrite them as passes. Finish with passing record IDs
+only when success criteria are met, not merely on zero exit. `--start-next T02` atomically starts a
+planned successor and returns its assignment. Prose uses `append ... finding --task T01`, not evidence.
 
 ## Review and close
 
-Apply clear feedback directly. Record reviews only when required. Once tasks are `DONE` or justified
-`SKIPPED`, required reviews are accepted, and receipts exist, close in one guarded operation:
+Apply feedback within the agreed design directly; material changes reopen alignment before affected
+work. Delivery reviews are conditional, distinct from mandatory architecture review. Once tasks are
+`DONE` or justified `SKIPPED`, required reviews accepted, and receipts present, close:
 
 ```sh
 research-project close <project-dir> --expected-revision <revision> \
   --reflection-file - --expected-reflection-sha256 <token>
 ```
 
-Supply a brief outcome, limitations, and next steps. Fix returned closure errors; after a committed
-index-only failure, run the stated `rebuild-index` recovery rather than closing again. Report the
-result and project path without repeating logs.
+Supply outcome, limitations, and next steps. Fix closure errors; after a committed index-only failure,
+use the stated `rebuild-index` recovery rather than closing again. Report the result and project path.
 
 Load optional procedures only when needed: [reports](references/report-design.md),
 [memory](references/memory-operations.md), [executor](references/executor-operations.md), and
-[maintenance](references/maintenance.md). Reports, graphs, memory promotion, interviews, and
-separate review ceremonies are not closure prerequisites.
+[maintenance](references/maintenance.md). Reports, task graphs, memory promotion, and separate
+delivery reviews are optional unless required by the project.
