@@ -36,7 +36,6 @@ from workspace_lib import (
     render_memory_index,
     render_memory_topic,
     render_postmortem_index,
-    search_memory,
     validate_project,
 )
 
@@ -734,55 +733,52 @@ class MemoryFindingsTests(MemoryRootTestCase):
         self.assertTrue(memory_index_path(self.workspace).is_file())
 
 
-class SearchTests(MemoryRootTestCase):
-    def test_an_empty_query_is_refused(self) -> None:
-        with self.assertRaises(WorkspaceError):
-            search_memory(self.workspace, "   ")
+class OptionalFieldTests(MemoryRootTestCase):
+    """`keywords`, `status` and `superseded_by` are optional so every earlier topic stays valid."""
 
-    def test_a_frontmatter_hit_is_returned_with_its_line_number(self) -> None:
-        path = self.write_topic("uv-toolchain")
-        hits = search_memory(self.workspace, "everything through uv")
-        self.assertEqual(hits, [(path, 3, "description: Run everything through uv")])
+    def test_the_three_optional_fields_parse_and_default(self) -> None:
+        topic, problems = parse_memory_topic(self.memory / "t.md", _topic(name="t"))
+        self.assertEqual(problems, [])
+        assert topic is not None
+        self.assertEqual((topic.keywords, topic.status, topic.superseded_by), ("", "active", ""))
+        extras = "keywords: set -e, grep\nstatus: retired\nsuperseded_by: newer\n---\n\n"
+        content = _topic(name="t").replace("---\n\n", extras, 1)
+        topic, problems = parse_memory_topic(self.memory / "t.md", content)
+        self.assertEqual(problems, [])
+        assert topic is not None
+        self.assertEqual((topic.keywords, topic.status, topic.superseded_by), ("set -e, grep", "retired", "newer"))
 
-    def test_matching_is_case_insensitive(self) -> None:
-        self.write_topic("uv-toolchain")
-        self.assertTrue(search_memory(self.workspace, "RUN EVERYTHING"))
+    def test_a_bad_status_or_superseded_by_slug_is_reported(self) -> None:
+        content = _topic(name="t").replace("---\n\n", "status: archived\nsuperseded_by: Not A Slug\n---\n\n", 1)
+        topic, problems = parse_memory_topic(self.memory / "t.md", content)
+        self.assertIsNone(topic)
+        self.assertTrue(any("status 'archived'" in problem for problem in problems))
+        self.assertTrue(any("superseded_by" in problem for problem in problems))
 
-    def test_a_topic_body_is_not_searched_because_pointers_are_how_bodies_are_reached(self) -> None:
-        self.write_topic("uv-toolchain", body="A distinctive phrase in the body.")
-        self.assertEqual(search_memory(self.workspace, "distinctive phrase"), [])
+    def test_an_unknown_field_is_still_rejected(self) -> None:
+        content = _topic(name="t").replace("---\n\n", "confidence: high\n---\n\n", 1)
+        topic, problems = parse_memory_topic(self.memory / "t.md", content)
+        self.assertIsNone(topic)
+        self.assertIn("unknown frontmatter field(s): 'confidence'", " ".join(problems))
 
-    def test_a_topic_with_no_frontmatter_is_searched_as_a_single_line(self) -> None:
-        self.write_topic("loose", content="Just a line mentioning uv.\n")
-        self.assertTrue(search_memory(self.workspace, "mentioning uv"))
+    def test_rendering_writes_optional_fields_only_when_set(self) -> None:
+        plain = MemoryTopic(
+            path=self.memory / "t.md", name="t", description="d", kind="environment", scope="s", updated="2026-09-09"
+        )
+        expected = _topic(name="t", description="d", scope="s", sources="", body="Body.")
+        self.assertEqual(render_memory_topic(plain, "Body."), expected)
+        rich = MemoryTopic(
+            path=self.memory / "t.md", name="t", description="d", kind="method", scope="s", updated="2026-09-09",
+            keywords="k1, k2", status="retired", superseded_by="newer",
+        )
+        rendered = render_memory_topic(rich, "Body.")
+        self.assertIn("updated: 2026-09-09\nkeywords: k1, k2\nstatus: retired\nsuperseded_by: newer\n---", rendered)
 
-    def test_an_unclosed_frontmatter_searches_only_its_first_line(self) -> None:
-        self.write_topic("half-written", content="---\nname: half-written\nkind: method\n")
-        self.assertEqual(search_memory(self.workspace, "half-written"), [])
-
-    def test_post_mortem_bodies_are_searched_and_come_after_frontmatter(self) -> None:
-        topic_path = self.write_topic("uv-toolchain")
-        project_dir = allocate_project(self.workspace, title="Cited", working_directory=self.target)
-        (project_dir / "reflection.md").write_text("# R\n\nRun everything through uv here too.\n", encoding="utf-8")
-        hits = search_memory(self.workspace, "everything through uv")
-        self.assertEqual([hit[0] for hit in hits], [topic_path, project_dir / "reflection.md"])
-
-    def test_an_unreadable_topic_and_post_mortem_are_skipped_rather_than_raising(self) -> None:
-        (self.memory / "binary.md").write_bytes(b"---\nname: binary\n\xff\xfe uv\n")
-        project_dir = self.workspace / "2026-01-01-001"
-        project_dir.mkdir()
-        (project_dir / "reflection.md").write_bytes(b"\xff\xfe uv\n")
-        self.assertEqual(search_memory(self.workspace, "uv"), [])
-
-    def test_hidden_directories_and_projects_without_post_mortems_are_skipped(self) -> None:
-        (self.workspace / ".hidden").mkdir()
-        (self.workspace / ".hidden" / "reflection.md").write_text("uv\n", encoding="utf-8")
-        (self.workspace / "loose.md").write_text("uv\n", encoding="utf-8")
-        (self.workspace / "2026-01-01-001").mkdir()
-        self.assertEqual(search_memory(self.workspace, "uv"), [])
-
-    def test_an_absent_workspace_root_yields_no_hits(self) -> None:
-        self.assertEqual(search_memory(self.root / "does-not-exist", "uv"), [])
+    def test_amending_preserves_optional_fields(self) -> None:
+        self.write_topic("t", content=_topic(name="t").replace("---\n\n", "keywords: k\nstatus: retired\n---\n\n", 1))
+        amend_memory_topic(self.workspace, "t", body="More.")
+        topics, _ = load_memory_topics(self.workspace)
+        self.assertEqual((topics[0].keywords, topics[0].status), ("k", "retired"))
 
 
 if __name__ == "__main__":  # pragma: no cover

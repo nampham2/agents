@@ -240,7 +240,7 @@ class ManageCLIMemoryTests(unittest.TestCase):
         self.assertEqual(1, result)
         self.assertFalse((self.workspace / "memory" / "bare-topic.md").exists())
 
-    def test_search_prints_a_hit_relative_to_the_root_and_returns_0(self) -> None:
+    def test_search_prints_ranked_json_relative_to_the_root_and_returns_0(self) -> None:
         self._promote(
             "uv-toolchain",
             "--body",
@@ -255,11 +255,16 @@ class ManageCLIMemoryTests(unittest.TestCase):
         with patch("sys.stdout", new_callable=io.StringIO) as out:
             result = _call_manage(["search-memory", "everything through uv", "--workspace-root", str(self.workspace)])
         self.assertEqual(0, result)
-        self.assertIn("memory/uv-toolchain.md:3: description: Run everything through uv", out.getvalue())
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["matches"][0]["topic"], "uv-toolchain")
+        self.assertEqual(payload["matches"][0]["path"], "memory/uv-toolchain.md")
+        self.assertNotIn("postmortems", payload)
 
     def test_search_with_no_hits_still_returns_0(self) -> None:
         with patch("sys.stderr", new_callable=io.StringIO) as err:
-            result = _call_manage(["search-memory", "nothing at all", "--workspace-root", str(self.workspace)])
+            with patch("sys.stdout", new_callable=io.StringIO):
+                result = _call_manage(["search-memory", "nothing at all", "--workspace-root", str(self.workspace)])
         self.assertEqual(0, result)
         self.assertIn("No memory matches", err.getvalue())
 

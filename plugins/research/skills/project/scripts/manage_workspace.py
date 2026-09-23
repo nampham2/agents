@@ -7,9 +7,11 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from execution_adapter import FakeAdapter, SubprocessAdapter
 from execution_ops import OperationError, run_automatic_tasks, run_parallel_tasks, run_sequential_task
+from memory_search import rank_topics, search_postmortems
 from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document
 from workspace_evidence import evidence_entries
 from workspace_lib import (
@@ -34,7 +36,6 @@ from workspace_lib import (
     record_evidence_result,
     render_task_graph,
     resolve_workspace_root,
-    search_memory,
     validate_v3_state,
     vcs_warnings,
 )
@@ -235,16 +236,21 @@ def _build_parser() -> argparse.ArgumentParser:
     # nothing and report no hits, which reads exactly like a topic that does not exist.
     search = subparsers.add_parser(
         "search-memory",
-        help="Print where a query appears in memory topics and project post-mortems",
+        help="Rank memory topics for a query and print bounded JSON with the best excerpt per hit",
         epilog=(
-            "Prints locations, never contents: a wide search costs the reader in proportion to the "
-            "number of hits rather than the size of the files hit. Topic frontmatter is searched "
-            "before post-mortem bodies, because a frontmatter hit means the topic is about the query."
+            "Ranks whole topics (name, description, scope, keywords and body) with BM25 and excerpts "
+            "the best paragraph, so a hit says where to read. Post-mortem bodies are searched by "
+            "substring only with --include-postmortems: on a real root they outnumber topic hits a "
+            "hundred to one. Retired topics are skipped unless --include-retired."
         ),
     )
-    search.add_argument("query", help="case-insensitive substring to look for")
-    search.add_argument("--limit", type=int, help="return bounded JSON results instead of all matching lines")
+    search.add_argument("query", help="free text; a title, an objective, or a few distinctive terms")
+    search.add_argument("--limit", type=int, default=5, help="hits per page, 1 to 20 (default 5)")
     search.add_argument("--offset", type=int, default=0)
+    search.add_argument(
+        "--include-postmortems", action="store_true", help="also list substring hits in reflection.md files"
+    )
+    search.add_argument("--include-retired", action="store_true", help="rank retired topics too")
     search.add_argument(
         "--workspace-root",
         type=Path,
@@ -636,26 +642,28 @@ def main() -> int:
             return 0
 
         if args.command == "search-memory":
-            if args.offset < 0 or (args.limit is not None and not 1 <= args.limit <= 100):
-                raise WorkspaceError("limit must be between 1 and 100; offset must be nonnegative")
+            if args.offset < 0 or not 1 <= args.limit <= 20:
+                raise WorkspaceError("limit must be between 1 and 20; offset must be nonnegative")
             workspace_root = resolve_workspace_root(args.workspace_root)
-            hits = search_memory(workspace_root, args.query)
-            if args.limit is not None:
-                page = hits[args.offset:args.offset + args.limit]
-                print(json.dumps({
-                    "matches": [
-                        {"path": str(path.relative_to(workspace_root)), "line": number,
-                         "excerpt": line[:300], "truncated": len(line) > 300}
-                        for path, number, line in page
-                    ],
-                    "total": len(hits), "offset": args.offset,
-                    "next_offset": args.offset + args.limit if args.offset + args.limit < len(hits) else None,
-                }, indent=2))
-                return 0
-            hits = hits[args.offset:]
-            for path, number, line in hits:
-                print(f"{path.relative_to(workspace_root)}:{number}: {line}")
-            if not hits:
+            hits = rank_topics(workspace_root, args.query, include_retired=args.include_retired)
+            end = args.offset + args.limit
+            result: dict[str, Any] = {
+                "query": args.query,
+                "matches": [hit.as_json(workspace_root) for hit in hits[args.offset:end]],
+                "total": len(hits),
+                "offset": args.offset,
+                "next_offset": end if end < len(hits) else None,
+            }
+            if args.include_postmortems:
+                postmortems = search_postmortems(workspace_root, args.query)
+                result["postmortems"] = [
+                    {"path": str(path.relative_to(workspace_root)), "line": number,
+                     "excerpt": line[:300], "truncated": len(line) > 300}
+                    for path, number, line in postmortems[args.offset:end]
+                ]
+                result["postmortem_total"] = len(postmortems)
+            print(json.dumps(result, indent=2))
+            if not hits and not result.get("postmortems"):
                 # Not an error. A query with no hits is the answer to "is there a lesson about this",
                 # and exiting non-zero would make an honest "nothing recorded" look like a failure.
                 print(f"No memory matches {args.query!r} under {workspace_root}", file=sys.stderr)

@@ -2130,6 +2130,12 @@ MEMORY_FRONTMATTER_FIELDS = ("name", "description", "kind", "scope", "sources", 
 # `sources` alone may be empty: a lesson can predate the projects that would cite it. Every other
 # field is load-bearing for either retrieval or provenance, so an empty one is malformed.
 MEMORY_OPTIONAL_FRONTMATTER_FIELDS = ("sources",)
+# Added by the memory review (docs/memory-management-review.md). All three are optional so every
+# topic written before them stays valid byte for byte: `keywords` feeds ranked search with the incident
+# vocabulary a compacted rule no longer carries, `status: retired` takes a topic out of the index while
+# keeping its file and provenance searchable, and `superseded_by` says which topic took its place.
+MEMORY_EXTRA_FRONTMATTER_FIELDS = ("keywords", "status", "superseded_by")
+MEMORY_STATUSES = ("active", "retired")
 MEMORY_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MEMORY_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MEMORY_FRONTMATTER_DELIMITER = "---"
@@ -2146,6 +2152,9 @@ class MemoryTopic:
     scope: str
     sources: list[str] = field(default_factory=list)
     updated: str = ""
+    keywords: str = ""
+    status: str = "active"
+    superseded_by: str = ""
 
 
 def parse_memory_frontmatter(content: str) -> "tuple[dict[str, str], list[str]]":
@@ -2195,9 +2204,15 @@ def parse_memory_topic(path: Path, content: str) -> "tuple[MemoryTopic | None, l
             problems.append(f"missing frontmatter field: {required!r}")
         elif not fields[required] and required not in MEMORY_OPTIONAL_FRONTMATTER_FIELDS:
             problems.append(f"empty frontmatter field: {required!r}")
-    unknown = sorted(set(fields) - set(MEMORY_FRONTMATTER_FIELDS))
+    unknown = sorted(set(fields) - set(MEMORY_FRONTMATTER_FIELDS) - set(MEMORY_EXTRA_FRONTMATTER_FIELDS))
     if unknown:
         problems.append(f"unknown frontmatter field(s): {', '.join(repr(name) for name in unknown)}")
+    status = fields.get("status", "").strip() or "active"
+    if status not in MEMORY_STATUSES:
+        problems.append(f"status {status!r} is not one of: {', '.join(MEMORY_STATUSES)}")
+    superseded_by = fields.get("superseded_by", "").strip()
+    if superseded_by and not MEMORY_SLUG_PATTERN.match(superseded_by):
+        problems.append(f"superseded_by {superseded_by!r} is not a lowercase-hyphenated slug")
     name = fields.get("name", "")
     if name and name != slug:
         problems.append(f"frontmatter name {name!r} does not match the filename slug {slug!r}")
@@ -2222,6 +2237,9 @@ def parse_memory_topic(path: Path, content: str) -> "tuple[MemoryTopic | None, l
             scope=fields["scope"],
             sources=sources,
             updated=updated,
+            keywords=fields.get("keywords", "").strip(),
+            status=status,
+            superseded_by=superseded_by,
         ),
         [],
     )
@@ -2370,8 +2388,15 @@ def render_memory_topic(topic: MemoryTopic, body: str) -> str:
         f"scope: {topic.scope}",
         f"sources: {', '.join(topic.sources)}",
         f"updated: {topic.updated}",
-        MEMORY_FRONTMATTER_DELIMITER,
     ]
+    # Written only when set, so a topic that never used them round-trips byte for byte.
+    if topic.keywords:
+        lines.append(f"keywords: {topic.keywords}")
+    if topic.status != "active":
+        lines.append(f"status: {topic.status}")
+    if topic.superseded_by:
+        lines.append(f"superseded_by: {topic.superseded_by}")
+    lines.append(MEMORY_FRONTMATTER_DELIMITER)
     return "\n".join(lines) + "\n\n" + body.strip("\n") + "\n"
 
 
@@ -2561,51 +2586,6 @@ def memory_findings(workspace_root: Path, *, check_index: bool = False) -> Valid
             if actual != expected:
                 report.errors.append(f"derived cross-project memory index is stale: {path}")
     return report
-
-
-def search_memory(workspace_root: Path, query: str) -> "list[tuple[Path, int, str]]":
-    """Find `query` in topic frontmatter first, then in per-project post-mortems.
-
-    Returns locations rather than contents — `(path, line number, line)` — so a wide search costs
-    the caller in proportion to the number of hits rather than the size of what was hit, and the
-    decision about what to actually load stays with the reader.
-
-    Frontmatter before bodies because a frontmatter hit means the topic is *about* the query, while
-    a body hit may only mention it in passing.
-    """
-    if not query.strip():
-        raise WorkspaceError("search-memory needs a non-empty query")
-    needle = query.strip().lower()
-    hits: list[tuple[Path, int, str]] = []
-    for path in _memory_topic_paths(workspace_root):
-        try:
-            content = read_text(path)
-        except WorkspaceError:
-            continue
-        lines = content.splitlines()
-        end = len(lines)
-        if lines and lines[0].strip() == MEMORY_FRONTMATTER_DELIMITER:
-            end = 1
-            for index, line in enumerate(lines[1:], start=1):
-                if line.strip() == MEMORY_FRONTMATTER_DELIMITER:
-                    end = index
-                    break
-        for number, line in enumerate(lines[:end], start=1):
-            if needle in line.lower():
-                hits.append((path, number, line.strip()))
-    if workspace_root.is_dir():
-        for child in sorted(workspace_root.iterdir(), key=lambda item: item.name):
-            postmortem = child / "reflection.md"
-            if not child.is_dir() or child.name.startswith(".") or not postmortem.is_file():
-                continue
-            try:
-                content = read_text(postmortem)
-            except WorkspaceError:
-                continue
-            for number, line in enumerate(content.splitlines(), start=1):
-                if needle in line.lower():
-                    hits.append((postmortem, number, line.strip()))
-    return hits
 
 
 def validate_project(

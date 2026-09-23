@@ -142,25 +142,48 @@ def test_discovery_filters_pages_and_keeps_uncertain_records(workspace: Workspac
     assert shortened["truncated_fields"] == ["title"]
 
 
-def test_bounded_memory_cli_and_legacy_output(workspace: WorkspaceFixture, capsys: pytest.CaptureFixture[str]) -> None:
+def test_bounded_memory_cli_ranks_topics_and_keeps_postmortems_opt_in(
+    workspace: WorkspaceFixture, capsys: pytest.CaptureFixture[str]
+) -> None:
     (workspace.project_dir / "reflection.md").write_text("\n".join("needle " + "x" * 600 for _ in range(12)))
+    memory = workspace.workspace_root / "memory"
+    memory.mkdir(exist_ok=True)
+    (memory / "needle-topic.md").write_text(
+        "---\nname: needle-topic\ndescription: A needle lesson\nkind: method\nscope: anywhere\n"
+        "sources: \nupdated: 2026-09-09\n---\n\nThe needle sits in the body.\n"
+    )
     base = ["research-project", "search-memory", "needle", "--workspace-root", str(workspace.workspace_root)]
     with patch.object(sys, "argv", [*base, "--limit", "2"]):
         assert manage_workspace.main() == 0
     result = json.loads(capsys.readouterr().out)
-    assert result["total"] == 12
-    assert result["next_offset"] == 2
-    assert len(result["matches"]) == 2
-    assert all(hit["truncated"] and len(hit["excerpt"]) == 300 for hit in result["matches"])
-    with patch.object(sys, "argv", [*base, "--limit", "2", "--offset", "12"]):
+    assert [hit["topic"] for hit in result["matches"]] == ["needle-topic"]
+    assert result["matches"][0]["excerpt"] == "The needle sits in the body."
+    assert result["total"] == 1 and result["next_offset"] is None
+    assert "postmortems" not in result
+    with patch.object(sys, "argv", [*base, "--limit", "2", "--include-postmortems"]):
         assert manage_workspace.main() == 0
-    assert json.loads(capsys.readouterr().out)["next_offset"] is None
-    with patch.object(sys, "argv", base):
-        assert manage_workspace.main() == 0
-    assert capsys.readouterr().out.count("needle") == 12
+    result = json.loads(capsys.readouterr().out)
+    assert result["postmortem_total"] == 12
+    assert len(result["postmortems"]) == 2
+    assert all(hit["truncated"] and len(hit["excerpt"]) == 300 for hit in result["postmortems"])
     with patch.object(sys, "argv", [*base, "--limit", "0"]):
         assert manage_workspace.main() == 1
     assert "limit" in capsys.readouterr().err
+
+
+def test_context_surfaces_bounded_memory_candidates_only_when_the_root_has_memory(workspace: WorkspaceFixture) -> None:
+    before = project_context(workspace.project_dir)
+    assert "memory_candidates" not in before
+    memory = workspace.workspace_root / "memory"
+    memory.mkdir(exist_ok=True)
+    (memory / "titled.md").write_text(
+        "---\nname: titled\ndescription: Matches the project title\nkind: method\nscope: anywhere\n"
+        f"sources: \nupdated: 2026-09-09\n---\n\n{before['title']}\n"
+    )
+    after = project_context(workspace.project_dir)
+    assert [item["topic"] for item in after["memory_candidates"]] == ["titled"]
+    assert len(json.dumps(after["memory_candidates"]).encode()) <= 600
+    assert "memory_candidates" not in project_context(workspace.project_dir, task_id="T01", task_only=True)
 
 
 def test_concise_reports_keep_evidence_sections_and_legacy_graph_checks(workspace: WorkspaceFixture) -> None:
