@@ -25,9 +25,11 @@ dependencies, and failure cases rather than inventing software components.
 | Verification and operation | How module contracts and end-to-end behavior will be checked, how failures are detected, and any rollout or recovery needs within scope. |
 | Implementation effort | Work by module or workstream, dependencies, difficult integrations, testing and migration effort, uncertainty, and what could change the estimate. |
 
-Prioritize diagrams when presenting the design, then use prose for rationale and details. Include
-a high-level module/dependency diagram, a diagram of the key end-to-end flow, and a directory tree
-mapping modules to proposed code locations. For non-code work, show the corresponding deliverable
+Prioritize diagrams when presenting the design, then use prose for rationale and details. Scale the
+set to the design: when it has more than one module or flow, include a high-level module/dependency
+diagram, a diagram of the key end-to-end flow, and a directory tree mapping modules to proposed code
+locations. A single-module or single-deliverable design may replace any of these with a short list,
+and says so rather than omitting it silently. For non-code work, show the corresponding deliverable
 structure. Prefer editable Mermaid diagrams embedded in `architecture.md` and fenced text for the
 directory tree; keep labels consistent with actual module names and paths.
 
@@ -70,7 +72,8 @@ its impact and a clear validation or contingency approach.
 4. When the agent judges the design coherent and feasible, summarize the current requirements,
    architecture, code organization, edge cases, effort range and assumptions, and any accepted
    residual uncertainty. Ask the user to explicitly confirm this version as the basis for task
-   planning. Wait; silence, a draft, or requirements-only confirmation is not architecture agreement.
+   planning. Wait; silence, a draft, or requirements-only confirmation is not architecture
+   agreement.
 5. Record the user's confirmation and its scope, and finalize the agreed `architecture.md`. Only
    then hand that document to task planning.
 
@@ -82,14 +85,23 @@ corrections within the agreed design do not require a new approval cycle.
 ## Produce the architecture document
 
 Create `<project-dir>/architecture.md` during review and update it as the proposal evolves. It is a
-required workspace deliverable before task planning, not an optional final report. The coordinator
-maintains it with normal file editing tools; the CLI's `read` and `edit` document selectors do not
-support `architecture`. Read the current file before editing and preserve unrelated changes.
+required workspace deliverable before task planning, not an optional final report. Read it with
+`read <project-dir> architecture` and write it whole with the guarded edit:
+
+```sh
+research-project edit <project-dir> architecture --body-file - --expected-sha256 <token-or-missing>
+```
+
+The token comes from the previous edit, a read, or resume context, which lists `architecture` beside
+the other documents; a stale token is refused, so read before editing and preserve unrelated
+changes.
 
 The document must be understandable without the chat transcript and contain:
 
-- Review identifier and status (`draft` or `agreed`), plus the actual confirmation date and source
-  when agreed. Changing substantive content creates a new draft revision needing agreement.
+- Review identifier and a status line reading `Status: draft` or `Status: agreed` near the top, in
+  any Markdown emphasis; the first such line is the one validation reads. Add the actual
+  confirmation date and source when agreed. Changing substantive content creates a new draft
+  revision needing agreement.
 - Requirements and scope summary linked to the current `spec.md`, constraints, and assumptions.
 - High-level architecture: module responsibilities, dependency relationships, state ownership,
   and the module/dependency diagram used in review.
@@ -115,19 +127,21 @@ relevant sections when bounded context truncates them. Avoid copying the whole d
 
 Append dated decisions for consequential review changes and a confirmation entry identifying the
 agreed requirements and architecture revision, effort assumptions, and the user's actual response.
-Use a simple review identifier such as A1, A2 in `architecture.md`, its specification link, and decisions
-so later edits cannot silently reuse approval of a different proposal. Maintain current content in
-place and preserve history; do not invent confirmation or overwrite earlier agreements.
+Use a simple review identifier such as A1, A2 in `architecture.md`, its specification link, and
+decisions so later edits cannot silently reuse approval of a different proposal. Maintain current
+content in place and preserve history; do not invent confirmation or overwrite earlier agreements.
 
 On resume, read the linked architecture document and reuse agreement that still covers the current
 proposal. A missing document or draft revision is not a completed gate. For an existing project with
-no recorded agreement, complete the missing alignment before new planning or affected implementation;
-preserve completed tasks and historical evidence. When revisiting a project already beyond
-`ALIGNING`, pause affected work and honor legal status transitions rather than forcing an invalid
-transition. The architecture review is a skill-level gate recorded in `architecture.md`, the
-specification and decision history; the CLI does not verify conversational agreement or require
-this new document for legacy workspace validity. It is separate from the optional delivery
-`review` state, so do not mark that state accepted or fabricate delivery review files to represent it.
+no recorded agreement, complete the missing alignment before new planning or affected
+implementation; preserve completed tasks and historical evidence. When revisiting a project already
+beyond `ALIGNING`, pause affected work and honor legal status transitions rather than forcing an
+invalid transition. The architecture review is a skill-level gate recorded in `architecture.md`, the
+specification and decision history. Validation warns, and never errors, when a `PLANNING`,
+`EXECUTING` or `REVIEW` project has no `architecture.md`, one without a recognisable status line, or
+one still marked `draft`; it cannot verify conversational agreement, and legacy workspaces stay
+valid. The gate is separate from the optional delivery `review` state, so do not mark that state
+accepted or fabricate delivery review files to represent it.
 
 Agreement establishes the basis for planning. It does not grant new destructive or external-action
 authorization; existing scoped user authorization still applies.

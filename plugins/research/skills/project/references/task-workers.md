@@ -2,9 +2,9 @@
 
 Delegate investigation-heavy or independent work when its tool output would crowd the coordinator,
 or a separate perspective materially helps. Keep small, closely related work together to reuse
-discovery. Minimize total coordinator-plus-worker tokens; fresh context alone does not prove savings.
-These instructions permit scoped delegation subject to host restrictions, not additional effects
-or nested delegation. Sequential work remains the default.
+discovery. Minimize total coordinator-plus-worker tokens; fresh context alone does not prove
+savings. These instructions permit scoped delegation subject to host restrictions, not additional
+effects or nested delegation. Sequential work remains the default.
 
 ## Assignment
 

@@ -29,10 +29,10 @@ research-project record-evidence <project-dir> --step report -- \
   research-validate <project-dir> --report-format markdown --report-profile concise
 ```
 
-Use the resolved validator launcher and absolute paths. `--task` and `--step` are mutually exclusive;
-`report` is the only closure-step name. Use `html` or `both` when requested. HTML also checks
-tag balance, resource loading, colour tokens, themes and chart accessibility. Structural checks
-cannot establish truth, visual quality, or whether the evidence supports the claims.
+Use the resolved validator launcher and absolute paths. `--task` and `--step` are mutually
+exclusive; `report` is the only closure-step name. Use `html` or `both` when requested. HTML also
+checks tag balance, resource loading, colour tokens, themes and chart accessibility. Structural
+checks cannot establish truth, visual quality, or whether the evidence supports the claims.
 
 For requested execution accounting, read [report-execution.md](report-execution.md) and select
 `--report-profile execution`. Omitting the profile retains legacy strict checks; bare `--report`

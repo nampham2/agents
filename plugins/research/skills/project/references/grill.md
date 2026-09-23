@@ -63,10 +63,10 @@ makes a round answerable in one pass and disagreement cheap; withholding one to 
 moves the work back to the user.
 
 For closed-ended choices, use the host's available question tool (or plain text): concrete options,
-within the tool's question limit, each option describing its trade-off rather than restating its label. Put
-the recommended option first and mark it `(Recommended)`. Use option previews for anything the user
-would rather see than read — a layout, a path structure, a resolution order, a snippet. Split a
-frontier across successive calls only when the tool limit requires it.
+within the tool's question limit, each option describing its trade-off rather than restating its
+label. Put the recommended option first and mark it `(Recommended)`. Use option previews for
+anything the user would rather see than read — a layout, a path structure, a resolution order, a
+snippet. Split a frontier across successive calls only when the tool limit requires it.
 
 For open-ended questions, ask in plain text:
 
@@ -110,21 +110,21 @@ how much was unsettled, so a subject with nothing material open gets zero rounds
 one confirmation.
 
 Confirmed requirements go to [architecture review](architecture-review.md), not directly to task
-planning or implementation. Architecture review can reopen requirement or design decisions: grill the
-affected branches, update the specification, and return to the review. Requirements confirmation
+planning or implementation. Architecture review can reopen requirement or design decisions: grill
+the affected branches, update the specification, and return to the review. Requirements confirmation
 alone does not complete the architecture agreement gate.
 
 ## Recording the consensus
 
 The consensus is state, not conversation, and recording it is part of the session:
 
-- Read the current specification and `briefing.md` if present. An optional briefing records requirements, the facts it
-  verified with their sources, the assumptions it had to correct, and the background the user was
-  missing. Use current, supported facts if a round needs them, but do not spend a
-  question or a second lookup re-establishing them. Its `## Open questions for grill` section is your
-  starting frontier — the questions the briefing could not settle are exactly the ones that need the
-  user. A fact the interview later contradicts is a correction to make out loud and to record as a
-  dated decision in `spec.md`; `briefing.md` is not yours to rewrite.
+- Read the current specification and `briefing.md` if present. An optional briefing records
+  requirements, the facts it verified with their sources, the assumptions it had to correct, and the
+  background the user was missing. Use current, supported facts if a round needs them, but do not
+  spend a question or a second lookup re-establishing them. Its `## Open questions for grill`
+  section is your starting frontier — the questions the briefing could not settle are exactly the
+  ones that need the user. A fact the interview later contradicts is a correction to make out loud
+  and to record as a dated decision in `spec.md`; `briefing.md` is not yours to rewrite.
 - Write the consensus into the project's `spec.md` under `## Current specification`, as exactly
   these seven `###` sections. `research-validate` warns for each one it cannot find, so the names
   are a contract rather than a suggestion:

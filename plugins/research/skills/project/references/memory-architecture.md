@@ -139,8 +139,8 @@ already decided a named project is worth opening, so its growth costs nothing at
 per project directory holding a readable `reflection.md`.
 
 Those lines are built from `project.json` `title` and `status` — the same canonical fields
-`render_index` reads — and never from headings inside the post-mortem itself. Canonical titles cannot
-drift from canonical state; document headings demonstrably have.
+`render_index` reads — and never from headings inside the post-mortem itself. Canonical titles
+cannot drift from canonical state; document headings demonstrably have.
 
 A lesson that generalizes beyond its project is promoted out of a post-mortem into a Layer 2 topic
 file. A lesson that does not generalize stays in the post-mortem, which is now indexed rather than
@@ -234,11 +234,11 @@ here is a read-modify-write under a lock, which is exactly how `record_evidence`
 | `memory/<slug>.md` | yes | `.memory.lock` | Read-modify-write is serialized |
 | `<project>/memory-staging.md` | no | `.project.lock` | Only one project can write it |
 
-**The generated files need no discipline of their own.** `rebuild_index` calls `render_index` *inside*
-`.index.lock` (`scripts/workspace_lib.py:1727`) and replaces the file atomically, so there is
-neither a torn read nor a torn write. Because generation reads the whole root rather than applying
-a delta, the loser of a race regenerates from a filesystem that already holds the winner's work:
-the outcome is correct whichever order two concurrent rebuilds land in. This is the guarantee
+**The generated files need no discipline of their own.** `rebuild_index` calls `render_index`
+*inside* `.index.lock` (`scripts/workspace_lib.py:1727`) and replaces the file atomically, so there
+is neither a torn read nor a torn write. Because generation reads the whole root rather than
+applying a delta, the loser of a race regenerates from a filesystem that already holds the winner's
+work: the outcome is correct whichever order two concurrent rebuilds land in. This is the guarantee
 `INDEX.md` has had all along.
 
 **Promotion into `memory/<slug>.md` takes a new `.memory.lock`** at the workspace root, for the
@@ -278,10 +278,10 @@ already in flight can leave `MEMORY.md` momentarily stale. That is an error only
 Errors — a project cannot validate, and cannot close, while one stands:
 
 - **`MEMORY.md` exceeds 120 lines or 12 KB.** This is the one budget the whole design rests on, and
-  the measured failure above is what happens when it is advisory. The bound is measured in **bytes**,
-  as `len(content.encode("utf-8"))`: a pointer line holds an em dash at three bytes, so a character
-  count reads a file over its cap as comfortably under it. `POSTMORTEMS.md` has no budget and cannot
-  raise this one.
+  the measured failure above is what happens when it is advisory. The bound is measured in
+  **bytes**, as `len(content.encode("utf-8"))`: a pointer line holds an em dash at three bytes, so a
+  character count reads a file over its cap as comfortably under it. `POSTMORTEMS.md` has no budget
+  and cannot raise this one.
 - **A topic file has missing or malformed frontmatter.** An unparseable pointer is an unreachable
   topic, so the body might as well not exist.
 - **`MEMORY.md` or `POSTMORTEMS.md` disagrees with regeneration.** An error only under
