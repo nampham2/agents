@@ -51,9 +51,13 @@ when relevant to the work, and it is the only memory file with a hard size budge
 - **120 lines** and **12 KB**, whichever binds first. Exceeding either is an **error**.
 
 It is generated, never hand-edited, in exactly the way `INDEX.md` is generated
-(`references/workspace-schema.md:15`). It holds one line per topic file — the topic's name, its
-one-line description, its scope, and its path — grouped by `kind`, and then **one** line pointing at
-`POSTMORTEMS.md` with the number of post-mortems it indexes.
+(`references/workspace-schema.md:15`). It holds one line per **active** topic file — the topic's
+name, its path and its one-line description — grouped by `kind`, and then **one** line pointing at
+`POSTMORTEMS.md` with the number of post-mortems it indexes. The scope clause used to render here
+too; measured on the live root it was 32% of every pointer's bytes, and ranked search reads scope
+from the frontmatter, so the budgeted file no longer pays for it (`docs/memory-management-review.md`
+in the plugin repository). `promote-memory` reports the file's headroom after every promotion and
+warns from 85% of either bound, so the pressure is visible where a person can act on it.
 
 The budget is what makes the layer honest, and what the budget is applied to is what makes it
 payable. Everything in this file is a topic pointer, and a topic pointer is the one thing a person
@@ -86,7 +90,7 @@ may have them, because nobody pays for those lines until the pointer says to.
 That is the whole trade this architecture makes. The old file was expensive because detail and
 index were the same bytes. Separating them means depth is free and breadth is budgeted.
 
-Each topic file begins with frontmatter of exactly six fields:
+Each topic file begins with frontmatter of six required fields and up to three optional ones:
 
 ```markdown
 ---
@@ -109,6 +113,9 @@ The body: the lesson, what happened that taught it, and what to do differently. 
 | `scope` | When this lesson applies | Non-empty; free text |
 | `sources` | Project ids that produced the lesson | Comma-separated `YYYY-MM-DD-NNN` ids; may be empty |
 | `updated` | Date the body last changed | `YYYY-MM-DD` |
+| `keywords` | Optional; comma-separated retrieval terms | Indexed by ranked search; written by compaction |
+| `status` | Optional; `active` (default) or `retired` | Retired topics leave `MEMORY.md` and the default ranking |
+| `superseded_by` | Optional; slug of the replacing topic | Validation warns when it names no topic |
 
 The three `kind` values are the three sections the flat file had already grown for itself (`##
 Confirmed user preferences`, `## Environment and tooling`, `## Method`). They are a closed set so a
@@ -118,9 +125,20 @@ typo is refused rather than silently creating a fourth group.
 and they are the fields matched first by search. A vague description makes a topic unreachable
 however good its body is.
 
-**Never rewrite a topic file from scratch.** Amend the body, add to `sources`, bump `updated`. A
-rewrite loses the incident that made the lesson credible, and provenance is the only thing that
-distinguishes a lesson from an opinion.
+**Two tiers inside the body.** Bodies grew at about 1.2 KB per promotion with no summary a reader
+could stop at, so a body may carry `## Rule`, the bounded statement of the lesson, above
+`## Incidents`, the dated append-only record. `promote-memory` writes new topics tiered and appends
+a `### <date> — <sources>` entry to a tiered topic; `read-memory` returns the rule by default and
+the incidents on request; `compact-memory` replaces the rule under `.memory.lock`, guarded by the
+token `read-memory` printed, and moves the previous rule into the newest incident entry. A body
+without a `## Rule` heading is **legacy**: the whole body is the rule, promotion appends to it as
+before, and compaction converts it by moving that body into the first incident. Validation warns,
+and never errors, when a rule exceeds 2 KB or an untiered topic passes 8 KB or six sources.
+
+**Never discard.** Amend the body, add to `sources`, bump `updated`; compaction rewrites the rule
+but keeps what it replaced. A rewrite that drops the incident loses what made the lesson credible,
+and provenance is the only thing that distinguishes a lesson from an opinion. Retirement follows the
+same rule: `retire-memory` sets `status: retired` and never deletes.
 
 ### Layer 3 — per-project post-mortems, read rarely, indexed not summarized
 
@@ -150,23 +168,25 @@ lost.
 
 Three routes, in increasing cost:
 
-1. **Always** — read `MEMORY.md` at discovery. Bounded by the budget, so this cost is fixed and
-   known.
-2. **By pointer** — open the topic files whose description and scope match the work at hand.
-   Usually zero to three files.
-3. **On demand** — `research-project search-memory <query>` when the pointers are not enough.
-   The root comes from `--workspace-root` or `$RESEARCH_WORKSPACE`, and is an option rather than
-   a leading positional because a query read as a root would report no hits, which is
+1. **At resume** — `context` lists up to three `memory_candidates` ranked for the project's title
+   and objective, bounded to 600 bytes and absent when the root has no `memory/` directory. Memory
+   is consulted once per project without anyone remembering to search.
+2. **By query** — `research-project search-memory <query>` ranks whole topics with BM25 over
+   name, description, scope, keywords and body, and prints bounded JSON with the best paragraph as
+   the excerpt. The root comes from `--workspace-root` or `$RESEARCH_WORKSPACE`, an option rather
+   than a positional because a query read as a root would report no hits, which is
    indistinguishable from a topic that does not exist.
+3. **On demand** — `read-memory <slug>` for the rule, `--full` for the incidents, and
+   `--include-postmortems` on the search for substring hits in per-project post-mortems.
 
-`search-memory` searches Layer 2 frontmatter first and Layer 3 post-mortem bodies second, and
-prints **paths with the matching lines**, never file contents. Printing paths keeps the cost of a
-wide search proportional to the number of hits rather than the size of what was hit, and leaves the
-decision of what to actually load with the reader. Frontmatter comes first because a frontmatter
-match means the topic is *about* the query, while a body match may only mention it.
-
-Search is lexical — substring and case-insensitive over the fields and files described above. It is
-not ranked, not stemmed, and not semantic. See the exclusions.
+Ranking replaced a substring match over six frontmatter lines per topic plus every post-mortem
+line. Measured on 46 real project queries against the live root, that search found an expected
+topic in 6% of queries and returned a median 18.7 KB, of which a median 140 lines were post-mortem
+matches and one was a topic; BM25 over topic bodies reached 65% recall at 5 and 81% at 10 with
+about 1 KB, and beat a popularity control by 0.21. Frontmatter-only ranking scored below the
+control, which is why bodies are indexed and why compaction must carry incident vocabulary into
+`keywords`. Ranking is lexical, rebuilt per call, stdlib only; it is not stemmed beyond a plural
+fold and not semantic. See the exclusions.
 
 ## The write path: stage during, drain at close
 
@@ -180,9 +200,11 @@ close:
 2. **At close**, drain it. For each staged observation, decide: promote it into a new or existing
    topic file with `research-project promote-memory <slug> --body … --source <project-id>`, fold it
    into this project's post-mortem, or discard it. Then empty the staging file. `promote-memory`
-   amends rather than replaces — merging `sources`, bumping `updated`, and appending the new text
-   below what is already there — because a rewrite loses the incident that made the lesson
-   credible.
+   amends rather than replaces — merging `sources`, bumping `updated`, and appending a dated
+   incident entry — because a rewrite loses the incident that made the lesson credible. A new slug
+   needs `--create`; without it the tool refuses and lists the nearest existing topics. The measured
+   failure was not bad topics but too many: one drain created three, breached the index budget, and
+   spent its closing time merging by hand, so creation pauses once and the caller answers.
 3. **Regenerate** `MEMORY.md` — which any `research-project commit` already does, because index
    regeneration is on the commit path.
 
@@ -298,6 +320,9 @@ Warnings — reported, never blocking:
   fact worth reporting rather than a fault worth blocking on.
 - **`<project>/memory-staging.md` is non-empty at close.** Triage is unfinished; the project's
   actual deliverables may well be done.
+- **A rule exceeds 2 KB, or an untiered topic exceeds 8 KB or six sources.** Compaction is due; the
+  remedy is `compact-memory`, and the reader pays for the rule until it runs.
+- **`superseded_by` names no topic.** Provenance to repair; the retired topic stays retired.
 
 And one non-finding, stated because it is load-bearing:
 
@@ -370,12 +395,12 @@ absent here. The reason is almost always the same, so it is worth stating once:
 > compiled extension either works on one host or works nowhere.
 
 **A vector index, embeddings, or semantic search.** Needs a model and either a background daemon or
-a compiled extension. Lexical matching over `description` and `scope` is what remains available on
-both hosts, which is precisely why those two fields carry the retrieval weight.
+a compiled extension. Lexical BM25 over frontmatter, keywords and bodies is what remains available
+on both hosts; measured on this corpus it recovers most of what vectors would buy.
 
-**SQLite FTS5 with `sqlite-vec`.** FTS5 is not guaranteed in a stock `python3` build and
-`sqlite-vec` is a compiled extension. A search index that fails to open on one host is worse than
-no index, because its absence is discovered at the moment it is needed.
+**SQLite FTS5 with `sqlite-vec`.** FTS5 is not guaranteed on every host's `python3` build (stock
+macOS 3.9.6 happens to ship it) and `sqlite-vec` is a compiled extension. Benchmarked against the
+stdlib BM25 it tied, so it would add a second, sometimes-missing code path for no measured gain.
 
 **`PreToolUse` and `PostToolUseFailure` hooks.** Hook configuration is host-specific and per-user;
 a plugin cannot rely on it existing. The per-project staging step replaces what hooks would have
