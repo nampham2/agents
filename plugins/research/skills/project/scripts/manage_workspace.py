@@ -7,9 +7,11 @@ import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 from execution_adapter import FakeAdapter, SubprocessAdapter
 from execution_ops import OperationError, run_automatic_tasks, run_parallel_tasks, run_sequential_task
+from memory_search import creation_gate, rank_topics, search_postmortems
 from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document
 from workspace_evidence import evidence_entries
 from workspace_lib import (
@@ -24,17 +26,20 @@ from workspace_lib import (
     apply_migration,
     check_candidate,
     commit_candidate,
+    compact_memory_topic,
     enable_execution,
     find_workspace_roots,
+    index_headroom,
     load_memory_topics,
     migration_candidate,
     project_task_graph,
+    read_memory_topic,
     read_text,
     rebuild_index,
     record_evidence_result,
     render_task_graph,
     resolve_workspace_root,
-    search_memory,
+    retire_memory_topic,
     validate_v3_state,
     vcs_warnings,
 )
@@ -235,16 +240,22 @@ def _build_parser() -> argparse.ArgumentParser:
     # nothing and report no hits, which reads exactly like a topic that does not exist.
     search = subparsers.add_parser(
         "search-memory",
-        help="Print where a query appears in memory topics and project post-mortems",
+        help="Rank memory topics for a query and print bounded JSON with the best excerpt per hit",
         epilog=(
-            "Prints locations, never contents: a wide search costs the reader in proportion to the "
-            "number of hits rather than the size of the files hit. Topic frontmatter is searched "
-            "before post-mortem bodies, because a frontmatter hit means the topic is about the query."
+            "Ranks whole topics (name, description, scope, keywords and body) with BM25 and excerpts "
+            "the best paragraph, so a hit says where to read. Post-mortem bodies are searched by "
+            "substring only with --include-postmortems: on a real root they outnumber topic hits a "
+            "hundred to one. Retired topics are skipped unless --include-retired."
         ),
     )
-    search.add_argument("query", help="case-insensitive substring to look for")
-    search.add_argument("--limit", type=int, help="return bounded JSON results instead of all matching lines")
+    search.add_argument("query", help="free text; a title, an objective, or a few distinctive terms")
+    search.add_argument("--limit", type=int, default=5, help="hits per page, 1 to 20 (default 5)")
     search.add_argument("--offset", type=int, default=0)
+    search.add_argument(
+        "--include-postmortems", action="store_true", help="also list substring hits in reflection.md files"
+    )
+    search.add_argument("--include-retired", action="store_true", help="rank retired topics too")
+    search.add_argument("--verbose", action="store_true", help="add scope, kind and status to each hit")
     search.add_argument(
         "--workspace-root",
         type=Path,
@@ -276,12 +287,72 @@ def _build_parser() -> argparse.ArgumentParser:
         help="YYYY-MM-DD-NNN project this lesson came from; repeat for several",
     )
     promote.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
+    promote.add_argument("--keywords", default="", help="comma-separated retrieval terms; sets the keywords field")
+    promote.add_argument(
+        "--create",
+        action="store_true",
+        help="allow a new topic file; without it a new slug is refused with the nearest existing topics listed",
+    )
     promote.add_argument(
         "--workspace-root",
         type=Path,
         help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
     )
     promote.add_argument("--lock-timeout", type=float, default=5.0)
+
+    read_topic = subparsers.add_parser(
+        "read-memory",
+        help="Print one topic's rule tier, counts and the token compact-memory needs",
+        epilog=(
+            "The rule is what a reader pays for by default. A file without a '## Rule' heading is legacy: "
+            "its whole body is returned as the rule and tiered is false. --full adds the incident record."
+        ),
+    )
+    read_topic.add_argument("slug")
+    read_topic.add_argument("--full", action="store_true", help="include the incidents text")
+    read_topic.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
+
+    compact = subparsers.add_parser(
+        "compact-memory",
+        help="Replace a topic's rule under the memory lock; the previous rule becomes the newest incident",
+        epilog=(
+            "Guarded by the sha256 that read-memory printed, so a rewrite cannot land on a file someone "
+            "else amended in between. Nothing is discarded: the old rule, or a legacy file's whole body, "
+            "moves below the new rule as a dated incident entry."
+        ),
+    )
+    compact.add_argument("slug")
+    rule_source = compact.add_mutually_exclusive_group(required=True)
+    rule_source.add_argument("--rule", help="the new rule text")
+    rule_source.add_argument("--rule-file", type=Path, help="read the rule from a file, or '-' for stdin")
+    compact.add_argument("--expected-sha256", required=True, help="token from read-memory")
+    compact.add_argument("--keywords", default="", help="comma-separated retrieval terms; sets the keywords field")
+    compact.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
+    compact.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
+    compact.add_argument("--lock-timeout", type=float, default=5.0)
+
+    retire = subparsers.add_parser(
+        "retire-memory",
+        help="Mark a topic retired (out of MEMORY.md and default search) or active again; never deletes",
+    )
+    retire.add_argument("slug")
+    retire.add_argument("--superseded-by", default="", dest="superseded_by", help="slug of the topic that replaces it")
+    retire.add_argument("--reactivate", action="store_true", help="set the topic active again")
+    retire.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
+    retire.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
+    retire.add_argument("--lock-timeout", type=float, default=5.0)
 
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
     migrate.add_argument("project_directory", type=Path)
@@ -636,26 +707,28 @@ def main() -> int:
             return 0
 
         if args.command == "search-memory":
-            if args.offset < 0 or (args.limit is not None and not 1 <= args.limit <= 100):
-                raise WorkspaceError("limit must be between 1 and 100; offset must be nonnegative")
+            if args.offset < 0 or not 1 <= args.limit <= 20:
+                raise WorkspaceError("limit must be between 1 and 20; offset must be nonnegative")
             workspace_root = resolve_workspace_root(args.workspace_root)
-            hits = search_memory(workspace_root, args.query)
-            if args.limit is not None:
-                page = hits[args.offset:args.offset + args.limit]
-                print(json.dumps({
-                    "matches": [
-                        {"path": str(path.relative_to(workspace_root)), "line": number,
-                         "excerpt": line[:300], "truncated": len(line) > 300}
-                        for path, number, line in page
-                    ],
-                    "total": len(hits), "offset": args.offset,
-                    "next_offset": args.offset + args.limit if args.offset + args.limit < len(hits) else None,
-                }, indent=2))
-                return 0
-            hits = hits[args.offset:]
-            for path, number, line in hits:
-                print(f"{path.relative_to(workspace_root)}:{number}: {line}")
-            if not hits:
+            hits = rank_topics(workspace_root, args.query, include_retired=args.include_retired)
+            end = args.offset + args.limit
+            # The query is not echoed: a title-plus-objective query can be longer than the hits.
+            result: dict[str, Any] = {
+                "matches": [hit.as_json(workspace_root, verbose=args.verbose) for hit in hits[args.offset:end]],
+                "total": len(hits),
+                "offset": args.offset,
+                "next_offset": end if end < len(hits) else None,
+            }
+            if args.include_postmortems:
+                postmortems = search_postmortems(workspace_root, args.query)
+                result["postmortems"] = [
+                    {"path": str(path.relative_to(workspace_root)), "line": number,
+                     "excerpt": line[:160], "truncated": len(line) > 160}
+                    for path, number, line in postmortems[args.offset:end]
+                ]
+                result["postmortem_total"] = len(postmortems)
+            print(json.dumps(result, indent=1))
+            if not hits and not result.get("postmortems"):
                 # Not an error. A query with no hits is the answer to "is there a lesson about this",
                 # and exiting non-zero would make an honest "nothing recorded" look like a failure.
                 print(f"No memory matches {args.query!r} under {workspace_root}", file=sys.stderr)
@@ -664,6 +737,8 @@ def main() -> int:
         if args.command == "promote-memory":
             workspace_root = resolve_workspace_root(args.workspace_root)
             body = args.body if args.body is not None else _read_body(args.body_file)
+            existed = (workspace_root / "memory" / f"{args.slug}.md").is_file()
+            creation_gate(workspace_root, args.slug, f"{args.description}\n{args.scope}\n{body}", create=args.create)
             path = amend_memory_topic(
                 workspace_root,
                 args.slug,
@@ -673,12 +748,54 @@ def main() -> int:
                 scope=args.scope,
                 sources=args.sources,
                 updated=args.updated,
+                keywords=args.keywords,
                 lock_timeout=args.lock_timeout,
             )
             # Regenerated after the memory lock is released, never inside it: the rebuild takes the
             # index lock, and these mkdir-based locks are not reentrant across each other's holders.
             rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
-            print(path)
+            headroom = index_headroom(workspace_root)
+            topic_warnings = read_memory_topic(workspace_root, args.slug)["warnings"]
+            for warning in [*headroom.pop("warnings"), *topic_warnings]:
+                print(f"WARNING: {warning}", file=sys.stderr)
+            print(json.dumps({"path": str(path), "created": not existed, **headroom}, indent=2))
+            return 0
+
+        if args.command == "retire-memory":
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            outcome = retire_memory_topic(
+                workspace_root,
+                args.slug,
+                superseded_by=args.superseded_by,
+                reactivate=args.reactivate,
+                updated=args.updated,
+                lock_timeout=args.lock_timeout,
+            )
+            rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+            print(json.dumps(outcome, indent=2))
+            return 0
+
+        if args.command == "read-memory":
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            print(json.dumps(read_memory_topic(workspace_root, args.slug, full=args.full), indent=2))
+            return 0
+
+        if args.command == "compact-memory":
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            rule = args.rule if args.rule is not None else _read_body(args.rule_file)
+            outcome = compact_memory_topic(
+                workspace_root,
+                args.slug,
+                rule=rule,
+                expected_sha256=args.expected_sha256,
+                keywords=args.keywords,
+                updated=args.updated,
+                lock_timeout=args.lock_timeout,
+            )
+            rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+            for warning in outcome["warnings"]:
+                print(f"WARNING: {warning}", file=sys.stderr)
+            print(json.dumps(outcome, indent=2))
             return 0
 
         if args.command == "migrate":

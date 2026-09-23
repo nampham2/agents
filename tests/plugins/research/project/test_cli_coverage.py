@@ -180,7 +180,29 @@ class ManageCLIMemoryTests(unittest.TestCase):
         (self.workspace / "memory").mkdir()
 
     def _promote(self, *args: str) -> int:
-        return _call_manage(["promote-memory", *args, "--workspace-root", str(self.workspace)])
+        return _call_manage(["promote-memory", *args, "--create", "--workspace-root", str(self.workspace)])
+
+    def test_a_new_slug_without_create_is_refused_and_promotion_reports_headroom(self) -> None:
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(0, self._promote("uv-toolchain", "--body", "uv lock.", "--description", "Run uv",
+                                              "--kind", "environment", "--scope", "any uv repo"))
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["created"])
+        self.assertGreater(payload["headroom_bytes"], 0)
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            refused = _call_manage([
+                "promote-memory", "uv-lockfiles", "--body", "uv lock again", "--description", "d",
+                "--kind", "environment", "--scope", "s", "--workspace-root", str(self.workspace),
+            ])
+        self.assertEqual(1, refused)
+        self.assertIn("uv-toolchain", err.getvalue())
+        self.assertFalse((self.workspace / "memory" / "uv-lockfiles.md").exists())
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(0, _call_manage([
+                "retire-memory", "uv-toolchain", "--workspace-root", str(self.workspace),
+            ]))
+        self.assertEqual(json.loads(out.getvalue())["status"], "retired")
+        self.assertNotIn("uv-toolchain", (self.workspace / "MEMORY.md").read_text(encoding="utf-8"))
 
     def test_promoting_a_new_topic_creates_it_and_regenerates_the_index(self) -> None:
         result = self._promote(
@@ -240,7 +262,53 @@ class ManageCLIMemoryTests(unittest.TestCase):
         self.assertEqual(1, result)
         self.assertFalse((self.workspace / "memory" / "bare-topic.md").exists())
 
-    def test_search_prints_a_hit_relative_to_the_root_and_returns_0(self) -> None:
+    def test_read_and_compact_memory_round_trip_through_the_cli(self) -> None:
+        with patch("sys.stdout", new_callable=io.StringIO):
+            self._promote("tiered", "--body", "Rule text.", "--description", "d", "--kind", "method", "--scope", "s")
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(0, _call_manage(["read-memory", "tiered", "--workspace-root", str(self.workspace)]))
+        before = json.loads(out.getvalue())
+        self.assertEqual((before["tiered"], before["rule"], before["incident_count"]), (True, "Rule text.", 1))
+        self.assertNotIn("incidents", before)
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            result = _call_manage([
+                "compact-memory", "tiered", "--rule", "Shorter.", "--expected-sha256", before["sha256"],
+                "--keywords", "k1, k2", "--workspace-root", str(self.workspace),
+            ])
+        self.assertEqual(0, result)
+        outcome = json.loads(out.getvalue())
+        self.assertEqual(outcome["incident_count"], 2)
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            _call_manage(["read-memory", "tiered", "--full", "--workspace-root", str(self.workspace)])
+        after = json.loads(out.getvalue())
+        self.assertEqual((after["rule"], after["keywords"], after["sha256"]), ("Shorter.", "k1, k2", outcome["sha256"]))
+        self.assertIn("compaction (previous rule)", after["incidents"])
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            stale = _call_manage([
+                "compact-memory", "tiered", "--rule", "Again.", "--expected-sha256", before["sha256"],
+                "--workspace-root", str(self.workspace),
+            ])
+        self.assertEqual(1, stale)
+        self.assertIn("changed since it was read", err.getvalue())
+        with patch("sys.stderr", new_callable=io.StringIO) as err, patch("sys.stdout", new_callable=io.StringIO):
+            over = _call_manage([
+                "compact-memory", "tiered", "--rule", "y" * 2100, "--expected-sha256", outcome["sha256"],
+                "--workspace-root", str(self.workspace),
+            ])
+        self.assertEqual(0, over)
+        self.assertIn("rule is", err.getvalue())
+
+    def test_promotion_warns_when_a_legacy_topic_is_due_for_compaction(self) -> None:
+        (self.workspace / "memory" / "big.md").write_text(
+            "---\nname: big\ndescription: d\nkind: method\nscope: s\nsources: \nupdated: 2026-09-09\n---\n\n"
+            + "x" * (8 * 1024 + 1) + "\n",
+            encoding="utf-8",
+        )
+        with patch("sys.stderr", new_callable=io.StringIO) as err, patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(0, self._promote("big", "--body", "More."))
+        self.assertIn("compaction is due", err.getvalue())
+
+    def test_search_prints_ranked_json_relative_to_the_root_and_returns_0(self) -> None:
         self._promote(
             "uv-toolchain",
             "--body",
@@ -255,11 +323,16 @@ class ManageCLIMemoryTests(unittest.TestCase):
         with patch("sys.stdout", new_callable=io.StringIO) as out:
             result = _call_manage(["search-memory", "everything through uv", "--workspace-root", str(self.workspace)])
         self.assertEqual(0, result)
-        self.assertIn("memory/uv-toolchain.md:3: description: Run everything through uv", out.getvalue())
+        payload = json.loads(out.getvalue())
+        self.assertEqual(payload["total"], 1)
+        self.assertEqual(payload["matches"][0]["topic"], "uv-toolchain")
+        self.assertEqual(payload["matches"][0]["path"], "memory/uv-toolchain.md")
+        self.assertNotIn("postmortems", payload)
 
     def test_search_with_no_hits_still_returns_0(self) -> None:
         with patch("sys.stderr", new_callable=io.StringIO) as err:
-            result = _call_manage(["search-memory", "nothing at all", "--workspace-root", str(self.workspace)])
+            with patch("sys.stdout", new_callable=io.StringIO):
+                result = _call_manage(["search-memory", "nothing at all", "--workspace-root", str(self.workspace)])
         self.assertEqual(0, result)
         self.assertIn("No memory matches", err.getvalue())
 

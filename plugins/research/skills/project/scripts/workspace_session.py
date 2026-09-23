@@ -8,6 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from memory_search import memory_candidates, objective_text
 from workspace_lib import (
     CLOSURE_STEPS,
     WorkspaceError,
@@ -124,6 +125,13 @@ def project_context(
         (pos for level, title, pos in _headings(spec) if level == 2 and title == "Decision history"), len(spec)
     )
     spec = spec[:history]
+    # Memory is consulted once per project here, without anyone remembering to search: at most three
+    # ranked topics for the title and objective, bounded in bytes, and absent when the root has no
+    # memory layer. It can never make a project unresumable; the lookup swallows its own failures.
+    workspace_root = project_dir.parent
+    candidates = None
+    if (workspace_root / "memory").is_dir():
+        candidates = memory_candidates(workspace_root, title=state["title"], objective=objective_text(spec))
     result: dict[str, Any] = {
         "project": state["project"],
         "title": state["title"][:200],
@@ -144,6 +152,8 @@ def project_context(
         "spec_truncated": len(spec) > 6000,
         "validation": "structure only; run research-validate on resume and at closure",
     }
+    if candidates is not None:
+        result["memory_candidates"] = candidates
     if selected is not None:
         result["selected_task"] = selected
     return result

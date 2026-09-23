@@ -1,6 +1,6 @@
 {
   "name": "research",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "description": "Persistent workspace management for research projects, with goal alignment built into the project lifecycle.",
   "author": {
     "name": "Nam Pham"

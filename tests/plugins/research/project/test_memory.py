@@ -16,6 +16,7 @@ import unittest.mock
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import workspace_lib
 from workspace_lib import (
     MEMORY_INDEX_MAX_BYTES,
     MEMORY_INDEX_MAX_LINES,
@@ -24,19 +25,25 @@ from workspace_lib import (
     WorkspaceError,
     allocate_project,
     amend_memory_topic,
+    compact_memory_topic,
+    index_headroom,
     load_memory_topics,
     memory_findings,
     memory_index_path,
     memory_staging_warnings,
     memory_topic_body,
+    memory_topic_warnings,
     parse_memory_frontmatter,
     parse_memory_topic,
     postmortem_index_path,
+    read_memory_topic,
     rebuild_index,
     render_memory_index,
     render_memory_topic,
     render_postmortem_index,
-    search_memory,
+    render_topic_body,
+    retire_memory_topic,
+    split_topic_body,
     validate_project,
 )
 
@@ -247,14 +254,13 @@ class IndexGenerationTests(MemoryRootTestCase):
         self.assertNotIn("Confirmed user preferences", rendered)
         self.assertNotIn("Method", rendered)
 
-    def test_a_pointer_carries_the_description_and_the_scope(self) -> None:
+    def test_a_pointer_carries_the_description_but_not_the_scope(self) -> None:
         self.write_topic("uv-toolchain")
         rendered = render_memory_index(self.workspace)
-        self.assertIn(
-            "- [uv-toolchain](memory/uv-toolchain.md) — Run everything through uv "
-            "_(scope: any repo with a uv.lock)_",
-            rendered,
-        )
+        # Scope was 32% of every pointer's bytes on a real root; ranked search reads it from the
+        # frontmatter instead, so the budgeted file no longer pays for it.
+        self.assertIn("- [uv-toolchain](memory/uv-toolchain.md) — Run everything through uv\n", rendered)
+        self.assertNotIn("any repo with a uv.lock", rendered)
 
     def test_generation_is_idempotent(self) -> None:
         self.write_topic("uv-toolchain")
@@ -734,55 +740,210 @@ class MemoryFindingsTests(MemoryRootTestCase):
         self.assertTrue(memory_index_path(self.workspace).is_file())
 
 
-class SearchTests(MemoryRootTestCase):
-    def test_an_empty_query_is_refused(self) -> None:
+class OptionalFieldTests(MemoryRootTestCase):
+    """`keywords`, `status` and `superseded_by` are optional so every earlier topic stays valid."""
+
+    def test_the_three_optional_fields_parse_and_default(self) -> None:
+        topic, problems = parse_memory_topic(self.memory / "t.md", _topic(name="t"))
+        self.assertEqual(problems, [])
+        assert topic is not None
+        self.assertEqual((topic.keywords, topic.status, topic.superseded_by), ("", "active", ""))
+        extras = "keywords: set -e, grep\nstatus: retired\nsuperseded_by: newer\n---\n\n"
+        content = _topic(name="t").replace("---\n\n", extras, 1)
+        topic, problems = parse_memory_topic(self.memory / "t.md", content)
+        self.assertEqual(problems, [])
+        assert topic is not None
+        self.assertEqual((topic.keywords, topic.status, topic.superseded_by), ("set -e, grep", "retired", "newer"))
+
+    def test_a_bad_status_or_superseded_by_slug_is_reported(self) -> None:
+        content = _topic(name="t").replace("---\n\n", "status: archived\nsuperseded_by: Not A Slug\n---\n\n", 1)
+        topic, problems = parse_memory_topic(self.memory / "t.md", content)
+        self.assertIsNone(topic)
+        self.assertTrue(any("status 'archived'" in problem for problem in problems))
+        self.assertTrue(any("superseded_by" in problem for problem in problems))
+
+    def test_an_unknown_field_is_still_rejected(self) -> None:
+        content = _topic(name="t").replace("---\n\n", "confidence: high\n---\n\n", 1)
+        topic, problems = parse_memory_topic(self.memory / "t.md", content)
+        self.assertIsNone(topic)
+        self.assertIn("unknown frontmatter field(s): 'confidence'", " ".join(problems))
+
+    def test_rendering_writes_optional_fields_only_when_set(self) -> None:
+        plain = MemoryTopic(
+            path=self.memory / "t.md", name="t", description="d", kind="environment", scope="s", updated="2026-09-09"
+        )
+        expected = _topic(name="t", description="d", scope="s", sources="", body="Body.")
+        self.assertEqual(render_memory_topic(plain, "Body."), expected)
+        rich = MemoryTopic(
+            path=self.memory / "t.md", name="t", description="d", kind="method", scope="s", updated="2026-09-09",
+            keywords="k1, k2", status="retired", superseded_by="newer",
+        )
+        rendered = render_memory_topic(rich, "Body.")
+        self.assertIn("updated: 2026-09-09\nkeywords: k1, k2\nstatus: retired\nsuperseded_by: newer\n---", rendered)
+
+    def test_amending_preserves_optional_fields(self) -> None:
+        self.write_topic("t", content=_topic(name="t").replace("---\n\n", "keywords: k\nstatus: retired\n---\n\n", 1))
+        amend_memory_topic(self.workspace, "t", body="More.")
+        topics, _ = load_memory_topics(self.workspace)
+        self.assertEqual((topics[0].keywords, topics[0].status), ("k", "retired"))
+
+
+class TierTests(MemoryRootTestCase):
+    """Two tiers inside a topic: a bounded rule rewritten in place, an incident record only appended to."""
+
+    def test_a_legacy_body_is_the_whole_rule(self) -> None:
+        tiers = split_topic_body("First paragraph.\n\n## Notes\n\nMore.\n")
+        self.assertEqual((tiers.tiered, tiers.incidents), (False, ""))
+        self.assertEqual(tiers.rule, "First paragraph.\n\n## Notes\n\nMore.")
+
+    def test_a_tiered_body_splits_and_fenced_headings_are_ignored(self) -> None:
+        body = "## Rule\n\nDo this.\n\n```md\n## Rule\n## Incidents\n```\n\n## Incidents\n\n### 2026-09-01 — a\n\nx\n"
+        tiers = split_topic_body(body)
+        self.assertTrue(tiers.tiered)
+        self.assertEqual(tiers.rule, "Do this.\n\n```md\n## Rule\n## Incidents\n```")
+        self.assertEqual(tiers.incidents, "### 2026-09-01 — a\n\nx")
+
+    def test_incidents_without_a_rule_heading_is_legacy_with_incidents_parsed(self) -> None:
+        tiers = split_topic_body("Lesson.\n\n## Incidents\n\n### 2026-09-01 — a\n\nx\n")
+        self.assertEqual((tiers.tiered, tiers.rule, tiers.incidents), (False, "Lesson.", "### 2026-09-01 — a\n\nx"))
+
+    def test_render_round_trips_with_and_without_incidents(self) -> None:
+        self.assertEqual(render_topic_body("R", ""), "## Rule\n\nR\n\n## Incidents")
+        rendered = render_topic_body("R", "### d — l\n\nx")
+        tiers = split_topic_body(rendered)
+        self.assertEqual((tiers.rule, tiers.incidents), ("R", "### d — l\n\nx"))
+
+    def test_a_new_topic_is_born_tiered_and_later_promotions_append_dated_incidents(self) -> None:
+        amend_memory_topic(
+            self.workspace, "fresh", body="The lesson.", description="d", kind="method", scope="s",
+            sources=["2026-09-01-001"], updated="2026-09-01", keywords="k1",
+        )
+        first = read_memory_topic(self.workspace, "fresh", full=True)
+        self.assertEqual(
+            (first["tiered"], first["rule"], first["incident_count"], first["keywords"]), (True, "The lesson.", 1, "k1")
+        )
+        self.assertIn("### 2026-09-01 — 2026-09-01-001\n\nPromoted as a new topic.", first["incidents"])
+        amend_memory_topic(self.workspace, "fresh", body="Second incident.", updated="2026-09-02")
+        second = read_memory_topic(self.workspace, "fresh", full=True)
+        self.assertEqual((second["rule"], second["incident_count"]), ("The lesson.", 2))
+        self.assertTrue(second["incidents"].endswith("### 2026-09-02 — unattributed\n\nSecond incident."))
+
+    def test_a_legacy_topic_keeps_its_append_only_shape(self) -> None:
+        self.write_topic("old", body="Old body.")
+        amend_memory_topic(self.workspace, "old", body="Appended.")
+        result = read_memory_topic(self.workspace, "old")
+        self.assertEqual((result["tiered"], result["rule"]), (False, "Old body.\n\nAppended."))
+        self.assertNotIn("incidents", result)
+
+    def test_read_refuses_unknown_or_malformed_topics_and_bad_slugs(self) -> None:
         with self.assertRaises(WorkspaceError):
-            search_memory(self.workspace, "   ")
+            read_memory_topic(self.workspace, "missing")
+        with self.assertRaises(WorkspaceError):
+            read_memory_topic(self.workspace, "Not Slug")
+        self.write_topic("half", content="---\nname: half\n")
+        with self.assertRaises(WorkspaceError):
+            read_memory_topic(self.workspace, "half")
 
-    def test_a_frontmatter_hit_is_returned_with_its_line_number(self) -> None:
-        path = self.write_topic("uv-toolchain")
-        hits = search_memory(self.workspace, "everything through uv")
-        self.assertEqual(hits, [(path, 3, "description: Run everything through uv")])
+    def test_compaction_keeps_the_previous_rule_as_the_newest_incident_and_guards_on_the_token(self) -> None:
+        self.write_topic("legacy", body="Long legacy body.")
+        token = read_memory_topic(self.workspace, "legacy")["sha256"]
+        with self.assertRaises(WorkspaceError) as refused:
+            compact_memory_topic(self.workspace, "legacy", rule="R", expected_sha256="stale")
+        self.assertIn("changed since it was read", str(refused.exception))
+        outcome = compact_memory_topic(
+            self.workspace, "legacy", rule="The rule.", expected_sha256=token, keywords="k", updated="2026-09-03"
+        )
+        after = read_memory_topic(self.workspace, "legacy", full=True)
+        self.assertEqual(
+            (after["tiered"], after["rule"], after["keywords"], after["updated"]),
+            (True, "The rule.", "k", "2026-09-03"),
+        )
+        self.assertIn("### 2026-09-03 — compaction (legacy body)\n\nLong legacy body.", after["incidents"])
+        self.assertEqual(outcome["sha256"], after["sha256"])
+        self.assertEqual(outcome["previous_rule_bytes"], len("Long legacy body."))
+        again = compact_memory_topic(self.workspace, "legacy", rule="Newer rule.", expected_sha256=after["sha256"])
+        self.assertEqual(again["incident_count"], 2)
+        self.assertIn("compaction (previous rule)", read_memory_topic(self.workspace, "legacy", full=True)["incidents"])
 
-    def test_matching_is_case_insensitive(self) -> None:
-        self.write_topic("uv-toolchain")
-        self.assertTrue(search_memory(self.workspace, "RUN EVERYTHING"))
+    def test_compaction_rejects_an_empty_rule_a_bad_date_and_reports_os_errors(self) -> None:
+        self.write_topic("t")
+        token = read_memory_topic(self.workspace, "t")["sha256"]
+        with self.assertRaises(WorkspaceError):
+            compact_memory_topic(self.workspace, "t", rule="  ", expected_sha256=token)
+        with self.assertRaises(WorkspaceError):
+            compact_memory_topic(self.workspace, "t", rule="R", expected_sha256=token, updated="yesterday")
+        with unittest.mock.patch.object(workspace_lib, "atomic_write_text", side_effect=OSError("disk")):
+            with self.assertRaises(WorkspaceError) as failed:
+                compact_memory_topic(self.workspace, "t", rule="R", expected_sha256=token)
+        self.assertIn("cannot compact", str(failed.exception))
 
-    def test_a_topic_body_is_not_searched_because_pointers_are_how_bodies_are_reached(self) -> None:
-        self.write_topic("uv-toolchain", body="A distinctive phrase in the body.")
-        self.assertEqual(search_memory(self.workspace, "distinctive phrase"), [])
+    def test_size_warnings_are_advisory_and_reach_validation(self) -> None:
+        topic = MemoryTopic(path=self.memory / "t.md", name="t", description="d", kind="method", scope="s")
+        self.assertEqual(memory_topic_warnings(topic, "short"), [])
+        self.assertEqual(len(memory_topic_warnings(topic, "x" * (8 * 1024 + 1))), 1)
+        topic.sources = [f"2026-09-0{n}-001" for n in range(1, 8)]
+        self.assertIn("compaction is due", memory_topic_warnings(topic, "short")[0])
+        self.assertIn("rule is", memory_topic_warnings(topic, render_topic_body("y" * 2049, ""))[0])
+        self.assertEqual(memory_topic_warnings(topic, render_topic_body("ok", "")), [])
+        self.write_topic("big", body="z" * (8 * 1024 + 1))
+        report = memory_findings(self.workspace)
+        self.assertTrue(report.valid)
+        self.assertTrue(any("compaction is due" in warning for warning in report.warnings))
+        with unittest.mock.patch.object(workspace_lib, "memory_topic_body", side_effect=WorkspaceError("gone")):
+            skipped = memory_findings(self.workspace).warnings
+        self.assertFalse(any("compaction" in warning for warning in skipped))
 
-    def test_a_topic_with_no_frontmatter_is_searched_as_a_single_line(self) -> None:
-        self.write_topic("loose", content="Just a line mentioning uv.\n")
-        self.assertTrue(search_memory(self.workspace, "mentioning uv"))
 
-    def test_an_unclosed_frontmatter_searches_only_its_first_line(self) -> None:
-        self.write_topic("half-written", content="---\nname: half-written\nkind: method\n")
-        self.assertEqual(search_memory(self.workspace, "half-written"), [])
+class RetirementAndHeadroomTests(MemoryRootTestCase):
+    def test_pointers_carry_no_scope_and_retired_topics_leave_the_index(self) -> None:
+        self.write_topic("live", scope="a very long scope clause that used to cost bytes")
+        self.write_topic("gone", content=_topic(name="gone").replace("---\n\n", "status: retired\n---\n\n", 1))
+        rendered = render_memory_index(self.workspace)
+        self.assertIn("- [live](memory/live.md) — Run everything through uv\n", rendered)
+        self.assertNotIn("scope:", rendered)
+        self.assertNotIn("gone", rendered)
 
-    def test_post_mortem_bodies_are_searched_and_come_after_frontmatter(self) -> None:
-        topic_path = self.write_topic("uv-toolchain")
-        project_dir = allocate_project(self.workspace, title="Cited", working_directory=self.target)
-        (project_dir / "reflection.md").write_text("# R\n\nRun everything through uv here too.\n", encoding="utf-8")
-        hits = search_memory(self.workspace, "everything through uv")
-        self.assertEqual([hit[0] for hit in hits], [topic_path, project_dir / "reflection.md"])
+    def test_retire_and_reactivate_round_trip_under_the_lock(self) -> None:
+        self.write_topic("old")
+        self.write_topic("newer")
+        outcome = retire_memory_topic(self.workspace, "old", superseded_by="newer", updated="2026-09-05")
+        self.assertEqual(outcome, {"path": str(self.memory / "old.md"), "status": "retired", "superseded_by": "newer"})
+        topic = next(item for item in load_memory_topics(self.workspace)[0] if item.name == "old")
+        self.assertEqual((topic.status, topic.superseded_by, topic.updated), ("retired", "newer", "2026-09-05"))
+        self.assertFalse(any("superseded" in warning for warning in memory_findings(self.workspace).warnings))
+        back = retire_memory_topic(self.workspace, "old", reactivate=True)
+        self.assertEqual((back["status"], back["superseded_by"]), ("active", ""))
 
-    def test_an_unreadable_topic_and_post_mortem_are_skipped_rather_than_raising(self) -> None:
-        (self.memory / "binary.md").write_bytes(b"---\nname: binary\n\xff\xfe uv\n")
-        project_dir = self.workspace / "2026-01-01-001"
-        project_dir.mkdir()
-        (project_dir / "reflection.md").write_bytes(b"\xff\xfe uv\n")
-        self.assertEqual(search_memory(self.workspace, "uv"), [])
+    def test_retirement_rejects_bad_arguments_and_reports_a_missing_successor(self) -> None:
+        self.write_topic("old")
+        with self.assertRaises(WorkspaceError):
+            retire_memory_topic(self.workspace, "old", superseded_by="Not Slug")
+        with self.assertRaises(WorkspaceError):
+            retire_memory_topic(self.workspace, "old", superseded_by="x", reactivate=True)
+        with self.assertRaises(WorkspaceError):
+            retire_memory_topic(self.workspace, "old", updated="soon")
+        with unittest.mock.patch.object(workspace_lib, "atomic_write_text", side_effect=OSError("disk")):
+            with self.assertRaises(WorkspaceError):
+                retire_memory_topic(self.workspace, "old")
+        retire_memory_topic(self.workspace, "old", superseded_by="never-written")
+        report = memory_findings(self.workspace)
+        self.assertTrue(report.valid)
+        self.assertTrue(any("superseded by 'never-written'" in warning for warning in report.warnings))
 
-    def test_hidden_directories_and_projects_without_post_mortems_are_skipped(self) -> None:
-        (self.workspace / ".hidden").mkdir()
-        (self.workspace / ".hidden" / "reflection.md").write_text("uv\n", encoding="utf-8")
-        (self.workspace / "loose.md").write_text("uv\n", encoding="utf-8")
-        (self.workspace / "2026-01-01-001").mkdir()
-        self.assertEqual(search_memory(self.workspace, "uv"), [])
-
-    def test_an_absent_workspace_root_yields_no_hits(self) -> None:
-        self.assertEqual(search_memory(self.root / "does-not-exist", "uv"), [])
+    def test_headroom_reports_both_bounds_and_warns_from_85_percent(self) -> None:
+        empty = index_headroom(self.workspace)
+        self.assertEqual(
+            (empty["index_bytes"], empty["headroom_lines"], empty["warnings"]), (0, MEMORY_INDEX_MAX_LINES, [])
+        )
+        memory_index_path(self.workspace).write_text("x" * int(MEMORY_INDEX_MAX_BYTES * 0.9) + "\n", encoding="utf-8")
+        wide = index_headroom(self.workspace)
+        self.assertEqual(len(wide["warnings"]), 1)
+        self.assertIn("bytes", wide["warnings"][0])
+        memory_index_path(self.workspace).write_text("y\n" * int(MEMORY_INDEX_MAX_LINES * 0.9), encoding="utf-8")
+        tall = index_headroom(self.workspace)
+        self.assertIn("lines", tall["warnings"][0])
+        memory_index_path(self.workspace).write_bytes(b"\xff\xfe")
+        self.assertEqual(index_headroom(self.workspace)["index_bytes"], 0)
 
 
 if __name__ == "__main__":  # pragma: no cover
