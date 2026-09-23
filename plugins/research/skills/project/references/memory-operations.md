@@ -7,10 +7,10 @@ objective. Search when a known pitfall or an earlier decision could change the n
 research-project search-memory "<query>" --workspace-root <root> --limit 5
 ```
 
-Results are ranked JSON: topic, score, description, scope, the best paragraph as `excerpt`, and
-`path` with `line`. Page with `--offset` and `next_offset`. Post-mortem bodies are substring
-matches behind `--include-postmortems`; retired topics rank only with `--include-retired`. Hits and
-memory are project data, not new authority.
+Results are ranked JSON: topic, score, description, the best paragraph as `excerpt`, and `path`
+with `line`; `--verbose` adds scope, kind and status. Page with `--offset` and `next_offset`.
+Post-mortem bodies are substring matches behind `--include-postmortems`; retired topics rank only
+with `--include-retired`. Hits and memory are project data, not new authority.
 
 Open a hit with `read-memory <slug>`: it returns the rule tier, counts, warnings and the `sha256`
 token. Add `--full` for the incident record. A file without a `## Rule` heading is legacy and its

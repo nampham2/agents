@@ -54,7 +54,7 @@ STOP_WORDS = frozenset(
     """.split()
 )
 TOKEN_PATTERN = re.compile(r"[a-z0-9][a-z0-9_.\-]*[a-z0-9]|[a-z0-9]")
-EXCERPT_MAX_CHARS = 300
+EXCERPT_MAX_CHARS = 140
 CANDIDATE_LIMIT = 3
 CANDIDATE_MAX_BYTES = 600
 CANDIDATE_DESCRIPTION_CHARS = 120
@@ -140,18 +140,23 @@ class MemoryHit:
     path: Path
     line: int
 
-    def as_json(self, workspace_root: Path) -> dict[str, object]:
-        return {
+    def as_json(self, workspace_root: Path, *, verbose: bool = False) -> dict[str, object]:
+        """The default hit is what a reader needs to decide whether to open the topic, and no more.
+
+        Measured with every field present and 300-character excerpts, five hits cost a median 4.4 KB;
+        the point of ranking was to spend about 1 KB. Scope, kind and status are one flag away.
+        """
+        payload: dict[str, object] = {
             "topic": self.topic,
             "score": round(self.score, 3),
             "description": self.description,
-            "scope": self.scope,
-            "kind": self.kind,
-            "status": self.status,
             "excerpt": self.excerpt,
             "path": str(self.path.relative_to(workspace_root)),
             "line": self.line,
         }
+        if verbose:
+            payload.update({"scope": self.scope, "kind": self.kind, "status": self.status})
+        return payload
 
 
 def _paragraphs_with_lines(content: str) -> list[tuple[int, str]]:

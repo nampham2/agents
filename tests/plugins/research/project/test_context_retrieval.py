@@ -165,7 +165,7 @@ def test_bounded_memory_cli_ranks_topics_and_keeps_postmortems_opt_in(
     result = json.loads(capsys.readouterr().out)
     assert result["postmortem_total"] == 12
     assert len(result["postmortems"]) == 2
-    assert all(hit["truncated"] and len(hit["excerpt"]) == 300 for hit in result["postmortems"])
+    assert all(hit["truncated"] and len(hit["excerpt"]) == 160 for hit in result["postmortems"])
     with patch.object(sys, "argv", [*base, "--limit", "0"]):
         assert manage_workspace.main() == 1
     assert "limit" in capsys.readouterr().err

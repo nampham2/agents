@@ -255,6 +255,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--include-postmortems", action="store_true", help="also list substring hits in reflection.md files"
     )
     search.add_argument("--include-retired", action="store_true", help="rank retired topics too")
+    search.add_argument("--verbose", action="store_true", help="add scope, kind and status to each hit")
     search.add_argument(
         "--workspace-root",
         type=Path,
@@ -711,9 +712,9 @@ def main() -> int:
             workspace_root = resolve_workspace_root(args.workspace_root)
             hits = rank_topics(workspace_root, args.query, include_retired=args.include_retired)
             end = args.offset + args.limit
+            # The query is not echoed: a title-plus-objective query can be longer than the hits.
             result: dict[str, Any] = {
-                "query": args.query,
-                "matches": [hit.as_json(workspace_root) for hit in hits[args.offset:end]],
+                "matches": [hit.as_json(workspace_root, verbose=args.verbose) for hit in hits[args.offset:end]],
                 "total": len(hits),
                 "offset": args.offset,
                 "next_offset": end if end < len(hits) else None,
@@ -722,11 +723,11 @@ def main() -> int:
                 postmortems = search_postmortems(workspace_root, args.query)
                 result["postmortems"] = [
                     {"path": str(path.relative_to(workspace_root)), "line": number,
-                     "excerpt": line[:300], "truncated": len(line) > 300}
+                     "excerpt": line[:160], "truncated": len(line) > 160}
                     for path, number, line in postmortems[args.offset:end]
                 ]
                 result["postmortem_total"] = len(postmortems)
-            print(json.dumps(result, indent=2))
+            print(json.dumps(result, indent=1))
             if not hits and not result.get("postmortems"):
                 # Not an error. A query with no hits is the answer to "is there a lesson about this",
                 # and exiting non-zero would make an honest "nothing recorded" look like a failure.

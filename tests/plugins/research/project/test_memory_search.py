@@ -103,7 +103,8 @@ class RankingTests(SearchRootTestCase):
         self.assertEqual(hits[0].line, 12)
         payload = hits[0].as_json(self.workspace)
         self.assertEqual(payload["path"], "memory/uv-toolchain.md")
-        self.assertEqual(payload["status"], "active")
+        self.assertNotIn("scope", payload)
+        self.assertEqual(hits[0].as_json(self.workspace, verbose=True)["status"], "active")
 
     def test_hits_are_ordered_by_score_then_name(self) -> None:
         self.write_topic("alpha", "uv everywhere", body="uv uv uv.")
