@@ -158,7 +158,7 @@ def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str,
     if after["revision"] != result["revision"]:
         raise WorkspaceError("project changed while context was validated; reload context")
     documents: dict[str, Any] = {}
-    for name in ("spec", "evidence", "reflection"):
+    for name in ("spec", "evidence", "reflection", "architecture"):
         path = project_dir / f"{name}.md"
         if path.exists():
             content = read_text(path, preserve_newlines=True)

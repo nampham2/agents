@@ -10,7 +10,7 @@ from pathlib import Path
 
 from execution_adapter import FakeAdapter, SubprocessAdapter
 from execution_ops import OperationError, run_automatic_tasks, run_parallel_tasks, run_sequential_task
-from workspace_documents import append_record, document_snapshot, edit_document
+from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document
 from workspace_evidence import evidence_entries
 from workspace_lib import (
     CLOSURE_STEPS,
@@ -84,7 +84,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     read = subparsers.add_parser("read", help="Read a bounded specification section or evidence excerpt")
     read.add_argument("project_directory", type=Path)
-    read.add_argument("document", choices=("spec", "evidence", "reflection", "notes"))
+    read.add_argument("document", choices=("spec", "evidence", "reflection", "architecture", "notes"))
     read.add_argument("--section", help="exact specification heading; default excludes decision history")
     read_owner = read.add_mutually_exclusive_group()
     read_owner.add_argument("--task")
@@ -112,7 +112,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     edit = subparsers.add_parser("edit", help="Guardedly replace project-owned Markdown content")
     edit.add_argument("project_directory", type=Path)
-    edit.add_argument("document", choices=("spec", "reflection"))
+    edit.add_argument("document", choices=("spec", "reflection", "architecture"))
     edit.add_argument("--section", help="exact specification heading to replace")
     edit.add_argument("--sections-json", type=Path, help="JSON heading-to-body mapping, or '-' for stdin")
     edit_body = edit.add_mutually_exclusive_group()
@@ -437,9 +437,9 @@ def main() -> int:
                     offset=args.offset, limit=args.limit, include_text=args.entry is not None,
                 ), indent=2))
                 return 0
-            if args.document in ("reflection", "notes") or args.outline:
+            if args.document in ("reflection", "architecture", "notes") or args.outline:
                 if args.section is not None or args.step is not None:
-                    raise WorkspaceError("outline/reflection/notes reads do not accept --section or --step")
+                    raise WorkspaceError("whole-document and outline reads do not accept --section or --step")
                 print(json.dumps(document_snapshot(
                     args.project_directory, args.document, task_id=args.task, outline=args.outline,
                     offset=args.offset, max_chars=args.max_chars,
@@ -492,15 +492,15 @@ def main() -> int:
             else:
                 if args.document == "spec" and args.section is None:
                     raise WorkspaceError("spec edit requires --section or --sections-json")
-                if args.document == "reflection" and args.section is not None:
-                    raise WorkspaceError("reflection edit does not accept --section")
+                if args.document in WHOLE_DOCUMENTS and args.section is not None:
+                    raise WorkspaceError(f"{args.document} edit does not accept --section")
                 if args.body is None and args.body_file is None:
                     raise WorkspaceError("edit requires --body or --body-file")
                 body = args.body if args.body is not None else _read_body(args.body_file)
                 sections = {args.section: body} if args.section is not None else None
             print(json.dumps(edit_document(
                 args.project_directory, args.document, expected_sha256=args.expected_sha256,
-                body=body if args.document == "reflection" else None, sections=sections,
+                body=body if args.document in WHOLE_DOCUMENTS else None, sections=sections,
                 lock_timeout=args.lock_timeout,
             ), indent=2))
             return 0

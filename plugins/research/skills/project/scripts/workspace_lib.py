@@ -730,6 +730,43 @@ def briefing_section_warnings(briefing_markdown: str) -> "list[str]":
     return warnings
 
 
+# The architecture review gate. `architecture.md` is the skill-level record of the design the user
+# agreed to before task planning. Like `briefing.md` it postdates existing projects, so the check
+# warns and never errors. Unlike the briefing, absence matters: a project in `PLANNING`, `EXECUTING`
+# or `REVIEW` has by definition passed the gate, and a gate whose record can be silently missing is
+# not a gate. `BLOCKED` is reachable straight from `ALIGNING`, where a draft is the expected state, so
+# it is not checked; `DONE` and `CANCELLED` stay quiet so history remains valid and reopenable.
+ARCHITECTURE_FILENAME = "architecture.md"
+ARCHITECTURE_GATE_STATUSES = frozenset({"PLANNING", "EXECUTING", "REVIEW"})
+# The one line the document must carry: `Status: draft` or `Status: agreed`, in any Markdown dress
+# (`**Status:** agreed`, `- status — draft`). The separator excludes line breaks, so the word and its
+# value must share a line. The first occurrence wins, so keep it near the top.
+ARCHITECTURE_STATUS_PATTERN = re.compile(r"\bstatus\b[^\w\r\n]*(?P<status>draft|agreed)\b", re.IGNORECASE)
+
+
+def architecture_status(architecture_markdown: str) -> "str | None":
+    """The review status the document declares, `draft` or `agreed`, or None when it declares none."""
+    match = ARCHITECTURE_STATUS_PATTERN.search(architecture_markdown)
+    return match.group("status").lower() if match else None
+
+
+def architecture_warnings(project_dir: Path, status: object) -> "list[str]":
+    """Warn when a project past the alignment gate has no agreed `architecture.md` to show for it."""
+    # `status` is arbitrary JSON here; an unhashable value must produce no finding, not a crash.
+    if not isinstance(status, str) or status not in ARCHITECTURE_GATE_STATUSES:
+        return []
+    path = project_dir / ARCHITECTURE_FILENAME
+    # `is_file`, not `exists`: a directory of that name must read as missing, not as a decode failure.
+    if not path.is_file():
+        return [f"{ARCHITECTURE_FILENAME} is missing; a {status} project needs an agreed architecture document"]
+    review = architecture_status(read_text(path))
+    if review is None:
+        return [f"{ARCHITECTURE_FILENAME} has no recognisable 'Status: draft' or 'Status: agreed' line"]
+    if review == "draft":
+        return [f"{ARCHITECTURE_FILENAME} is still a draft; task planning requires an agreed revision"]
+    return []
+
+
 # Where the closing report lives, and the sections it carries. Two authored files rather than one
 # generated from the other: the Markdown is the record a terminal, `grep` and `diff` can read, and the
 # HTML is the same findings presented, with charts. Deriving either from the other would mean shipping
@@ -1382,6 +1419,7 @@ def validate_v3_state(
         briefing_path = project_dir / "briefing.md"
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
+        report.warnings.extend(architecture_warnings(project_dir, status))
 
     # The closing report is checked at close and for a project already past it, and at no other
     # point. `CANCELLED` counts: the step runs on that path too, reporting what was abandoned and
@@ -1675,6 +1713,7 @@ def validate_v4_state(
         briefing_path = project_dir / "briefing.md"
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
+        report.warnings.extend(architecture_warnings(project_dir, status))
 
     if check_files and (close or _enum_string(status, {"DONE", "CANCELLED"})):
         report.warnings.extend(report_warnings(project_dir, require_graph=False))

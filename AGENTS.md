@@ -49,15 +49,15 @@ placement. Keep these surfaces aligned:
 - Claude discovers `skills/<name>/SKILL.md` by convention; its `plugin.json` must not contain a
   `skills` key. After manifest changes, run `claude plugin validate --strict .` and
   `claude plugin validate --strict plugins/research`.
-- Skill frontmatter is not portable. `user-invocable: false` — which hides a skill's slash command
-  while leaving it reachable by the model through the Skill tool — is honoured by Claude Code only.
-  Codex parses only `name`, `description`, and `disable-model-invocation`, so a skill hidden this way
-  still appears as a Codex slash command. `skills/grill` relies on this: it is plugin-internal in
-  Claude Code and still typable in Codex, which is accepted drift rather than a bug to fix. Narrow
-  such a skill's `description` too,
-  since the flag hides the command without stopping a plain-English request from reaching it. Never
-  reach for `disable-model-invocation` instead: it is the opposite lever, it would break the skill
-  that invokes the hidden one, and Codex rejects any value but `false`.
+- Skill frontmatter is not portable. Claude Code honours `user-invocable: false`, which hides a
+  skill's slash command while leaving it reachable through the Skill tool; Codex reads only `name`
+  and `description` from `SKILL.md` and takes invocation policy from `agents/openai.yaml`
+  (`policy.allow_implicit_invocation`), so a skill hidden that way still appears as a Codex slash
+  command. Plugin-internal procedures therefore live under `skills/<skill>/references/` and are
+  loaded by the owning skill on demand, never as hidden sibling skills. The requirements grill
+  (`skills/project/references/grill.md`) is the precedent. Never reach for `disable-model-invocation`
+  to hide a skill: it is the opposite lever, blocking the model from loading the skill, which would
+  break the skill that invokes it.
 - `pyproject.toml` `[project].version` is canonical. It must exactly match the `agents` package in
   `uv.lock` and the Claude and Codex plugin manifests. Committed manifests use plain SemVer,
   without a Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:
@@ -74,7 +74,11 @@ placement. Keep these surfaces aligned:
   `[tool.ty.environment].extra-paths` in `pyproject.toml` synchronized.
 - Project state is `dict[str, Any]`, not `dict[str, object]`. Type all public functions.
 - Tests live under `tests/plugins/<plugin>/<skill>/`; skills live under
-  `plugins/<plugin>/skills/<skill>/`. Ruff line length is 120.
+  `plugins/<plugin>/skills/<skill>/`. Ruff line length is 120. Markdown under `plugins/` wraps prose
+  at 100 columns (fences, tables and URL lines exempt; `parallel-execution.md` exempt as a whole),
+  enforced by `tests/plugins/research/test_markdown_width.py`.
+- The project skill's `SKILL.md` plus `references/commands.md` have a word budget enforced by
+  `test_default_instruction_payload_budget`; trim before adding.
 
 ## Research workspace invariants
 

@@ -10,9 +10,10 @@ format, not a requirement to read the schema or use every optional feature on ea
 specification, evidence, reviews, and notes but must not duplicate canonical statuses.
 
 One coordinator is the sole writer of `project.json`, shared Markdown records, `INDEX.md`,
-`MEMORY.md`, and `POSTMORTEMS.md`. Workers own only assigned non-overlapping target-file paths in isolated Git worktrees
-and return commits and attestations to the coordinator. State updates use guarded execution
-operations or `research-project commit` with an expected revision; direct edits are unsupported.
+`MEMORY.md`, and `POSTMORTEMS.md`. Workers own only assigned non-overlapping target-file paths in
+isolated Git worktrees and return commits and attestations to the coordinator. State updates use
+guarded execution operations or `research-project commit` with an expected revision; direct edits
+are unsupported.
 
 `INDEX.md` is a deterministic cache generated from canonical state. A stale index is an error at
 close but does not supersede `project.json`. `MEMORY.md` and `POSTMORTEMS.md` are generated the same
@@ -95,10 +96,10 @@ run's non-empty id. `ownership_generation` is a non-negative fencing generation.
 task ids to current attempt ids and must agree with running tasks and the durable execution journal.
 
 `execution/config.json` is immutable generation configuration created after probing atomic links,
-same-volume storage, case sensitivity, and a POSIX subprocess runner. Fresh projects create it during
-initialization. The execution store under `execution/` holds immutable plans, grants, attempts,
-worktrees, integration worktrees, runtime reports, and recovery records; it is protocol state, not a
-place for hand-authored project notes.
+same-volume storage, case sensitivity, and a POSIX subprocess runner. Fresh projects create it
+during initialization. The execution store under `execution/` holds immutable plans, grants,
+attempts, worktrees, integration worktrees, runtime reports, and recovery records; it is protocol
+state, not a place for hand-authored project notes.
 
 The optional task `reads` field is an exhaustive list of target-relative input files for automatic
 execution. An empty list explicitly declares a self-contained task that uses only its task text.
@@ -127,9 +128,9 @@ and protocol-owned paths are refused rather than inferred.
 Each admitted worker runs non-interactively in a coordinator-created Git worktree and may modify
 only the plan's declared files. `RESEARCH_PROJECT_WORKER=1` forbids nested coordination. The
 coordinator seals the process tree, rejects undeclared or missing outputs, runs the checks, and
-commits the isolated result. It serially cherry-picks all accepted worker commits into an integration
-worktree, reruns all checks, confirms the target still matches its clean baseline, and only then
-fast-forwards the target and commits canonical acceptance.
+commits the isolated result. It serially cherry-picks all accepted worker commits into an
+integration worktree, reruns all checks, confirms the target still matches its clean baseline, and
+only then fast-forwards the target and commits canonical acceptance.
 
 The JSON report partitions tasks into `completed`, `blocked`, `fallbacks`, and `deferred`.
 Fallbacks carry precise refusal reasons and return to sequential coordinator execution; they are not
@@ -146,8 +147,11 @@ At the skill level, `ALIGNING` includes mandatory requirements grill and iterati
 review. Requirements, design, edge cases, and effort are revisited until agent and user agree;
 record the agreement and finalize the required workspace `architecture.md` before task planning.
 This uses specification and decision records, not a new JSON state or the delivery `review` field.
-The CLI does not enforce conversational agreement or require `architecture.md` for legacy validity.
-See [architecture-review.md](architecture-review.md) for the document contract and resume behavior.
+Validation warns, and never errors, when a `PLANNING`, `EXECUTING`, or `REVIEW` project has no
+`architecture.md`, none with a recognisable `Status: draft` or `Status: agreed` line, or one still a
+draft. `BLOCKED` is reachable from `ALIGNING` and is not checked; `DONE` and `CANCELLED` stay quiet
+so history remains valid. The CLI cannot verify conversational agreement. See
+[architecture-review.md](architecture-review.md) for the document contract and resume behavior.
 
 Allowed transitions are:
 
@@ -189,8 +193,8 @@ duplicates or cycles, and are hard prerequisites: every dependency of a `RUNNING
 must be `DONE`. A skipped dependency is not satisfied; replan or skip downstream tasks explicitly.
 
 Every task has non-empty `name`, `success_criteria`, and `verification` strings, even before it
-starts. `BLOCKED` requires `block_reason`; `SKIPPED` requires `skip_reason`. Those fields are null in
-other states.
+starts. `BLOCKED` requires `block_reason`; `SKIPPED` requires `skip_reason`. Those fields are null
+in other states.
 
 Terminal tasks are immutable. When historical evidence is false, append a dated correction task and
 decision rather than rewriting completed task history.
@@ -228,8 +232,8 @@ Evidence references use:
 ```
 
 `anchor` is a non-empty string or null. Local evidence files referenced by `DONE` tasks must exist.
-Every `DONE` task has at least one evidence reference. Keep evidence concise; link large logs instead
-of embedding them.
+Every `DONE` task has at least one evidence reference. Keep evidence concise; link large logs
+instead of embedding them.
 
 ## Effects and authorization
 
@@ -312,13 +316,19 @@ that placeholder. Reworded headings are tolerated by a recogniser per section, a
 specification headings.
 
 These are warnings and never errors, at close as well as during execution, and a missing
-`briefing.md` produces neither: the file postdates every project created before the briefing step, so
-requiring it would invalidate valid history and block reopening a closed project for maintenance.
+`briefing.md` produces neither: the file postdates every project created before the briefing step,
+so requiring it would invalidate valid history and block reopening a closed project for maintenance.
 `briefing.md` is not in the list of files required non-empty at close.
 
 The briefing is append-only in spirit: when the grill interview contradicts a fact it verified, the
 correction is recorded as a dated decision in `spec.md` rather than by rewriting the briefing. Grill
 reads it and does not write it.
+
+`architecture.md` records the design the user agreed to before task planning. It is read whole with
+`read <project-dir> architecture` and replaced whole with `edit <project-dir> architecture` under
+the same content-token guard as `reflection.md`; resume context lists its token beside the other
+documents. Its status line (`Status: draft` or `Status: agreed`) is what validation reads. Like the
+briefing it warns and never errors, and it is not in the list of files required non-empty at close.
 
 `spec.md` has two non-empty sections:
 
@@ -385,8 +395,9 @@ Redact credentials, tokens, private data, and unnecessary command output from ev
 
 ## The closing report
 
-Reports are optional deliverables, not closure requirements. Each format can be requested independently
-in the `artifacts/` directory that `init` already created; an unspecified format defaults to Markdown:
+Reports are optional deliverables, not closure requirements. Each format can be requested
+independently in the `artifacts/` directory that `init` already created; an unspecified format
+defaults to Markdown:
 
 ```text
 YYYY-MM-DD-NNN/
@@ -395,8 +406,9 @@ YYYY-MM-DD-NNN/
     └── report.html          # Only when HTML is requested
 ```
 
-When both are requested they carry the same findings and may share generated content; nothing in this
-plugin converts between them. Each requested file carries five sections (`##` in Markdown, `<h2>` in HTML):
+When both are requested they carry the same findings and may share generated content; nothing in
+this plugin converts between them. Each requested file carries five sections (`##` in Markdown,
+`<h2>` in HTML):
 
 ```text
 ## Summary
@@ -416,27 +428,28 @@ a new measurement.
 the selected formats. Bare `--report` retains the legacy paired check and cannot be combined with
 `--report-format`. Each checked file needs written sections. Add `--report-profile concise` for
 ordinary requested reports; `execution` (the legacy default when omitted) additionally requires a
-task-graph subsection under What was done. HTML checks cover tags, resources, colour tokens, themes, and chart labels
-and captions. See [report-design.md](report-design.md) for the shared content contract and
-[report-html.md](report-html.md) only for HTML work. Mechanical checks do not establish that prose
-is true or charts look right.
+task-graph subsection under What was done. HTML checks cover tags, resources, colour tokens, themes,
+and chart labels and captions. See [report-design.md](report-design.md) for the shared content
+contract and [report-html.md](report-html.md) only for HTML work. Mechanical checks do not establish
+that prose is true or charts look right.
 
 Validation severities for the report:
 
-- **Warning** — an existing report that is unreadable, still at its placeholder, or missing sections, reported by
-  `--close` and by validating a project already `DONE` or `CANCELLED`.
-- **Not a finding at all** — the same conditions in `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, or
-  `BLOCKED`. A report cannot exist before the work it reports on does, which is why this rule differs
-  from the briefing's; `briefing.md` warns from the moment a project leaves `ALIGNING`.
-- **No ordinary report error** — in any status, including at close. The reasoning is the one stated for
-  `briefing.md` above: requiring a new file at close would invalidate valid history and block
+- **Warning** — an existing report that is unreadable, still at its placeholder, or missing
+  sections, reported by `--close` and by validating a project already `DONE` or `CANCELLED`.
+- **Not a finding at all** — the same conditions in `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`,
+  or `BLOCKED`. A report cannot exist before the work it reports on does, which is why this rule
+  differs from the briefing's; `briefing.md` warns from the moment a project leaves `ALIGNING`.
+- **No ordinary report error** — in any status, including at close. The reasoning is the one stated
+  for `briefing.md` above: requiring a new file at close would invalidate valid history and block
   reopening a closed project for maintenance. `report.md` and `report.html` are not in the list of
   files required non-empty at close.
 
-Neither an absent report, an absent counterpart, nor an omitted optional task graph produces a warning. Explicit `--report` or
-`--report-format` checks report errors for missing or invalid selected files; record the command
-with `record-evidence --step report`. Required report deliverables still belong in task outputs,
-where the normal completion guards enforce their existence.
+Neither an absent report, an absent counterpart, nor an omitted optional task graph produces a
+warning. Explicit `--report` or `--report-format` checks report errors for missing or invalid
+selected files; record the command with `record-evidence --step report`. Required report
+deliverables still belong in task outputs, where the normal completion guards enforce their
+existence.
 
 If a report is requested for `CANCELLED`, its summary states the
 cancellation reason and `## Open work` carries what a successor would pick up; the rule that
@@ -507,8 +520,8 @@ continues to live beside projects and remains compatible with schema v3.
 
 ## Transactional updates
 
-Do not write `project.json` directly. Prefer `update` with a small patch; it constructs the candidate
-and derives `current_tasks`. For a full candidate, starting from revision `R`, run:
+Do not write `project.json` directly. Prefer `update` with a small patch; it constructs the
+candidate and derives `current_tasks`. For a full candidate, starting from revision `R`, run:
 
 ```sh
 research-project commit <project-dir> <candidate.json> \
@@ -564,8 +577,8 @@ research-project enable-execution <project-dir> --expected-revision R \
 ```
 
 The command probes the execution store, writes `execution/config.json`, and atomically commits the
-v3 → v4 transition. Without the quiescence attestation it refuses with `R-LEGACY-WRITER`. There is no
-automatic migration and no supported downgrade for that generation.
+v3 → v4 transition. Without the quiescence attestation it refuses with `R-LEGACY-WRITER`. There is
+no automatic migration and no supported downgrade for that generation.
 
 Unmigrated v1 closure requires `--allow-legacy-close`, a non-empty `reflection.md`, and a clear user
 warning that task completion could not be validated canonically.
@@ -581,8 +594,9 @@ A v4 or compatible v3 project may be `DONE` only when:
 - every required review is accepted with evidence;
 - every authorization-required completed task has scoped explicit authorization;
 - every completed external task has a durable receipt;
-- `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty (`briefing.md` and the
-  two report files under `artifacts/` are deliberately not required, and warn at most);
+- `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty (`briefing.md`,
+  `architecture.md` and the two report files under `artifacts/` are deliberately not required, and
+  warn at most);
 - required specification sections and numbered review files exist;
 - canonical state, local files, and the generated `INDEX.md`, `MEMORY.md`, and `POSTMORTEMS.md`
   agree.
@@ -593,6 +607,6 @@ Run both close and index validation after the transactional `DONE` commit:
 research-validate <project-dir> --close --check-index
 ```
 
-The validator checks structural state, local files, references, and index derivation. The coordinator
-must still inspect semantic correctness, accepted feedback, the truth of authorization sources, and
-the validity of external receipts.
+The validator checks structural state, local files, references, and index derivation. The
+coordinator must still inspect semantic correctness, accepted feedback, the truth of authorization
+sources, and the validity of external receipts.

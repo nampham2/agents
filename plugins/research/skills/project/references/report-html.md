@@ -13,14 +13,14 @@ dead CDN link is a report that renders wrong for reasons nobody will diagnose. A
 
 The single exception is a web-font stylesheet from `https://fonts.googleapis.com/`, and every family
 it loads needs a real fallback stack so the page is right when the font does not arrive.
-`research-validate --report-format html` enforces exactly this: an external script, any other stylesheet host, or
-an `@import` is an error.
+`research-validate --report-format html` enforces exactly this: an external script, any other
+stylesheet host, or an `@import` is an error.
 
 ## The CSS baseline
 
 Colour lives in custom properties and nowhere else. That is what lets the three theme blocks
-redefine the palette without touching a rule, and `--report-format html` treats a colour literal in any
-colour-carrying property outside a `--*` definition as an error.
+redefine the palette without touching a rule, and `--report-format html` treats a colour literal in
+any colour-carrying property outside a `--*` definition as an error.
 
 Three theme blocks, all three required, in this order:
 
@@ -108,8 +108,8 @@ h1, h2, h3 { font-family: var(--sans); }
   prose readable; the mono with `tabular-nums` is what makes a column of figures comparable down the
   page.
 - **Prose is measured, tables and charts are not.** Prose in a `max-width: 660px` column — roughly
-  70 characters — while a table or a chart gets the full 1080px. A full-width paragraph is the single
-  most common way a technical page becomes unreadable.
+  70 characters — while a table or a chart gets the full 1080px. A full-width paragraph is the
+  single most common way a technical page becomes unreadable.
 - **`<h2>` earns its space.** The five contract sections are the page's skeleton; set them apart
   (a rule above, generous margin) so the reader can scan to one.
 - **Tables**: right-align numbers, left-align labels, hairline rules in `var(--rule)`, no vertical
@@ -158,11 +158,11 @@ State the scale in an SVG comment, then verify each mark:
 </svg>
 ```
 
-Every one of those is checkable without rendering anything: `5.0 × 18 = 90` and a negative bar starts
-at `400 − 90 = 310`; `2.8 × 18 = 50.4` from `x = 400`; `0.97 × 18 = 17.46 ≈ 17.5` from
-`400 − 17.5 = 382.5`. Do this for bars, tick positions, and label anchors. Two failures this catches
-that nothing else will: a bar whose length does not match its printed value, and a bar that runs off
-the `viewBox`.
+Every one of those is checkable without rendering anything: `5.0 × 18 = 90` and a negative bar
+starts at `400 − 90 = 310`; `2.8 × 18 = 50.4` from `x = 400`; `0.97 × 18 = 17.46 ≈ 17.5` from `400 −
+17.5 = 382.5`. Do this for bars, tick positions, and label anchors. Two failures this catches that
+nothing else will: a bar whose length does not match its printed value, and a bar that runs off the
+`viewBox`.
 
 Keep every mark inside the `viewBox` with room for labels — the reference chart plots to `y=200` and
 puts axis ticks at `y=216` and a caption line at `y=240` inside a 250-high box. Use
@@ -226,8 +226,8 @@ all measured:
   `width = max(3, 0) = 3`. Without that floor a single-entry task draws nothing at all, which reads
   as "did not run" rather than "ran once".
 - The floor is the only way a bar can overrun: a single entry at the very end of the window would
-  start at `x=600` and draw to `603`. Clamping the start to `x=597` keeps it inside, which is why the
-  clamp is written down rather than left to whoever notices.
+  start at `x=600` and draw to `603`. Clamping the start to `x=597` keeps it inside, which is why
+  the clamp is written down rather than left to whoever notices.
 
 The window itself is the first and last readable stamp in the whole project, so the leftmost bar
 starts at `x=120` and the rightmost ends at `x=600` by construction. State the window's real clock

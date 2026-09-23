@@ -19,6 +19,10 @@ from workspace_lib import (
 )
 from workspace_session import _headings, _load_state
 
+# Documents replaced whole under the content-token guard, as opposed to `spec`, which is edited by
+# section, and `notes`, which are append-only.
+WHOLE_DOCUMENTS = ("reflection", "architecture")
+
 ENTRY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 ENTRY_MARKER_PATTERN = re.compile(r"^<!-- research-entry: (?P<id>[a-z0-9][a-z0-9-]{0,63}) -->$", re.MULTILINE)
 ENTRY_BODY_PATTERN = re.compile(r"^<!-- research-body-sha256: (?P<digest>[0-9a-f]{64}) -->$", re.MULTILINE)
@@ -30,6 +34,8 @@ def _managed_path(project_dir: Path, document: str, task_id: str | None = None) 
         path = project_dir / "spec.md"
     elif document == "reflection":
         path = project_dir / "reflection.md"
+    elif document == "architecture":
+        path = project_dir / "architecture.md"
     elif document == "notes":
         if task_id is None or not ENTRY_ID_PATTERN.fullmatch(task_id.lower()):
             raise WorkspaceError("notes require a safe task ID")
@@ -38,7 +44,7 @@ def _managed_path(project_dir: Path, document: str, task_id: str | None = None) 
             raise WorkspaceError(f"unknown task: {task_id}")
         path = project_dir / "tasks" / f"{task_id}.md"
     else:
-        raise WorkspaceError("document must be spec, reflection, or notes")
+        raise WorkspaceError("document must be spec, reflection, architecture, or notes")
     try:
         path.resolve(strict=False).relative_to(project_dir)
     except (OSError, ValueError) as error:
@@ -156,15 +162,19 @@ def edit_document(
     sections: dict[str, str] | None = None,
     lock_timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Replace a reflection or selected specification bodies under a content-token guard."""
+    """Replace a whole reflection or architecture document, or selected specification bodies.
+
+    Every write is guarded by the whole-document content token, so a stale draft cannot overwrite
+    an edit made by another session.
+    """
     if (body is None) == (sections is None):
         raise WorkspaceError("provide exactly one of body or sections")
     if document == "spec" and sections is None:
         raise WorkspaceError("spec edits require a sections mapping")
-    if document == "reflection" and body is None:
-        raise WorkspaceError("reflection edits require a body")
-    if document not in ("spec", "reflection"):
-        raise WorkspaceError("editable document must be spec or reflection")
+    if document in WHOLE_DOCUMENTS and body is None:
+        raise WorkspaceError(f"{document} edits require a body")
+    if document not in ("spec", *WHOLE_DOCUMENTS):
+        raise WorkspaceError("editable document must be spec, reflection, or architecture")
     project_dir = project_dir.resolve()
     path = _managed_path(project_dir, document)
     try:
@@ -177,10 +187,10 @@ def edit_document(
             actual = document_sha256(current) if exists else "missing"
             if actual != expected_sha256:
                 raise WorkspaceConflict(f"document conflict: expected {expected_sha256}, found {actual}")
-            if document == "reflection":
+            if document in WHOLE_DOCUMENTS:
                 replacement = (body or "").strip()
                 if not replacement:
-                    raise WorkspaceError("reflection body must not be empty")
+                    raise WorkspaceError(f"{document} body must not be empty")
                 replacement += "\n"
             else:
                 replacement = _replace_sections(current, sections or {})

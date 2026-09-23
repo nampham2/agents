@@ -6,12 +6,14 @@ grill skill told users to invoke it as `/grill` when a plugin skill is only reac
 headings the validator looks for. Both are contracts between two files, so both belong in a test
 rather than in a reviewer's memory.
 
-A third followed from hiding `grill`: the frontmatter reader below only matched `[a-z_]+` keys, so a
-hyphenated key like `user-invocable` was not merely ignored, it was folded into the preceding key's
-value. `name: grill` followed by `user-invocable: false` parsed as the name
-`'grill user-invocable: false'`. A skill that is deliberately not user-invocable must also not claim
-an invocation users cannot type, so the invocation rule is conditional on that key rather than
-unconditional.
+A third followed from hiding `grill` while it was still a skill: the frontmatter reader below only
+matched `[a-z_]+` keys, so a hyphenated key like `user-invocable` was not merely ignored, it was
+folded into the preceding key's value. `name: grill` followed by `user-invocable: false` parsed as
+the name `'grill user-invocable: false'`. A skill that is deliberately not user-invocable must also
+not claim an invocation users cannot type, so the invocation rule is conditional on that key rather
+than unconditional. Grill has since become a reference document under the project skill, which is
+why the section check also sweeps `references/`: the heading contract moved with it and would
+otherwise have left the test's reach.
 
 The checks are functions over a directory of plugins, so the same code runs against the real tree
 and against a deliberately broken fixture. A consistency test that cannot be made to fail proves
@@ -38,6 +40,11 @@ FENCED_MARKDOWN_PATTERN = re.compile(r"```markdown\n(.*?)^\s*```", re.DOTALL | r
 def skill_documents(plugins_dir: Path) -> "list[Path]":
     """Every shipped SKILL.md, discovered from the layout rather than from a hand-kept list."""
     return sorted(plugins_dir.glob("*/skills/*/SKILL.md"))
+
+
+def reference_documents(plugins_dir: Path) -> "list[Path]":
+    """Every skill-internal reference document; these have no frontmatter or invocation to check."""
+    return sorted(plugins_dir.glob("*/skills/*/references/*.md"))
 
 
 def parse_frontmatter(text: str) -> "dict[str, str]":
@@ -77,7 +84,6 @@ def documented_spec_sections(text: str) -> "list[str]":
 def documentation_problems(plugins_dir: Path) -> "list[str]":
     """Every inconsistency found across the shipped skill documents, as readable sentences."""
     problems: "list[str]" = []
-    required = [name for name, _ in SPEC_CANONICAL_SECTIONS]
 
     for document in skill_documents(plugins_dir):
         skill_name = document.parent.name
@@ -117,16 +123,27 @@ def documentation_problems(plugins_dir: Path) -> "list[str]":
             line = text[: bare.start()].count("\n") + 1
             problems.append(f"{relative}:{line} names a bare /{skill_name} instead of {expected}")
 
-        documented = documented_spec_sections(text)
-        if documented and documented != required:
-            problems.append(f"{relative} documents specification sections {documented}, tools require {required}")
-        elif documented:
-            spec = "# T\n\n## Current specification\n\n" + "".join(f"### {name}\n\nx\n\n" for name in documented)
-            warnings = spec_section_warnings(spec)
-            if warnings:
-                problems.append(f"{relative} documents sections the validator still warns about: {warnings}")
+        problems.extend(section_problems(relative, text))
+
+    for document in reference_documents(plugins_dir):
+        problems.extend(section_problems(document.relative_to(plugins_dir), document.read_text(encoding="utf-8")))
 
     return problems
+
+
+def section_problems(relative: Path, text: str) -> "list[str]":
+    """The specification-heading contract, shared by skill and reference documents."""
+    required = [name for name, _ in SPEC_CANONICAL_SECTIONS]
+    documented = documented_spec_sections(text)
+    if not documented:
+        return []
+    if documented != required:
+        return [f"{relative} documents specification sections {documented}, tools require {required}"]
+    spec = "# T\n\n## Current specification\n\n" + "".join(f"### {name}\n\nx\n\n" for name in documented)
+    warnings = spec_section_warnings(spec)
+    if warnings:
+        return [f"{relative} documents sections the validator still warns about: {warnings}"]
+    return []
 
 
 class ShippedSkillDocumentTests(unittest.TestCase):
@@ -137,12 +154,17 @@ class ShippedSkillDocumentTests(unittest.TestCase):
         # An empty sweep would make every assertion above vacuously true.
         found = {document.parent.name for document in skill_documents(PLUGINS_DIR)}
         self.assertIn("project", found)
-        self.assertIn("grill", found)
+        references = {document.name for document in reference_documents(PLUGINS_DIR)}
+        self.assertIn("grill.md", references)
 
-    def test_both_skills_document_the_specification_headings(self) -> None:
+    def test_the_project_skill_and_grill_document_the_specification_headings(self) -> None:
         required = [name for name, _ in SPEC_CANONICAL_SECTIONS]
-        for document in skill_documents(PLUGINS_DIR):
-            with self.subTest(skill=document.parent.name):
+        documents = [
+            PLUGINS_DIR / "research" / "skills" / "project" / "SKILL.md",
+            PLUGINS_DIR / "research" / "skills" / "project" / "references" / "grill.md",
+        ]
+        for document in documents:
+            with self.subTest(document=document.name):
                 self.assertEqual(required, documented_spec_sections(document.read_text(encoding="utf-8")))
 
 
@@ -248,6 +270,22 @@ class BrokenFixtureTests(unittest.TestCase):
         fields = parse_frontmatter(self._document(invocation=None, user_invocable=False))
         self.assertEqual("widget", fields["name"])
         self.assertEqual("false", fields["user-invocable"])
+
+    def test_a_renamed_section_in_a_reference_document_is_caught(self) -> None:
+        # References carry no frontmatter and claim no invocation, so only the heading contract
+        # applies to them; it must still apply, or moving a listing there would silence the check.
+        (self.skill_dir / "SKILL.md").write_text(self._document(), encoding="utf-8")
+        references = self.skill_dir / "references"
+        references.mkdir()
+        sections = [name for name, _ in SPEC_CANONICAL_SECTIONS]
+        sections[-1] = "Dangerous actions"
+        listing = "".join(f"### {section}\n" for section in sections)
+        (references / "interview.md").write_text(f"# Interview\n\n```markdown\n{listing}```\n", encoding="utf-8")
+        problems = documentation_problems(self.plugins)
+        self.assertTrue(
+            any(problem.startswith("demo/skills/widget/references/interview.md documents") for problem in problems),
+            problems,
+        )
 
     def test_a_document_without_a_section_listing_is_not_forced_to_have_one(self) -> None:
         # Only a skill that documents the headings has to document them correctly; a future skill
