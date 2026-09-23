@@ -2136,6 +2136,16 @@ MEMORY_OPTIONAL_FRONTMATTER_FIELDS = ("sources",)
 # keeping its file and provenance searchable, and `superseded_by` says which topic took its place.
 MEMORY_EXTRA_FRONTMATTER_FIELDS = ("keywords", "status", "superseded_by")
 MEMORY_STATUSES = ("active", "retired")
+# A topic body may carry two tiers. `## Rule` is the bounded statement a reader pays for by default
+# and is rewritten in place by `compact-memory`; `## Incidents` is the append-only record `promote-memory`
+# adds one dated entry to. A body with neither heading is legacy: the whole body is the rule. Bodies
+# grew at about 1.2 KB per promotion with no summary tier (docs/memory-management-review.md), which is
+# what these thresholds make visible; all of them warn and none of them block.
+MEMORY_RULE_HEADING = "## Rule"
+MEMORY_INCIDENTS_HEADING = "## Incidents"
+MEMORY_RULE_MAX_BYTES = 2 * 1024
+MEMORY_TOPIC_COMPACTION_BYTES = 8 * 1024
+MEMORY_TOPIC_COMPACTION_SOURCES = 6
 MEMORY_SLUG_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 MEMORY_DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 MEMORY_FRONTMATTER_DELIMITER = "---"
@@ -2421,6 +2431,7 @@ def amend_memory_topic(
     scope: str = "",
     sources: "Sequence[str]" = (),
     updated: str = "",
+    keywords: str = "",
     lock_timeout: float = 5.0,
 ) -> Path:
     """Create or amend one topic file under `.memory.lock`, never rewriting its body from scratch.
@@ -2460,6 +2471,7 @@ def amend_memory_topic(
                 topic.description = description or topic.description
                 topic.kind = kind or topic.kind
                 topic.scope = scope or topic.scope
+                topic.keywords = keywords or topic.keywords
                 topic.updated = stamp
             else:
                 missing = [
@@ -2478,12 +2490,203 @@ def amend_memory_topic(
                     scope=scope,
                     sources=list(sources),
                     updated=stamp,
+                    keywords=keywords,
                 )
-            combined = f"{existing_body}\n\n{body.strip()}" if existing_body else body.strip()
+            label = ", ".join(sources) or "unattributed"
+            if not existing_body:
+                # A new topic is born tiered: the lesson is its rule, and the record starts with who
+                # promoted it.
+                combined = render_topic_body(body, incident_entry(stamp, label, "Promoted as a new topic."))
+            else:
+                tiers = split_topic_body(existing_body)
+                if tiers.tiered:
+                    incidents = _append_incident(tiers.incidents, incident_entry(stamp, label, body))
+                    combined = render_topic_body(tiers.rule, incidents)
+                else:
+                    # Legacy files keep the append-only shape they were written in until compaction.
+                    combined = f"{existing_body}\n\n{body.strip()}"
             atomic_write_text(path, render_memory_topic(topic, combined))
     except OSError as error:
         raise WorkspaceError(f"cannot amend {path}: {error}") from error
     return path
+
+
+@dataclass
+class TopicTiers:
+    """A topic body split into its rule and its incident record."""
+
+    rule: str
+    incidents: str
+    tiered: bool
+
+
+def _h2_sections(body: str) -> "list[tuple[str, str]]":
+    """(heading, text) for each `## ` section, with a leading unheaded section under the empty heading."""
+    sections: list[tuple[str, list[str]]] = [("", [])]
+    fence = ""
+    for line in body.splitlines():
+        marker = re.match(r"^ {0,3}(`{3,}|~{3,})", line)
+        if fence:
+            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence):
+                fence = ""
+        elif marker:
+            fence = marker[1]
+        elif line.startswith("## "):
+            sections.append((line.strip(), []))
+            continue
+        sections[-1][1].append(line)
+    return [(heading, "\n".join(lines).strip("\n")) for heading, lines in sections]
+
+
+def split_topic_body(body: str) -> TopicTiers:
+    """Rule and incidents, or the whole body as the rule when the file predates the tiers."""
+    sections = _h2_sections(body)
+    headings = [heading for heading, _ in sections]
+    incidents = next((text for heading, text in sections if heading == MEMORY_INCIDENTS_HEADING), "")
+    if MEMORY_RULE_HEADING in headings:
+        rule = next(text for heading, text in sections if heading == MEMORY_RULE_HEADING)
+        return TopicTiers(rule=rule, incidents=incidents, tiered=True)
+    rule = "\n\n".join(
+        (f"{heading}\n\n{text}" if heading else text)
+        for heading, text in sections
+        if heading != MEMORY_INCIDENTS_HEADING and (heading or text)
+    )
+    return TopicTiers(rule=rule.strip("\n"), incidents=incidents, tiered=False)
+
+
+def render_topic_body(rule: str, incidents: str) -> str:
+    parts = [MEMORY_RULE_HEADING, "", rule.strip("\n"), "", MEMORY_INCIDENTS_HEADING]
+    if incidents.strip():
+        parts.extend(["", incidents.strip("\n")])
+    return "\n".join(parts)
+
+
+def incident_entry(stamp: str, label: str, text: str) -> str:
+    return f"### {stamp} — {label}\n\n{text.strip()}"
+
+
+def _append_incident(incidents: str, entry: str) -> str:
+    return f"{incidents.strip()}\n\n{entry}" if incidents.strip() else entry
+
+
+def incident_count(incidents: str) -> int:
+    return sum(1 for line in incidents.splitlines() if line.startswith("### "))
+
+
+def _content_sha256(content: str) -> str:
+    return document_sha256(content)
+
+
+def memory_topic_warnings(topic: MemoryTopic, body: str) -> "list[str]":
+    """Advisory size findings for one topic: a rule over budget, or an untiered body that is due for one."""
+    warnings: list[str] = []
+    tiers = split_topic_body(body)
+    rule_bytes = len(tiers.rule.encode("utf-8"))
+    if tiers.tiered and rule_bytes > MEMORY_RULE_MAX_BYTES:
+        warnings.append(
+            f"{topic.path} rule is {rule_bytes} bytes, above the {MEMORY_RULE_MAX_BYTES} a reader pays for by "
+            "default; shorten it with compact-memory"
+        )
+    body_bytes = len(body.encode("utf-8"))
+    if not tiers.tiered and (body_bytes > MEMORY_TOPIC_COMPACTION_BYTES or len(topic.sources) > MEMORY_TOPIC_COMPACTION_SOURCES):
+        warnings.append(
+            f"{topic.path} has no '{MEMORY_RULE_HEADING}' section and is {body_bytes} bytes from {len(topic.sources)} "
+            f"source(s); compaction is due: write a rule with compact-memory and keep the incidents below it"
+        )
+    return warnings
+
+
+def _load_topic_or_raise(workspace_root: Path, slug: str) -> "tuple[Path, str, MemoryTopic]":
+    if not MEMORY_SLUG_PATTERN.match(slug):
+        raise WorkspaceError(f"topic slug must be lowercase-hyphenated: {slug!r}")
+    path = workspace_root / MEMORY_DIRECTORY / f"{slug}.md"
+    if not path.is_file():
+        raise WorkspaceError(f"no such memory topic: {path}")
+    content = read_text(path)
+    topic, problems = parse_memory_topic(path, content)
+    if topic is None:
+        raise WorkspaceError(f"topic file {path} is malformed: " + "; ".join(problems))
+    return path, content, topic
+
+
+def read_memory_topic(workspace_root: Path, slug: str, *, full: bool = False) -> "dict[str, Any]":
+    """The rule tier by default, the incidents on request, and the token `compact-memory` needs."""
+    path, content, topic = _load_topic_or_raise(workspace_root, slug)
+    body = memory_topic_body(content)
+    tiers = split_topic_body(body)
+    result: dict[str, Any] = {
+        "path": str(path),
+        "name": topic.name,
+        "description": topic.description,
+        "kind": topic.kind,
+        "scope": topic.scope,
+        "sources": list(topic.sources),
+        "updated": topic.updated,
+        "keywords": topic.keywords,
+        "status": topic.status,
+        "superseded_by": topic.superseded_by,
+        "tiered": tiers.tiered,
+        "rule": tiers.rule,
+        "rule_bytes": len(tiers.rule.encode("utf-8")),
+        "incident_count": incident_count(tiers.incidents),
+        "body_bytes": len(body.encode("utf-8")),
+        "sha256": _content_sha256(content),
+        "warnings": memory_topic_warnings(topic, body),
+    }
+    if full:
+        result["incidents"] = tiers.incidents
+    return result
+
+
+def compact_memory_topic(
+    workspace_root: Path,
+    slug: str,
+    *,
+    rule: str,
+    expected_sha256: str,
+    keywords: str = "",
+    updated: str = "",
+    lock_timeout: float = 5.0,
+) -> "dict[str, Any]":
+    """Replace the rule tier under `.memory.lock`, keeping the previous rule as the newest incident.
+
+    A rewrite is the one operation this layer refused until now, because a rewrite loses the incident
+    that made a lesson credible. It is allowed here on two conditions: the caller proves it read the
+    current file (the token), and nothing is discarded: the old rule, or a legacy file's whole body,
+    moves below the new rule as a dated incident entry.
+    """
+    if not rule.strip():
+        raise WorkspaceError("compact-memory needs a non-empty rule")
+    stamp = updated or datetime.now().astimezone().date().isoformat()
+    if not MEMORY_DATE_PATTERN.match(stamp):
+        raise WorkspaceError(f"updated {stamp!r} is not a YYYY-MM-DD date")
+    try:
+        with memory_lock(workspace_root, timeout=lock_timeout):
+            path, content, topic = _load_topic_or_raise(workspace_root, slug)
+            current = _content_sha256(content)
+            if current != expected_sha256:
+                raise WorkspaceError(
+                    f"{path} changed since it was read (current sha256 {current}); read it again before compacting"
+                )
+            tiers = split_topic_body(memory_topic_body(content))
+            previous = tiers.rule
+            label = "compaction (previous rule)" if tiers.tiered else "compaction (legacy body)"
+            incidents = _append_incident(tiers.incidents, incident_entry(stamp, label, previous))
+            topic.keywords = keywords or topic.keywords
+            topic.updated = stamp
+            rendered = render_memory_topic(topic, render_topic_body(rule, incidents))
+            atomic_write_text(path, rendered)
+    except OSError as error:
+        raise WorkspaceError(f"cannot compact {slug}: {error}") from error
+    body = memory_topic_body(rendered)
+    return {
+        "path": str(path),
+        "previous_rule_bytes": len(previous.encode("utf-8")),
+        "rule_bytes": len(rule.strip().encode("utf-8")),
+        "incident_count": incident_count(incidents),
+        "sha256": _content_sha256(rendered),
+        "warnings": memory_topic_warnings(topic, body),
+    }
 
 
 def memory_staging_warnings(project_dir: Path) -> "list[str]":
@@ -2559,6 +2762,12 @@ def memory_findings(workspace_root: Path, *, check_index: bool = False) -> Valid
                     f"{index_path} is {' and '.join(exceeded)}; this file is read in full every "
                     "session, so merge or retire topics rather than appending pointers"
                 )
+
+    for topic in topics:
+        try:
+            report.warnings.extend(memory_topic_warnings(topic, memory_topic_body(read_text(topic.path))))
+        except WorkspaceError:
+            continue
 
     cited = {source for topic in topics for source in topic.sources}
     if cited:

@@ -240,6 +240,52 @@ class ManageCLIMemoryTests(unittest.TestCase):
         self.assertEqual(1, result)
         self.assertFalse((self.workspace / "memory" / "bare-topic.md").exists())
 
+    def test_read_and_compact_memory_round_trip_through_the_cli(self) -> None:
+        with patch("sys.stdout", new_callable=io.StringIO):
+            self._promote("tiered", "--body", "Rule text.", "--description", "d", "--kind", "method", "--scope", "s")
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(0, _call_manage(["read-memory", "tiered", "--workspace-root", str(self.workspace)]))
+        before = json.loads(out.getvalue())
+        self.assertEqual((before["tiered"], before["rule"], before["incident_count"]), (True, "Rule text.", 1))
+        self.assertNotIn("incidents", before)
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            result = _call_manage([
+                "compact-memory", "tiered", "--rule", "Shorter.", "--expected-sha256", before["sha256"],
+                "--keywords", "k1, k2", "--workspace-root", str(self.workspace),
+            ])
+        self.assertEqual(0, result)
+        outcome = json.loads(out.getvalue())
+        self.assertEqual(outcome["incident_count"], 2)
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            _call_manage(["read-memory", "tiered", "--full", "--workspace-root", str(self.workspace)])
+        after = json.loads(out.getvalue())
+        self.assertEqual((after["rule"], after["keywords"], after["sha256"]), ("Shorter.", "k1, k2", outcome["sha256"]))
+        self.assertIn("compaction (previous rule)", after["incidents"])
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            stale = _call_manage([
+                "compact-memory", "tiered", "--rule", "Again.", "--expected-sha256", before["sha256"],
+                "--workspace-root", str(self.workspace),
+            ])
+        self.assertEqual(1, stale)
+        self.assertIn("changed since it was read", err.getvalue())
+        with patch("sys.stderr", new_callable=io.StringIO) as err, patch("sys.stdout", new_callable=io.StringIO):
+            over = _call_manage([
+                "compact-memory", "tiered", "--rule", "y" * 2100, "--expected-sha256", outcome["sha256"],
+                "--workspace-root", str(self.workspace),
+            ])
+        self.assertEqual(0, over)
+        self.assertIn("rule is", err.getvalue())
+
+    def test_promotion_warns_when_a_legacy_topic_is_due_for_compaction(self) -> None:
+        (self.workspace / "memory" / "big.md").write_text(
+            "---\nname: big\ndescription: d\nkind: method\nscope: s\nsources: \nupdated: 2026-09-09\n---\n\n"
+            + "x" * (8 * 1024 + 1) + "\n",
+            encoding="utf-8",
+        )
+        with patch("sys.stderr", new_callable=io.StringIO) as err, patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(0, self._promote("big", "--body", "More."))
+        self.assertIn("compaction is due", err.getvalue())
+
     def test_search_prints_ranked_json_relative_to_the_root_and_returns_0(self) -> None:
         self._promote(
             "uv-toolchain",

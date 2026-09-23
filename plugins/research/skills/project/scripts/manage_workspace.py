@@ -26,11 +26,13 @@ from workspace_lib import (
     apply_migration,
     check_candidate,
     commit_candidate,
+    compact_memory_topic,
     enable_execution,
     find_workspace_roots,
     load_memory_topics,
     migration_candidate,
     project_task_graph,
+    read_memory_topic,
     read_text,
     rebuild_index,
     record_evidence_result,
@@ -282,12 +284,52 @@ def _build_parser() -> argparse.ArgumentParser:
         help="YYYY-MM-DD-NNN project this lesson came from; repeat for several",
     )
     promote.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
+    promote.add_argument("--keywords", default="", help="comma-separated retrieval terms; sets the keywords field")
     promote.add_argument(
         "--workspace-root",
         type=Path,
         help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
     )
     promote.add_argument("--lock-timeout", type=float, default=5.0)
+
+    read_topic = subparsers.add_parser(
+        "read-memory",
+        help="Print one topic's rule tier, counts and the token compact-memory needs",
+        epilog=(
+            "The rule is what a reader pays for by default. A file without a '## Rule' heading is legacy: "
+            "its whole body is returned as the rule and tiered is false. --full adds the incident record."
+        ),
+    )
+    read_topic.add_argument("slug")
+    read_topic.add_argument("--full", action="store_true", help="include the incidents text")
+    read_topic.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
+
+    compact = subparsers.add_parser(
+        "compact-memory",
+        help="Replace a topic's rule under the memory lock; the previous rule becomes the newest incident",
+        epilog=(
+            "Guarded by the sha256 that read-memory printed, so a rewrite cannot land on a file someone "
+            "else amended in between. Nothing is discarded: the old rule, or a legacy file's whole body, "
+            "moves below the new rule as a dated incident entry."
+        ),
+    )
+    compact.add_argument("slug")
+    rule_source = compact.add_mutually_exclusive_group(required=True)
+    rule_source.add_argument("--rule", help="the new rule text")
+    rule_source.add_argument("--rule-file", type=Path, help="read the rule from a file, or '-' for stdin")
+    compact.add_argument("--expected-sha256", required=True, help="token from read-memory")
+    compact.add_argument("--keywords", default="", help="comma-separated retrieval terms; sets the keywords field")
+    compact.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
+    compact.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
+    compact.add_argument("--lock-timeout", type=float, default=5.0)
 
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
     migrate.add_argument("project_directory", type=Path)
@@ -681,12 +723,38 @@ def main() -> int:
                 scope=args.scope,
                 sources=args.sources,
                 updated=args.updated,
+                keywords=args.keywords,
                 lock_timeout=args.lock_timeout,
             )
             # Regenerated after the memory lock is released, never inside it: the rebuild takes the
             # index lock, and these mkdir-based locks are not reentrant across each other's holders.
             rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+            for warning in read_memory_topic(workspace_root, args.slug)["warnings"]:
+                print(f"WARNING: {warning}", file=sys.stderr)
             print(path)
+            return 0
+
+        if args.command == "read-memory":
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            print(json.dumps(read_memory_topic(workspace_root, args.slug, full=args.full), indent=2))
+            return 0
+
+        if args.command == "compact-memory":
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            rule = args.rule if args.rule is not None else _read_body(args.rule_file)
+            outcome = compact_memory_topic(
+                workspace_root,
+                args.slug,
+                rule=rule,
+                expected_sha256=args.expected_sha256,
+                keywords=args.keywords,
+                updated=args.updated,
+                lock_timeout=args.lock_timeout,
+            )
+            rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+            for warning in outcome["warnings"]:
+                print(f"WARNING: {warning}", file=sys.stderr)
+            print(json.dumps(outcome, indent=2))
             return 0
 
         if args.command == "migrate":

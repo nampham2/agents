@@ -16,6 +16,7 @@ import unittest.mock
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import workspace_lib
 from workspace_lib import (
     MEMORY_INDEX_MAX_BYTES,
     MEMORY_INDEX_MAX_LINES,
@@ -24,18 +25,23 @@ from workspace_lib import (
     WorkspaceError,
     allocate_project,
     amend_memory_topic,
+    compact_memory_topic,
     load_memory_topics,
     memory_findings,
     memory_index_path,
     memory_staging_warnings,
     memory_topic_body,
+    memory_topic_warnings,
     parse_memory_frontmatter,
     parse_memory_topic,
     postmortem_index_path,
+    read_memory_topic,
     rebuild_index,
     render_memory_index,
     render_memory_topic,
     render_postmortem_index,
+    render_topic_body,
+    split_topic_body,
     validate_project,
 )
 
@@ -779,6 +785,112 @@ class OptionalFieldTests(MemoryRootTestCase):
         amend_memory_topic(self.workspace, "t", body="More.")
         topics, _ = load_memory_topics(self.workspace)
         self.assertEqual((topics[0].keywords, topics[0].status), ("k", "retired"))
+
+
+class TierTests(MemoryRootTestCase):
+    """Two tiers inside a topic: a bounded rule rewritten in place, an incident record only appended to."""
+
+    def test_a_legacy_body_is_the_whole_rule(self) -> None:
+        tiers = split_topic_body("First paragraph.\n\n## Notes\n\nMore.\n")
+        self.assertEqual((tiers.tiered, tiers.incidents), (False, ""))
+        self.assertEqual(tiers.rule, "First paragraph.\n\n## Notes\n\nMore.")
+
+    def test_a_tiered_body_splits_and_fenced_headings_are_ignored(self) -> None:
+        body = "## Rule\n\nDo this.\n\n```md\n## Rule\n## Incidents\n```\n\n## Incidents\n\n### 2026-09-01 — a\n\nx\n"
+        tiers = split_topic_body(body)
+        self.assertTrue(tiers.tiered)
+        self.assertEqual(tiers.rule, "Do this.\n\n```md\n## Rule\n## Incidents\n```")
+        self.assertEqual(tiers.incidents, "### 2026-09-01 — a\n\nx")
+
+    def test_incidents_without_a_rule_heading_is_legacy_with_incidents_parsed(self) -> None:
+        tiers = split_topic_body("Lesson.\n\n## Incidents\n\n### 2026-09-01 — a\n\nx\n")
+        self.assertEqual((tiers.tiered, tiers.rule, tiers.incidents), (False, "Lesson.", "### 2026-09-01 — a\n\nx"))
+
+    def test_render_round_trips_with_and_without_incidents(self) -> None:
+        self.assertEqual(render_topic_body("R", ""), "## Rule\n\nR\n\n## Incidents")
+        rendered = render_topic_body("R", "### d — l\n\nx")
+        tiers = split_topic_body(rendered)
+        self.assertEqual((tiers.rule, tiers.incidents), ("R", "### d — l\n\nx"))
+
+    def test_a_new_topic_is_born_tiered_and_later_promotions_append_dated_incidents(self) -> None:
+        amend_memory_topic(
+            self.workspace, "fresh", body="The lesson.", description="d", kind="method", scope="s",
+            sources=["2026-09-01-001"], updated="2026-09-01", keywords="k1",
+        )
+        first = read_memory_topic(self.workspace, "fresh", full=True)
+        self.assertEqual(
+            (first["tiered"], first["rule"], first["incident_count"], first["keywords"]), (True, "The lesson.", 1, "k1")
+        )
+        self.assertIn("### 2026-09-01 — 2026-09-01-001\n\nPromoted as a new topic.", first["incidents"])
+        amend_memory_topic(self.workspace, "fresh", body="Second incident.", updated="2026-09-02")
+        second = read_memory_topic(self.workspace, "fresh", full=True)
+        self.assertEqual((second["rule"], second["incident_count"]), ("The lesson.", 2))
+        self.assertTrue(second["incidents"].endswith("### 2026-09-02 — unattributed\n\nSecond incident."))
+
+    def test_a_legacy_topic_keeps_its_append_only_shape(self) -> None:
+        self.write_topic("old", body="Old body.")
+        amend_memory_topic(self.workspace, "old", body="Appended.")
+        result = read_memory_topic(self.workspace, "old")
+        self.assertEqual((result["tiered"], result["rule"]), (False, "Old body.\n\nAppended."))
+        self.assertNotIn("incidents", result)
+
+    def test_read_refuses_unknown_or_malformed_topics_and_bad_slugs(self) -> None:
+        with self.assertRaises(WorkspaceError):
+            read_memory_topic(self.workspace, "missing")
+        with self.assertRaises(WorkspaceError):
+            read_memory_topic(self.workspace, "Not Slug")
+        self.write_topic("half", content="---\nname: half\n")
+        with self.assertRaises(WorkspaceError):
+            read_memory_topic(self.workspace, "half")
+
+    def test_compaction_keeps_the_previous_rule_as_the_newest_incident_and_guards_on_the_token(self) -> None:
+        self.write_topic("legacy", body="Long legacy body.")
+        token = read_memory_topic(self.workspace, "legacy")["sha256"]
+        with self.assertRaises(WorkspaceError) as refused:
+            compact_memory_topic(self.workspace, "legacy", rule="R", expected_sha256="stale")
+        self.assertIn("changed since it was read", str(refused.exception))
+        outcome = compact_memory_topic(
+            self.workspace, "legacy", rule="The rule.", expected_sha256=token, keywords="k", updated="2026-09-03"
+        )
+        after = read_memory_topic(self.workspace, "legacy", full=True)
+        self.assertEqual(
+            (after["tiered"], after["rule"], after["keywords"], after["updated"]),
+            (True, "The rule.", "k", "2026-09-03"),
+        )
+        self.assertIn("### 2026-09-03 — compaction (legacy body)\n\nLong legacy body.", after["incidents"])
+        self.assertEqual(outcome["sha256"], after["sha256"])
+        self.assertEqual(outcome["previous_rule_bytes"], len("Long legacy body."))
+        again = compact_memory_topic(self.workspace, "legacy", rule="Newer rule.", expected_sha256=after["sha256"])
+        self.assertEqual(again["incident_count"], 2)
+        self.assertIn("compaction (previous rule)", read_memory_topic(self.workspace, "legacy", full=True)["incidents"])
+
+    def test_compaction_rejects_an_empty_rule_a_bad_date_and_reports_os_errors(self) -> None:
+        self.write_topic("t")
+        token = read_memory_topic(self.workspace, "t")["sha256"]
+        with self.assertRaises(WorkspaceError):
+            compact_memory_topic(self.workspace, "t", rule="  ", expected_sha256=token)
+        with self.assertRaises(WorkspaceError):
+            compact_memory_topic(self.workspace, "t", rule="R", expected_sha256=token, updated="yesterday")
+        with unittest.mock.patch.object(workspace_lib, "atomic_write_text", side_effect=OSError("disk")):
+            with self.assertRaises(WorkspaceError) as failed:
+                compact_memory_topic(self.workspace, "t", rule="R", expected_sha256=token)
+        self.assertIn("cannot compact", str(failed.exception))
+
+    def test_size_warnings_are_advisory_and_reach_validation(self) -> None:
+        topic = MemoryTopic(path=self.memory / "t.md", name="t", description="d", kind="method", scope="s")
+        self.assertEqual(memory_topic_warnings(topic, "short"), [])
+        self.assertEqual(len(memory_topic_warnings(topic, "x" * (8 * 1024 + 1))), 1)
+        topic.sources = [f"2026-09-0{n}-001" for n in range(1, 8)]
+        self.assertIn("compaction is due", memory_topic_warnings(topic, "short")[0])
+        self.assertIn("rule is", memory_topic_warnings(topic, render_topic_body("y" * 2049, ""))[0])
+        self.assertEqual(memory_topic_warnings(topic, render_topic_body("ok", "")), [])
+        self.write_topic("big", body="z" * (8 * 1024 + 1))
+        report = memory_findings(self.workspace)
+        self.assertTrue(report.valid)
+        self.assertTrue(any("compaction is due" in warning for warning in report.warnings))
+        with unittest.mock.patch.object(workspace_lib, "memory_topic_body", side_effect=WorkspaceError("gone")):
+            skipped = memory_findings(self.workspace).warnings
+        self.assertFalse(any("compaction" in warning for warning in skipped))
 
 
 if __name__ == "__main__":  # pragma: no cover
