@@ -50,12 +50,14 @@ placement. Keep these surfaces aligned:
   `skills` key. After manifest changes, run `claude plugin validate --strict .` and
   `claude plugin validate --strict plugins/research`.
 - Skill frontmatter is not portable. Claude Code honours `user-invocable: false`, which hides a
-  skill's slash command while leaving it reachable through the Skill tool; Codex parses only `name`,
-  `description`, and `disable-model-invocation`, so a skill hidden that way still appears as a Codex
-  slash command. Plugin-internal procedures therefore live under `skills/<skill>/references/` and are
+  skill's slash command while leaving it reachable through the Skill tool; Codex reads only `name`
+  and `description` from `SKILL.md` and takes invocation policy from `agents/openai.yaml`
+  (`policy.allow_implicit_invocation`), so a skill hidden that way still appears as a Codex slash
+  command. Plugin-internal procedures therefore live under `skills/<skill>/references/` and are
   loaded by the owning skill on demand, never as hidden sibling skills. The requirements grill
   (`skills/project/references/grill.md`) is the precedent. Never reach for `disable-model-invocation`
-  to hide a skill: it is the opposite lever, and Codex rejects any value but `false`.
+  to hide a skill: it is the opposite lever, blocking the model from loading the skill, which would
+  break the skill that invokes it.
 - `pyproject.toml` `[project].version` is canonical. It must exactly match the `agents` package in
   `uv.lock` and the Claude and Codex plugin manifests. Committed manifests use plain SemVer,
   without a Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:

@@ -739,8 +739,9 @@ def briefing_section_warnings(briefing_markdown: str) -> "list[str]":
 ARCHITECTURE_FILENAME = "architecture.md"
 ARCHITECTURE_GATE_STATUSES = frozenset({"PLANNING", "EXECUTING", "REVIEW"})
 # The one line the document must carry: `Status: draft` or `Status: agreed`, in any Markdown dress
-# (`**Status:** agreed`, `- status — draft`). The first occurrence wins, so keep it near the top.
-ARCHITECTURE_STATUS_PATTERN = re.compile(r"\bstatus\b\W*(?P<status>draft|agreed)\b", re.IGNORECASE)
+# (`**Status:** agreed`, `- status — draft`). The separator excludes line breaks, so the word and its
+# value must share a line. The first occurrence wins, so keep it near the top.
+ARCHITECTURE_STATUS_PATTERN = re.compile(r"\bstatus\b[^\w\r\n]*(?P<status>draft|agreed)\b", re.IGNORECASE)
 
 
 def architecture_status(architecture_markdown: str) -> "str | None":
@@ -755,7 +756,8 @@ def architecture_warnings(project_dir: Path, status: object) -> "list[str]":
     if not isinstance(status, str) or status not in ARCHITECTURE_GATE_STATUSES:
         return []
     path = project_dir / ARCHITECTURE_FILENAME
-    if not path.exists():
+    # `is_file`, not `exists`: a directory of that name must read as missing, not as a decode failure.
+    if not path.is_file():
         return [f"{ARCHITECTURE_FILENAME} is missing; a {status} project needs an agreed architecture document"]
     review = architecture_status(read_text(path))
     if review is None:

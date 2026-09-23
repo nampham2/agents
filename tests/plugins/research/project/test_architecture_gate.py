@@ -89,6 +89,10 @@ def architecture_findings(project: Path, status: str, **kwargs: Any) -> list[str
         ("The statuses were agreed informally.", None),
         # The first occurrence wins, so a history section further down cannot override the header.
         ("Status: agreed\n\n## History\n\nA0 status: draft, superseded.\n", "agreed"),
+        # The word and its value must share a line; a marker split across lines is not a marker.
+        ("Status:\nagreed\n", None),
+        ("Status:\r\n\r\nagreed\n", None),
+        ("Status: **agreed**", "agreed"),
     ],
 )
 def test_the_status_line_is_read_in_any_markdown_dress(markdown: str, expected: str | None) -> None:
@@ -120,6 +124,17 @@ def test_each_failure_is_named_distinctly(project: Path) -> None:
     ]
     (project / "architecture.md").write_text(AGREED, encoding="utf-8")
     assert architecture_warnings(project, "REVIEW") == []
+
+
+def test_a_directory_named_architecture_md_reads_as_missing(project: Path) -> None:
+    # `exists()` is true for a directory, and reading one raises; the gate must warn, not crash.
+    (project / "architecture.md").mkdir()
+    assert architecture_warnings(project, "PLANNING") == [
+        "architecture.md is missing; a PLANNING project needs an agreed architecture document"
+    ]
+    assert architecture_findings(project, "PLANNING") == [
+        "architecture.md is missing; a PLANNING project needs an agreed architecture document"
+    ]
 
 
 def test_validation_reports_the_gate_as_a_warning_not_an_error(project: Path) -> None:
