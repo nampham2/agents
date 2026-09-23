@@ -18,12 +18,14 @@ import memory_search
 from memory_search import (
     Bm25Index,
     IndexedTopic,
+    creation_gate,
     load_indexed_topics,
     memory_candidates,
     objective_text,
     rank_indexed,
     rank_topics,
     search_postmortems,
+    similar_topics,
     tokenize,
 )
 from workspace_lib import MemoryTopic, WorkspaceError, allocate_project
@@ -173,6 +175,26 @@ class PostmortemTests(SearchRootTestCase):
         with self.assertRaises(WorkspaceError):
             search_postmortems(self.workspace, " ")
         self.assertEqual(search_postmortems(self.root / "missing", "uv"), [])
+
+
+class CreationGateTests(SearchRootTestCase):
+    def test_an_existing_slug_or_an_explicit_create_passes(self) -> None:
+        self.write_topic("uv-toolchain", "Run everything through uv")
+        creation_gate(self.workspace, "uv-toolchain", "anything", create=False)
+        creation_gate(self.workspace, "brand-new", "anything", create=True)
+
+    def test_a_new_slug_is_refused_with_the_nearest_topics_listed(self) -> None:
+        self.write_topic("uv-toolchain", "Run everything through uv", body="uv lock and uv sync.")
+        self.write_topic("git-forge", "Read the sha that ran")
+        self.assertEqual([hit.topic for hit in similar_topics(self.workspace, "uv sync")], ["uv-toolchain"])
+        with self.assertRaises(WorkspaceError) as refused:
+            creation_gate(self.workspace, "uv-lockfiles", "Always run uv sync after a lock change", create=False)
+        message = str(refused.exception)
+        self.assertIn("uv-toolchain — Run everything through uv", message)
+        self.assertIn("--create", message)
+        with self.assertRaises(WorkspaceError) as lonely:
+            creation_gate(self.workspace, "zebra", "quantum chromodynamics", create=False)
+        self.assertIn("no similar topic was found", str(lonely.exception))
 
 
 class CandidateTests(SearchRootTestCase):

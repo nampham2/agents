@@ -180,7 +180,29 @@ class ManageCLIMemoryTests(unittest.TestCase):
         (self.workspace / "memory").mkdir()
 
     def _promote(self, *args: str) -> int:
-        return _call_manage(["promote-memory", *args, "--workspace-root", str(self.workspace)])
+        return _call_manage(["promote-memory", *args, "--create", "--workspace-root", str(self.workspace)])
+
+    def test_a_new_slug_without_create_is_refused_and_promotion_reports_headroom(self) -> None:
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(0, self._promote("uv-toolchain", "--body", "uv lock.", "--description", "Run uv",
+                                              "--kind", "environment", "--scope", "any uv repo"))
+        payload = json.loads(out.getvalue())
+        self.assertTrue(payload["created"])
+        self.assertGreater(payload["headroom_bytes"], 0)
+        with patch("sys.stderr", new_callable=io.StringIO) as err:
+            refused = _call_manage([
+                "promote-memory", "uv-lockfiles", "--body", "uv lock again", "--description", "d",
+                "--kind", "environment", "--scope", "s", "--workspace-root", str(self.workspace),
+            ])
+        self.assertEqual(1, refused)
+        self.assertIn("uv-toolchain", err.getvalue())
+        self.assertFalse((self.workspace / "memory" / "uv-lockfiles.md").exists())
+        with patch("sys.stdout", new_callable=io.StringIO) as out:
+            self.assertEqual(0, _call_manage([
+                "retire-memory", "uv-toolchain", "--workspace-root", str(self.workspace),
+            ]))
+        self.assertEqual(json.loads(out.getvalue())["status"], "retired")
+        self.assertNotIn("uv-toolchain", (self.workspace / "MEMORY.md").read_text(encoding="utf-8"))
 
     def test_promoting_a_new_topic_creates_it_and_regenerates_the_index(self) -> None:
         result = self._promote(

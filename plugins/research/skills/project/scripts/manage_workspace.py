@@ -11,7 +11,7 @@ from typing import Any
 
 from execution_adapter import FakeAdapter, SubprocessAdapter
 from execution_ops import OperationError, run_automatic_tasks, run_parallel_tasks, run_sequential_task
-from memory_search import rank_topics, search_postmortems
+from memory_search import creation_gate, rank_topics, search_postmortems
 from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document
 from workspace_evidence import evidence_entries
 from workspace_lib import (
@@ -29,6 +29,7 @@ from workspace_lib import (
     compact_memory_topic,
     enable_execution,
     find_workspace_roots,
+    index_headroom,
     load_memory_topics,
     migration_candidate,
     project_task_graph,
@@ -38,6 +39,7 @@ from workspace_lib import (
     record_evidence_result,
     render_task_graph,
     resolve_workspace_root,
+    retire_memory_topic,
     validate_v3_state,
     vcs_warnings,
 )
@@ -286,6 +288,11 @@ def _build_parser() -> argparse.ArgumentParser:
     promote.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
     promote.add_argument("--keywords", default="", help="comma-separated retrieval terms; sets the keywords field")
     promote.add_argument(
+        "--create",
+        action="store_true",
+        help="allow a new topic file; without it a new slug is refused with the nearest existing topics listed",
+    )
+    promote.add_argument(
         "--workspace-root",
         type=Path,
         help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
@@ -330,6 +337,21 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
     )
     compact.add_argument("--lock-timeout", type=float, default=5.0)
+
+    retire = subparsers.add_parser(
+        "retire-memory",
+        help="Mark a topic retired (out of MEMORY.md and default search) or active again; never deletes",
+    )
+    retire.add_argument("slug")
+    retire.add_argument("--superseded-by", default="", dest="superseded_by", help="slug of the topic that replaces it")
+    retire.add_argument("--reactivate", action="store_true", help="set the topic active again")
+    retire.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
+    retire.add_argument(
+        "--workspace-root",
+        type=Path,
+        help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
+    )
+    retire.add_argument("--lock-timeout", type=float, default=5.0)
 
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
     migrate.add_argument("project_directory", type=Path)
@@ -714,6 +736,8 @@ def main() -> int:
         if args.command == "promote-memory":
             workspace_root = resolve_workspace_root(args.workspace_root)
             body = args.body if args.body is not None else _read_body(args.body_file)
+            existed = (workspace_root / "memory" / f"{args.slug}.md").is_file()
+            creation_gate(workspace_root, args.slug, f"{args.description}\n{args.scope}\n{body}", create=args.create)
             path = amend_memory_topic(
                 workspace_root,
                 args.slug,
@@ -729,9 +753,25 @@ def main() -> int:
             # Regenerated after the memory lock is released, never inside it: the rebuild takes the
             # index lock, and these mkdir-based locks are not reentrant across each other's holders.
             rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
-            for warning in read_memory_topic(workspace_root, args.slug)["warnings"]:
+            headroom = index_headroom(workspace_root)
+            topic_warnings = read_memory_topic(workspace_root, args.slug)["warnings"]
+            for warning in [*headroom.pop("warnings"), *topic_warnings]:
                 print(f"WARNING: {warning}", file=sys.stderr)
-            print(path)
+            print(json.dumps({"path": str(path), "created": not existed, **headroom}, indent=2))
+            return 0
+
+        if args.command == "retire-memory":
+            workspace_root = resolve_workspace_root(args.workspace_root)
+            outcome = retire_memory_topic(
+                workspace_root,
+                args.slug,
+                superseded_by=args.superseded_by,
+                reactivate=args.reactivate,
+                updated=args.updated,
+                lock_timeout=args.lock_timeout,
+            )
+            rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+            print(json.dumps(outcome, indent=2))
             return 0
 
         if args.command == "read-memory":

@@ -278,6 +278,31 @@ def search_postmortems(workspace_root: Path, query: str) -> list[tuple[Path, int
     return hits
 
 
+def similar_topics(workspace_root: Path, text: str, *, limit: int = CANDIDATE_LIMIT) -> list[MemoryHit]:
+    return rank_indexed(load_indexed_topics(workspace_root), text)[:limit]
+
+
+def creation_gate(workspace_root: Path, slug: str, text: str, *, create: bool) -> None:
+    """Refuse to create a new topic file unless the caller asked for one after seeing what already exists.
+
+    The measured failure was not bad topics but too many of them: one drain created three, breached
+    the index budget, and spent its closing time merging by hand. So a new slug pauses once, with
+    the nearest existing topics in the refusal, and `--create` is the caller's answer.
+    """
+    if create or (workspace_root / "memory" / f"{slug}.md").is_file():
+        return
+    hits = similar_topics(workspace_root, text)
+    if hits:
+        listed = "; ".join(f"{hit.topic} — {hit.description} ({hit.score:.2f})" for hit in hits)
+        advice = f"similar existing topics: {listed}. Amend one of them with promote-memory <name>"
+    else:
+        advice = "no similar topic was found"
+    raise WorkspaceError(
+        f"refusing to create a new topic {slug!r} without --create; {advice}, "
+        "or rerun with --create if this lesson is genuinely new"
+    )
+
+
 def objective_text(spec: str) -> str:
     """The `### Objective and audience` section body, or an empty string."""
     match = re.search(r"^### Objective and audience[ \t]*\n(.*?)(?=^#{1,3} |\Z)", spec, re.S | re.M)

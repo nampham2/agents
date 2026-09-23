@@ -26,6 +26,7 @@ from workspace_lib import (
     allocate_project,
     amend_memory_topic,
     compact_memory_topic,
+    index_headroom,
     load_memory_topics,
     memory_findings,
     memory_index_path,
@@ -41,6 +42,7 @@ from workspace_lib import (
     render_memory_topic,
     render_postmortem_index,
     render_topic_body,
+    retire_memory_topic,
     split_topic_body,
     validate_project,
 )
@@ -252,14 +254,13 @@ class IndexGenerationTests(MemoryRootTestCase):
         self.assertNotIn("Confirmed user preferences", rendered)
         self.assertNotIn("Method", rendered)
 
-    def test_a_pointer_carries_the_description_and_the_scope(self) -> None:
+    def test_a_pointer_carries_the_description_but_not_the_scope(self) -> None:
         self.write_topic("uv-toolchain")
         rendered = render_memory_index(self.workspace)
-        self.assertIn(
-            "- [uv-toolchain](memory/uv-toolchain.md) — Run everything through uv "
-            "_(scope: any repo with a uv.lock)_",
-            rendered,
-        )
+        # Scope was 32% of every pointer's bytes on a real root; ranked search reads it from the
+        # frontmatter instead, so the budgeted file no longer pays for it.
+        self.assertIn("- [uv-toolchain](memory/uv-toolchain.md) — Run everything through uv\n", rendered)
+        self.assertNotIn("any repo with a uv.lock", rendered)
 
     def test_generation_is_idempotent(self) -> None:
         self.write_topic("uv-toolchain")
@@ -891,6 +892,58 @@ class TierTests(MemoryRootTestCase):
         with unittest.mock.patch.object(workspace_lib, "memory_topic_body", side_effect=WorkspaceError("gone")):
             skipped = memory_findings(self.workspace).warnings
         self.assertFalse(any("compaction" in warning for warning in skipped))
+
+
+class RetirementAndHeadroomTests(MemoryRootTestCase):
+    def test_pointers_carry_no_scope_and_retired_topics_leave_the_index(self) -> None:
+        self.write_topic("live", scope="a very long scope clause that used to cost bytes")
+        self.write_topic("gone", content=_topic(name="gone").replace("---\n\n", "status: retired\n---\n\n", 1))
+        rendered = render_memory_index(self.workspace)
+        self.assertIn("- [live](memory/live.md) — Run everything through uv\n", rendered)
+        self.assertNotIn("scope:", rendered)
+        self.assertNotIn("gone", rendered)
+
+    def test_retire_and_reactivate_round_trip_under_the_lock(self) -> None:
+        self.write_topic("old")
+        self.write_topic("newer")
+        outcome = retire_memory_topic(self.workspace, "old", superseded_by="newer", updated="2026-09-05")
+        self.assertEqual(outcome, {"path": str(self.memory / "old.md"), "status": "retired", "superseded_by": "newer"})
+        topic = next(item for item in load_memory_topics(self.workspace)[0] if item.name == "old")
+        self.assertEqual((topic.status, topic.superseded_by, topic.updated), ("retired", "newer", "2026-09-05"))
+        self.assertFalse(any("superseded" in warning for warning in memory_findings(self.workspace).warnings))
+        back = retire_memory_topic(self.workspace, "old", reactivate=True)
+        self.assertEqual((back["status"], back["superseded_by"]), ("active", ""))
+
+    def test_retirement_rejects_bad_arguments_and_reports_a_missing_successor(self) -> None:
+        self.write_topic("old")
+        with self.assertRaises(WorkspaceError):
+            retire_memory_topic(self.workspace, "old", superseded_by="Not Slug")
+        with self.assertRaises(WorkspaceError):
+            retire_memory_topic(self.workspace, "old", superseded_by="x", reactivate=True)
+        with self.assertRaises(WorkspaceError):
+            retire_memory_topic(self.workspace, "old", updated="soon")
+        with unittest.mock.patch.object(workspace_lib, "atomic_write_text", side_effect=OSError("disk")):
+            with self.assertRaises(WorkspaceError):
+                retire_memory_topic(self.workspace, "old")
+        retire_memory_topic(self.workspace, "old", superseded_by="never-written")
+        report = memory_findings(self.workspace)
+        self.assertTrue(report.valid)
+        self.assertTrue(any("superseded by 'never-written'" in warning for warning in report.warnings))
+
+    def test_headroom_reports_both_bounds_and_warns_from_85_percent(self) -> None:
+        empty = index_headroom(self.workspace)
+        self.assertEqual(
+            (empty["index_bytes"], empty["headroom_lines"], empty["warnings"]), (0, MEMORY_INDEX_MAX_LINES, [])
+        )
+        memory_index_path(self.workspace).write_text("x" * int(MEMORY_INDEX_MAX_BYTES * 0.9) + "\n", encoding="utf-8")
+        wide = index_headroom(self.workspace)
+        self.assertEqual(len(wide["warnings"]), 1)
+        self.assertIn("bytes", wide["warnings"][0])
+        memory_index_path(self.workspace).write_text("y\n" * int(MEMORY_INDEX_MAX_LINES * 0.9), encoding="utf-8")
+        tall = index_headroom(self.workspace)
+        self.assertIn("lines", tall["warnings"][0])
+        memory_index_path(self.workspace).write_bytes(b"\xff\xfe")
+        self.assertEqual(index_headroom(self.workspace)["index_bytes"], 0)
 
 
 if __name__ == "__main__":  # pragma: no cover
