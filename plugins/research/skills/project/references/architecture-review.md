@@ -63,7 +63,8 @@ its impact and a clear validation or contingency approach.
    State the agent's assessment and any concerns; do not claim readiness while material decisions
    remain unresolved.
 2. Collect the user's corrections and decisions. When these expose requirement gaps or trade-offs,
-   return to the sibling grill skill for the affected branches. Preserve decisions that still hold.
+   return to the [requirements grill](grill.md) for the affected branches. Preserve decisions that
+   still hold.
 3. Update requirements, design, scenarios, and estimates together. Explain what changed and what
    previous conclusions or confirmations it invalidates, then review the affected design again.
 4. When the agent judges the design coherent and feasible, summarize the current requirements,

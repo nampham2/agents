@@ -12,6 +12,12 @@ Ordinary one-turn changes usually do not need a persistent project. Within a pro
 grill and architecture review are mandatory before task planning. Clear requirements can use zero
 question rounds, followed by a shared summary and explicit confirmation.
 
+The grill is a procedure of this skill, documented in [grill.md](references/grill.md), not a separate
+command. It interviews the user in rounds over a tree of decisions, asking each round's whole frontier
+with a recommended answer per question, looks up facts itself, and ends with an explicit confirmation.
+It writes the agreed specification and dated decisions into the project workspace and never starts
+work on the strength of the interview alone.
+
 The alignment loop is iterative: grill requirements, review architecture and effort, revisit affected
 requirements, and repeat until agent and user agree. The required `architecture.md` records modules,
 code organization, interfaces and flows, edge cases, trade-offs, verification, and effort ranges with

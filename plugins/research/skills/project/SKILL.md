@@ -47,7 +47,7 @@ Report version-control warnings; never initialize or commit repositories implici
 
 ## Align requirements and architecture
 
-Every project requires [grill](../grill/SKILL.md), then
+Every project requires [grill](references/grill.md), then
 [architecture review](references/architecture-review.md); read and follow both before planning.
 Clear requirements need confirmation, even with zero question rounds. Write these sections under
 `## Current specification`, in order:
