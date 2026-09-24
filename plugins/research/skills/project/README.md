@@ -29,8 +29,16 @@ and agreement contract.
 
 The lifecycle minimizes repeated context and bookkeeping. Investigation-heavy or independent
 work can use fresh native agents; small, related work stays together when context reuse is cheaper.
-Reports, task graphs, memory promotion, separate delivery review checkpoints, and parallel execution
-remain available on demand. Total token consumption and peak context are separate measurements.
+Reports, task graphs, memory promotion and separate delivery review checkpoints remain available
+on demand. The automatic executor is retired; native workers use the host's agent tools.
+Total token consumption and peak context are separate measurements.
+
+Project status and task definitions live in `project.json`; `tasks/<id>.md` holds optional findings
+and worker-recovery notes. `artifacts/` holds durable supporting files and requested deliverables.
+`reviews/review_NN.md` records explicit delivery checkpoints, not the initial architecture review.
+These directories appear only when used. Design changes update `architecture.md`; implementation
+findings and verification do not need copying there. See
+[durable-context.md](references/durable-context.md#keep-the-layout-small-and-consistent).
 
 Use the supplied workspace, otherwise `RESEARCH_WORKSPACE`, otherwise discover established roots.
 A unique root is used and stated; ambiguous or missing roots need a choice. New roots use the user's

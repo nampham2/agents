@@ -116,7 +116,7 @@ dependencies and roots. Supply omitted specification constraints. Dependencies m
 counts.
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
-[executor-operations.md](references/executor-operations.md). Delegate only when isolation outweighs
+[legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs
 startup and repeated discovery; read [task-workers.md](references/task-workers.md) when doing so.
 
 Work in the target and record acceptance checks:
@@ -133,7 +133,8 @@ evidence.
 
 ## Review and close
 
-Delivery reviews are conditional, distinct from mandatory architecture review. Once tasks are
+Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional,
+distinct from architecture review. Once tasks are
 `DONE` or justified `SKIPPED`, required reviews accepted, and receipts present, close:
 
 ```sh
@@ -145,6 +146,6 @@ Supply outcome, limitations, and next steps. Fix closure errors; after a committ
 failure, use the stated `rebuild-index` recovery rather than closing again. Report the result and
 project path.
 
-Load [reports](references/report-design.md), [executor](references/executor-operations.md) and
+Load [reports](references/report-design.md), [layout](references/durable-context.md) and
 [maintenance](references/maintenance.md) only when needed. Reports, task graphs and delivery reviews
 are optional unless required.

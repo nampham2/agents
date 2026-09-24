@@ -28,7 +28,7 @@ unavailable or delegation is prohibited, continue inline; do not launch a detach
 
 Before launch, record task ID, revision, write scope and launch intent in coordinator-owned
 `tasks/<id>.md`; record the host handle immediately. Keep this a current recovery note.
-Native workers are not tracked by `execution_active`; never overlap the executor or edit a worker's
+Native workers are not tracked by `execution_active`; never overlap legacy owners or edit a worker's
 assigned files concurrently.
 
 ## Worker instructions

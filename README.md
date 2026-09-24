@@ -63,6 +63,17 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.17.0 execution change
+
+Projects now use normal task execution and scoped native subagents. The automatic executor and
+`run-auto`, `run-once`, `run-parallel`, and `enable-execution` commands are removed. New projects
+create no `execution/` store or empty `tasks/`, `artifacts/`, or `reviews/` directories.
+Existing idle v3/v4 projects remain supported without migration; historical files are untouched.
+Resolve active legacy executor ownership with the previous compatible installation before upgrading.
+This version preserves the ownership guard but cannot perform legacy executor recovery.
+
+### Versioning and updates
+
 `pyproject.toml` owns the release version. `uv.lock` and the Claude Code and Codex plugin
 manifests must use exactly the same SemVer; CI enforces this contract.
 

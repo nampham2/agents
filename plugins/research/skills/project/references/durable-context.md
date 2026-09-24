@@ -21,7 +21,7 @@ write can still lose newly received information. Use existing project records an
   Stage reusable lessons under [memory-operations.md](memory-operations.md), with source evidence.
 - Before a long operation or worker launch, save its intent, affected paths and recovery approach;
   record the returned handle as soon as available. After it settles, save its outcome. Follow
-  [task-workers.md](task-workers.md) for native workers; use executor procedures when active.
+  [task-workers.md](task-workers.md) for native workers; stop for legacy executor ownership.
 - Before ending a turn, waiting for input, switching tasks or preparing a restart, refresh the
   continuation note if material context changed. Batch closely related updates; no empty writes
   after acknowledgments or repeated rewrites of unchanged records are needed.
@@ -44,6 +44,49 @@ Before tasks exist, keep investigation summaries in draft design or the continua
 project artifact for lengthy findings. Never invent task IDs for notes or evidence commands.
 Keep secrets and unnecessary personal information out. Record the user's actual instruction with
 enough context to recover its meaning; do not archive the conversation or private reasoning.
+
+## Keep the layout small and consistent
+
+Create optional directories only when writing their first useful file. Their absence is normal;
+consistency means the same purpose, not identical empty scaffolding in every project.
+
+- `tasks/<id>.md`: concise findings and recovery notes, created by `append ... finding --task <id>`.
+  No note is required for a task with nothing useful to add beyond its definition and evidence.
+  Task definitions and status live only in `project.json`; do not maintain a second task plan here.
+- `artifacts/`: durable supporting material and requested project deliverables. Link long logs,
+  analyses and reusable verification scripts from the owning task note or evidence. Repository
+  deliverables belong in the target checkout. Do not put disposable state patches, command payloads
+  or copied transcripts here; send patches through stdin and use temporary storage for scratch work.
+- `reviews/review_NN.md`: delivery-review cycles reflected in canonical `review` state. Requirements
+  and architecture agreement belong in `spec.md` and `architecture.md`. Reviewing another repository
+  as the project's task does not itself require a delivery-review cycle: keep findings in task notes
+  or a requested artifact.
+- `execution/`: legacy machine-owned storage, no longer created. Never put execution notes or
+  handoffs here. Native worker recovery belongs in task notes. Read
+  [legacy-executor.md](legacy-executor.md) only when inspecting old storage or ownership blockers.
+
+Do not generate reports, HTML counterparts, graphs or review cycles just to populate the layout.
+On resume, follow existing references; do not rename historical files to match today's convention.
+Before any requested cleanup, check outputs, evidence, receipts and document links. Preserve cited
+files and executor recovery state; an old filename or empty-looking record alone is not disposable.
+
+### Delivery-review checkpoints
+
+Use a separate delivery review only when required by the user, agreed acceptance criteria or the
+repository workflow. Usually it follows implementation and verification, before closure; a staged
+delivery can have an earlier checkpoint. Routine code inspection and tests are task work, not new
+review cycles. The initial design review is recorded in `architecture.md`, not `reviews/`.
+
+For a checkpoint, record date, reviewer (human or agent), scope, inspected commit/revision or
+artifact version, findings and their disposition, outcome, and evidence links in
+`reviews/review_NN.md`.
+Use the next sequential cycle and keep canonical `review` state aligned; see
+[workspace-schema.md](workspace-schema.md#review-state). Do not infer acceptance from a file's
+existence or passing tests. Retain old reviews and identify what a later cycle supersedes.
+
+Propagate accepted requirement changes to `spec.md` and design changes to `architecture.md`, with
+source links. Findings that only require implementation fixes belong in task notes and correction
+tasks. Follow [execution-changes.md](execution-changes.md) when scope or acceptance changes.
 
 ## Maintain the continuation note while working
 
@@ -70,9 +113,9 @@ Save new user input promptly instead of reconstructing it at the end of a long t
 Writes across documents are not one transaction. Check each result; on conflict, reread and
 reconcile. On failure, report what remains unsaved and pause dependent work. Do not claim the
 checkpoint is current just because an earlier write succeeded. If active executor ownership blocks
-record updates, settle it through the executor protocol first; do not bypass the guard or act on an
-unsaved scope change. Include unsaved essentials in the user-facing response if persistence remains
-blocked, so they can be carried into recovery.
+record updates, follow [legacy-executor.md](legacy-executor.md); do not bypass the guard or act on
+an unsaved scope change. Include unsaved essentials in the user-facing response if persistence
+remains blocked, so they can be carried into recovery.
 
 ## Recover after interruption
 

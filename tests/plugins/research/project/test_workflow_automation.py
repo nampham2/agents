@@ -87,6 +87,58 @@ def launcher(request: pytest.FixtureRequest) -> Path:
     return REPO_ROOT / "plugins/research" / request.param / "research-project"
 
 
+def test_lazy_task_notes_and_retired_commands_through_both_hosts(tmp_path: Path, launcher: Path) -> None:
+    initialized = subprocess.run(
+        [str(launcher), "init", str(tmp_path / "workspace"), "--create-root",
+         "--title", "Lean layout", "--working-directory", str(tmp_path)],
+        text=True, capture_output=True, check=True,
+    )
+    project = Path(initialized.stdout.strip())
+    assert {path.name for path in project.iterdir()} == {
+        "project.json", "spec.md", "evidence.md", "memory-staging.md",
+    }
+    plan(project)
+    # Definitions and bounded reads do not create empty note files or directories.
+    result = subprocess.run(
+        [str(launcher), "context", str(project), "--validate"],
+        text=True, capture_output=True, check=True,
+    )
+    assert json.loads(result.stdout)["validation"]["valid"] is True
+    assert not (project / "tasks").exists()
+    result = subprocess.run(
+        [str(launcher), "append", str(project), "finding", "--task", "T01",
+         "--body", "Worker finished; inspect src/parser.py before acceptance."],
+        text=True, capture_output=True, check=True,
+    )
+    assert Path(json.loads(result.stdout)["path"]) == project / "tasks" / "T01.md"
+    assert [path.name for path in (project / "tasks").iterdir()] == ["T01.md"]
+    before = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
+    for command in ("run-auto", "run-once", "run-parallel", "enable-execution"):
+        refused = subprocess.run([str(launcher), command, str(project)], text=True, capture_output=True)
+        assert refused.returncode == 2
+        assert "invalid choice" in refused.stderr
+    assert before == {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
+    assert not any((project / name).exists() for name in ("artifacts", "reviews", "execution"))
+
+
+def test_idle_legacy_store_is_preserved_during_normal_work(project: Path) -> None:
+    legacy = project / "execution"
+    legacy.mkdir()
+    config = legacy / "config.json"
+    config.write_text('{"max_concurrent": 2}\n', encoding="utf-8")
+    state = json.loads((project / "project.json").read_text(encoding="utf-8"))
+    state["execution"]["ownership_generation"] = 3
+    (project / "project.json").write_text(json.dumps(state), encoding="utf-8")
+    original = config.read_bytes()
+    plan(project)
+    task_operation(project, "start", "T01", expected_revision=1)
+    append_record(project, "finding", "Continue without the retired executor.", task_id="T01")
+    assert config.read_bytes() == original
+    assert [path.name for path in legacy.iterdir()] == ["config.json"]
+    assert validated_project_context(project)["execution_active"] is False
+    assert json.loads((project / "project.json").read_text(encoding="utf-8"))["execution"] == state["execution"]
+
+
 def test_resume_context_keeps_constraints_after_heading_examples(project: Path, launcher: Path) -> None:
     plan(project)
     snapshot = document_snapshot(project, "spec")
@@ -251,6 +303,7 @@ def test_decisions_and_findings_are_idempotent_and_preserve_notes(project: Path)
     with pytest.raises(WorkspaceConflict, match="different content"):
         append_record(project, "decision", "Different", entry_id="decision-one")
     notes = project / "tasks" / "T01.md"
+    notes.parent.mkdir()
     notes.write_text("# Existing worker note\n\nHandle: worker-1\n", encoding="utf-8")
     append_record(project, "finding", "Parser behavior confirmed.", task_id="T01", entry_id="finding-one")
     assert "worker-1" in notes.read_text(encoding="utf-8")

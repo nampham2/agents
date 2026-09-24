@@ -11,7 +11,7 @@ that has not been agreed. Preserve unaffected decisions and work.
 Stop dispatching affected tasks or accepting results against their old assignment. Identify live
 workers and commands that may write affected outputs or consume invalidated inputs. Use
 [task-workers.md](task-workers.md) to settle native workers and
-[executor-operations.md](executor-operations.md) for active executor ownership. Observe completion
+[legacy-executor.md](legacy-executor.md) for active legacy executor ownership. Observe completion
 or request a stop and confirm termination before replacing assignments or taking over their files.
 Retain partial outputs and actual results for assessment; completion under the old assignment is
 not acceptance under the new one. Unknown ownership blocks conflicting work. Unaffected work may

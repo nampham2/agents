@@ -266,6 +266,7 @@ class ReportTriggerTests(unittest.TestCase):
 
     def test_a_written_report_warns_about_nothing_at_close(self) -> None:
         artifacts = self.project_dir / REPORT_DIRECTORY
+        artifacts.mkdir()
         (artifacts / REPORT_MARKDOWN_FILENAME).write_text(GOOD_MARKDOWN, encoding="utf-8")
         (artifacts / REPORT_HTML_FILENAME).write_text(GOOD_HTML, encoding="utf-8")
 
@@ -461,6 +462,7 @@ class ReportCheckCliTests(unittest.TestCase):
         root = Path(tempfile.mkdtemp())
         work = Path(tempfile.mkdtemp())
         self.project_dir = allocate_project(root, title="Report CLI", working_directory=work, create_root=True)
+        (self.project_dir / REPORT_DIRECTORY).mkdir()
 
     def _write_reports(self, *, html: str = GOOD_HTML) -> None:
         (self.project_dir / REPORT_DIRECTORY / REPORT_MARKDOWN_FILENAME).write_text(GOOD_MARKDOWN, encoding="utf-8")

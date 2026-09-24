@@ -25,7 +25,7 @@ Neither compaction nor a child inheriting the conversation counts as a fresh coo
    merely to indicate a session break, or commit/stash/reset a working tree for the handoff.
 2. Settle all launched workers and commands, including native workers recorded in task notes.
    Observe completion or stop them and confirm termination before handing over their write scope.
-   If `execution_active` is true, follow [executor-operations.md](executor-operations.md) to resolve
+   If `execution_active` is true, follow [legacy-executor.md](legacy-executor.md) to resolve
    ownership first; the document writer refuses active executor state. An unavailable handle or
    stale heartbeat is not proof of termination. If ownership remains unknown, report a blocked
    handoff and the known handles/paths in the final response; the successor may investigate but
