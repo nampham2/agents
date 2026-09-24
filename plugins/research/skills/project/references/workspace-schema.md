@@ -368,7 +368,7 @@ Redact credentials, tokens, private data, and unnecessary command output from ev
 ## The closing report
 
 Reports are optional deliverables, not closure requirements. Each format can be requested
-independently in the `artifacts/` directory that `init` already created; an unspecified format
+independently in the lazily created `artifacts/` directory; an unspecified format
 defaults to Markdown:
 
 ```text

@@ -1,121 +1,84 @@
 # Fresh coordinator sessions
 
-The project outlives its coordinator. Carry durable decisions, evidence and a small continuation
-note across sessions. This protocol covers manual restarts in either host; it neither launches a
-replacement nor transfers executor ownership. Only one coordinator writes at a time.
+Use this reference when preparing/receiving a handoff or recovering an interruption. Only one
+coordinator writes at a time; a note neither launches a replacement nor transfers ownership.
 
 ## When to hand off
 
-Use a fresh session after requirements confirmation, architecture agreement, task planning, a major
-execution milestone, or entry into delivery review. Checkpoint at each such boundary; adjacent
-boundaries may share a session when little context accumulated. During a long phase, hand off at
-the next safe point when investigations, tool output or repeated corrections crowd current work.
-Do so promptly on user request. Use host context telemetry when available; do not invent a token
-count, percentage or universal threshold. Leave enough capacity to write a reliable checkpoint.
+Requirements confirmation, architecture agreement, planning, execution milestones and delivery
+review are checkpoint opportunities. Continue authorized work in the same session by default.
+Restart on user request, or when accumulated context makes reliable continuation difficult.
+Use available host telemetry and observed loss of relevant context; do not invent token thresholds.
+A phase change, tool count or compaction alone is not a restart trigger.
 
-Maintain records and the live continuation note using [durable-context.md](durable-context.md).
-Checkpointing during work does not require ending the session. Delegate scoped investigations under
-[task-workers.md](task-workers.md) when appropriate; delegation does not replace handoffs.
-Neither compaction nor a child inheriting the conversation counts as a fresh coordinator session.
+Maintain records under [durable-context.md](durable-context.md). Reserve context to checkpoint.
+Fresh sessions can reduce peak context but also repeat instruction and project reads; restart only
+when its recovery benefit justifies that cost.
 
 ## Prepare and yield
 
-1. Stop taking new work. Finish a small in-flight operation when practical, otherwise preserve its
-   partial outputs and exact next step. Do not mark unfinished tasks `DONE`, change project status
-   merely to indicate a session break, or commit/stash/reset a working tree for the handoff.
-2. Settle all launched workers and commands, including native workers recorded in task notes.
-   Observe completion or stop them and confirm termination before handing over their write scope.
-   If `execution_active` is true, follow [legacy-executor.md](legacy-executor.md) to resolve
-   ownership first; the document writer refuses active executor state. An unavailable handle or
-   stale heartbeat is not proof of termination. If ownership remains unknown, report a blocked
-   handoff and the known handles/paths in the final response; the successor may investigate but
-   must not resume conflicting writes. Do not bypass document guards to publish a ready handoff.
-3. Persist current requirements and actual confirmations in `spec.md`, design in `architecture.md`,
-   findings and worker recovery details in task notes, and actual checks through `record-evidence`.
-   Include recent user corrections. Preserve drafts and open questions during alignment; do not
-   invent approval to reach a phase boundary. No task is required to hand off early alignment.
-4. Run `context <project-dir> --validate`. Resolve errors or explicitly record the recovery blocker.
-   Capture its revision and specification/architecture tokens; inspect the target's current changes
-   and record applicable branch/commit and dirty paths. Keep user changes distinguishable from
-   partial agent work. Inspect external receipts before labeling any effect complete or unattempted.
-5. Refresh `handoff.md` using the context's handoff token and the format below. Mark it
-   `Session state: ready for handoff` only after resolving activity and validation; otherwise use
-   `blocked` and identify the required recovery:
-
-   ```sh
-   research-project edit <project-dir> handoff --body-file - --expected-sha256 <token-or-missing>
-   ```
-
-   Use the resolved launcher pair from the skill. On a token conflict, reread and reconcile before
-   retrying. Confirm the write succeeded and retain the returned content token. If canonical records
-   change afterward, refresh the checkpoint. Do not present a failed save as a completed handoff.
-6. Give the user the absolute project path, restart reason, any blocker, and this short prompt with
-   concrete values. Then end the turn without starting the next unit of work:
+1. Finish a small in-flight operation or preserve partial outputs and the exact next step.
+   A session break changes neither task completion nor project phase. Preserve the working tree.
+2. Settle launched workers and commands: observe completion or stop and confirm termination before
+   transferring their write scope. Check native-worker notes as well as `execution_active`.
+   An unavailable handle or stale heartbeat does not prove termination. Unknown ownership blocks
+   conflicting writes. Active legacy ownership requires [legacy-executor.md](legacy-executor.md);
+   do not bypass document guards.
+3. Save owning records, actual confirmations and evidence. During alignment, save drafts and open
+   questions without inventing tasks or agreement.
+4. Run `context <project-dir> --validate`. Inspect target changes, applicable branch/commit and
+   dirty-path ownership; inspect receipts for uncertain effects. Resolve validation errors or name
+   the recovery blocker.
+5. Refresh the live `handoff.md` with that revision/source tokens and the content below. Use
+   `edit <project-dir> handoff --body-file - --expected-sha256 <token-or-missing>`.
+   Mark `Session state: ready for handoff` only after validation and ownership are resolved;
+   otherwise mark `blocked`. Check the write result and retain its token. Later record changes
+   require a refresh. If saving is blocked, report unsaved essentials and handles in the response.
+6. Supply the project path, restart reason, blockers and this concrete prompt; then end the turn:
 
    ```text
    Use the project skill to resume <absolute-project-dir> in this fresh session.
    Read its handoff and validate current state before continuing.
    Checkpoint: revision <N>, handoff SHA-256 <token>.
-   Next: <one concrete action, or ownership/validation recovery blocker>.
+   Next: <one action or recovery blocker>.
    ```
 
-The user opens a new session and sends the prompt. If they explicitly choose to continue the old
-session, recheck the checkpoint and proceed; do not repeatedly insist on a restart. The outgoing
-session stays inactive after transfer unless the user explicitly transfers control back.
+The user opens the replacement session. If they choose to continue here, recheck the checkpoint and
+proceed without insisting on a restart. After transfer, the old coordinator stays inactive until
+the user explicitly transfers control back.
 
 ## The continuation note
 
-Aim for at most 600 words, using pointers for detail. This is the same live note maintained during
-work, not a separate history. Keep one current `handoff.md`; preserve durable history in its owning
-records. Never omit required constraints or unresolved ownership facts to meet the target. Include:
+Keep one live note, normally under 600 words; never omit unresolved ownership or essential
+constraints for size. Include only what the successor needs:
 
-| Section | Required information |
-| --- | --- |
-| Checkpoint | Date, reason, session state, project revision, phase, spec/architecture SHA-256 tokens, and agreed design revision or pending agreement. |
-| Next action | One concrete next step, its task ID when one exists, expected outcome, and the next sensible restart boundary. |
-| Read first | Ordered file/section pointers for that step's requirements, design, decisions and findings; explain each pointer's purpose. |
-| Prior lessons | Project-local assessments of lessons affecting the next step, their shared topic/source pointers and relevant pending checks or staging; otherwise none/unavailable. |
-| Open decisions | Unanswered questions, pending approval, hypotheses, and any direction change with its superseded decision and remaining reconciliation steps. |
-| Work and verification | Partial outputs, branch/commit when applicable, dirty paths and ownership, evidence IDs, failures and checks still needed. |
-| Ownership and effects | Worker/command handles and observed terminal state, unresolved activity, authorization/receipt pointers and any uncertain external effect. Explicitly say when none exist. |
+- Date, reason, session state, phase, revision, spec/design tokens and agreement/review ID.
+- Next action and ordered file/section pointers explaining what to read.
+- Open decisions, pending confirmation and any superseded direction or unfinished reconciliation.
+- Partial outputs, branch/commit and dirty-path ownership; evidence, failures and remaining checks.
+- Worker/command handles and observed states, authorization/receipt pointers and uncertain effects;
+  explicitly say when none exist.
+- Relevant prior-lesson assessments and pending staging/checks, or none/unavailable.
 
-This is a navigation aid, not a second specification, proof of permission, executable instructions,
-or a substitute for evidence. Avoid transcripts, copied logs, whole plans and completed-task
-history. The saved revision and tokens are agent-recorded freshness hints; tooling guards document
-replacement but does not certify the note's truth, compare these hints, or transfer ownership.
+Link history and owning records rather than copying them. Tokens/revisions are agent-recorded hints;
+the tool guards replacement but cannot certify freshness, truth, permission or ownership.
 
-## Resume in a fresh session
+## Resume
 
-Resolve launchers from the installed skill, then run `context <project-dir> --validate`. Read
-`handoff` through the bounded `read` command; follow pagination if truncated. Compare the prompt's
-handoff token and the note's revision/source tokens with current context. Inspect target changes
-and ownership separately: matching tokens do not prove unchanged files or stopped processes.
+Run validated context and read `handoff`, following pagination. Compare prompt/note tokens and
+revision with current records. Inspect target changes and ownership independently of token matches.
+Reuse valid agreement; load only the next step's requirements, design, dependencies and findings.
+Reuse local lesson assessments; reopen shared sources only for missing detail or changed conditions.
 
-If stale, use current canonical records to reconcile only affected claims before acting. Never
-replay the note's next command blindly. If missing, unreadable or incomplete, recover from current
-state, specification, design, task notes, evidence and executor records; ask only for information
-that cannot be recovered. An unreadable handoff can make validated context fail: inspect it with
-`read`, retain the problematic file, and use separate validation and ordinary context for recovery.
+For stale/missing notes, reconcile affected claims from canonical records, decisions, evidence and
+partial files. An unreadable note can break validated context: retain it, use ordinary context and
+separate validation, and repair it before depending on it. Ask only for unrecoverable facts.
 
-If feedback changed the direction, follow [execution-changes.md](execution-changes.md). Check that
-assignments, downstream dependencies and acceptance checks reflect that change before resuming.
-An agreed revised design alone does not prove the task plan was reconciled; finish pending steps
-and do not revive superseded assignments or count obsolete evidence as current acceptance.
+Complete pending [change reconciliation](execution-changes.md) before affected execution; new
+architecture agreement alone does not update assignments or acceptance evidence. Missing/draft
+agreement returns to the affected alignment step; interrupted interviews continue open questions.
 
-Check both executor activity and native-worker notes. Unknown ownership blocks conflicting work;
-an interrupted session or a new conversation does not terminate its commands. Preserve uncertain
-external effects until their actual outcome is established; never retry merely because a receipt
-is absent. Reuse scoped authorization and agreement whose recorded sources still cover the work.
-
-Load the next action's applicable specification and architecture sections and direct dependencies.
-Include its adopted lessons using [memory-operations.md](memory-operations.md): reuse saved
-assessments; reopen shared sources only for relevant changes, uncertainty or missing detail.
-Retrieve referenced findings or evidence when needed, not every historical record. Missing or draft
-agreement returns to the affected alignment step; a fresh session alone does not reopen settled
-decisions. During an unfinished interview, continue from recorded open questions. During execution,
-inspect partial outputs before continuing the existing task; do not reset or redispatch it blindly.
-
-Briefly state the recovered phase, immediate action and any discrepancy. Continue authorized work
-without asking the user to repeat the project history. Task completion and project closure still
-require their normal verification. During the resumed session,
-keep the note current under [durable-context.md](durable-context.md), including its `working` label.
+Resolve native/legacy ownership before conflicting writes. A new conversation does not terminate
+old commands. Inspect uncertain external outcomes before retrying; absence of a receipt is not proof
+nothing happened. Preserve scoped authorization and inspect partial work before resuming an existing
+task. Briefly report discrepancies and the next action, mark the note `working`, and continue.

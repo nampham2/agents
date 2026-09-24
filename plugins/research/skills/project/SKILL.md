@@ -15,17 +15,17 @@ Preserve essential constraints and evidence.
 
 ## Durable context
 
-Save consequential user decisions/corrections before dependent work, findings before switching work,
-and open questions/next steps before waiting or ending a turn. Keep `handoff.md` current,
-not just at restart. Read [durable-context.md](references/durable-context.md) on the first such save
-or interruption recovery. Distinguish proposals from agreement; retain source pointers.
+Save consequential decisions before dependent work and findings before switching work. Read
+[durable-context.md](references/durable-context.md) on the first save. Refresh `handoff.md` when
+continuation context changes; batch saves and reuse tokens. Preserve open questions, source pointers
+and the distinction between proposals and agreement.
 
 ## Session boundaries
 
-Hand off to a fresh session at major phase boundaries, under context pressure, or on user request.
-Read [session-handoff.md](references/session-handoff.md) when preparing or receiving a handoff.
-Checkpoint, supply a resume prompt, and stop; the user opens the replacement session. Preserve
-agreement and partial work. A new agent resumes the current phase without repeating settled work.
+Phase boundaries are checkpoints; continue authorized work in the same session. Restart on user
+request or when context pressure impairs reliable continuation. Read
+[session-handoff.md](references/session-handoff.md) only for handoff or interruption recovery.
+For a restart, checkpoint, supply a resume prompt, and stop; the user opens the replacement session.
 
 ## Resolve once
 
@@ -85,12 +85,9 @@ Use `read <project-dir> spec --outline` for the content token, then one guarded 
 --sections-json ... --expected-sha256 ...` for initial or batched changes. Append consequential
 decisions with `append ... decision`; avoid transcripts and duplicate task narratives.
 
-Iterate requirements, grill, and architecture until agent and user explicitly agree. Prioritize
-diagrams; cover modules, code organization, flows, edge cases, and effort. Record agreement and
-write the required `architecture.md` through guarded `edit ... architecture` with a `Status: agreed`
-line before leaving `ALIGNING` or planning tasks.
-On resume, reuse current agreement; missing records or material changes reopen the affected loop.
-Follow the architecture reference's persistence and legal-transition rules.
+Record explicit requirements/design agreement and guardedly save `architecture.md` with
+`Status: agreed` before planning. Follow the architecture reference's coverage and transition rules.
+Reuse current agreement on resume; missing records or material changes reopen affected choices.
 
 ## Plan tasks
 
@@ -107,13 +104,15 @@ revision conflicts. Avoid temporary patch files.
 
 ## Execute and verify
 
-When feedback affects planned or running work, follow
-[execution-changes.md](references/execution-changes.md) before continuing affected work.
+Apply routine corrections directly when scope, dependencies, authorization and acceptance criteria
+remain valid. Settle affected workers first; record useful findings and rerun affected checks.
+For invalidated assignments, inputs or agreement, follow
+[execution-changes.md](references/execution-changes.md). Terminal tasks need new correction IDs.
 
-Start with `task <project-dir> start T01 --expected-revision <revision>`; it returns the assignment,
-dependencies and roots. Supply omitted specification constraints. Dependencies must be `DONE`, not
-`SKIPPED`. Destructive/external effects need current explicit authorization; existing authorization
-counts.
+`task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
+and roots; it resumes `EXECUTING` from `REVIEW`. Supply applicable constraints. Dependencies must be
+`DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
+existing authorization counts.
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
 [legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs
@@ -133,9 +132,9 @@ evidence.
 
 ## Review and close
 
-Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional,
-distinct from architecture review. Once tasks are
-`DONE` or justified `SKIPPED`, required reviews accepted, and receipts present, close:
+Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional.
+When tasks are `DONE` or justified `SKIPPED`, required reviews accepted, and receipts present,
+close:
 
 ```sh
 research-project close <project-dir> --expected-revision <revision> \

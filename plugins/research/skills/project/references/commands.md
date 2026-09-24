@@ -53,9 +53,9 @@ update.
 
 ## Documents and records
 
-Use the SHA-256 from reads to guard edits. Initial `--sections-json -` maps all seven specification
-headings to bodies; later batches replace unique non-overlapping sections. Reflection, architecture
-and handoff use whole-document `--body-file -`:
+Reuse tokens from edits, validated context or document/outline reads. Initial `--sections-json -`
+maps the seven headings to bodies; later batches replace non-overlapping sections.
+Reflection, architecture and handoff use whole-document `--body-file -`:
 
 ```sh
 research-project edit <project-dir> spec --sections-json - --expected-sha256 <token>
@@ -82,6 +82,8 @@ tail; failure returns nonzero. `--tail-lines` adjusts stored output; `--timeout 
 a hung command. References have `root`, `path`, `anchor` (or null). Keep commands free of secrets.
 Undecodable output bytes are stored as `\xNN` escapes.
 
+`task ... start` resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`, preserving review state
+and normal dependency/authorization guards. Reopen invalidated review acceptance as `pending`.
 Finish after judging success criteria:
 
 ```sh

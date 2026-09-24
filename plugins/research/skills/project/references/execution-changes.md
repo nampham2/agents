@@ -1,10 +1,22 @@
 # Changes during execution
 
-Use this procedure when feedback changes planned or running work, including review feedback.
-Apply corrections within the agreed design directly. Reopen requirements/design agreement only
-for material changes to scope, outcomes, interfaces, constraints or architecture. A clear user
-decision already settles that choice; ask only about unresolved consequences or a revised proposal
-that has not been agreed. Preserve unaffected decisions and work.
+Use full reconciliation below when feedback invalidates assignments, inputs, dependencies,
+authorization, acceptance criteria or agreement, including during delivery review.
+
+## Routine corrections
+
+When those remain valid, apply the correction directly. Settle a worker before changing its files;
+save useful rationale/recovery context in task findings, then rerun affected acceptance checks.
+No change identifier, impact map, lesson search, task blocking or intermediate handoff is required.
+Refresh the live note at the next material continuation checkpoint. For terminal tasks, add a new
+correction ID; never rewrite history. Reopen a delivery review as pending if its acceptance no
+longer covers the result. Starting the correction from REVIEW returns the project to EXECUTING.
+
+## Full reconciliation
+
+Reopen requirements/design agreement only for material scope, outcome, interface, constraint or
+architecture changes. A clear user decision settles that choice; ask only about unresolved
+consequences or a revised proposal not yet agreed. Preserve unaffected decisions and work.
 
 ## Contain and record the change
 
@@ -94,6 +106,8 @@ reuse prior evidence only when its scope and checked outputs still apply. If req
 review acceptance no longer covers the deliverable, reopen that review as `pending`, preserving
 its earlier records. Architecture agreement and delivery review remain separate gates.
 
+When resuming correction work from `REVIEW`, `task ... start` transitions to `EXECUTING` while
+preserving review state. If using `update` to start tasks instead, include `status: EXECUTING`.
 Run `context <project-dir> --validate` after reconciliation. Resolve invalid dependencies, status
 transitions and records before dispatch. Semantic impact and evidence applicability still need
 agent assessment; a valid workspace cannot prove that the new direction has been fully propagated.

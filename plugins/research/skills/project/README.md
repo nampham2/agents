@@ -33,6 +33,12 @@ Reports, task graphs, memory promotion and separate delivery review checkpoints 
 on demand. The automatic executor is retired; native workers use the host's agent tools.
 Total token consumption and peak context are separate measurements.
 
+Phase boundaries checkpoint progress and continue in the same session. Fresh sessions are for user
+requests or context pressure that impairs continuation. Routine corrections within the current
+assignment use task findings and affected checks; material changes reconcile dependencies and
+agreement. Starting a correction task from `REVIEW` returns to `EXECUTING`, preserving review state
+and normal guards. Reopen invalidated delivery acceptance before closure.
+
 Project status and task definitions live in `project.json`; `tasks/<id>.md` holds optional findings
 and worker-recovery notes. `artifacts/` holds durable supporting files and requested deliverables.
 `reviews/review_NN.md` records explicit delivery checkpoints, not the initial architecture review.

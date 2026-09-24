@@ -81,7 +81,7 @@ def task_operation(
     locked_guard = None
     if action == "start":
         selected.update(status="RUNNING", block_reason=None, skip_reason=None)
-        if state["status"] in ("PLANNING", "BLOCKED"):
+        if state["status"] in ("PLANNING", "BLOCKED", "REVIEW"):
             state["status"] = "EXECUTING"
     elif action == "finish":
         record_ids = evidence_record_ids or []

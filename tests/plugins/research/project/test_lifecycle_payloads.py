@@ -134,3 +134,29 @@ def test_default_instruction_payload_budget() -> None:
     routine = (skill / "references/commands.md").read_text()
     assert len(entry.split()) <= 900
     assert len((entry + routine).split()) <= 1500
+
+
+@pytest.mark.parametrize("scenario,references,budget", [
+    ("alignment", ("durable-context", "grill", "architecture-review", "memory-operations"), 5800),
+    ("resume", ("durable-context", "session-handoff", "memory-operations"), 3400),
+    ("alignment-and-handoff", (
+        "durable-context", "grill", "architecture-review", "memory-operations", "session-handoff",
+    ), 6600),
+    ("material-change-after-resume", (
+        "durable-context", "session-handoff", "memory-operations", "execution-changes",
+        "grill", "architecture-review",
+    ), 8000),
+])
+def test_required_lifecycle_instruction_budget(scenario: str, references: tuple[str, ...], budget: int) -> None:
+    """Count phase load sets, including required references, rather than only entrypoint routing.
+
+    Keep these sets aligned with reference routing when procedures move. Each file is loaded once
+    per session; a fresh session pays again. These are words, not billed or cache-adjusted tokens.
+    Reports, workers and schema repairs are outside these scenarios, not free operations.
+    """
+    skill = REPO_ROOT / "plugins/research/skills/project"
+    documents = [skill / "SKILL.md", skill / "references/commands.md"]
+    documents.extend(skill / "references" / f"{name}.md" for name in references)
+    words = sum(len(document.read_text(encoding="utf-8").split()) for document in documents)
+    assert words <= budget, f"{scenario}: {words} words exceeds {budget}"
+    print(json.dumps({"scenario": scenario, "instruction_words": words, "budget": budget}))
