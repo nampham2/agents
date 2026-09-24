@@ -3251,7 +3251,11 @@ def record_evidence_result(
         raise WorkspaceError(f"unknown task {task_id!r}; this project has: {known or '(none)'}")
 
     working_directory = state.get("working_directory")
-    if not _non_empty_string(working_directory) or not Path(working_directory).is_dir():
+    if (
+        not _non_empty_string(working_directory)
+        or not Path(working_directory).is_absolute()
+        or not Path(working_directory).is_dir()
+    ):
         raise WorkspaceError(f"working_directory is not an existing directory: {working_directory!r}")
 
     misrooted = _misrooted_command_arguments(command, project_dir, Path(working_directory))
