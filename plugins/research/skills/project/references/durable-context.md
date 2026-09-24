@@ -10,6 +10,8 @@ write can still lose newly received information. Use existing project records an
 - After consequential user input, record the decision, correction, constraint, preference or scoped
   approval before work that depends on it. Include its date, source and relevant wording; preserve
   scope and qualifications. Label an unresolved interpretation as such. A suggestion is not consent.
+  If planned/running work changes, follow [execution-changes.md](execution-changes.md) to propagate
+  the feedback through assignments, dependencies and verification before affected work continues.
 - After each answered interview/review round, save settled answers and the remaining questions
   before asking the next round. Save the proposal/version awaiting confirmation before waiting.
   This applies during `ALIGNING`, before tasks exist; do not wait for complete consensus to save.

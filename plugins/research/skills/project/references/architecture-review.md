@@ -82,6 +82,10 @@ needs. If the user changes a material decision after confirmation, reopen the af
 obtain agreement on the revised proposal before planning or implementing affected work. Editorial
 corrections within the agreed design do not require a new approval cycle.
 
+For changes during execution, follow [execution-changes.md](execution-changes.md) to reconcile
+workers, downstream tasks and verification as well as the design. Revised architecture agreement
+does not by itself update existing assignments or make old evidence applicable.
+
 ## Produce the architecture document
 
 Create `<project-dir>/architecture.md` during review and update it as the proposal evolves. It is a

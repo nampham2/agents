@@ -74,7 +74,7 @@ records. Never omit required constraints or unresolved ownership facts to meet t
 | Checkpoint | Date, reason, session state, project revision, phase, spec/architecture SHA-256 tokens, and agreed design revision or pending agreement. |
 | Next action | One concrete next step, its task ID when one exists, expected outcome, and the next sensible restart boundary. |
 | Read first | Ordered file/section pointers for that step's requirements, design, decisions and findings; explain each pointer's purpose. |
-| Open decisions | Unanswered user questions, pending approval and current hypotheses, distinguished from confirmed decisions. |
+| Open decisions | Unanswered questions, pending approval, hypotheses, and any direction change with its superseded decision and remaining reconciliation steps. |
 | Work and verification | Partial outputs, branch/commit when applicable, dirty paths and ownership, evidence IDs, failures and checks still needed. |
 | Ownership and effects | Worker/command handles and observed terminal state, unresolved activity, authorization/receipt pointers and any uncertain external effect. Explicitly say when none exist. |
 
@@ -95,6 +95,11 @@ replay the note's next command blindly. If missing, unreadable or incomplete, re
 state, specification, design, task notes, evidence and executor records; ask only for information
 that cannot be recovered. An unreadable handoff can make validated context fail: inspect it with
 `read`, retain the problematic file, and use separate validation and ordinary context for recovery.
+
+If feedback changed the direction, follow [execution-changes.md](execution-changes.md). Check that
+assignments, downstream dependencies and acceptance checks reflect that change before resuming.
+An agreed revised design alone does not prove the task plan was reconciled; finish pending steps
+and do not revive superseded assignments or count obsolete evidence as current acceptance.
 
 Check both executor activity and native-worker notes. Unknown ownership blocks conflicting work;
 an interrupted session or a new conversation does not terminate its commands. Preserve uncertain

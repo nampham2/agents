@@ -43,6 +43,10 @@ completion.
 
 ## Acceptance and recovery
 
+When feedback changes an assignment or its inputs, use [execution-changes.md](execution-changes.md).
+Settle the old worker before replacing its assignment. Preserve its result as partial work until
+assessed against the revised criteria; do not automatically accept an obsolete assignment's success.
+
 Inspect results and relevant artifacts. Run required acceptance checks through `record-evidence`;
 reuse existing recorded evidence only when command, scope and checked outputs remain applicable.
 A worker summary is not command evidence. Avoid duplicate exploratory checks. Mark `DONE` only

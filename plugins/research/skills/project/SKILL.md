@@ -102,6 +102,9 @@ revision conflicts. Avoid temporary patch files.
 
 ## Execute and verify
 
+When feedback affects planned or running work, follow
+[execution-changes.md](references/execution-changes.md) before continuing affected work.
+
 Start with `task <project-dir> start T01 --expected-revision <revision>`; it returns the assignment,
 dependencies and roots. Supply omitted specification constraints. Dependencies must be `DONE`, not
 `SKIPPED`. Destructive/external effects need current explicit authorization; existing authorization
@@ -125,8 +128,7 @@ evidence.
 
 ## Review and close
 
-Apply feedback within the agreed design directly; material changes reopen alignment before affected
-work. Delivery reviews are conditional, distinct from mandatory architecture review. Once tasks are
+Delivery reviews are conditional, distinct from mandatory architecture review. Once tasks are
 `DONE` or justified `SKIPPED`, required reviews accepted, and receipts present, close:
 
 ```sh
