@@ -89,7 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     read = subparsers.add_parser("read", help="Read a bounded specification section or evidence excerpt")
     read.add_argument("project_directory", type=Path)
-    read.add_argument("document", choices=("spec", "evidence", "reflection", "architecture", "notes"))
+    read.add_argument("document", choices=("spec", "evidence", *WHOLE_DOCUMENTS, "notes"))
     read.add_argument("--section", help="exact specification heading; default excludes decision history")
     read_owner = read.add_mutually_exclusive_group()
     read_owner.add_argument("--task")
@@ -117,7 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     edit = subparsers.add_parser("edit", help="Guardedly replace project-owned Markdown content")
     edit.add_argument("project_directory", type=Path)
-    edit.add_argument("document", choices=("spec", "reflection", "architecture"))
+    edit.add_argument("document", choices=("spec", *WHOLE_DOCUMENTS))
     edit.add_argument("--section", help="exact specification heading to replace")
     edit.add_argument("--sections-json", type=Path, help="JSON heading-to-body mapping, or '-' for stdin")
     edit_body = edit.add_mutually_exclusive_group()
@@ -508,7 +508,7 @@ def main() -> int:
                     offset=args.offset, limit=args.limit, include_text=args.entry is not None,
                 ), indent=2))
                 return 0
-            if args.document in ("reflection", "architecture", "notes") or args.outline:
+            if args.document in (*WHOLE_DOCUMENTS, "notes") or args.outline:
                 if args.section is not None or args.step is not None:
                     raise WorkspaceError("whole-document and outline reads do not accept --section or --step")
                 print(json.dumps(document_snapshot(

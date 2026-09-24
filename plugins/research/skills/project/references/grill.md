@@ -116,6 +116,11 @@ alone does not complete the architecture agreement gate.
 
 ## Recording the consensus
 
+Save each answered round and the remaining questions following
+[durable-context.md](durable-context.md), before waiting for another reply. Record partial answers
+as partial; persistence does not imply requirements confirmation. On resume, reconcile the live
+continuation note with current specification and recent decisions before repeating any questions.
+
 The consensus is state, not conversation, and recording it is part of the session:
 
 - Read the current specification and `briefing.md` if present. An optional briefing records

@@ -265,6 +265,125 @@ def test_validated_context_combines_bounded_context_and_findings(project: Path) 
     assert result["roots"]["workspace"] == str(project)
 
 
+@pytest.mark.parametrize("schema_version", [3, 4])
+def test_fresh_session_reads_alignment_handoff_through_both_hosts(
+    project: Path, launcher: Path, schema_version: int,
+) -> None:
+    state_path = project / "project.json"
+    state = json.loads(state_path.read_text())
+    if schema_version == 3:
+        state["schema_version"] = 3
+        del state["execution"]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    before = {name: (project / name).read_bytes() for name in ("project.json", "spec.md", "evidence.md")}
+    context = json.loads(subprocess.run(
+        [str(launcher), "context", str(project), "--validate"],
+        text=True, capture_output=True, check=True,
+    ).stdout)
+    assert context["documents"]["handoff"] == {
+        "path": str(project / "handoff.md"), "exists": False, "sha256": "missing",
+    }
+    body = (
+        "# Handoff\n\nRevision: 0; phase: ALIGNING.\n"
+        f"Specification SHA-256: {context['documents']['spec']['sha256']}\n\n"
+        "## Next action\nAsk which audience the report should address.\n\n"
+        "## Open decisions\nRequirements and architecture agreement are pending.\n\n"
+        "## Ownership and effects\nNo workers, commands or external effects.\n"
+    )
+    saved = json.loads(subprocess.run(
+        [str(launcher), "edit", str(project), "handoff", "--body-file", "-",
+         "--expected-sha256", "missing"],
+        input=body, text=True, capture_output=True, check=True,
+    ).stdout)
+    # Separate processes share only durable files, as an outgoing and incoming session would.
+    resumed = json.loads(subprocess.run(
+        [str(launcher), "context", str(project), "--validate"],
+        text=True, capture_output=True, check=True,
+    ).stdout)
+    note = json.loads(subprocess.run(
+        [str(launcher), "read", str(project), "handoff"],
+        text=True, capture_output=True, check=True,
+    ).stdout)
+    assert resumed["validation"]["valid"] is True
+    assert resumed["status"] == "ALIGNING" and resumed["revision"] == 0
+    assert resumed["documents"]["handoff"]["sha256"] == saved["document_sha256"] == note["document_sha256"]
+    assert note["text"] == body
+    assert "Ask which audience" not in json.dumps(resumed)
+    assert before == {name: (project / name).read_bytes() for name in before}
+
+
+def test_handoff_preserves_running_task_partial_work_and_failed_evidence(project: Path) -> None:
+    plan(project)
+    task_operation(project, "start", "T01", expected_revision=1)
+    failed = record_evidence_result(project, "T01", [sys.executable, "-c", "raise SystemExit(1)"])
+    state_path = project / "project.json"
+    state = json.loads(state_path.read_text())
+    target_file = Path(state["working_directory"]) / "partial.txt"
+    target_file.write_text("Incomplete output.\n", encoding="utf-8")
+    before_state = state_path.read_bytes()
+    before_evidence = (project / "evidence.md").read_bytes()
+    context = validated_project_context(project)
+    note = (
+        f"# Handoff\n\nRevision: {context['revision']}\n"
+        f"Specification SHA-256: {context['documents']['spec']['sha256']}\n"
+        f"T01 remains unfinished; partial.txt is agent work. Check {failed.record_id}, which failed.\n"
+        "Worker and command ownership: all stopped. Next: fix the partial output.\n"
+    )
+    saved = edit_document(project, "handoff", expected_sha256="missing", body=note)
+    assert state_path.read_bytes() == before_state
+    assert (project / "evidence.md").read_bytes() == before_evidence
+    assert target_file.read_text() == "Incomplete output.\n"
+    assert validated_project_context(project)["tasks"][0]["status"] == "RUNNING"
+    # Subsequent canonical changes stay visible; the note cannot assert freshness or override them.
+    append_record(project, "decision", "The user changed the audience.")
+    current = validated_project_context(project)
+    assert current["documents"]["spec"]["sha256"] != context["documents"]["spec"]["sha256"]
+    assert current["documents"]["handoff"]["sha256"] == saved["document_sha256"]
+    assert evidence_entries(project, record_id=failed.record_id)["entries"][0]["passed"] is False
+
+
+def test_handoff_guarded_replacement_pagination_and_cli_errors(project: Path) -> None:
+    body = "# Handoff\n\n" + "Necessary continuation detail.\n" * 200
+    code, output, err = invoke([
+        "edit", str(project), "handoff", "--body-file", "-", "--expected-sha256", "missing",
+    ], stdin=body)
+    assert code == 0, err
+    token = json.loads(output)["document_sha256"]
+    code, output, _ = invoke(["read", str(project), "handoff"])
+    first = json.loads(output)
+    assert code == 0 and first["truncated"]
+    code, output, _ = invoke(["read", str(project), "handoff", "--offset", str(first["next_offset"])])
+    assert code == 0 and first["text"] + json.loads(output)["text"] == body
+    code, _, err = invoke([
+        "edit", str(project), "handoff", "--body", "Stale writer", "--expected-sha256", "missing",
+    ])
+    assert code == 1 and "document conflict" in err
+    assert (project / "handoff.md").read_text() == body
+    assert invoke([
+        "edit", str(project), "handoff", "--body", "  ", "--expected-sha256", token,
+    ])[0] == 1
+    assert invoke(["read", str(project), "handoff", "--section", "Next"])[0] == 1
+    code, output, _ = invoke([
+        "edit", str(project), "handoff", "--body", "# Handoff\n\nUpdated.", "--expected-sha256", token,
+    ])
+    assert code == 0
+    assert json.loads(output)["previous_sha256"] == token
+    assert document_snapshot(project, "handoff")["text"] == "# Handoff\n\nUpdated.\n"
+
+
+def test_handoff_cannot_release_executor_ownership(project: Path) -> None:
+    saved = edit_document(project, "handoff", expected_sha256="missing", body="Previous checkpoint.")
+    state_path = project / "project.json"
+    state = json.loads(state_path.read_text())
+    state["execution"]["coordinator_run"] = "still-running"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    before = state_path.read_bytes()
+    with pytest.raises(WorkspaceError, match="execution is active"):
+        edit_document(project, "handoff", expected_sha256=saved["document_sha256"], body="Ready to resume.")
+    assert state_path.read_bytes() == before
+    assert document_snapshot(project, "handoff")["text"] == "Previous checkpoint.\n"
+
+
 def test_task_block_skip_and_revision_guards(project: Path) -> None:
     plan(project)
     blocked = task_operation(project, "block", "T01", expected_revision=1, reason="Need input")

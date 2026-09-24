@@ -125,6 +125,11 @@ relevant sections when bounded context truncates them. Avoid copying the whole d
 
 ## Persist agreement and resume
 
+Persist each review round before waiting or starting dependent work, following
+[durable-context.md](durable-context.md). Save rejected alternatives and rationale alongside the
+current design; keep unanswered questions and the exact revision awaiting confirmation in the live
+continuation note. A saved proposal remains a draft until the user agrees.
+
 Append dated decisions for consequential review changes and a confirmation entry identifying the
 agreed requirements and architecture revision, effort assumptions, and the user's actual response.
 Use a simple review identifier such as A1, A2 in `architecture.md`, its specification link, and

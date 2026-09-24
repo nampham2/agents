@@ -330,6 +330,16 @@ the same content-token guard as `reflection.md`; resume context lists its token 
 documents. Its status line (`Status: draft` or `Status: agreed`) is what validation reads. Like the
 briefing it warns and never errors, and it is not in the list of files required non-empty at close.
 
+`handoff.md` is a live continuation note for ongoing work and coordinator replacement. Read
+and replace it with `read ... handoff` and guarded `edit ... handoff`; validated context exposes its
+presence and content token without loading the body. It works with v3 and v4 without migration and
+is not a closure requirement. Its recorded revision, source tokens, ownership observations and next
+action are agent-authored data, not enforced state or authorization. Saving it neither changes
+`project.json` nor releases executor ownership. Its session-state label is prose, not a lock or a
+project status. Existing projects without it remain valid. Follow
+[durable-context.md](durable-context.md) during work and [session-handoff.md](session-handoff.md)
+when yielding to a fresh session.
+
 `spec.md` has two non-empty sections:
 
 ```markdown

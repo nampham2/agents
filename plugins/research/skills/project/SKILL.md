@@ -10,7 +10,20 @@ description: >
 
 Invoke with `/research:project [problem statement]`.
 
-Keep records concise; retrieve only needed context. Keep history and long findings in files.
+## Durable context
+
+Save consequential user decisions/corrections before dependent work, findings before switching work,
+and open questions/next steps before waiting or ending a turn. Keep `handoff.md` current,
+not just at restart. Read [durable-context.md](references/durable-context.md) on the first such save
+or interruption recovery. Store concise facts, rationale and source pointers; distinguish proposals
+from agreement. Retrieve only needed context; do not copy transcripts.
+
+## Session boundaries
+
+Hand off to a fresh session at major phase boundaries, under context pressure, or on user request.
+Read [session-handoff.md](references/session-handoff.md) when preparing or receiving a handoff.
+Checkpoint, supply a resume prompt, and stop; the user opens the replacement session. Preserve
+agreement and partial work. A new agent resumes the current phase without repeating settled work.
 
 ## Resolve once
 
@@ -34,7 +47,8 @@ research-project context <project-dir> --validate
 ```
 
 Resolve validation errors and contradictions first. Context includes roots, revision and document
-tokens; follow truncation with targeted `read` calls. Do not reload unchanged context.
+tokens, including optional `handoff.md`; follow truncation with targeted reads. Do not reload
+unchanged context.
 
 Create a project with:
 
@@ -43,6 +57,7 @@ research-project init <root> --title "<title>" --working-directory <target>
 ```
 
 Report version-control warnings; never initialize or commit repositories implicitly.
+Read [commands.md](references/commands.md) before the first record update, including alignment.
 
 ## Align requirements and architecture
 
@@ -76,8 +91,7 @@ Follow the architecture reference's persistence and legal-transition rules.
 
 After agreement, enter `PLANNING` and derive milestones from `architecture.md` with success
 criteria, verification, effects, dependencies and rooted outputs. Only plan publication, pushes, or
-commits when requested. Read [commands.md](references/commands.md) on the first update. Send a
-compact patch through stdin:
+commits when requested. Send a compact patch through stdin:
 
 ```sh
 research-project update <project-dir> - --expected-revision <revision> --json

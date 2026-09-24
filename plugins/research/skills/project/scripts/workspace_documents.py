@@ -21,7 +21,7 @@ from workspace_session import _headings, _load_state
 
 # Documents replaced whole under the content-token guard, as opposed to `spec`, which is edited by
 # section, and `notes`, which are append-only.
-WHOLE_DOCUMENTS = ("reflection", "architecture")
+WHOLE_DOCUMENTS = ("reflection", "architecture", "handoff")
 
 ENTRY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 ENTRY_MARKER_PATTERN = re.compile(r"^<!-- research-entry: (?P<id>[a-z0-9][a-z0-9-]{0,63}) -->$", re.MULTILINE)
@@ -36,6 +36,8 @@ def _managed_path(project_dir: Path, document: str, task_id: str | None = None) 
         path = project_dir / "reflection.md"
     elif document == "architecture":
         path = project_dir / "architecture.md"
+    elif document == "handoff":
+        path = project_dir / "handoff.md"
     elif document == "notes":
         if task_id is None or not ENTRY_ID_PATTERN.fullmatch(task_id.lower()):
             raise WorkspaceError("notes require a safe task ID")
@@ -44,7 +46,7 @@ def _managed_path(project_dir: Path, document: str, task_id: str | None = None) 
             raise WorkspaceError(f"unknown task: {task_id}")
         path = project_dir / "tasks" / f"{task_id}.md"
     else:
-        raise WorkspaceError("document must be spec, reflection, architecture, or notes")
+        raise WorkspaceError("document must be spec, reflection, architecture, handoff, or notes")
     try:
         path.resolve(strict=False).relative_to(project_dir)
     except (OSError, ValueError) as error:
@@ -162,7 +164,7 @@ def edit_document(
     sections: dict[str, str] | None = None,
     lock_timeout: float = 5.0,
 ) -> dict[str, Any]:
-    """Replace a whole reflection or architecture document, or selected specification bodies.
+    """Replace a whole managed document, or selected specification bodies.
 
     Every write is guarded by the whole-document content token, so a stale draft cannot overwrite
     an edit made by another session.
@@ -174,7 +176,7 @@ def edit_document(
     if document in WHOLE_DOCUMENTS and body is None:
         raise WorkspaceError(f"{document} edits require a body")
     if document not in ("spec", *WHOLE_DOCUMENTS):
-        raise WorkspaceError("editable document must be spec, reflection, or architecture")
+        raise WorkspaceError("editable document must be spec, reflection, architecture, or handoff")
     project_dir = project_dir.resolve()
     path = _managed_path(project_dir, document)
     try:
