@@ -34,6 +34,11 @@ Include downstream consumers even when they were already completed. Record a con
 in the decision/task notes: affected task IDs, outputs, workers, evidence/reviews, authorization,
 and the intended disposition. Inspect partial changes before deciding what can be reused.
 
+Reassess prior adopted lessons affected by the new direction, following
+[memory-operations.md](memory-operations.md). Search the new problem where existing lessons no
+longer cover it. Update project-local assessments and their design/task consequences; do not carry
+a lesson forward merely because the previous handoff listed it. Preserve unaffected assessments.
+
 Update relevant specification sections; retain previous decisions and append the correction.
 For a material design change, follow [architecture-review.md](architecture-review.md): create the
 revised draft, link its review identifier, explain consequences and confirm the affected proposal

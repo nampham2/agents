@@ -74,6 +74,7 @@ records. Never omit required constraints or unresolved ownership facts to meet t
 | Checkpoint | Date, reason, session state, project revision, phase, spec/architecture SHA-256 tokens, and agreed design revision or pending agreement. |
 | Next action | One concrete next step, its task ID when one exists, expected outcome, and the next sensible restart boundary. |
 | Read first | Ordered file/section pointers for that step's requirements, design, decisions and findings; explain each pointer's purpose. |
+| Prior lessons | Project-local assessments of lessons affecting the next step, their shared topic/source pointers and relevant pending checks or staging; otherwise none/unavailable. |
 | Open decisions | Unanswered questions, pending approval, hypotheses, and any direction change with its superseded decision and remaining reconciliation steps. |
 | Work and verification | Partial outputs, branch/commit when applicable, dirty paths and ownership, evidence IDs, failures and checks still needed. |
 | Ownership and effects | Worker/command handles and observed terminal state, unresolved activity, authorization/receipt pointers and any uncertain external effect. Explicitly say when none exist. |
@@ -107,6 +108,8 @@ external effects until their actual outcome is established; never retry merely b
 is absent. Reuse scoped authorization and agreement whose recorded sources still cover the work.
 
 Load the next action's applicable specification and architecture sections and direct dependencies.
+Include its adopted lessons using [memory-operations.md](memory-operations.md): reuse saved
+assessments; reopen shared sources only for relevant changes, uncertainty or missing detail.
 Retrieve referenced findings or evidence when needed, not every historical record. Missing or draft
 agreement returns to the affected alignment step; a fresh session alone does not reopen settled
 decisions. During an unfinished interview, continue from recorded open questions. During execution,

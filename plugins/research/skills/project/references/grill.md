@@ -40,6 +40,10 @@ to invalidate a sibling question you already asked, say so and reopen that branc
 
 ## Facts are yours, decisions are the user's
 
+Review relevant prior lessons using [memory-operations.md](memory-operations.md) before requirements
+confirmation. Use them to inform questions and recommendations; prior preferences or assumptions
+do not answer the current user's open questions. Reuse the assessment across unchanged rounds.
+
 Before each round, answer every question you can answer yourself. Read the files, run the read-only
 command, check the environment, look up the documentation. Asking the user for something the
 environment would have told you wastes the one resource the session depends on: their attention.

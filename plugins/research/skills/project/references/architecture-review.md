@@ -8,6 +8,10 @@ stand in for unresolved design decisions.
 
 ## Prepare a concrete proposal
 
+Use [memory-operations.md](memory-operations.md) to assess lessons relevant to the design. Reuse
+the requirements-stage assessment where it still applies; evaluate uncovered design risks. Link
+applied lessons to concrete design choices or checks and record rejection/deferral reasons.
+
 Read the current specification, confirmed decisions, and relevant existing code or other target
 material. Establish facts from those sources and identify assumptions. Present a concrete design
 for the user to react to, with recommendations and the consequential alternatives and trade-offs.

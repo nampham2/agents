@@ -18,6 +18,8 @@ Add applicable specification constraints, current user decisions, input paths, d
 write scope, and the assignment's relationship to the authorized outcome. Preserve necessary
 requirements even when lengthy. Do not copy conversation history, the entire project skill, or logs.
 Workers can read relevant source and repository instructions beyond the input pointers.
+Include applicable adopted-lesson summaries and pending checks from project records; worker
+context omits shared-memory candidates. Return new reusable observations to the coordinator.
 
 Use a fresh native agent: Claude's non-fork `general-purpose` Agent or Codex's spawn tool with
 conversation inheritance disabled (`fork_turns: "none"` or `fork_context: false`, as its actual

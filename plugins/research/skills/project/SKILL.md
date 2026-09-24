@@ -10,13 +10,15 @@ description: >
 
 Invoke with `/research:project [problem statement]`.
 
+Use tokens carefully: reuse saved context, retrieve selectively, and report briefly.
+Preserve essential constraints and evidence.
+
 ## Durable context
 
 Save consequential user decisions/corrections before dependent work, findings before switching work,
 and open questions/next steps before waiting or ending a turn. Keep `handoff.md` current,
 not just at restart. Read [durable-context.md](references/durable-context.md) on the first such save
-or interruption recovery. Store concise facts, rationale and source pointers; distinguish proposals
-from agreement. Retrieve only needed context; do not copy transcripts.
+or interruption recovery. Distinguish proposals from agreement; retain source pointers.
 
 ## Session boundaries
 
@@ -60,6 +62,9 @@ Report version-control warnings; never initialize or commit repositories implici
 Read [commands.md](references/commands.md) before the first record update, including alignment.
 
 ## Align requirements and architecture
+
+Review relevant [lessons](references/memory-operations.md) before requirements/design agreement.
+Reassess after direction changes; resolve staged lessons at closure.
 
 Every project requires [grill](references/grill.md), then
 [architecture review](references/architecture-review.md); read and follow both before planning.
@@ -140,7 +145,6 @@ Supply outcome, limitations, and next steps. Fix closure errors; after a committ
 failure, use the stated `rebuild-index` recovery rather than closing again. Report the result and
 project path.
 
-Load optional procedures only when needed: [reports](references/report-design.md),
-[memory](references/memory-operations.md), [executor](references/executor-operations.md), and
-[maintenance](references/maintenance.md). Reports, task graphs, memory promotion, and separate
-delivery reviews are optional unless required by the project.
+Load [reports](references/report-design.md), [executor](references/executor-operations.md) and
+[maintenance](references/maintenance.md) only when needed. Reports, task graphs and delivery reviews
+are optional unless required.

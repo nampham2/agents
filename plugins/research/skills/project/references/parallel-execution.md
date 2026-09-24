@@ -2302,9 +2302,9 @@ not that the sentence citing it is true.
 | C2 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3491-3511 | `def _dependency_levels(` |
 | C3 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3512-3540 | `def build_task_graph(` |
 | C4 | `plugins/research/skills/project/scripts/workspace_lib.py` | 3410-3417 | `def levels(` |
-| C5 | `plugins/research/skills/project/SKILL.md` | 37-40 | `Only the coordinator writes canonical state` |
+| C5 | `plugins/research/skills/project/SKILL.md` | 39-42 | `Only the coordinator writes canonical state` |
 | C6 | `plugins/research/skills/project/references/workspace-schema.md` | 9-14 | `One coordinator is the sole writer` |
-| C7 | `plugins/research/skills/project/SKILL.md` | 113-115 | `Delegate only when isolation outweighs` |
+| C7 | `plugins/research/skills/project/SKILL.md` | 118-120 | `Delegate only when isolation outweighs` |
 | C8 | `plugins/research/skills/project/scripts/workspace_lib.py` | 327-360 | `class DirectoryLock` |
 | C9 | `plugins/research/skills/project/scripts/workspace_lib.py` | 304-320 | `def atomic_write_text(` |
 | C10 | `plugins/research/skills/project/scripts/workspace_lib.py` | 27-31 | `EFFECT_KINDS = {` |

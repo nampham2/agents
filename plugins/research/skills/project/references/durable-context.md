@@ -18,6 +18,7 @@ write can still lose newly received information. Use existing project records an
 - After a useful investigation or failed approach, save the conclusion, supporting references,
   uncertainty and what it rules out before changing work. Keep rationale for consequential rejected
   alternatives so a successor does not repeat them. Do not preserve every exploratory command.
+  Stage reusable lessons under [memory-operations.md](memory-operations.md), with source evidence.
 - Before a long operation or worker launch, save its intent, affected paths and recovery approach;
   record the returned handle as soon as available. After it settles, save its outcome. Follow
   [task-workers.md](task-workers.md) for native workers; use executor procedures when active.
@@ -36,6 +37,8 @@ write can still lose newly received information. Use existing project records an
 | Actual acceptance checks | `record-evidence`, with the real output and result. |
 | Task state, dependencies, scoped authorization and external receipts | Existing guarded `project.json` operations; prose cannot grant authorization or finish a task. |
 | Current focus, open questions, pending confirmations, hypotheses and next action | The current `handoff.md`, linking the owning records instead of copying them. |
+| Lessons from other projects | Project-local assessments with source topic/token, rule, applicability and disposition; adopted consequences in spec/design/tasks. Handoff links what the next step needs. |
+| New candidate lessons for other projects | `memory-staging.md`, triaged at closure into shared topics or project reflection. |
 
 Before tasks exist, keep investigation summaries in draft design or the continuation note; link a
 project artifact for lengthy findings. Never invent task IDs for notes or evidence commands.
