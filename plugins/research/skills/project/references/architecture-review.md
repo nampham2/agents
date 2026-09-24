@@ -8,6 +8,10 @@ stand in for unresolved design decisions.
 
 ## Prepare a concrete proposal
 
+Use [memory-operations.md](memory-operations.md) to assess lessons relevant to the design. Reuse
+the requirements-stage assessment where it still applies; evaluate uncovered design risks. Link
+applied lessons to concrete design choices or checks and record rejection/deferral reasons.
+
 Read the current specification, confirmed decisions, and relevant existing code or other target
 material. Establish facts from those sources and identify assumptions. Present a concrete design
 for the user to react to, with recommendations and the consequential alternatives and trade-offs.
@@ -82,6 +86,10 @@ needs. If the user changes a material decision after confirmation, reopen the af
 obtain agreement on the revised proposal before planning or implementing affected work. Editorial
 corrections within the agreed design do not require a new approval cycle.
 
+For changes during execution, follow [execution-changes.md](execution-changes.md) to reconcile
+workers, downstream tasks and verification as well as the design. Revised architecture agreement
+does not by itself update existing assignments or make old evidence applicable.
+
 ## Produce the architecture document
 
 Create `<project-dir>/architecture.md` during review and update it as the proposal evolves. It is a
@@ -124,6 +132,11 @@ criteria` aligned with the design's scenarios. Use guarded specification edits a
 relevant sections when bounded context truncates them. Avoid copying the whole design into the spec.
 
 ## Persist agreement and resume
+
+Persist each review round before waiting or starting dependent work, following
+[durable-context.md](durable-context.md). Save rejected alternatives and rationale alongside the
+current design; keep unanswered questions and the exact revision awaiting confirmation in the live
+continuation note. A saved proposal remains a draft until the user agrees.
 
 Append dated decisions for consequential review changes and a confirmation entry identifying the
 agreed requirements and architecture revision, effort assumptions, and the user's actual response.

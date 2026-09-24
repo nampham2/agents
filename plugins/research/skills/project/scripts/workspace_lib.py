@@ -14,7 +14,7 @@ import tempfile
 import time
 import uuid
 from contextlib import AbstractContextManager
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -2439,6 +2439,8 @@ def amend_memory_topic(
     updated: str = "",
     keywords: str = "",
     lock_timeout: float = 5.0,
+    expected_sha256: str | None = None,
+    entry_id: str | None = None,
 ) -> Path:
     """Create or amend one topic file under `.memory.lock`, never rewriting its body from scratch.
 
@@ -2463,8 +2465,21 @@ def amend_memory_topic(
     if not body.strip():
         raise WorkspaceError("a topic amendment needs a non-empty body")
     path = workspace_root / MEMORY_DIRECTORY / f"{slug}.md"
+    marker = ""
+    if entry_id is not None:
+        if not re.fullmatch(r"[a-z0-9-]{1,100}", entry_id):
+            raise WorkspaceError("invalid memory entry ID")
+        marker = f"<!-- memory-entry: {entry_id} {document_sha256(body)} -->"
     try:
         with memory_lock(workspace_root, timeout=lock_timeout):
+            original = read_text(path, preserve_newlines=True) if path.exists() else ""
+            if marker and marker in original:
+                return path
+            if entry_id and f"<!-- memory-entry: {entry_id} " in original:
+                raise WorkspaceConflict("memory entry ID already has different content")
+            actual = document_sha256(original) if path.exists() else "missing"
+            if expected_sha256 is not None and actual != expected_sha256:
+                raise WorkspaceConflict("memory topic changed; reload its token")
             if path.is_file():
                 content = read_text(path)
                 topic, problems = parse_memory_topic(path, content)
@@ -2511,6 +2526,8 @@ def amend_memory_topic(
                 else:
                     # Legacy files keep the append-only shape they were written in until compaction.
                     combined = f"{existing_body}\n\n{body.strip()}"
+            if marker:
+                combined += "\n\n" + marker + "\n"
             atomic_write_text(path, render_memory_topic(topic, combined))
     except OSError as error:
         raise WorkspaceError(f"cannot amend {path}: {error}") from error
@@ -3208,6 +3225,7 @@ def record_evidence_result(
     tail_lines: int = EVIDENCE_TAIL_LINES,
     timeout: float | None = None,
     lock_timeout: float = 5.0,
+    observe: Callable[[dict[str, Any]], None] | None = None,
 ) -> EvidenceResult:
     """Run and durably record a command, returning its selectable evidence identity."""
     project_dir = project_dir.resolve()
@@ -3233,7 +3251,11 @@ def record_evidence_result(
         raise WorkspaceError(f"unknown task {task_id!r}; this project has: {known or '(none)'}")
 
     working_directory = state.get("working_directory")
-    if not _non_empty_string(working_directory) or not Path(working_directory).is_dir():
+    if (
+        not _non_empty_string(working_directory)
+        or not Path(working_directory).is_absolute()
+        or not Path(working_directory).is_dir()
+    ):
         raise WorkspaceError(f"working_directory is not an existing directory: {working_directory!r}")
 
     misrooted = _misrooted_command_arguments(command, project_dir, Path(working_directory))
@@ -3248,6 +3270,8 @@ def record_evidence_result(
             "Pass an absolute path for anything inside the project directory."
         )
 
+    if observe is not None:
+        observe({"status": "running", "working_directory": working_directory})
     try:
         completed = subprocess.run(
             list(command),
@@ -3260,10 +3284,17 @@ def record_evidence_result(
             shell=False,
         )
     except FileNotFoundError as error:
+        if observe is not None:
+            observe({"status": "launch_error", "error": str(error)})
         raise WorkspaceError(f"cannot run {command[0]!r}: {error}") from error
     except OSError as error:
+        if observe is not None:
+            observe({"status": "launch_error", "error": str(error)})
         raise WorkspaceError(f"cannot run {shlex.join(command)}: {error}") from error
     except subprocess.TimeoutExpired as error:
+        if observe is not None:
+            observe({"status": "timeout", "error": str(error),
+                     "stdout": str(error.stdout or "")[-8000:], "stderr": str(error.stderr or "")[-8000:]})
         raise WorkspaceError(f"command timed out after {timeout}s: {shlex.join(command)}") from error
 
     outcome = "passed" if completed.returncode == 0 else "FAILED"
@@ -3293,8 +3324,7 @@ def record_evidence_result(
     if not completed.stdout.strip() and not completed.stderr.strip():
         lines.extend(["No output.", ""])
 
-    _append_evidence_entry(project_dir, lines, lock_timeout=lock_timeout)
-    return EvidenceResult(
+    result = EvidenceResult(
         record_id=record_id,
         owner_kind="task" if task_id is not None else "step",
         owner_id=task_id or step or "",
@@ -3302,6 +3332,10 @@ def record_evidence_result(
         working_directory=working_directory,
         reference={"root": "workspace", "path": "evidence.md", "anchor": anchor},
     )
+    if observe is not None:
+        observe({"status": "persistable", "result": asdict(result), "lines": lines})
+    _append_evidence_entry(project_dir, lines, lock_timeout=lock_timeout)
+    return result
 
 
 def _append_evidence_entry(project_dir: Path, lines: "list[str]", *, lock_timeout: float) -> None:
@@ -3317,6 +3351,9 @@ def _append_evidence_entry(project_dir: Path, lines: "list[str]", *, lock_timeou
     try:
         with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
             existing = read_text(evidence_path) if evidence_path.exists() else "# Evidence\n"
+            identity = next((line for line in lines if line.startswith("- Record ID: ")), None)
+            if identity is not None and identity in existing.splitlines():
+                return
             # The skeleton's placeholder would otherwise sit above real entries, saying the opposite
             # of what the file now holds.
             existing = existing.replace(EVIDENCE_PLACEHOLDER, "")
@@ -3897,6 +3934,14 @@ def check_candidate(
     """
     project_dir = project_dir.resolve()
     candidate = load_json(candidate_path.resolve())
+    return check_state_candidate(project_dir, candidate, expected_revision=expected_revision)
+
+
+def check_state_candidate(
+    project_dir: Path, candidate: dict[str, Any], *, expected_revision: int | None = None,
+    check_files: bool = True,
+) -> ValidationReport:
+    """Validate an in-memory candidate using the same preview guards."""
     current = load_json(project_dir / "project.json")
     report = ValidationReport()
     schema_version = current.get("schema_version")
@@ -3930,7 +3975,7 @@ def check_candidate(
             simulated,
             project_dir,
             close=simulated.get("status") == "DONE",
-            check_files=True,
+            check_files=check_files,
             already_done=_done_task_ids(current),
         )
     )
@@ -3966,43 +4011,52 @@ def commit_state(
     project_dir = project_dir.resolve()
     candidate = copy.deepcopy(candidate_state)
     with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
-        current = load_json(project_dir / "project.json")
-        schema_version = current.get("schema_version")
-        if schema_version not in (3, 4):
-            raise WorkspaceError(SCHEMA_UNSUPPORTED)
-        if schema_version == 4:
-            curr_exec = current.get("execution")
-            if not isinstance(curr_exec, dict):
-                curr_exec = {}
-            if curr_exec.get("attempts") or curr_exec.get("coordinator_run") is not None:
-                raise WorkspaceError(READER_ONLY_REFUSAL)
-        conflicts = _revision_conflicts(current, candidate, expected_revision)
-        if conflicts:
-            raise WorkspaceConflict(conflicts[0])
-        if locked_guard is not None:
-            locked_guard(current)
-        immutable_changes = _immutable_field_changes(current, candidate)
-        if immutable_changes:
-            raise WorkspaceError(immutable_changes[0])
-        transition_errors = check_state_transition(current, candidate)
-        if transition_errors:
-            raise WorkspaceError("; ".join(transition_errors))
-        candidate["revision"] = expected_revision + 1
-        candidate["updated"] = now_iso()
-        validator = validate_v4_state if schema_version == 4 else validate_v3_state
-        report = validator(
-            candidate,
-            project_dir,
-            close=candidate.get("status") == "DONE",
-            check_files=True,
-            already_done=_done_task_ids(current),
-        )
-        if report.errors:
-            raise WorkspaceError("candidate validation failed:\n- " + "\n- ".join(report.errors))
-        atomic_write_json(project_dir / "project.json", candidate)
+        candidate = _commit_state_locked(project_dir, candidate, expected_revision, locked_guard)
     # The commit already landed; a failed index rebuild must not read as a failed commit, or the
     # retry reloads and reports a revision conflict against the write that actually succeeded.
     _rebuild_index_after_commit(project_dir.parent, f"revision {candidate['revision']} is committed", lock_timeout)
+    return candidate
+
+
+def _commit_state_locked(
+    project_dir: Path, candidate: dict[str, Any], expected_revision: int,
+    locked_guard: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    """Commit under an already-held project lock; the caller rebuilds indexes afterward."""
+    current = load_json(project_dir / "project.json")
+    schema_version = current.get("schema_version")
+    if schema_version not in (3, 4):
+        raise WorkspaceError(SCHEMA_UNSUPPORTED)
+    if schema_version == 4:
+        curr_exec = current.get("execution")
+        if not isinstance(curr_exec, dict):
+            curr_exec = {}
+        if curr_exec.get("attempts") or curr_exec.get("coordinator_run") is not None:
+            raise WorkspaceError(READER_ONLY_REFUSAL)
+    conflicts = _revision_conflicts(current, candidate, expected_revision)
+    if conflicts:
+        raise WorkspaceConflict(conflicts[0])
+    if locked_guard is not None:
+        locked_guard(current)
+    immutable_changes = _immutable_field_changes(current, candidate)
+    if immutable_changes:
+        raise WorkspaceError(immutable_changes[0])
+    transition_errors = check_state_transition(current, candidate)
+    if transition_errors:
+        raise WorkspaceError("; ".join(transition_errors))
+    candidate["revision"] = expected_revision + 1
+    candidate["updated"] = now_iso()
+    validator = validate_v4_state if schema_version == 4 else validate_v3_state
+    report = validator(
+        candidate,
+        project_dir,
+        close=candidate.get("status") == "DONE",
+        check_files=True,
+        already_done=_done_task_ids(current),
+    )
+    if report.errors:
+        raise WorkspaceError("candidate validation failed:\n- " + "\n- ".join(report.errors))
+    atomic_write_json(project_dir / "project.json", candidate)
     return candidate
 
 
@@ -4046,8 +4100,6 @@ def allocate_project(
         except FileExistsError:
             sequence += 1
     try:
-        for directory in ("tasks", "artifacts", "reviews"):
-            (project_dir / directory).mkdir()
         timestamp = now_iso()
         state = {
             "schema_version": 4,
@@ -4081,8 +4133,6 @@ def allocate_project(
             atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))
         atomic_write_text(project_dir / "evidence.md", f"# Evidence\n\n{EVIDENCE_PLACEHOLDER}")
         atomic_write_text(project_dir / MEMORY_STAGING_FILENAME, MEMORY_STAGING_SKELETON)
-        execution_config = _probe_execution_config(project_dir, legacy_writers_quiesced=False)
-        atomic_write_json(project_dir / "execution" / "config.json", execution_config)
         # The flat cross-project `reflection.md` is no longer scaffolded. It is what the memory layer
         # replaces: one always-read file that grew to 61 KB while its guardrail, which counted
         # entries, still reported it clean. Existing ones stay valid and warn that they are legacy.
@@ -4393,9 +4443,6 @@ def apply_migration(project_dir: Path, *, lock_timeout: float = 5.0) -> Path:
             )
         if not (project_dir / "evidence.md").exists():
             atomic_write_text(project_dir / "evidence.md", "# Evidence\n\nNo v3 evidence recorded yet.\n")
-        (project_dir / "tasks").mkdir(exist_ok=True)
-        (project_dir / "artifacts").mkdir(exist_ok=True)
-        (project_dir / "reviews").mkdir(exist_ok=True)
         if version == 2:
             backup_path = project_dir / "project.v2.json"
             legacy_state = read_text(state_path)
@@ -4407,175 +4454,3 @@ def apply_migration(project_dir: Path, *, lock_timeout: float = 5.0) -> Path:
         atomic_write_json(state_path, candidate)
     _rebuild_index_after_commit(project_dir.parent, "migration is committed", lock_timeout)
     return state_path
-
-
-def _probe_execution_config(project_dir: Path, *, legacy_writers_quiesced: bool) -> dict[str, Any]:
-    """Probe execution prerequisites and return the immutable generation configuration."""
-    scratch_dir = project_dir / "execution" / "scratch"
-    tmp_dir = project_dir / "execution" / "tmp"
-    scratch_dir.mkdir(parents=True, exist_ok=True)
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-    probe_src = scratch_dir / "probe_src.tmp"
-    probe_dst = scratch_dir / "probe_dst.tmp"
-    probe_case_upper = scratch_dir / "probe_CASE.tmp"
-    probe_case_lower = scratch_dir / "probe_case.tmp"
-
-    atomic_link = False
-    same_volume = False
-    case_sensitive = True
-    try:
-        probe_src.write_bytes(b"")
-        try:
-            os.unlink(probe_dst)
-        except OSError:
-            pass
-        try:
-            os.link(probe_src, probe_dst)
-            atomic_link = True
-        except OSError:
-            pass
-        same_volume = os.stat(scratch_dir).st_dev == os.stat(tmp_dir).st_dev
-        probe_case_upper.write_bytes(b"")
-        case_sensitive = not probe_case_lower.exists()
-    finally:
-        for probe_path in (probe_src, probe_dst, probe_case_upper):
-            try:
-                os.unlink(probe_path)
-            except OSError:
-                pass
-        try:
-            os.rmdir(scratch_dir)
-        except OSError:
-            pass
-
-    if not atomic_link:
-        raise WorkspaceError(
-            "R-NO-ATOMIC-LINK: the store's filesystem cannot link a file without clobbering an "
-            "existing name; the parallel execution protocol is unavailable on this filesystem"
-        )
-    if not same_volume:
-        raise WorkspaceError(
-            "R-CROSS-VOLUME: the store's temporary directory is on a different volume from the "
-            "execution store; the parallel execution protocol requires them on the same volume"
-        )
-    if os.name != "posix":
-        raise WorkspaceError("R-NO-RUNNER: automatic execution requires a POSIX subprocess runner")
-    import sys
-
-    try:
-        runner_probe = subprocess.run(
-            [sys.executable, "-c", "pass"],
-            check=False,
-            capture_output=True,
-            timeout=5,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise WorkspaceError(f"R-NO-RUNNER: local subprocess probe failed: {error}") from error
-    if runner_probe.returncode != 0:
-        raise WorkspaceError(f"R-NO-RUNNER: local subprocess probe exited with status {runner_probe.returncode}")
-
-    return {
-        "max_concurrent": 2,
-        "max_prepare": 2,
-        "project_lock_timeout": 5.0,
-        "registry_lock_timeout": 5.0,
-        "poll_interval": 2.0,
-        "heartbeat_interval": 30,
-        "stale_after": 900,
-        "stale_grace": 900,
-        "check_timeout": 1800,
-        "max_reruns": 16,
-        "max_consecutive_failures": 3,
-        "log_cap": 1048576,
-        "summary_cap": 4096,
-        "tmp_reap": 3600,
-        "atomic_link": atomic_link,
-        "same_volume": same_volume,
-        "case_sensitive": case_sensitive,
-        "runner": "posix_subprocess",
-        "legacy_writers_quiesced": legacy_writers_quiesced,
-    }
-
-
-def enable_execution(
-    project_dir: Path,
-    *,
-    expected_revision: int,
-    legacy_writers_quiesced: bool,
-    lock_timeout: float = 5.0,
-) -> None:
-    project_dir = project_dir.resolve()
-    state_path = project_dir / "project.json"
-    config_path = project_dir / "execution" / "config.json"
-
-    current = load_json(state_path)
-    current_revision = current.get("revision")
-    if current_revision != expected_revision:
-        raise WorkspaceConflict(
-            f"revision conflict: expected {expected_revision}, found {current_revision}; reload and reconcile"
-        )
-
-    if current.get("schema_version") == 4:
-        if not config_path.exists():
-            raise WorkspaceError(
-                "project is schema v4 but execution/config.json is missing; "
-                "the execution store may be corrupt — inspect manually"
-            )
-        generation: int = current.get("execution", {}).get("ownership_generation", 0)
-        print(f"already enabled at generation {generation}")
-        return
-
-    if not legacy_writers_quiesced:
-        raise WorkspaceError(
-            "R-LEGACY-WRITER: --legacy-writers-quiesced is required; attest that every installation "
-            "with write access to this workspace or working directory has been upgraded to schema v4"
-        )
-
-    expected_config = _probe_execution_config(project_dir, legacy_writers_quiesced=True)
-
-    if config_path.exists():
-        existing_config = load_json(config_path)
-        if existing_config != expected_config:
-            raise WorkspaceError(
-                "config mismatch: execution/config.json exists but does not match what this call "
-                "would write; inspect config.json and remove it if it is stale before re-running"
-            )
-    else:
-        atomic_write_json(config_path, expected_config)
-
-    # Commit schema 3 → 4 under the project lock, bypassing _immutable_field_changes.
-    # This is the one permitted exception: enable_execution is the only path that may change
-    # schema_version, and it takes the lock and writes the migration directly.
-    with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
-        current = load_json(state_path)
-        if current.get("revision") != expected_revision:
-            if current.get("schema_version") == 4:
-                # A concurrent call committed the activation first (or a retry after signal).
-                generation = current.get("execution", {}).get("ownership_generation", 0)
-                print(f"already enabled at generation {generation}")
-                return
-            raise WorkspaceConflict(
-                f"revision conflict: expected {expected_revision}, found {current.get('revision')}; "
-                "reload and reconcile"
-            )
-        new_state = copy.deepcopy(current)
-        new_state["schema_version"] = 4
-        new_state["execution"] = {
-            "protocol_version": 1,
-            "coordinator_run": None,
-            "ownership_generation": 0,
-            "attempts": {},
-        }
-        new_state["revision"] = expected_revision + 1
-        new_state["updated"] = now_iso()
-        report = validate_v4_state(
-            new_state,
-            project_dir,
-            close=new_state.get("status") == "DONE",
-            check_files=True,
-            already_done=_done_task_ids(current),
-        )
-        if report.errors:
-            raise WorkspaceError("v4 state validation failed:\n- " + "\n- ".join(report.errors))
-        atomic_write_json(state_path, new_state)
-    _rebuild_index_after_commit(project_dir.parent, "schema v4 enabled at generation 0", lock_timeout)

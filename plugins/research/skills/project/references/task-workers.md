@@ -11,22 +11,24 @@ effects or nested delegation. Sequential work remains the default.
 After checking dependencies, authorization and ownership, record `RUNNING` and retrieve:
 
 ```sh
-research-project context <project-dir> --task T01 --worker
+research-project workflow <project-dir> packet -
 ```
 
-Add applicable specification constraints, current user decisions, input paths, dependency findings,
-write scope, and the assignment's relationship to the authorized outcome. Preserve necessary
-requirements even when lengthy. Do not copy conversation history, the entire project skill, or logs.
+Select the task and needed sources using [packet input](automation-context.md). Supply constraints,
+current decisions, input paths, findings, write scope and relationship to the authorized outcome.
+Preserve lengthy requirements. Do not copy conversation history, the entire skill, or logs.
 Workers can read relevant source and repository instructions beyond the input pointers.
+Include applicable adopted-lesson summaries and pending checks from project records; worker
+context omits shared-memory candidates. Return new reusable observations to the coordinator.
 
 Use a fresh native agent: Claude's non-fork `general-purpose` Agent or Codex's spawn tool with
 conversation inheritance disabled (`fork_turns: "none"` or `fork_context: false`, as its actual
 schema supports). Preserve the configured model. If fresh context, observation, or stopping is
 unavailable or delegation is prohibited, continue inline; do not launch a detached CLI workaround.
 
-Before launch, record task ID, revision, write scope and launch intent in coordinator-owned
-`tasks/<id>.md`; record the host handle immediately. Keep this a current recovery note.
-Native workers are not tracked by `execution_active`; never overlap the executor or edit a worker's
+Use [`workflow worker-event`](automation-execution.md) for launch intent, then the observed host
+handle/outcome in `tasks/<id>.md`. Keep this a current recovery note.
+Native workers are not tracked by `execution_active`; never overlap legacy owners or edit a worker's
 assigned files concurrently.
 
 ## Worker instructions
@@ -42,6 +44,11 @@ assigned artifact. Report partial changes and uncertainty when interrupted; do n
 completion.
 
 ## Acceptance and recovery
+
+For routine corrections under the same assignment, reuse the worker and check its result. Settle it
+before taking over its files. Invalidated assignments/inputs need
+[execution-changes.md](execution-changes.md); settle old work before replacing its assignment and
+assess partial results against revised criteria.
 
 Inspect results and relevant artifacts. Run required acceptance checks through `record-evidence`;
 reuse existing recorded evidence only when command, scope and checked outputs remain applicable.

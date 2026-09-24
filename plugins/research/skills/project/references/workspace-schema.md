@@ -10,10 +10,10 @@ format, not a requirement to read the schema or use every optional feature on ea
 specification, evidence, reviews, and notes but must not duplicate canonical statuses.
 
 One coordinator is the sole writer of `project.json`, shared Markdown records, `INDEX.md`,
-`MEMORY.md`, and `POSTMORTEMS.md`. Workers own only assigned non-overlapping target-file paths in
-isolated Git worktrees and return commits and attestations to the coordinator. State updates use
-guarded execution operations or `research-project commit` with an expected revision; direct edits
-are unsupported.
+`MEMORY.md`, and `POSTMORTEMS.md`. Workers own only assigned non-overlapping paths and return
+results to the coordinator; see [task-workers.md](task-workers.md).
+State updates use guarded task/update operations or `research-project commit` with an expected
+revision; direct edits are unsupported.
 
 `INDEX.md` is a deterministic cache generated from canonical state. A stale index is an error at
 close but does not supersede `project.json`. `MEMORY.md` and `POSTMORTEMS.md` are generated the same
@@ -90,53 +90,15 @@ timezone-aware ISO-8601 values. `working_directory` must be an existing absolute
 `revision` is a non-negative integer changed only by transactional commit. `current_tasks` is always
 an array and must equal the set of tasks in `RUNNING` state.
 
-The v4-only `execution` object is canonical coordination state. `protocol_version` is a positive
-integer. `coordinator_run` is null while no automatic pass owns the project; otherwise it is that
-run's non-empty id. `ownership_generation` is a non-negative fencing generation. `attempts` maps
-task ids to current attempt ids and must agree with running tasks and the durable execution journal.
+The v4-only `execution` object is retained for compatibility with existing projects.
+`protocol_version` is a positive integer; `ownership_generation` is a non-negative integer.
+Fresh projects have no coordinator or attempts and create no execution store. An existing
+non-null `coordinator_run` or non-empty `attempts` blocks writes: see
+[legacy-executor.md](legacy-executor.md). Removing the engine does not release its old ownership.
 
-`execution/config.json` is immutable generation configuration created after probing atomic links,
-same-volume storage, case sensitivity, and a POSIX subprocess runner. Fresh projects create it
-during initialization. The execution store under `execution/` holds immutable plans, grants,
-attempts, worktrees, integration worktrees, runtime reports, and recovery records; it is protocol
-state, not a place for hand-authored project notes.
+The optional v4 task `reads` list remains accepted for compatibility and input documentation;
+it no longer controls automatic dispatch. Schema-v3 task objects remain unchanged.
 
-The optional task `reads` field is an exhaustive list of target-relative input files for automatic
-execution. An empty list explicitly declares a self-contained task that uses only its task text.
-Omitting `reads` keeps the task valid but makes it `R-UNENUMERABLE`, so it follows the sequential
-path. This field is accepted only by schema v4; schema-v3 task objects remain unchanged.
-
-## Optional automatic task plans and workers
-
-Sequential coordination is the default, including for v4. When explicitly selected,
-`research-project run-auto <project-dir>` automatically considers READY tasks. Its default capacity
-is two and can be changed with `--concurrency`. Admission requires:
-
-- effect `none` or `local_write`;
-- one or more non-directory file outputs rooted at `target`;
-- an explicit exhaustive `reads` list, including an explicit empty list for a self-contained task;
-- a clean Git target checkout;
-- non-conflicting resolved read/write claims;
-- separate read-only `test` or `[` verification commands whose subjects cover every required output;
-- an available Claude Code or Codex CLI.
-
-The coordinator resolves these fields into an immutable, content-hashed plan bound to the exact
-project revision and task definition. Empty/generic instructions, no-op or composed checks,
-workspace/external outputs, directory subjects, uncovered required outputs, unsafe worker arguments,
-and protocol-owned paths are refused rather than inferred.
-
-Each admitted worker runs non-interactively in a coordinator-created Git worktree and may modify
-only the plan's declared files. `RESEARCH_PROJECT_WORKER=1` forbids nested coordination. The
-coordinator seals the process tree, rejects undeclared or missing outputs, runs the checks, and
-commits the isolated result. It serially cherry-picks all accepted worker commits into an
-integration worktree, reruns all checks, confirms the target still matches its clean baseline, and
-only then fast-forwards the target and commits canonical acceptance.
-
-The JSON report partitions tasks into `completed`, `blocked`, `fallbacks`, and `deferred`.
-Fallbacks carry precise refusal reasons and return to sequential coordinator execution; they are not
-permission to weaken checks or authorization. Claim conflicts and capacity overflow are deferred to
-a later pass. Failed workers, checks, outputs, or integration block their tasks and preserve durable
-attempt records for inspection and recovery.
 
 ## Project lifecycle
 
@@ -330,6 +292,16 @@ the same content-token guard as `reflection.md`; resume context lists its token 
 documents. Its status line (`Status: draft` or `Status: agreed`) is what validation reads. Like the
 briefing it warns and never errors, and it is not in the list of files required non-empty at close.
 
+`handoff.md` is a live continuation note for ongoing work and coordinator replacement. Read
+and replace it with `read ... handoff` and guarded `edit ... handoff`; validated context exposes its
+presence and content token without loading the body. It works with v3 and v4 without migration and
+is not a closure requirement. Its recorded revision, source tokens, ownership observations and next
+action are agent-authored data, not enforced state or authorization. Saving it neither changes
+`project.json` nor releases executor ownership. Its session-state label is prose, not a lock or a
+project status. Existing projects without it remain valid. Follow
+[durable-context.md](durable-context.md) during work and [session-handoff.md](session-handoff.md)
+when yielding to a fresh session.
+
 `spec.md` has two non-empty sections:
 
 ```markdown
@@ -396,7 +368,7 @@ Redact credentials, tokens, private data, and unnecessary command output from ev
 ## The closing report
 
 Reports are optional deliverables, not closure requirements. Each format can be requested
-independently in the `artifacts/` directory that `init` already created; an unspecified format
+independently in the lazily created `artifacts/` directory; an unspecified format
 defaults to Markdown:
 
 ```text
@@ -557,7 +529,7 @@ across a call that regenerates the caches.
 
 The validator recognizes:
 
-- schema v4 with the execution state and automatic executor described above;
+- schema v4 with the retained legacy execution fields described above;
 - schema v3 with the transactional project guarantees in this document but no automatic executor;
 - schema v2 with strict checks for its documented fields and a warning that concurrency and
   authorization guarantees are limited;
@@ -567,18 +539,10 @@ Migration is preview-only unless `--apply` is explicitly supplied. V2 applicatio
 state as `project.v2.json`. Pure v1 migration preserves legacy files and imports tasks as `TODO` in
 an `ALIGNING` v3 project; it never guesses historical task completion.
 
-Existing v3 projects never activate v4 implicitly. After explicit user approval, first establish
-that every pre-v4 installation with write access to the workspace or target has been upgraded and
-quiesced. Then run:
-
-```sh
-research-project enable-execution <project-dir> --expected-revision R \
-  --legacy-writers-quiesced
-```
-
-The command probes the execution store, writes `execution/config.json`, and atomically commits the
-v3 → v4 transition. Without the quiescence attestation it refuses with `R-LEGACY-WRITER`. There is
-no automatic migration and no supported downgrade for that generation.
+Existing v3 projects need no upgrade for normal work or native workers. Fresh projects retain v4
+without creating an execution store. The executor and its activation commands were removed in
+0.17.0; old stores remain untouched. Resolve active legacy ownership before upgrading or resuming;
+see [legacy-executor.md](legacy-executor.md). Never clear old execution fields to bypass guards.
 
 Unmigrated v1 closure requires `--allow-legacy-close`, a non-empty `reflection.md`, and a clear user
 warning that task completion could not be validated canonically.

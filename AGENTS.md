@@ -75,7 +75,7 @@ placement. Keep these surfaces aligned:
 - Project state is `dict[str, Any]`, not `dict[str, object]`. Type all public functions.
 - Tests live under `tests/plugins/<plugin>/<skill>/`; skills live under
   `plugins/<plugin>/skills/<skill>/`. Ruff line length is 120. Markdown under `plugins/` wraps prose
-  at 100 columns (fences, tables and URL lines exempt; `parallel-execution.md` exempt as a whole),
+  at 100 columns (fences, tables and URL lines exempt),
   enforced by `tests/plugins/research/test_markdown_width.py`.
 - The project skill's `SKILL.md` plus `references/commands.md` have a word budget enforced by
   `test_default_instruction_payload_budget`; trim before adding.

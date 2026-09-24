@@ -197,6 +197,14 @@ class RecordEvidenceTests(_ProjectFixture):
             record_evidence(self.project_dir, "T01", [sys.executable, "-c", "pass"])
         self.assertIn("working_directory", str(caught.exception))
 
+    def test_a_relative_working_directory_is_refused(self) -> None:
+        state = self._state()
+        state["working_directory"] = "."
+        self._write(state)
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence(self.project_dir, "T01", [sys.executable, "-c", "pass"])
+        self.assertIn("working_directory", str(caught.exception))
+
     def test_a_project_without_a_task_list_is_refused(self) -> None:
         state = self._state()
         state["tasks"] = "not a list"

@@ -87,6 +87,58 @@ def launcher(request: pytest.FixtureRequest) -> Path:
     return REPO_ROOT / "plugins/research" / request.param / "research-project"
 
 
+def test_lazy_task_notes_and_retired_commands_through_both_hosts(tmp_path: Path, launcher: Path) -> None:
+    initialized = subprocess.run(
+        [str(launcher), "init", str(tmp_path / "workspace"), "--create-root",
+         "--title", "Lean layout", "--working-directory", str(tmp_path)],
+        text=True, capture_output=True, check=True,
+    )
+    project = Path(initialized.stdout.strip())
+    assert {path.name for path in project.iterdir()} == {
+        "project.json", "spec.md", "evidence.md", "memory-staging.md",
+    }
+    plan(project)
+    # Definitions and bounded reads do not create empty note files or directories.
+    result = subprocess.run(
+        [str(launcher), "context", str(project), "--validate"],
+        text=True, capture_output=True, check=True,
+    )
+    assert json.loads(result.stdout)["validation"]["valid"] is True
+    assert not (project / "tasks").exists()
+    result = subprocess.run(
+        [str(launcher), "append", str(project), "finding", "--task", "T01",
+         "--body", "Worker finished; inspect src/parser.py before acceptance."],
+        text=True, capture_output=True, check=True,
+    )
+    assert Path(json.loads(result.stdout)["path"]) == project / "tasks" / "T01.md"
+    assert [path.name for path in (project / "tasks").iterdir()] == ["T01.md"]
+    before = {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
+    for command in ("run-auto", "run-once", "run-parallel", "enable-execution"):
+        refused = subprocess.run([str(launcher), command, str(project)], text=True, capture_output=True)
+        assert refused.returncode == 2
+        assert "invalid choice" in refused.stderr
+    assert before == {path.relative_to(project): path.read_bytes() for path in project.rglob("*") if path.is_file()}
+    assert not any((project / name).exists() for name in ("artifacts", "reviews", "execution"))
+
+
+def test_idle_legacy_store_is_preserved_during_normal_work(project: Path) -> None:
+    legacy = project / "execution"
+    legacy.mkdir()
+    config = legacy / "config.json"
+    config.write_text('{"max_concurrent": 2}\n', encoding="utf-8")
+    state = json.loads((project / "project.json").read_text(encoding="utf-8"))
+    state["execution"]["ownership_generation"] = 3
+    (project / "project.json").write_text(json.dumps(state), encoding="utf-8")
+    original = config.read_bytes()
+    plan(project)
+    task_operation(project, "start", "T01", expected_revision=1)
+    append_record(project, "finding", "Continue without the retired executor.", task_id="T01")
+    assert config.read_bytes() == original
+    assert [path.name for path in legacy.iterdir()] == ["config.json"]
+    assert validated_project_context(project)["execution_active"] is False
+    assert json.loads((project / "project.json").read_text(encoding="utf-8"))["execution"] == state["execution"]
+
+
 def test_resume_context_keeps_constraints_after_heading_examples(project: Path, launcher: Path) -> None:
     plan(project)
     snapshot = document_snapshot(project, "spec")
@@ -251,6 +303,7 @@ def test_decisions_and_findings_are_idempotent_and_preserve_notes(project: Path)
     with pytest.raises(WorkspaceConflict, match="different content"):
         append_record(project, "decision", "Different", entry_id="decision-one")
     notes = project / "tasks" / "T01.md"
+    notes.parent.mkdir()
     notes.write_text("# Existing worker note\n\nHandle: worker-1\n", encoding="utf-8")
     append_record(project, "finding", "Parser behavior confirmed.", task_id="T01", entry_id="finding-one")
     assert "worker-1" in notes.read_text(encoding="utf-8")
@@ -265,6 +318,125 @@ def test_validated_context_combines_bounded_context_and_findings(project: Path) 
     assert result["roots"]["workspace"] == str(project)
 
 
+@pytest.mark.parametrize("schema_version", [3, 4])
+def test_fresh_session_reads_alignment_handoff_through_both_hosts(
+    project: Path, launcher: Path, schema_version: int,
+) -> None:
+    state_path = project / "project.json"
+    state = json.loads(state_path.read_text())
+    if schema_version == 3:
+        state["schema_version"] = 3
+        del state["execution"]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    before = {name: (project / name).read_bytes() for name in ("project.json", "spec.md", "evidence.md")}
+    context = json.loads(subprocess.run(
+        [str(launcher), "context", str(project), "--validate"],
+        text=True, capture_output=True, check=True,
+    ).stdout)
+    assert context["documents"]["handoff"] == {
+        "path": str(project / "handoff.md"), "exists": False, "sha256": "missing",
+    }
+    body = (
+        "# Handoff\n\nRevision: 0; phase: ALIGNING.\n"
+        f"Specification SHA-256: {context['documents']['spec']['sha256']}\n\n"
+        "## Next action\nAsk which audience the report should address.\n\n"
+        "## Open decisions\nRequirements and architecture agreement are pending.\n\n"
+        "## Ownership and effects\nNo workers, commands or external effects.\n"
+    )
+    saved = json.loads(subprocess.run(
+        [str(launcher), "edit", str(project), "handoff", "--body-file", "-",
+         "--expected-sha256", "missing"],
+        input=body, text=True, capture_output=True, check=True,
+    ).stdout)
+    # Separate processes share only durable files, as an outgoing and incoming session would.
+    resumed = json.loads(subprocess.run(
+        [str(launcher), "context", str(project), "--validate"],
+        text=True, capture_output=True, check=True,
+    ).stdout)
+    note = json.loads(subprocess.run(
+        [str(launcher), "read", str(project), "handoff"],
+        text=True, capture_output=True, check=True,
+    ).stdout)
+    assert resumed["validation"]["valid"] is True
+    assert resumed["status"] == "ALIGNING" and resumed["revision"] == 0
+    assert resumed["documents"]["handoff"]["sha256"] == saved["document_sha256"] == note["document_sha256"]
+    assert note["text"] == body
+    assert "Ask which audience" not in json.dumps(resumed)
+    assert before == {name: (project / name).read_bytes() for name in before}
+
+
+def test_handoff_preserves_running_task_partial_work_and_failed_evidence(project: Path) -> None:
+    plan(project)
+    task_operation(project, "start", "T01", expected_revision=1)
+    failed = record_evidence_result(project, "T01", [sys.executable, "-c", "raise SystemExit(1)"])
+    state_path = project / "project.json"
+    state = json.loads(state_path.read_text())
+    target_file = Path(state["working_directory"]) / "partial.txt"
+    target_file.write_text("Incomplete output.\n", encoding="utf-8")
+    before_state = state_path.read_bytes()
+    before_evidence = (project / "evidence.md").read_bytes()
+    context = validated_project_context(project)
+    note = (
+        f"# Handoff\n\nRevision: {context['revision']}\n"
+        f"Specification SHA-256: {context['documents']['spec']['sha256']}\n"
+        f"T01 remains unfinished; partial.txt is agent work. Check {failed.record_id}, which failed.\n"
+        "Worker and command ownership: all stopped. Next: fix the partial output.\n"
+    )
+    saved = edit_document(project, "handoff", expected_sha256="missing", body=note)
+    assert state_path.read_bytes() == before_state
+    assert (project / "evidence.md").read_bytes() == before_evidence
+    assert target_file.read_text() == "Incomplete output.\n"
+    assert validated_project_context(project)["tasks"][0]["status"] == "RUNNING"
+    # Subsequent canonical changes stay visible; the note cannot assert freshness or override them.
+    append_record(project, "decision", "The user changed the audience.")
+    current = validated_project_context(project)
+    assert current["documents"]["spec"]["sha256"] != context["documents"]["spec"]["sha256"]
+    assert current["documents"]["handoff"]["sha256"] == saved["document_sha256"]
+    assert evidence_entries(project, record_id=failed.record_id)["entries"][0]["passed"] is False
+
+
+def test_handoff_guarded_replacement_pagination_and_cli_errors(project: Path) -> None:
+    body = "# Handoff\n\n" + "Necessary continuation detail.\n" * 200
+    code, output, err = invoke([
+        "edit", str(project), "handoff", "--body-file", "-", "--expected-sha256", "missing",
+    ], stdin=body)
+    assert code == 0, err
+    token = json.loads(output)["document_sha256"]
+    code, output, _ = invoke(["read", str(project), "handoff"])
+    first = json.loads(output)
+    assert code == 0 and first["truncated"]
+    code, output, _ = invoke(["read", str(project), "handoff", "--offset", str(first["next_offset"])])
+    assert code == 0 and first["text"] + json.loads(output)["text"] == body
+    code, _, err = invoke([
+        "edit", str(project), "handoff", "--body", "Stale writer", "--expected-sha256", "missing",
+    ])
+    assert code == 1 and "document conflict" in err
+    assert (project / "handoff.md").read_text() == body
+    assert invoke([
+        "edit", str(project), "handoff", "--body", "  ", "--expected-sha256", token,
+    ])[0] == 1
+    assert invoke(["read", str(project), "handoff", "--section", "Next"])[0] == 1
+    code, output, _ = invoke([
+        "edit", str(project), "handoff", "--body", "# Handoff\n\nUpdated.", "--expected-sha256", token,
+    ])
+    assert code == 0
+    assert json.loads(output)["previous_sha256"] == token
+    assert document_snapshot(project, "handoff")["text"] == "# Handoff\n\nUpdated.\n"
+
+
+def test_handoff_cannot_release_executor_ownership(project: Path) -> None:
+    saved = edit_document(project, "handoff", expected_sha256="missing", body="Previous checkpoint.")
+    state_path = project / "project.json"
+    state = json.loads(state_path.read_text())
+    state["execution"]["coordinator_run"] = "still-running"
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    before = state_path.read_bytes()
+    with pytest.raises(WorkspaceError, match="execution is active"):
+        edit_document(project, "handoff", expected_sha256=saved["document_sha256"], body="Ready to resume.")
+    assert state_path.read_bytes() == before
+    assert document_snapshot(project, "handoff")["text"] == "Previous checkpoint.\n"
+
+
 def test_task_block_skip_and_revision_guards(project: Path) -> None:
     plan(project)
     blocked = task_operation(project, "block", "T01", expected_revision=1, reason="Need input")
@@ -274,6 +446,53 @@ def test_task_block_skip_and_revision_guards(project: Path) -> None:
     assert task_operation(project, "start", "T01", expected_revision=2)["status"] == "EXECUTING"
     skipped = task_operation(project, "skip", "T01", expected_revision=3, reason="Withdrawn")
     assert skipped["changed_tasks"][0]["status"] == "SKIPPED"
+
+
+@pytest.mark.parametrize("schema_version", [3, 4])
+def test_review_corrections_resume_through_both_hosts(
+    project: Path, launcher: Path, schema_version: int,
+) -> None:
+    state_path = project / "project.json"
+    if schema_version == 3:
+        state = json.loads(state_path.read_text())
+        state["schema_version"] = 3
+        del state["execution"]
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    plan(project)
+    task_operation(project, "start", "T01", expected_revision=1)
+    for revision, task_id, successor in ((2, "T01", "T02"), (3, "T02", None)):
+        evidence = record_evidence_result(project, task_id, [sys.executable, "-c", "assert 1 + 1 == 2"])
+        task_operation(
+            project, "finish", task_id, expected_revision=revision,
+            evidence_record_ids=[evidence.record_id], start_next=successor,
+        )
+    reviewed = update_project_data(project, {
+        "status": "REVIEW", "review": {"required": True, "status": "pending"},
+    }, expected_revision=4)
+    update_project_data(project, {"tasks": [
+        task("T03", depends_on=["T02"]),
+        task("T04", depends_on=["T03"]),
+        {**task("T05"), "effect": {"kind": "external", "description": "Publish correction"}},
+    ]}, expected_revision=5)
+    before = state_path.read_bytes()
+    # Resuming review must preserve the dependency, authorization and stale-revision guards.
+    for task_id, revision in (("T04", 6), ("T05", 6), ("T03", 5)):
+        refused = subprocess.run([
+            str(launcher), "task", str(project), "start", task_id, "--expected-revision", str(revision),
+        ], text=True, capture_output=True)
+        assert refused.returncode == 1, refused.stdout
+        assert state_path.read_bytes() == before
+    started = subprocess.run([
+        str(launcher), "task", str(project), "start", "T03", "--expected-revision", "6",
+    ], text=True, capture_output=True, check=True)
+    result = json.loads(started.stdout)
+    assert result["status"] == "EXECUTING"
+    assert result["selected_task"]["status"] == "RUNNING"
+    current = json.loads(state_path.read_text())
+    assert current["tasks"][:2] == reviewed["tasks"]
+    assert current["review"] == reviewed["review"]
+    assert current["current_tasks"] == ["T03"]
+    assert validated_project_context(project)["validation"]["valid"] is True
 
 
 def test_cli_accepts_stdin_updates_and_validated_context(project: Path) -> None:
@@ -641,46 +860,143 @@ def test_close_reports_a_commit_that_landed_before_index_failure(project: Path) 
     assert state["status"] == "DONE"
 
 
-def test_automated_cli_lifecycle_interaction_budget(project: Path) -> None:
-    fill_spec(project)
-    tasks = [task("T01"), task("T02", depends_on=["T01"]), task("T03", depends_on=["T02"])]
-    observations: list[str] = []
+@pytest.mark.parametrize("scenario,max_calls,max_bytes", [
+    ("ordinary", 19, 30000),
+    ("routine-correction", 21, 32000),
+    ("interrupted", 28, 45000),
+])
+def test_automated_cli_lifecycle_interaction_budget(
+    project: Path, scenario: str, max_calls: int, max_bytes: int,
+) -> None:
+    """Scripted user agreement and agent bookkeeping from initialized workspace through closure.
 
-    def call(arguments: list[str], *, stdin: str = "") -> dict[str, Any]:
+    Count command arguments/stdin as well as results. Implementation writes and user/model reasoning
+    are not measured. Human confirmations below are fixture inputs, not inferred by the CLI.
+    """
+    observations: list[str] = []
+    requests: list[str] = []
+
+    def call(arguments: list[str], *, stdin: str = "", expected: int = 0) -> dict[str, Any]:
         code, output, error = invoke(arguments, stdin=stdin)
-        assert code == 0, error
-        observations.append(output)
+        assert code == expected, error
+        requests.append(json.dumps(arguments) + stdin)
+        observations.append(output + error)
         return json.loads(output)
 
-    call(["context", str(project), "--validate"])
-    call(
-        ["update", str(project), "-", "--expected-revision", "0", "--json"],
-        stdin=json.dumps({"status": "PLANNING", "tasks": tasks}),
+    context = call(["context", str(project), "--validate"])
+    target = Path(context["working_directory"])
+    tokens = {name: item["sha256"] for name, item in context["documents"].items()}
+    revision = context["revision"]
+
+    def edit(document: str, body: str) -> None:
+        result = call([
+            "edit", str(project), document, "--body-file", "-", "--expected-sha256", tokens[document],
+        ], stdin=body)
+        tokens[document] = result["document_sha256"]
+
+    def checkpoint(phase: str, next_action: str, session: str = "working") -> None:
+        edit("handoff", (
+            f"# Continuation\nSession state: {session}\nPhase: {phase}; revision: {revision}\n"
+            f"Spec: {tokens['spec']}\nArchitecture: {tokens['architecture']}\n"
+            f"Next: {next_action}\nRead spec.md constraints and architecture.md A1.\n"
+            "No workers or external effects; commands observed terminal. Prior lessons: no candidates.\n"
+        ))
+
+    # A precise request needs zero interview questions, but still records explicit confirmation.
+    sections = {heading: f"Fixture agreement: {heading}." for heading, _ in SPEC_CANONICAL_SECTIONS}
+    sections["Objective and audience"] = "Produce three verified local fixture files."
+    sections["Success and verification criteria"] = "Each task file must contain its task ID exactly."
+    sections["Constraints and important assumptions"] = "Preserve unrelated files; no external effects."
+    sections["Deliverables and roots"] = "Target: T01.txt, T02.txt, T03.txt. Workspace: architecture.md A1."
+    result = call([
+        "edit", str(project), "spec", "--sections-json", "-", "--expected-sha256", tokens["spec"],
+    ], stdin=json.dumps(sections))
+    tokens["spec"] = result["document_sha256"]
+    result = call(["append", str(project), "decision", "--body",
+                   "Fixture user confirmed requirements. Current workspace has no memory candidates."])
+    tokens["spec"] = result["document_sha256"]
+    checkpoint("ALIGNING", "Review design A1.")
+
+    architecture = (
+        "# Architecture A1\nStatus: draft\n"
+        "One module writes three local text files, preserving unrelated paths. "
+        "Sequential tasks verify exact text; failed assertions require correction. "
+        "No migration or external actions. Effort: three small writes plus checks.\n"
     )
-    call(["task", str(project), "start", "T01", "--expected-revision", "1"])
-    revision = 2
+    edit("architecture", architecture)
+    checkpoint("ALIGNING", "Await fixture user's architecture A1 confirmation.", "waiting")
+    # The simulated user confirms this concrete proposal, rather than a task runner granting consent.
+    edit("architecture", architecture.replace("Status: draft", "Status: agreed"))
+    result = call(["append", str(project), "decision", "--body",
+                   "Fixture user confirmed architecture A1 and its effort; no external actions authorized."])
+    tokens["spec"] = result["document_sha256"]
+    tasks = [{
+        **task(task_id, depends_on=[f"T0{index - 1}"] if index > 1 else []),
+        "success_criteria": f"{task_id}.txt contains exactly {task_id}",
+        "verification": "Assert exact file contents",
+        "effect": {"kind": "local_write", "description": f"Write {task_id}.txt"},
+        "outputs": [{"root": "target", "path": f"{task_id}.txt", "required": True}],
+    } for index, task_id in enumerate(("T01", "T02", "T03"), 1)]
+    result = call(["update", str(project), "-", "--expected-revision", str(revision), "--json"],
+                  stdin=json.dumps({"status": "PLANNING", "tasks": tasks}))
+    revision = result["revision"]
+    checkpoint("PLANNING", "Start T01; continue through the agreed tasks in this session.")
+    result = call(["task", str(project), "start", "T01", "--expected-revision", str(revision)])
+    revision = result["revision"]
+    failed_id = None
     for index, task_id in enumerate(("T01", "T02", "T03")):
-        evidence = call([
-            "record-evidence", str(project), "--task", task_id, "--json", "--",
-            sys.executable, "-c", "pass",
-        ])
+        check = [
+            "record-evidence", str(project), "--task", task_id, "--json", "--", sys.executable, "-c",
+            f"from pathlib import Path; assert Path('{task_id}.txt').read_text() == '{task_id}'",
+        ]
+        if task_id == "T02" and scenario != "ordinary":
+            (target / "T02.txt").write_text("typo", encoding="utf-8")
+            failed = call(check, expected=1)
+            failed_id = failed["record_id"]
+            call(["append", str(project), "finding", "--task", task_id, "--body",
+                  f"Exact-text check {failed_id} failed. Correct typo; assignment and criteria unchanged."])
+            if scenario == "interrupted":
+                checkpoint("EXECUTING", f"Fix T02.txt after failed check {failed_id}; partial file is agent work.")
+                # A new session recovers from files; no whole history read or repeated agreement.
+                resumed = call(["context", str(project), "--validate"])
+                note = call(["read", str(project), "handoff"])
+                assert note["document_sha256"] == resumed["documents"]["handoff"]["sha256"]
+                assert failed_id in note["text"]
+                design = call(["read", str(project), "architecture"])
+                assert "Status: agreed" in design["text"]
+                assignment = call(["context", str(project), "--task", task_id, "--task-only"])
+                assert assignment["selected_task"]["status"] == "RUNNING"
+                failed_entry = call(["read", str(project), "evidence", "--entry", failed_id])
+                assert failed_entry["entries"][0]["passed"] is False
+                tokens = {name: item["sha256"] for name, item in resumed["documents"].items()}
+                revision = resumed["revision"]
+                checkpoint("EXECUTING", "Continue T02 after inspecting the partial file and failed check.")
+        (target / f"{task_id}.txt").write_text(task_id, encoding="utf-8")
+        evidence = call(check)
         finish = [
             "task", str(project), "finish", task_id, "--evidence", evidence["record_id"],
             "--expected-revision", str(revision),
         ]
         if index < 2:
             finish.extend(["--start-next", f"T0{index + 2}"])
-        call(finish)
-        revision += 1
-    call([
-        "close", str(project), "--expected-revision", "5", "--reflection", "# Reflection\n\nVerified.",
-        "--expected-reflection-sha256", "missing",
+        result = call(finish)
+        revision = result["revision"]
+    closed = call([
+        "close", str(project), "--expected-revision", str(revision),
+        "--reflection", "# Reflection\n\nAll files verified. No reusable new lessons or pending staging.",
+        "--expected-reflection-sha256", tokens["reflection"],
     ])
+    assert closed["validation"]["valid"]
+    revision = closed["revision"]
+    checkpoint("DONE", "No open work; all three exact-text checks passed.")
+    assert all((target / f"{task_id}.txt").read_text() == task_id for task_id in ("T01", "T02", "T03"))
+    if failed_id is not None:
+        assert evidence_entries(project, record_id=failed_id)["entries"][0]["passed"] is False
     metrics = {
-        "observations": len(observations),
+        "scenario": scenario, "observations": len(observations),
+        "input_bytes": sum(len(item.encode()) for item in requests),
         "output_bytes": sum(len(item.encode()) for item in observations),
-        "result_bytes": [len(item.encode()) for item in observations],
     }
-    assert metrics["observations"] == 10
-    assert metrics["output_bytes"] < 15000
+    assert metrics["observations"] <= max_calls
+    assert metrics["input_bytes"] + metrics["output_bytes"] <= max_bytes
     print(json.dumps(metrics, sort_keys=True))

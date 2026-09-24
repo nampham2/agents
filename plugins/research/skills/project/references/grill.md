@@ -40,6 +40,10 @@ to invalidate a sibling question you already asked, say so and reopen that branc
 
 ## Facts are yours, decisions are the user's
 
+Review relevant prior lessons using [memory-operations.md](memory-operations.md) before requirements
+confirmation. Use them to inform questions and recommendations; prior preferences or assumptions
+do not answer the current user's open questions. Reuse the assessment across unchanged rounds.
+
 Before each round, answer every question you can answer yourself. Read the files, run the read-only
 command, check the environment, look up the documentation. Asking the user for something the
 environment would have told you wastes the one resource the session depends on: their attention.
@@ -115,6 +119,11 @@ the affected branches, update the specification, and return to the review. Requi
 alone does not complete the architecture agreement gate.
 
 ## Recording the consensus
+
+Save each answered round and the remaining questions following
+[durable-context.md](durable-context.md), before waiting for another reply. Record partial answers
+as partial; persistence does not imply requirements confirmation. On resume, reconcile the live
+continuation note with current specification and recent decisions before repeating any questions.
 
 The consensus is state, not conversation, and recording it is part of the session:
 

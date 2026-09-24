@@ -9,11 +9,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from execution_adapter import FakeAdapter, SubprocessAdapter
-from execution_ops import OperationError, run_automatic_tasks, run_parallel_tasks, run_sequential_task
 from memory_search import creation_gate, rank_topics, search_postmortems
 from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document
 from workspace_evidence import evidence_entries
+from workspace_journal import OperationError
 from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
@@ -27,7 +26,6 @@ from workspace_lib import (
     check_candidate,
     commit_candidate,
     compact_memory_topic,
-    enable_execution,
     find_workspace_roots,
     index_headroom,
     load_memory_topics,
@@ -52,6 +50,7 @@ from workspace_session import (
     update_project_data,
     validated_project_context,
 )
+from workspace_workflows import FIELDS, READ_ACTIONS, preview, workflow
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -74,6 +73,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     initialize.add_argument("--lock-timeout", type=float, default=5.0)
     initialize.add_argument("--briefing", action="store_true", help="also scaffold an optional discovery briefing")
+    initialize.add_argument(
+        "--json", action="store_true", help="return path, revision, roots, document tokens and warnings"
+    )
+
+    automation = subparsers.add_parser("workflow", help="Named lifecycle automation with closed JSON input schemas")
+    automation.add_argument("project_directory", type=Path)
+    automation.add_argument("action", choices=sorted(FIELDS.keys() | READ_ACTIONS))
+    automation.add_argument("input_json", type=Path, help="JSON input file, or '-' for stdin")
 
     context = subparsers.add_parser("context", help="Print bounded resume context without completed task history")
     context.add_argument("project_directory", type=Path)
@@ -89,7 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     read = subparsers.add_parser("read", help="Read a bounded specification section or evidence excerpt")
     read.add_argument("project_directory", type=Path)
-    read.add_argument("document", choices=("spec", "evidence", "reflection", "architecture", "notes"))
+    read.add_argument("document", choices=("spec", "evidence", *WHOLE_DOCUMENTS, "notes"))
     read.add_argument("--section", help="exact specification heading; default excludes decision history")
     read_owner = read.add_mutually_exclusive_group()
     read_owner.add_argument("--task")
@@ -114,10 +121,11 @@ def _build_parser() -> argparse.ArgumentParser:
     update.add_argument("--expected-revision", type=int, required=True)
     update.add_argument("--lock-timeout", type=float, default=5.0)
     update.add_argument("--json", action="store_true", help="print a compact structured mutation result")
+    update.add_argument("--dry-run", action="store_true", help="return a patch diff and validation without writing")
 
     edit = subparsers.add_parser("edit", help="Guardedly replace project-owned Markdown content")
     edit.add_argument("project_directory", type=Path)
-    edit.add_argument("document", choices=("spec", "reflection", "architecture"))
+    edit.add_argument("document", choices=("spec", *WHOLE_DOCUMENTS))
     edit.add_argument("--section", help="exact specification heading to replace")
     edit.add_argument("--sections-json", type=Path, help="JSON heading-to-body mapping, or '-' for stdin")
     edit_body = edit.add_mutually_exclusive_group()
@@ -359,78 +367,6 @@ def _build_parser() -> argparse.ArgumentParser:
     migrate.add_argument("--apply", action="store_true", help="Apply the migration; default is a read-only preview")
     migrate.add_argument("--lock-timeout", type=float, default=5.0)
 
-    enable = subparsers.add_parser(
-        "enable-execution",
-        help="Activate the parallel execution protocol on a schema v3 project (irreversible)",
-        epilog=(
-            "Probes the store's filesystem, writes config.json with probe results and §15.1 "
-            "settings, and commits schema_version 3 → 4. Idempotent: a second call on an "
-            "already-enabled project prints 'already enabled at generation G' and exits zero. "
-            "--legacy-writers-quiesced attests that every installation with write access to this "
-            "workspace or working directory has been upgraded."
-        ),
-    )
-    enable.add_argument("project_directory", type=Path)
-    enable.add_argument(
-        "--expected-revision",
-        type=int,
-        required=True,
-        help="revision the caller read from project.json; checked before any filesystem work",
-    )
-    enable.add_argument(
-        "--legacy-writers-quiesced",
-        action="store_true",
-        help="attest that no legacy (pre-v4) installation can mutate this workspace or working directory",
-    )
-    enable.add_argument("--lock-timeout", type=float, default=5.0)
-
-    run_once = subparsers.add_parser(
-        "run-once",
-        help="Run one READY task to completion using the parallel execution protocol",
-        epilog=(
-            "Acquires the coordinator run (O19), finds the first READY task, executes the "
-            "full O1-O16 lifecycle with a FakeAdapter, then relinquishes (O20). Exits 0 when "
-            "a task ran, exits 2 when no READY task exists. The project must have been "
-            "activated with enable-execution first."
-        ),
-    )
-    run_once.add_argument("project_directory", type=Path)
-    run_once.add_argument("--lock-timeout", type=float, default=5.0)
-
-    run_auto = subparsers.add_parser(
-        "run-auto",
-        help="Automatically run eligible READY tasks with Claude or Codex workers",
-        epilog=(
-            "Resolves immutable task plans, dispatches up to --concurrency non-conflicting "
-            "none/local_write tasks in isolated Git worktrees, verifies and serially integrates "
-            "their commits, and reports precise fallback reasons for ineligible tasks."
-        ),
-    )
-    run_auto.add_argument("project_directory", type=Path)
-    run_auto.add_argument("--concurrency", type=int, default=2)
-    run_auto.add_argument("--lock-timeout", type=float, default=5.0)
-
-    run_parallel = subparsers.add_parser(
-        "run-parallel",
-        help="Run up to N READY tasks concurrently using real subprocess adapters",
-        epilog=(
-            "Acquires the coordinator run (O19), finds up to --concurrency READY tasks, "
-            "executes each in a thread with its own SubprocessAdapter, then relinquishes (O20). "
-            "Exits 0 when tasks ran, exits 2 when no READY task exists. The project must have "
-            "been activated with enable-execution first. Pass -- <command> to specify the "
-            "subprocess command; defaults to a no-op Python one-liner."
-        ),
-    )
-    run_parallel.add_argument("project_directory", type=Path)
-    run_parallel.add_argument("--concurrency", type=int, default=2)
-    run_parallel.add_argument("--lock-timeout", type=float, default=5.0)
-    run_parallel.add_argument(
-        "subprocess_command",
-        nargs="*",
-        metavar="command",
-        help="Command to run for each task (default: python -c 'pass')",
-    )
-
     return parser
 
 
@@ -483,10 +419,21 @@ def main() -> int:
             # Warned at init as well as at validation, because this is the moment someone chooses
             # where the record of the work will live. Checked after allocation, since --create-root
             # means the directory to check may not have existed a moment ago.
-            for warning in vcs_warnings(workspace_root):
+            warnings = vcs_warnings(workspace_root)
+            for warning in warnings:
                 print(f"WARNING: {warning}", file=sys.stderr)
-            print(project_dir)
+            if args.json:
+                initial = validated_project_context(project_dir)
+                print(json.dumps({"project_directory": str(project_dir), "revision": initial["revision"],
+                    "roots": initial["roots"], "documents": initial["documents"], "warnings": warnings}, indent=2))
+            else:
+                print(project_dir)
             return 0
+
+        if args.command == "workflow":
+            result = workflow(args.project_directory, args.action, _read_json_object(args.input_json))
+            print(json.dumps(result, indent=2))
+            return 1 if result.get("valid") is False or result.get("passed") is False else 0
 
         if args.command == "context":
             if args.validate:
@@ -508,7 +455,7 @@ def main() -> int:
                     offset=args.offset, limit=args.limit, include_text=args.entry is not None,
                 ), indent=2))
                 return 0
-            if args.document in ("reflection", "architecture", "notes") or args.outline:
+            if args.document in (*WHOLE_DOCUMENTS, "notes") or args.outline:
                 if args.section is not None or args.step is not None:
                     raise WorkspaceError("whole-document and outline reads do not accept --section or --step")
                 print(json.dumps(document_snapshot(
@@ -530,6 +477,10 @@ def main() -> int:
             return 0
 
         if args.command == "update":
+            if args.dry_run:
+                result = preview(args.project_directory, _read_json_object(args.patch_json), args.expected_revision)
+                print(json.dumps(result, indent=2))
+                return 0 if result["valid"] else 1
             if str(args.patch_json) == "-":
                 patch = _read_json_object(args.patch_json)
                 state = update_project_data(
@@ -817,66 +768,11 @@ def main() -> int:
                 return 1
             return 0
 
-        if args.command == "enable-execution":
-            enable_execution(
-                args.project_directory,
-                expected_revision=args.expected_revision,
-                legacy_writers_quiesced=args.legacy_writers_quiesced,
-                lock_timeout=args.lock_timeout,
-            )
-            return 0
-
-        if args.command == "run-once":
-            ran = run_sequential_task(
-                args.project_directory,
-                FakeAdapter(),
-                lock_timeout=args.lock_timeout,
-            )
-            if ran:
-                print(f"Task completed: {args.project_directory.resolve()}")
-                return 0
-            print("No READY task found", file=sys.stderr)
-            return 2
-
-        if args.command == "run-auto":
-            report = run_automatic_tasks(
-                args.project_directory,
-                max_concurrent=args.concurrency,
-                lock_timeout=args.lock_timeout,
-            )
-            print(json.dumps(report.as_dict(), indent=2, ensure_ascii=False))
-            if report.blocked:
-                return 1
-            if report.completed:
-                return 0
-            return 2
-
-        if args.command == "run-parallel":
-            cmd = (
-                list(args.subprocess_command)
-                if args.subprocess_command
-                else [
-                    "python",
-                    "-c",
-                    "pass",
-                ]
-            )
-            done = run_parallel_tasks(
-                args.project_directory,
-                lambda: SubprocessAdapter(cmd),
-                max_concurrent=args.concurrency,
-                lock_timeout=args.lock_timeout,
-            )
-            if done:
-                print(f"Tasks completed: {done} task(s) in {args.project_directory.resolve()}")
-                return 0
-            print("No READY task found", file=sys.stderr)
-            return 2
-    except CloseOperationError as error:
+    except (CloseOperationError, OperationError) as error:
         print(json.dumps(error.result, indent=2))
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
-    except (WorkspaceError, OperationError) as error:
+    except WorkspaceError as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1
 

@@ -10,7 +10,24 @@ description: >
 
 Invoke with `/research:project [problem statement]`.
 
-Keep records concise; retrieve only needed context. Keep history and long findings in files.
+Reuse saved context and retrieve selectively, preserving constraints and evidence.
+
+## Durable context
+
+Save consequential decisions before dependent work and findings before switching work. Read
+[durable-context.md](references/durable-context.md) on the first save. Refresh `handoff.md` when
+continuation context changes; batch saves and reuse tokens. Preserve open questions, source pointers
+and the distinction between proposals and agreement.
+
+Read [automation.md](references/automation.md) and the action's selected reference before use.
+Prefer its named commands over agent-authored bookkeeping; supply judgments and actual consent.
+
+## Session boundaries
+
+Phase boundaries are checkpoints; continue authorized work in the same session. Restart on user
+request or when context pressure impairs reliable continuation. Read
+[session-handoff.md](references/session-handoff.md) only for handoff or interruption recovery.
+For a restart, checkpoint, supply a resume prompt, and stop; the user opens the replacement session.
 
 ## Resolve once
 
@@ -30,21 +47,25 @@ Find an existing project with paged `list-projects <root> --query "<objective>"`
 needs no discovery. Check objective and ownership, then run:
 
 ```sh
-research-project context <project-dir> --validate
+research-project workflow <project-dir> resume -
 ```
 
-Resolve validation errors and contradictions first. Context includes roots, revision and document
-tokens; follow truncation with targeted `read` calls. Do not reload unchanged context.
+Send `{}` or explicit source/task selections. Resolve validation errors and contradictions;
+follow truncation with targeted reads. `context --validate` remains a compact metadata-only option.
 
 Create a project with:
 
 ```sh
-research-project init <root> --title "<title>" --working-directory <target>
+research-project init <root> --title "<title>" --working-directory <target> --json
 ```
 
 Report version-control warnings; never initialize or commit repositories implicitly.
+Read [commands.md](references/commands.md) before the first record update, including alignment.
 
 ## Align requirements and architecture
+
+Review relevant [lessons](references/memory-operations.md) before requirements/design agreement.
+Reassess after direction changes; resolve staged lessons at closure.
 
 Every project requires [grill](references/grill.md), then
 [architecture review](references/architecture-review.md); read and follow both before planning.
@@ -61,23 +82,19 @@ Clear requirements need confirmation, even with zero question rounds. Write thes
 ### Destructive and external actions
 ```
 
-Use `read <project-dir> spec --outline` for the content token, then one guarded `edit ... spec
---sections-json ... --expected-sha256 ...` for initial or batched changes. Append consequential
-decisions with `append ... decision`; avoid transcripts and duplicate task narratives.
+Save related spec sections, decisions, design drafts and continuation with `workflow ... round`.
+Use `workflow ... confirm` for actual agreement against the proposal token. Single findings can
+use `append ... finding`; avoid transcripts and duplicate task narratives.
 
-Iterate requirements, grill, and architecture until agent and user explicitly agree. Prioritize
-diagrams; cover modules, code organization, flows, edge cases, and effort. Record agreement and
-write the required `architecture.md` through guarded `edit ... architecture` with a `Status: agreed`
-line before leaving `ALIGNING` or planning tasks.
-On resume, reuse current agreement; missing records or material changes reopen the affected loop.
-Follow the architecture reference's persistence and legal-transition rules.
+Record explicit requirements/design agreement and `Status: agreed` before planning. Follow the
+architecture reference's coverage and transition rules.
+Reuse current agreement on resume; missing records or material changes reopen affected choices.
 
 ## Plan tasks
 
 After agreement, enter `PLANNING` and derive milestones from `architecture.md` with success
 criteria, verification, effects, dependencies and rooted outputs. Only plan publication, pushes, or
-commits when requested. Read [commands.md](references/commands.md) on the first update. Send a
-compact patch through stdin:
+commits when requested. Send a compact patch through stdin:
 
 ```sh
 research-project update <project-dir> - --expected-revision <revision> --json
@@ -88,16 +105,23 @@ revision conflicts. Avoid temporary patch files.
 
 ## Execute and verify
 
-Start with `task <project-dir> start T01 --expected-revision <revision>`; it returns the assignment,
-dependencies and roots. Supply omitted specification constraints. Dependencies must be `DONE`, not
-`SKIPPED`. Destructive/external effects need current explicit authorization; existing authorization
-counts.
+Apply routine corrections directly when scope, dependencies, authorization and acceptance criteria
+remain valid. Settle affected workers first; record useful findings and rerun affected checks.
+For invalidated assignments, inputs or agreement, follow
+[execution-changes.md](references/execution-changes.md). `workflow ... correct` allocates correction
+tasks for terminal work without copying old acceptance or consent.
+
+`task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
+and roots; it resumes `EXECUTING` from `REVIEW`. Supply applicable constraints. Dependencies must be
+`DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
+existing authorization counts.
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
-[executor-operations.md](references/executor-operations.md). Delegate only when isolation outweighs
+[legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs
 startup and repeated discovery; read [task-workers.md](references/task-workers.md) when doing so.
 
-Work in the target and record acceptance checks:
+Work in the target. Use `workflow ... verify` for explicit check batches with durable attempts;
+single checks may use:
 
 ```sh
 research-project record-evidence <project-dir> --task T01 --json -- <command>
@@ -111,20 +135,18 @@ evidence.
 
 ## Review and close
 
-Apply feedback within the agreed design directly; material changes reopen alignment before affected
-work. Delivery reviews are conditional, distinct from mandatory architecture review. Once tasks are
-`DONE` or justified `SKIPPED`, required reviews accepted, and receipts present, close:
+Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional;
+`workflow ... review` saves supplied findings and review state together.
+When tasks are `DONE` or justified `SKIPPED`, required reviews accepted, and receipts present,
+close:
 
 ```sh
-research-project close <project-dir> --expected-revision <revision> \
-  --reflection-file - --expected-reflection-sha256 <token>
+research-project workflow <project-dir> finalize -
 ```
 
-Supply outcome, limitations, and next steps. Fix closure errors; after a committed index-only
-failure, use the stated `rebuild-index` recovery rather than closing again. Report the result and
-project path.
+Supply reflection, continuation, retry ID, revision and document tokens. Fix closure errors;
+use reported same-ID recovery for partial writes, never replay effects. Report result and path.
 
-Load optional procedures only when needed: [reports](references/report-design.md),
-[memory](references/memory-operations.md), [executor](references/executor-operations.md), and
-[maintenance](references/maintenance.md). Reports, task graphs, memory promotion, and separate
-delivery reviews are optional unless required by the project.
+Load [reports](references/report-design.md), [layout](references/durable-context.md) and
+[maintenance](references/maintenance.md) only when needed. Reports, task graphs and delivery reviews
+are optional unless required.

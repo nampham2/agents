@@ -1,32 +1,29 @@
 # Routine commands
 
-Commands support v3 and v4.
+Use [named automation](automation.md) for composed work: `workflow <project-dir> <action> -`
+accepts typed JSON on stdin. Follow its action-specific schemas and recovery contracts.
+`init --json` supplies initial tokens; `update --dry-run` previews a small patch without writing.
 
 ## Retrieve
 
-`context <project-dir> --validate` gives revision, active summaries, ready IDs, review/executor
-status, roots, document tokens and full validation findings in one call. Without `--validate`,
-context gives up to 6,000 specification characters. `--limit` changes summary count (1–20).
-`--task T01 --task-only` gives the full task and direct dependency references without rereading
-specification or logs. `--worker` gives the same assignment with the worker role; the coordinator
-supplies applicable constraints, decisions, and inputs. Neither view authorizes or starts work.
+`context <project-dir> --validate` returns revision, active summaries, ready IDs, review/executor
+status, roots, document tokens and validation findings. Specification text is capped at 6,000
+characters; `--limit` sets summary count (1–20). `--task T01 --task-only` returns task/dependencies;
+`--worker` changes its role, granting no authority.
 
 `read <project-dir> spec --section "Constraints and important assumptions"` selects an exact
-heading. `read <project-dir> spec --outline` returns headings and the whole-document SHA-256 token.
-Without a section, it returns the current document before Decision history; that history can be
-explicitly selected. `read <project-dir> evidence --task T01` retrieves that task's actual entries;
-`--step report` selects report-check evidence. Omit the owner for all evidence. `read <project-dir>
-architecture` returns the design document whole. Reads return up to 4,000 characters with
-`total_chars`, `truncated`, and `next_offset`. Continue with `--offset <next_offset>`; `--max-chars`
-accepts 1–20,000. File edits can change offsets; reload when the source changes.
+heading; `--outline` returns headings and the SHA-256 token. Default reads exclude Decision history;
+select it explicitly. `read <project-dir> evidence --task T01` selects task entries; `--step report`
+selects report-check evidence; omit both for all. `read <project-dir> architecture` or `handoff`
+reads that document. Reads cap at 4,000 characters with `total_chars`, `truncated`, `next_offset`;
+continue with `--offset <next_offset>`. `--max-chars` accepts 1–20,000. Reload changed sources.
 
-`list-projects <root> --query "<text>" [--status EXECUTING]` searches identity, title and target.
-It returns 10 matches by default; `--limit` (1–100) and `--offset` page results. Invalid and legacy
-records stay visible.
+`list-projects <root> --query "<text>" [--status EXECUTING]` searches identity/title/target,
+returning 10 matches. Page with `--limit` (1–100) and `--offset`. Invalid/legacy records remain.
 
 ## Update
 
-Send a small patch through stdin; a file path remains supported:
+Send a small JSON patch:
 
 ```sh
 research-project update <project-dir> - --expected-revision 0 --json
@@ -48,8 +45,8 @@ effects need a description. Destructive/external effects default to pending auth
 Roots: `target` for repository outputs, `workspace` for project files, `workspace_root` for shared
 records, `external` for remote outputs.
 
-Objects merge; lists/scalars replace. Task entries merge by ID; omitted fields/tasks stay unchanged.
-Allowed project fields: `title`, `status`, `review`, `cancellation_reason`, `predecessor`, `tasks`.
+Objects merge; lists/scalars replace. Tasks merge by ID; omissions stay unchanged.
+Project fields: `title`, `status`, `review`, `cancellation_reason`, `predecessor`, `tasks`.
 Include `block_reason` for `BLOCKED`, `skip_reason` for `SKIPPED`; clear them with null when
 leaving. Terminal history is immutable. Use full `commit` only for changes outside these fields.
 After a post-commit index failure, run the printed `rebuild-index` recovery; do not repeat the
@@ -57,10 +54,9 @@ update.
 
 ## Documents and records
 
-Use the SHA-256 from `read ... spec --outline` to prevent overwriting a concurrent edit. Initial
-`--sections-json -` input maps all seven exact specification headings to body strings; later batches
-may replace any unique non-overlapping sections. Reflection and architecture are replaced whole with
-`--body-file -`:
+Reuse tokens from edits, validated context or document/outline reads. Initial `--sections-json -`
+maps the seven headings to bodies; later batches replace non-overlapping sections.
+Reflection, architecture and handoff use whole-document `--body-file -`:
 
 ```sh
 research-project edit <project-dir> spec --sections-json - --expected-sha256 <token>
@@ -68,17 +64,16 @@ research-project edit <project-dir> reflection --body-file - --expected-sha256 m
 research-project edit <project-dir> architecture --body-file - --expected-sha256 <token-or-missing>
 ```
 
-`init --briefing` scaffolds an optional `briefing.md` that seeds the grill.
+`init --briefing` optionally seeds the grill.
 
-Append prose without rewriting Markdown:
+Append prose:
 
 ```sh
 research-project append <project-dir> decision --body-file -
 research-project append <project-dir> finding --task T01 --body-file -
 ```
 
-Supply `--entry-id` for retry-safe appends. The same ID and body returns the existing entry;
-different content conflicts. Decisions and findings are not command evidence.
+`--entry-id` makes retries idempotent; different content conflicts. Prose is not evidence.
 
 ## Evidence and effects
 
@@ -87,8 +82,9 @@ tail; failure returns nonzero. `--tail-lines` adjusts stored output; `--timeout 
 a hung command. References have `root`, `path`, `anchor` (or null). Keep commands free of secrets.
 Undecodable output bytes are stored as `\xNN` escapes.
 
-Start work with `task <project-dir> start T01 --expected-revision N`; its JSON includes the complete
-task, direct dependencies and roots. Finish only after judging success criteria:
+`task ... start` resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`, preserving review state
+and normal dependency/authorization guards. Reopen invalidated review acceptance as `pending`.
+Finish after judging success criteria:
 
 ```sh
 research-project task <project-dir> finish T01 --evidence <record-id> \
@@ -99,18 +95,9 @@ research-project task <project-dir> finish T01 --evidence <record-id> \
 selectable checks; `--entry <record-id>` returns one complete entry. Legacy evidence stays valid but
 is not selectable by generated ID.
 
-Close with an existing reflection token or supply one through `--reflection-file -`:
-
-```sh
-research-project close <project-dir> --expected-revision N \
-  --reflection-file - --expected-reflection-sha256 <token-or-missing>
-```
-
-If the reflection is saved but the state commit is rejected, the failing JSON result reports
-`reflection_saved: true`, `committed: false`, the new reflection token, and actual state revision.
-Keep that draft, reload context, and retry against the reported state; do not rewrite the
-reflection. If `committed: true` accompanies an index or final-validation error, do not retry
-`close`; run the reported `rebuild-index` and closure-validation recovery instead.
+Failed `close` reports whether reflection was saved and state committed. Keep saved drafts;
+reload before retrying uncommitted state. For committed index/validation errors, use the reported
+recovery, not another close. `workflow finalize` also saves the final handoff after DONE commits.
 
 For destructive/external work, update authorization explicitly: `required: true`, `status:
 explicit`, the actual `scope`, user-instruction `source`, and real `authorized_at` timestamp.

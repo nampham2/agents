@@ -6,9 +6,7 @@ rather than in a check. Ruff's 120-column rule covers Python only. This test is 
 counterpart: prose lines in the shipped skill documents stay within `WIDTH` columns.
 
 Fenced code blocks, table rows, and lines carrying a URL are exempt, because breaking any of them
-changes what a reader copies. `parallel-execution.md` is exempt as a whole: it is the executor
-protocol, authored at a wider column with hundreds of such lines, and reflowing it is not this
-test's business. Everything else under `plugins/` is checked, and the layout sweep is asserted to
+changes what a reader copies. Everything under `plugins/` is checked, and the layout sweep is asserted to
 find documents so an empty glob cannot pass vacuously.
 """
 
@@ -22,7 +20,6 @@ from tests.conftest import REPO_ROOT
 
 PLUGINS_DIR = REPO_ROOT / "plugins"
 WIDTH = 100
-EXEMPT_DOCUMENTS = frozenset({"parallel-execution.md"})
 URL_PATTERN = re.compile(r"https?://")
 
 
@@ -42,7 +39,7 @@ def over_width_lines(text: str, *, width: int = WIDTH) -> "list[int]":
 
 
 def checked_documents(plugins_dir: Path) -> "list[Path]":
-    return sorted(path for path in plugins_dir.rglob("*.md") if path.name not in EXEMPT_DOCUMENTS)
+    return sorted(plugins_dir.rglob("*.md"))
 
 
 class MarkdownWidthTests(unittest.TestCase):
@@ -58,7 +55,6 @@ class MarkdownWidthTests(unittest.TestCase):
         names = {document.name for document in checked_documents(PLUGINS_DIR)}
         self.assertIn("SKILL.md", names)
         self.assertIn("commands.md", names)
-        self.assertNotIn("parallel-execution.md", names)
 
     def test_the_check_has_teeth(self) -> None:
         long_line = "word " * 30
