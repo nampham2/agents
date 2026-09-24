@@ -29,8 +29,8 @@ when its recovery benefit justifies that cost.
 4. Run `context <project-dir> --validate`. Inspect target changes, applicable branch/commit and
    dirty-path ownership; inspect receipts for uncertain effects. Resolve validation errors or name
    the recovery blocker.
-5. Refresh the live `handoff.md` with that revision/source tokens and the content below. Use
-   `edit <project-dir> handoff --body-file - --expected-sha256 <token-or-missing>`.
+5. Use [`workflow checkpoint`](automation-records.md) with continuation fields and the handoff
+   token; it derives revision/source/Git metadata and returns a resume prompt.
    Mark `Session state: ready for handoff` only after validation and ownership are resolved;
    otherwise mark `blocked`. Check the write result and retain its token. Later record changes
    require a refresh. If saving is blocked, report unsaved essentials and handles in the response.
@@ -60,13 +60,13 @@ constraints for size. Include only what the successor needs:
   explicitly say when none exist.
 - Relevant prior-lesson assessments and pending staging/checks, or none/unavailable.
 
-Link history and owning records rather than copying them. Tokens/revisions are agent-recorded hints;
-the tool guards replacement but cannot certify freshness, truth, permission or ownership.
+Link history and owning records rather than copying them. Derived tokens/revisions are hints;
+they cannot certify semantic freshness, truth, permission or ownership.
 
 ## Resume
 
-Run validated context and read `handoff`, following pagination. Compare prompt/note tokens and
-revision with current records. Inspect target changes and ownership independently of token matches.
+Use [`workflow resume`](automation-context.md) with needed source/task selections and follow
+pagination. Inspect freshness findings, target changes and ownership independently of token matches.
 Reuse valid agreement; load only the next step's requirements, design, dependencies and findings.
 Reuse local lesson assessments; reopen shared sources only for missing detail or changed conditions.
 

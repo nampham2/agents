@@ -340,3 +340,16 @@ def memory_candidates(
     while candidates and len(json.dumps(candidates).encode("utf-8")) > max_bytes:
         candidates.pop()
     return candidates
+
+
+def memory_health(workspace_root: Path, query: str) -> dict[str, object]:
+    """Distinguish unavailable retrieval from a successful search with no matches."""
+    if not (workspace_root / "memory").is_dir():
+        return {"status": "absent", "candidates": []}
+    try:
+        hits = rank_indexed(load_indexed_topics(workspace_root), query)
+        candidates = [{"topic": hit.topic, "description": hit.description[:CANDIDATE_DESCRIPTION_CHARS],
+                       "score": round(hit.score, 3)} for hit in hits[:CANDIDATE_LIMIT]]
+        return {"status": "available" if hits else "no_matches", "candidates": candidates}
+    except (WorkspaceError, OSError) as error:
+        return {"status": "failed", "candidates": [], "diagnostic": str(error)[:1000]}

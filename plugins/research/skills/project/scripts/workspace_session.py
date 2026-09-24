@@ -366,7 +366,15 @@ def update_project_data(
 ) -> dict[str, Any]:
     """Apply a mapping patch without requiring the caller to create a temporary file."""
     project_dir = project_dir.resolve()
-    state = _load_state(project_dir)
+    state = prepare_update(_load_state(project_dir), patch)
+    return commit_state(
+        project_dir, state, expected_revision=expected_revision, lock_timeout=lock_timeout,
+    )
+
+
+def prepare_update(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    """Build a candidate without writing or mutating the caller's state."""
+    state = copy.deepcopy(current)
     if not isinstance(patch, dict):
         raise WorkspaceError("update patch must be a JSON object")
     changes = copy.deepcopy(patch)
@@ -391,9 +399,4 @@ def update_project_data(
             state["tasks"].append(_new_task(change))
     _merge(state, changes)
     state["current_tasks"] = [task["id"] for task in state["tasks"] if task.get("status") == "RUNNING"]
-    return commit_state(
-        project_dir,
-        state,
-        expected_revision=expected_revision,
-        lock_timeout=lock_timeout,
-    )
+    return state

@@ -12,6 +12,7 @@ from typing import Any
 from memory_search import creation_gate, rank_topics, search_postmortems
 from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document
 from workspace_evidence import evidence_entries
+from workspace_journal import OperationError
 from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
@@ -49,6 +50,7 @@ from workspace_session import (
     update_project_data,
     validated_project_context,
 )
+from workspace_workflows import FIELDS, READ_ACTIONS, preview, workflow
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -71,6 +73,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     initialize.add_argument("--lock-timeout", type=float, default=5.0)
     initialize.add_argument("--briefing", action="store_true", help="also scaffold an optional discovery briefing")
+    initialize.add_argument(
+        "--json", action="store_true", help="return path, revision, roots, document tokens and warnings"
+    )
+
+    automation = subparsers.add_parser("workflow", help="Named lifecycle automation with closed JSON input schemas")
+    automation.add_argument("project_directory", type=Path)
+    automation.add_argument("action", choices=sorted(FIELDS.keys() | READ_ACTIONS))
+    automation.add_argument("input_json", type=Path, help="JSON input file, or '-' for stdin")
 
     context = subparsers.add_parser("context", help="Print bounded resume context without completed task history")
     context.add_argument("project_directory", type=Path)
@@ -111,6 +121,7 @@ def _build_parser() -> argparse.ArgumentParser:
     update.add_argument("--expected-revision", type=int, required=True)
     update.add_argument("--lock-timeout", type=float, default=5.0)
     update.add_argument("--json", action="store_true", help="print a compact structured mutation result")
+    update.add_argument("--dry-run", action="store_true", help="return a patch diff and validation without writing")
 
     edit = subparsers.add_parser("edit", help="Guardedly replace project-owned Markdown content")
     edit.add_argument("project_directory", type=Path)
@@ -408,10 +419,21 @@ def main() -> int:
             # Warned at init as well as at validation, because this is the moment someone chooses
             # where the record of the work will live. Checked after allocation, since --create-root
             # means the directory to check may not have existed a moment ago.
-            for warning in vcs_warnings(workspace_root):
+            warnings = vcs_warnings(workspace_root)
+            for warning in warnings:
                 print(f"WARNING: {warning}", file=sys.stderr)
-            print(project_dir)
+            if args.json:
+                initial = validated_project_context(project_dir)
+                print(json.dumps({"project_directory": str(project_dir), "revision": initial["revision"],
+                    "roots": initial["roots"], "documents": initial["documents"], "warnings": warnings}, indent=2))
+            else:
+                print(project_dir)
             return 0
+
+        if args.command == "workflow":
+            result = workflow(args.project_directory, args.action, _read_json_object(args.input_json))
+            print(json.dumps(result, indent=2))
+            return 1 if result.get("valid") is False or result.get("passed") is False else 0
 
         if args.command == "context":
             if args.validate:
@@ -455,6 +477,10 @@ def main() -> int:
             return 0
 
         if args.command == "update":
+            if args.dry_run:
+                result = preview(args.project_directory, _read_json_object(args.patch_json), args.expected_revision)
+                print(json.dumps(result, indent=2))
+                return 0 if result["valid"] else 1
             if str(args.patch_json) == "-":
                 patch = _read_json_object(args.patch_json)
                 state = update_project_data(
@@ -742,7 +768,7 @@ def main() -> int:
                 return 1
             return 0
 
-    except CloseOperationError as error:
+    except (CloseOperationError, OperationError) as error:
         print(json.dumps(error.result, indent=2))
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

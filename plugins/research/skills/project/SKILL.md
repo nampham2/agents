@@ -10,8 +10,7 @@ description: >
 
 Invoke with `/research:project [problem statement]`.
 
-Use tokens carefully: reuse saved context, retrieve selectively, and report briefly.
-Preserve essential constraints and evidence.
+Reuse saved context and retrieve selectively, preserving constraints and evidence.
 
 ## Durable context
 
@@ -19,6 +18,9 @@ Save consequential decisions before dependent work and findings before switching
 [durable-context.md](references/durable-context.md) on the first save. Refresh `handoff.md` when
 continuation context changes; batch saves and reuse tokens. Preserve open questions, source pointers
 and the distinction between proposals and agreement.
+
+Read [automation.md](references/automation.md) and the action's selected reference before use.
+Prefer its named commands over agent-authored bookkeeping; supply judgments and actual consent.
 
 ## Session boundaries
 
@@ -45,17 +47,16 @@ Find an existing project with paged `list-projects <root> --query "<objective>"`
 needs no discovery. Check objective and ownership, then run:
 
 ```sh
-research-project context <project-dir> --validate
+research-project workflow <project-dir> resume -
 ```
 
-Resolve validation errors and contradictions first. Context includes roots, revision and document
-tokens, including optional `handoff.md`; follow truncation with targeted reads. Do not reload
-unchanged context.
+Send `{}` or explicit source/task selections. Resolve validation errors and contradictions;
+follow truncation with targeted reads. `context --validate` remains a compact metadata-only option.
 
 Create a project with:
 
 ```sh
-research-project init <root> --title "<title>" --working-directory <target>
+research-project init <root> --title "<title>" --working-directory <target> --json
 ```
 
 Report version-control warnings; never initialize or commit repositories implicitly.
@@ -81,12 +82,12 @@ Clear requirements need confirmation, even with zero question rounds. Write thes
 ### Destructive and external actions
 ```
 
-Use `read <project-dir> spec --outline` for the content token, then one guarded `edit ... spec
---sections-json ... --expected-sha256 ...` for initial or batched changes. Append consequential
-decisions with `append ... decision`; avoid transcripts and duplicate task narratives.
+Save related spec sections, decisions, design drafts and continuation with `workflow ... round`.
+Use `workflow ... confirm` for actual agreement against the proposal token. Single findings can
+use `append ... finding`; avoid transcripts and duplicate task narratives.
 
-Record explicit requirements/design agreement and guardedly save `architecture.md` with
-`Status: agreed` before planning. Follow the architecture reference's coverage and transition rules.
+Record explicit requirements/design agreement and `Status: agreed` before planning. Follow the
+architecture reference's coverage and transition rules.
 Reuse current agreement on resume; missing records or material changes reopen affected choices.
 
 ## Plan tasks
@@ -107,7 +108,8 @@ revision conflicts. Avoid temporary patch files.
 Apply routine corrections directly when scope, dependencies, authorization and acceptance criteria
 remain valid. Settle affected workers first; record useful findings and rerun affected checks.
 For invalidated assignments, inputs or agreement, follow
-[execution-changes.md](references/execution-changes.md). Terminal tasks need new correction IDs.
+[execution-changes.md](references/execution-changes.md). `workflow ... correct` allocates correction
+tasks for terminal work without copying old acceptance or consent.
 
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
 and roots; it resumes `EXECUTING` from `REVIEW`. Supply applicable constraints. Dependencies must be
@@ -118,7 +120,8 @@ Resolve worker ownership before takeover. If `execution_active` is true, read
 [legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs
 startup and repeated discovery; read [task-workers.md](references/task-workers.md) when doing so.
 
-Work in the target and record acceptance checks:
+Work in the target. Use `workflow ... verify` for explicit check batches with durable attempts;
+single checks may use:
 
 ```sh
 research-project record-evidence <project-dir> --task T01 --json -- <command>
@@ -132,18 +135,17 @@ evidence.
 
 ## Review and close
 
-Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional.
+Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional;
+`workflow ... review` saves supplied findings and review state together.
 When tasks are `DONE` or justified `SKIPPED`, required reviews accepted, and receipts present,
 close:
 
 ```sh
-research-project close <project-dir> --expected-revision <revision> \
-  --reflection-file - --expected-reflection-sha256 <token>
+research-project workflow <project-dir> finalize -
 ```
 
-Supply outcome, limitations, and next steps. Fix closure errors; after a committed index-only
-failure, use the stated `rebuild-index` recovery rather than closing again. Report the result and
-project path.
+Supply reflection, continuation, retry ID, revision and document tokens. Fix closure errors;
+use reported same-ID recovery for partial writes, never replay effects. Report result and path.
 
 Load [reports](references/report-design.md), [layout](references/durable-context.md) and
 [maintenance](references/maintenance.md) only when needed. Reports, task graphs and delivery reviews

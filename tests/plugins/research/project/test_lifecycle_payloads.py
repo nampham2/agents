@@ -134,6 +134,11 @@ def test_default_instruction_payload_budget() -> None:
     routine = (skill / "references/commands.md").read_text()
     assert len(entry.split()) <= 900
     assert len((entry + routine).split()) <= 1500
+    router = (skill / "references/automation.md").read_text()
+    assert len((entry + routine + router).split()) <= 1750
+    for reference in ("automation-context", "automation-records", "automation-execution"):
+        selected = (skill / f"references/{reference}.md").read_text()
+        assert len((entry + routine + router + selected).split()) <= 2350
 
 
 @pytest.mark.parametrize("scenario,references,budget", [

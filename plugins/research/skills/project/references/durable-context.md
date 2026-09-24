@@ -45,8 +45,8 @@ Requested cleanup must preserve cited outputs, evidence, receipts and recovery r
 ### Delivery-review checkpoints
 
 Use delivery review only when required by the user, acceptance criteria or repository workflow.
-Record reviewer/date, scope/version, findings/dispositions, outcome and evidence in the next
-`reviews/review_NN.md`; align canonical [review state](workspace-schema.md#review-state).
+Use [`workflow review`](automation-records.md) with reviewer, scope/version, findings/dispositions,
+outcome and evidence; it allocates `reviews/review_NN.md` and aligns canonical review state.
 File existence or passing tests do not establish acceptance. Preserve earlier cycles.
 Requirements/design agreement stays in spec/architecture; implementation fixes use task notes and
 new correction tasks for terminal work. Reopen acceptance invalidated by corrections as `pending`.
@@ -60,8 +60,8 @@ These labels do not change canonical status or ownership.
 
 Refresh after material continuation changes, before waiting/ending a turn or a risky operation.
 Batch related saves; a routine task transition already captured in state/evidence needs no duplicate
-narrative. Reuse the last returned handoff token with `edit ... handoff --body-file -
---expected-sha256 <token-or-missing>`; read only when missing context or resolving conflicts.
+narrative. Use [`workflow checkpoint`](automation-records.md) with the last token and continuation
+fields; metadata is derived. Read only for missing context or conflicts.
 Move lasting facts to owning records before replacing the note, retaining unresolved entries.
 
 Write owning records first. Check every result: cross-document writes are not one transaction.

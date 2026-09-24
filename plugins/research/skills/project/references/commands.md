@@ -1,14 +1,15 @@
 # Routine commands
 
-Commands support v3 and v4.
+Use [named automation](automation.md) for composed work: `workflow <project-dir> <action> -`
+accepts typed JSON on stdin. Follow its action-specific schemas and recovery contracts.
+`init --json` supplies initial tokens; `update --dry-run` previews a small patch without writing.
 
 ## Retrieve
 
 `context <project-dir> --validate` returns revision, active summaries, ready IDs, review/executor
 status, roots, document tokens and validation findings. Specification text is capped at 6,000
-characters; `--limit` sets summary count (1–20). `--task T01 --task-only` returns the full task and
-direct dependencies; `--worker` changes its role. Both omit specification/logs, grant no authority,
-and need applicable constraints, decisions and inputs from the coordinator.
+characters; `--limit` sets summary count (1–20). `--task T01 --task-only` returns task/dependencies;
+`--worker` changes its role, granting no authority.
 
 `read <project-dir> spec --section "Constraints and important assumptions"` selects an exact
 heading; `--outline` returns headings and the SHA-256 token. Default reads exclude Decision history;
@@ -22,7 +23,7 @@ returning 10 matches. Page with `--limit` (1–100) and `--offset`. Invalid/lega
 
 ## Update
 
-Send a small patch through stdin or a file:
+Send a small JSON patch:
 
 ```sh
 research-project update <project-dir> - --expected-revision 0 --json
@@ -44,8 +45,8 @@ effects need a description. Destructive/external effects default to pending auth
 Roots: `target` for repository outputs, `workspace` for project files, `workspace_root` for shared
 records, `external` for remote outputs.
 
-Objects merge; lists/scalars replace. Task entries merge by ID; omitted fields/tasks stay unchanged.
-Allowed project fields: `title`, `status`, `review`, `cancellation_reason`, `predecessor`, `tasks`.
+Objects merge; lists/scalars replace. Tasks merge by ID; omissions stay unchanged.
+Project fields: `title`, `status`, `review`, `cancellation_reason`, `predecessor`, `tasks`.
 Include `block_reason` for `BLOCKED`, `skip_reason` for `SKIPPED`; clear them with null when
 leaving. Terminal history is immutable. Use full `commit` only for changes outside these fields.
 After a post-commit index failure, run the printed `rebuild-index` recovery; do not repeat the
@@ -63,7 +64,7 @@ research-project edit <project-dir> reflection --body-file - --expected-sha256 m
 research-project edit <project-dir> architecture --body-file - --expected-sha256 <token-or-missing>
 ```
 
-`init --briefing` scaffolds an optional `briefing.md` that seeds the grill.
+`init --briefing` optionally seeds the grill.
 
 Append prose:
 
@@ -72,8 +73,7 @@ research-project append <project-dir> decision --body-file -
 research-project append <project-dir> finding --task T01 --body-file -
 ```
 
-Use `--entry-id` for retries: identical content returns the entry; changed content conflicts.
-Prose is not command evidence.
+`--entry-id` makes retries idempotent; different content conflicts. Prose is not evidence.
 
 ## Evidence and effects
 
@@ -95,11 +95,9 @@ research-project task <project-dir> finish T01 --evidence <record-id> \
 selectable checks; `--entry <record-id>` returns one complete entry. Legacy evidence stays valid but
 is not selectable by generated ID.
 
-If the reflection is saved but the state commit is rejected, the failing JSON result reports
-`reflection_saved: true`, `committed: false`, the new reflection token, and actual state revision.
-Keep that draft, reload context, and retry against the reported state; do not rewrite the
-reflection. If `committed: true` accompanies an index or final-validation error, do not retry
-`close`; run the reported `rebuild-index` and closure-validation recovery instead.
+Failed `close` reports whether reflection was saved and state committed. Keep saved drafts;
+reload before retrying uncommitted state. For committed index/validation errors, use the reported
+recovery, not another close. `workflow finalize` also saves the final handoff after DONE commits.
 
 For destructive/external work, update authorization explicitly: `required: true`, `status:
 explicit`, the actual `scope`, user-instruction `source`, and real `authorized_at` timestamp.

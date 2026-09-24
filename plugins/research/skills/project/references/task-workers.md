@@ -11,12 +11,12 @@ effects or nested delegation. Sequential work remains the default.
 After checking dependencies, authorization and ownership, record `RUNNING` and retrieve:
 
 ```sh
-research-project context <project-dir> --task T01 --worker
+research-project workflow <project-dir> packet -
 ```
 
-Add applicable specification constraints, current user decisions, input paths, dependency findings,
-write scope, and the assignment's relationship to the authorized outcome. Preserve necessary
-requirements even when lengthy. Do not copy conversation history, the entire project skill, or logs.
+Select the task and needed sources using [packet input](automation-context.md). Supply constraints,
+current decisions, input paths, findings, write scope and relationship to the authorized outcome.
+Preserve lengthy requirements. Do not copy conversation history, the entire skill, or logs.
 Workers can read relevant source and repository instructions beyond the input pointers.
 Include applicable adopted-lesson summaries and pending checks from project records; worker
 context omits shared-memory candidates. Return new reusable observations to the coordinator.
@@ -26,8 +26,8 @@ conversation inheritance disabled (`fork_turns: "none"` or `fork_context: false`
 schema supports). Preserve the configured model. If fresh context, observation, or stopping is
 unavailable or delegation is prohibited, continue inline; do not launch a detached CLI workaround.
 
-Before launch, record task ID, revision, write scope and launch intent in coordinator-owned
-`tasks/<id>.md`; record the host handle immediately. Keep this a current recovery note.
+Use [`workflow worker-event`](automation-execution.md) for launch intent, then the observed host
+handle/outcome in `tasks/<id>.md`. Keep this a current recovery note.
 Native workers are not tracked by `execution_active`; never overlap legacy owners or edit a worker's
 assigned files concurrently.
 
