@@ -53,6 +53,9 @@ new correction tasks for terminal work. Reopen acceptance invalidated by correct
 
 ## Maintain the continuation note while working
 
+Read [handoff-writing.md](handoff-writing.md) before writing continuation fields or a brief; apply
+its provenance, verifier-status and preservation rules to routine checkpoints and closure too.
+
 Keep `handoff.md` short: focus/next action, open decisions, partial work, relevant pointers,
 agreement, current revision/spec/design tokens, and worker/command ownership or uncertain effects.
 Mark it `Session state: working`, `waiting`, `blocked`, or `ready for handoff`.

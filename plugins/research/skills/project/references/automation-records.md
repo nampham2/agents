@@ -40,6 +40,10 @@ Continuation fields are strings: `next` (required on first checkpoint), `questio
 `partial`, `ownership`, `effects`, `lessons`, `session`. Only supplied fields change; empty text
 explicitly resolves a prior field. Session labels: `working`, `waiting`, `blocked`, `ready for
 handoff`. Claim readiness only after validation and actual ownership/effect reconciliation.
+Before supplying continuation, read [handoff-writing.md](handoff-writing.md). Put verifier status
+in `next`/`partial`, sourced external observations in `ownership`/`effects`, and the literal
+`## Do not` list inside `effects`; these are Markdown strings, not new input fields. Checkpoint
+metadata does not verify their prose, and merged fields retain their original observation times.
 Existing free-form handoffs require `import_legacy: true`; their full text is preserved.
 An unchanged checkpoint is not rewritten. Scripts derive metadata, not the next decision.
 
