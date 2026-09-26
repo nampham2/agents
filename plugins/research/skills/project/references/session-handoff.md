@@ -2,6 +2,7 @@
 
 Use this reference when preparing/receiving a handoff or recovering an interruption. Only one
 coordinator writes at a time; a note neither launches a replacement nor transfers ownership.
+Read [handoff-writing.md](handoff-writing.md) before preparing the note or a companion brief.
 
 ## When to hand off
 
@@ -65,8 +66,12 @@ they cannot certify semantic freshness, truth, permission or ownership.
 
 ## Resume
 
-Use [`workflow resume`](automation-context.md) with needed source/task selections and follow
-pagination. Inspect freshness findings, target changes and ownership independently of token matches.
+Start with [`workflow resume`](automation-context.md), which includes freshness, using needed
+source/task selections and following pagination. Inspect freshness findings, target changes and
+ownership independently of token matches. Re-check consequential external claims with the note's
+commands; unresolved `UNVERIFIED` claims block work that relies on them. Check a brief's expiry and
+handoff token before following its instructions. A verifier fault leaves the subject verdict
+unknown.
 Reuse valid agreement; load only the next step's requirements, design, dependencies and findings.
 Reuse local lesson assessments; reopen shared sources only for missing detail or changed conditions.
 
