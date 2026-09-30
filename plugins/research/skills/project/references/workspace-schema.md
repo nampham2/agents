@@ -21,7 +21,8 @@ way and carry the same rule; see [Workspace root files](#workspace-root-files).
 
 ## Canonical v4 state
 
-Every listed field is required except `predecessor` and the v4-only task `reads` declaration:
+Every listed field is required except `predecessor`, `worktrees` and the v4-only task `reads`
+declaration:
 
 ```json
 {
@@ -48,6 +49,20 @@ Every listed field is required except `predecessor` and the v4-only task `reads`
     "attempts": {}
   },
   "predecessor": "2026-08-20-001",
+  "worktrees": [
+    {
+      "repository": "/absolute/path/to/main-checkout",
+      "path": "/absolute/path/to/main-checkout.worktrees/2026-08-28-001",
+      "branch": "npham/2026-08-28-001-short-slug",
+      "base_commit": "eefe8d1105560e2418d7620d5f670c2bc36d9975",
+      "kind": "created",
+      "role": "target",
+      "status": "active",
+      "recorded_at": "2026-08-28T10:05:00+02:00",
+      "confirmation": {"source": "user reply 2026-08-28", "response": "yes, that path"},
+      "closure": null
+    }
+  ],
   "tasks": [
     {
       "id": "T01",
@@ -196,6 +211,20 @@ Evidence references use:
 `anchor` is a non-empty string or null. Local evidence files referenced by `DONE` tasks must exist.
 Every `DONE` task has at least one evidence reference. Keep evidence concise; link large logs
 instead of embedding them.
+
+## Recorded worktrees
+
+`worktrees` (v3 and v4, optional) lists one entry per repository the project works in, written only
+by `workflow <project-dir> worktree`, which reads Git before recording. `kind` is `created` (the
+agent ran `git worktree add` after the user confirmed path and branch), `existing` (the target
+already was a linked worktree) or `none` (the target is not a repository; `repository`, `branch`
+and `base_commit` are null). `role` is `target` for the one entry that owns `working_directory` or
+`additional` for further repositories. `status` moves from `active` to `kept` or `removed` through a
+`close` operation whose `closure` object stores `decision` (`keep`, `accept_dirty`, `remove`), the
+`dirty` status lines observed at that moment, `observed_at`, and the user's quoted `source` and
+`response`. A `keep` decision requires an empty snapshot. While a `target` worktree stands,
+`working_directory` equals its `path`; once removed it equals `repository`. `finalize` refuses an
+`active` repository worktree or a kept-clean one that is dirty again; a missing directory warns.
 
 ## Effects and authorization
 

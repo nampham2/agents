@@ -82,6 +82,9 @@ placement. Keep these surfaces aligned:
 
 ## Research workspace invariants
 
+- Repository work happens in a recorded git worktree. Only `workflow ... worktree` writes the
+  `worktrees` field, and only from what Git reports; the tools never create, commit or remove a
+  worktree. Closure needs the user's keep/remove decision for every recorded repository worktree.
 - Migration must not manufacture consent. Only a legacy `DONE` task carries authorization forward;
   migrate a `RUNNING` external task to `BLOCKED` with pending authorization.
 - Validation sees arbitrary JSON before `validate_v3_state`; malformed input must produce findings,

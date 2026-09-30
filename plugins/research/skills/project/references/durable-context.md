@@ -25,6 +25,7 @@ its handle when available and its outcome when observed. Native workers follow
 | Findings, partial work and worker recovery | `append ... finding --task <id>` into `tasks/<id>.md`. |
 | Acceptance checks | `record-evidence`, retaining actual output and failures. |
 | Task status, authorization and receipts | Guarded `project.json` operations. |
+| Repository worktrees and their closure decisions | `workflow ... worktree` entries in `project.json`. |
 | Continuation context | `handoff.md`, linking owning records. |
 | Prior/new lessons | Local assessments / `memory-staging.md`; see [memory-operations.md](memory-operations.md). |
 

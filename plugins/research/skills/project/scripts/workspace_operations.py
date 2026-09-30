@@ -59,6 +59,12 @@ def _result(
                 "workspace_root": str(project_dir.parent),
             },
         })
+        from workspace_context import worktree_status
+
+        # An assignment is the moment before the first write, which is exactly when a repository
+        # target without a recorded worktree has to be noticed.
+        result["worktree"] = worktree_status(state)
+        result["warnings"] = list(result["worktree"]["warnings"])
     return result
 
 

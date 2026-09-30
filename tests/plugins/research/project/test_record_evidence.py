@@ -262,7 +262,11 @@ class EvidenceHeadingTests(_ProjectFixture):
 
     def test_a_multi_line_command_becomes_one_heading_line(self) -> None:
         script = "import sys\nfor value in (1, 2):\n    print(value)\n"
-        record_evidence(self.project_dir, "T01", [sys.executable, "-c", script])
+        # The interpreter path is part of the heading, and a checkout under a long directory (a
+        # git worktree, a deep CI path) is long enough to push the script past the heading limit.
+        # This case is about newline collapsing, so give it room and leave truncation to its own test.
+        with patch.object(workspace_lib, "EVIDENCE_HEADING_MAX_CHARS", 400):
+            record_evidence(self.project_dir, "T01", [sys.executable, "-c", script])
         text = self.evidence.read_text(encoding="utf-8")
         heading = self._heading()
         self.assertNotIn("\n", heading)

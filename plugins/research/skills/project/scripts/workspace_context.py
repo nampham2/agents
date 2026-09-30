@@ -63,6 +63,23 @@ def selected_read(project: Path, selection: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _git(target: Path, *arguments: str) -> "str | None":
+    """Run one read-only Git query; None means Git refused (not a repository, bad ref)."""
+    completed = subprocess.run(
+        ["git", "-C", str(target), *arguments],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="backslashreplace",
+        timeout=5,
+    )
+    if completed.returncode:
+        return None
+    # Only trailing newlines go: a porcelain status line starts with its status column, and a
+    # leading space there is the difference between "modified" and "staged".
+    return completed.stdout.rstrip("\n")
+
+
 def git_observation(target: Path) -> dict[str, Any]:
     """Observe Git metadata only; never attribute dirty paths to an actor."""
     result: dict[str, Any] = {}
@@ -72,23 +89,169 @@ def git_observation(target: Path) -> dict[str, Any]:
             ("branch", ["branch", "--show-current"]),
             ("dirty", ["status", "--porcelain=v1", "--untracked-files=normal"]),
         ):
-            completed = subprocess.run(
-                ["git", "-C", str(target), *arguments],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="backslashreplace",
-                timeout=5,
-            )
-            if completed.returncode:
+            output = _git(target, *arguments)
+            if output is None:
                 return {"available": False}
-            output = completed.stdout.strip()
+            output = output.strip()
             result[key] = output[:4000]
             result[key + "_sha256"] = document_sha256(output)
             result[key + "_truncated"] = len(output) > 4000
     except (OSError, subprocess.TimeoutExpired):
         return {"available": False}
     return {"available": True, **result}
+
+
+def worktree_observation(path: Path) -> dict[str, Any]:
+    """Describe a directory as Git sees it: repository, linked worktree, branch, head, dirty paths.
+
+    Read-only and bounded. `available` is False only when Git itself could not be consulted; a
+    directory that is not a repository is a normal observation, not a failure. `repository` is the
+    main checkout that owns the worktree (the parent of the common Git directory), and `toplevel`
+    lets a caller insist that `path` is the worktree root rather than a subdirectory of one.
+    Dirty paths include untracked files: an uncommitted new file is exactly what closure must not
+    lose. Nothing here attributes a dirty path to an actor.
+    """
+    result: dict[str, Any] = {
+        "available": True,
+        "exists": path.is_dir(),
+        "is_repository": False,
+        "is_worktree": False,
+        "repository": None,
+        "toplevel": None,
+        "branch": None,
+        "head": None,
+        "dirty": [],
+    }
+    if not result["exists"]:
+        return result
+    try:
+        inside = _git(path, "rev-parse", "--is-inside-work-tree")
+        if inside != "true":
+            return result
+        toplevel = _git(path, "rev-parse", "--show-toplevel")
+        git_dir = _git(path, "rev-parse", "--absolute-git-dir")
+        common = _git(path, "rev-parse", "--git-common-dir")
+        head = _git(path, "rev-parse", "HEAD")
+        branch = _git(path, "branch", "--show-current")
+        status = _git(path, "status", "--porcelain=v1", "--untracked-files=normal")
+        if None in (toplevel, git_dir, common, branch, status):
+            return {**result, "available": False}
+    except (OSError, subprocess.TimeoutExpired):
+        return {**result, "available": False}
+    assert toplevel is not None and git_dir is not None and common is not None
+    assert branch is not None and status is not None
+    common_path = Path(common) if Path(common).is_absolute() else Path(toplevel) / common
+    common_path = common_path.resolve()
+    result.update(
+        is_repository=True,
+        is_worktree=Path(git_dir).resolve() != common_path,
+        repository=str(common_path.parent),
+        toplevel=str(Path(toplevel).resolve()),
+        # A fresh repository has no commit yet; that is an observation, not an error.
+        head=head,
+        branch=branch,
+        dirty=status.splitlines()[:200],
+    )
+    return result
+
+
+def worktree_registered(repository: Path, path: Path) -> "bool | None":
+    """Report whether `repository` still lists `path` as a worktree; None when Git cannot say."""
+    try:
+        listing = _git(repository, "worktree", "list", "--porcelain")
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if listing is None:
+        return None
+    wanted = path.resolve()
+    for line in listing.splitlines():
+        if line.startswith("worktree ") and Path(line[len("worktree "):]).resolve() == wanted:
+            return True
+    return False
+
+
+WORKTREE_GUIDANCE = (
+    "read references/worktrees.md, confirm a worktree path and branch with the user, create it, and record it "
+    "with `workflow <project-dir> worktree` before the first write"
+)
+
+
+def worktree_status(state: dict[str, Any]) -> dict[str, Any]:
+    """Say whether the target root is a repository and whether a recorded worktree covers it.
+
+    This is the observation task start and resume hand to the agent. It grants nothing: the warning
+    is the cue to run the worktree procedure, and a legacy project without the field gets the same
+    cue as a new one because its repository is just as unprotected.
+    """
+    target = state["working_directory"]
+    recorded = next(
+        (item for item in state.get("worktrees", []) if item["role"] == "target" and item["status"] != "removed"),
+        None,
+    )
+    seen = worktree_observation(Path(target))
+    warnings: list[str] = []
+    if not seen["available"]:
+        warnings.append(f"Git could not be consulted for {target}; worktree state is unknown")
+    elif seen["is_repository"] and recorded is None:
+        kind = "linked worktree" if seen["is_worktree"] else "repository"
+        warnings.append(f"target {target} is a Git {kind} with no recorded worktree; {WORKTREE_GUIDANCE}")
+    return {
+        "target": target,
+        "available": seen["available"],
+        "is_repository": seen["is_repository"] if seen["available"] else None,
+        "is_worktree": seen["is_worktree"] if seen["available"] else None,
+        "recorded": recorded,
+        "additional": [
+            item for item in state.get("worktrees", []) if item["role"] == "additional" and item["status"] != "removed"
+        ],
+        "warnings": warnings,
+    }
+
+
+def worktree_closure_findings(state: dict[str, Any]) -> tuple[list[str], list[str]]:
+    """Errors that must stop closure and warnings that must reach the handoff.
+
+    Every repository worktree needs the user's keep/remove decision before the project closes, and
+    a worktree kept as clean must still be clean now: work committed between the decision and
+    finalize is fine, new uncommitted work is not. Untouched observation failures are warnings so
+    that a machine without Git can still close a project whose decisions are recorded.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    for item in state.get("worktrees", []):
+        if item["kind"] == "none" or item["status"] == "removed":
+            continue
+        path = item["path"]
+        if item["status"] == "active":
+            errors.append(
+                f"worktree {path} has no closure decision; report `git status`, ask the user whether to commit "
+                "and whether to keep or remove it, then record `workflow <project-dir> worktree` close"
+            )
+            continue
+        seen = worktree_observation(Path(path))
+        if not seen["available"]:
+            warnings.append(f"worktree {path} could not be observed at closure; mark it UNVERIFIED in the handoff")
+        elif not seen["exists"]:
+            warnings.append(f"worktree {path} was kept but is missing on disk; record its removal if intended")
+        elif seen["dirty"] and item["closure"]["decision"] == "keep":
+            errors.append(
+                f"worktree {path} was kept as clean but now has uncommitted changes: "
+                + ", ".join(seen["dirty"][:10])
+                + "; commit them (only when the user asks) or record accept_dirty"
+            )
+    return errors, warnings
+
+
+def worktree_summaries(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Compact per-worktree observations for checkpoint metadata."""
+    summaries = []
+    for item in state.get("worktrees", []):
+        summary: dict[str, Any] = {"path": item["path"], "branch": item["branch"], "status": item["status"]}
+        if item["kind"] != "none" and item["status"] != "removed":
+            seen = worktree_observation(Path(item["path"]))
+            summary["dirty"] = len(seen["dirty"]) if seen["available"] and seen["exists"] else None
+        summaries.append(summary)
+    return summaries
 
 
 def checkpoint_data(project: Path) -> dict[str, Any] | None:
@@ -103,7 +266,7 @@ def checkpoint_data(project: Path) -> dict[str, Any] | None:
         raise WorkspaceError("checkpoint metadata is unreadable") from error
     object_input(
         value,
-        {"version", "revision", "phase", "sources", "git", "continuation", "recorded", "tasks", "review"},
+        {"version", "revision", "phase", "sources", "git", "worktrees", "continuation", "recorded", "tasks", "review"},
         {"version", "revision", "sources", "continuation", "git"},
     )
     if (
@@ -157,6 +320,7 @@ def render_checkpoint(
         "phase": state["status"],
         "sources": sources,
         "git": git_observation(Path(state["working_directory"])),
+        "worktrees": worktree_summaries(state),
         "continuation": continuation,
         "tasks": [
             {"id": task["id"], "evidence": task["evidence"]}
@@ -229,6 +393,7 @@ def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
             maximum -= len(item.get("text", ""))
             selected.append(item)
         context.update(sources=selected, omitted=omitted, freshness=checkpoint_freshness(project))
+        context["worktree"] = worktree_status(_load_state(project))
         context["memory_health"] = memory_health(project.parent, context["title"])
         if "task" in request:
             context["assignment"] = project_context(project, task_id=string_input(request["task"]), task_only=True)
