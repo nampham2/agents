@@ -372,13 +372,19 @@ def update_project_data(
     )
 
 
-def prepare_update(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+UPDATE_FIELDS = {"title", "status", "review", "cancellation_reason", "predecessor", "tasks"}
+# Fields only a verifying operation may patch: `update` must not be able to declare a worktree or
+# move the target root without the Git observations the `worktree` action insists on.
+INTERNAL_UPDATE_FIELDS = UPDATE_FIELDS | {"worktrees", "working_directory"}
+
+
+def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: bool = False) -> dict[str, Any]:
     """Build a candidate without writing or mutating the caller's state."""
     state = copy.deepcopy(current)
     if not isinstance(patch, dict):
         raise WorkspaceError("update patch must be a JSON object")
     changes = copy.deepcopy(patch)
-    unknown = changes.keys() - {"title", "status", "review", "cancellation_reason", "predecessor", "tasks"}
+    unknown = changes.keys() - (INTERNAL_UPDATE_FIELDS if internal else UPDATE_FIELDS)
     if unknown:
         raise WorkspaceError("unsupported update fields: " + ", ".join(sorted(unknown)))
     task_changes = changes.pop("tasks", [])

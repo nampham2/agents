@@ -114,7 +114,8 @@ tasks for terminal work without copying old acceptance or consent.
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
 and roots; it resumes `EXECUTING` from `REVIEW`. Supply applicable constraints. Dependencies must be
 `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
-existing authorization counts.
+existing authorization counts. A repository target needs a user-confirmed, recorded worktree
+before its first write: follow [worktrees.md](references/worktrees.md) when the assignment warns.
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
 [legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs
@@ -137,8 +138,9 @@ evidence.
 
 Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional;
 `workflow ... review` saves supplied findings and review state together.
-When tasks are `DONE` or justified `SKIPPED`, required reviews accepted, and receipts present,
-close:
+When tasks are `DONE` or justified `SKIPPED`, required reviews accepted, receipts present, and
+each recorded worktree has the user's commit and keep/remove decision
+([worktrees.md](references/worktrees.md)), close:
 
 ```sh
 research-project workflow <project-dir> finalize -

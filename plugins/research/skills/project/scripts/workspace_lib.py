@@ -80,8 +80,29 @@ PROJECT_FIELDS = {
     "cancellation_reason",
     "tasks",
     "predecessor",
+    "worktrees",
 }
 PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution"}
+# Fields a valid project may omit: `predecessor` names a maintenance ancestor and `worktrees` is
+# only present once a repository worktree, or its absence, has been recorded.
+OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees"}
+WORKTREE_FIELDS = {
+    "repository",
+    "path",
+    "branch",
+    "base_commit",
+    "kind",
+    "role",
+    "status",
+    "recorded_at",
+    "confirmation",
+    "closure",
+}
+WORKTREE_KINDS = {"created", "existing", "none"}
+WORKTREE_ROLES = {"target", "additional"}
+WORKTREE_STATUSES = {"active", "kept", "removed"}
+WORKTREE_CLOSURE_FIELDS = {"decision", "dirty", "observed_at", "source", "response"}
+WORKTREE_DECISIONS = {"keep": "kept", "accept_dirty": "kept", "remove": "removed"}
 TASK_FIELDS = {
     "id",
     "name",
@@ -1190,6 +1211,110 @@ def _section_content(markdown: str, heading: str) -> str | None:
     return remainder[: next_heading.start() if next_heading else None].strip()
 
 
+def _validate_worktree_closure(value: object, label: str, status: object, report: ValidationReport) -> None:
+    if status == "active":
+        if value is not None:
+            report.errors.append(f"{label}: closure must be null while the worktree is active")
+        return
+    if not isinstance(value, dict):
+        report.errors.append(f"{label}: closure must be an object once the worktree is kept or removed")
+        return
+    _missing_fields(value, WORKTREE_CLOSURE_FIELDS, f"{label}.closure", report)
+    _unexpected_fields(value, WORKTREE_CLOSURE_FIELDS, f"{label}.closure", report)
+    decision = value.get("decision")
+    if not _enum_string(decision, set(WORKTREE_DECISIONS)):
+        report.errors.append(f"{label}.closure: decision must be one of {', '.join(sorted(WORKTREE_DECISIONS))}")
+    elif WORKTREE_DECISIONS[decision] != status:
+        report.errors.append(f"{label}.closure: decision {decision!r} does not match status {status!r}")
+    dirty = value.get("dirty")
+    if not isinstance(dirty, list) or not all(isinstance(item, str) for item in dirty):
+        report.errors.append(f"{label}.closure: dirty must be a list of status lines")
+    elif decision == "keep" and dirty:
+        report.errors.append(f"{label}.closure: a keep decision requires an empty dirty snapshot; use accept_dirty")
+    if not _is_timestamp(value.get("observed_at")):
+        report.errors.append(f"{label}.closure: observed_at must be timezone-aware ISO-8601")
+    for field_name in ("source", "response"):
+        if not _non_empty_string(value.get(field_name)):
+            report.errors.append(f"{label}.closure: {field_name} must be a non-empty string")
+
+
+def _validate_worktrees(
+    value: object, working_directory: Path, report: ValidationReport, *, check_files: bool
+) -> None:
+    """Validate recorded worktrees: one per repository path, consistent with the target root.
+
+    The record is what lets closure prove that repository work was committed and what lets a
+    successor session find the tree the outputs live in. A `target` entry must therefore agree with
+    `working_directory`: the worktree path while it stands, the main repository once it is removed.
+    A missing directory is a warning, not an error, because a worktree deleted by hand must remain
+    recordable as removed rather than making the project unloadable.
+    """
+    if not isinstance(value, list):
+        report.errors.append("project: worktrees must be a list")
+        return
+    seen_paths: set[str] = set()
+    targets = 0
+    for index, entry in enumerate(value, start=1):
+        label = f"worktree #{index}"
+        if not isinstance(entry, dict):
+            report.errors.append(f"{label}: must be an object")
+            continue
+        _missing_fields(entry, WORKTREE_FIELDS, label, report)
+        _unexpected_fields(entry, WORKTREE_FIELDS, label, report)
+        kind, role, status = entry.get("kind"), entry.get("role"), entry.get("status")
+        if not _enum_string(kind, WORKTREE_KINDS):
+            report.errors.append(f"{label}: kind must be one of {', '.join(sorted(WORKTREE_KINDS))}")
+        if not _enum_string(role, WORKTREE_ROLES):
+            report.errors.append(f"{label}: role must be one of {', '.join(sorted(WORKTREE_ROLES))}")
+        if not _enum_string(status, WORKTREE_STATUSES):
+            report.errors.append(f"{label}: status must be one of {', '.join(sorted(WORKTREE_STATUSES))}")
+        path_value = entry.get("path")
+        if not _non_empty_string(path_value) or not Path(path_value).is_absolute():
+            report.errors.append(f"{label}: path must be an absolute path")
+            path_value = None
+        elif path_value in seen_paths:
+            report.errors.append(f"{label}: duplicate worktree path {path_value}")
+        else:
+            seen_paths.add(path_value)
+        if kind == "none":
+            for field_name in ("repository", "branch", "base_commit"):
+                if entry.get(field_name) is not None:
+                    report.errors.append(f"{label}: {field_name} must be null when kind is none")
+            if status != "active" or entry.get("closure") is not None:
+                report.errors.append(f"{label}: a non-repository record stays active with no closure")
+        elif kind in WORKTREE_KINDS:
+            repository = entry.get("repository")
+            if not _non_empty_string(repository) or not Path(repository).is_absolute():
+                report.errors.append(f"{label}: repository must be an absolute path")
+            for field_name in ("branch", "base_commit"):
+                if not _non_empty_string(entry.get(field_name)):
+                    report.errors.append(f"{label}: {field_name} must be a non-empty string")
+            _validate_worktree_closure(entry.get("closure"), label, status, report)
+            if role == "target" and path_value is not None and _non_empty_string(repository):
+                targets += 1
+                expected = repository if status == "removed" else path_value
+                if str(working_directory) != expected:
+                    report.errors.append(
+                        f"{label}: target worktree {status} requires working_directory {expected}, "
+                        f"found {working_directory}"
+                    )
+            if check_files and status != "removed" and path_value is not None and not Path(path_value).is_dir():
+                report.warnings.append(f"{label}: recorded worktree is missing on disk: {path_value}")
+        if not _is_timestamp(entry.get("recorded_at")):
+            report.errors.append(f"{label}: recorded_at must be timezone-aware ISO-8601")
+        confirmation = entry.get("confirmation")
+        if not isinstance(confirmation, dict):
+            report.errors.append(f"{label}: confirmation must be an object with source and response")
+        else:
+            _missing_fields(confirmation, {"source", "response"}, f"{label}.confirmation", report)
+            _unexpected_fields(confirmation, {"source", "response"}, f"{label}.confirmation", report)
+            for field_name in ("source", "response"):
+                if not _non_empty_string(confirmation.get(field_name)):
+                    report.errors.append(f"{label}.confirmation: {field_name} must be a non-empty string")
+    if targets > 1:
+        report.errors.append("project: at most one worktree may have role target")
+
+
 def validate_v3_state(
     state: dict[str, Any],
     project_dir: Path,
@@ -1209,7 +1334,7 @@ def validate_v3_state(
     their reports unchanged.
     """
     report = ValidationReport()
-    _missing_fields(state, PROJECT_FIELDS - {"predecessor"}, "project", report)
+    _missing_fields(state, PROJECT_FIELDS - OPTIONAL_PROJECT_FIELDS, "project", report)
     _unexpected_fields(state, PROJECT_FIELDS, "project", report)
 
     if state.get("schema_version") != 3:
@@ -1247,6 +1372,8 @@ def validate_v3_state(
         report.errors.append(f"project: working_directory does not exist: {working_directory}")
     elif check_files:
         report.warnings.extend(self_location_warnings(working_directory))
+    if "worktrees" in state:
+        _validate_worktrees(state["worktrees"], working_directory, report, check_files=check_files)
 
     current_tasks = state.get("current_tasks")
     if not isinstance(current_tasks, list) or not all(_non_empty_string(item) for item in current_tasks):
@@ -1467,7 +1594,7 @@ def validate_v4_state(
 ) -> ValidationReport:
     """Validate a v4 candidate. Mirrors v3 validation but accepts the execution block."""
     report = ValidationReport()
-    _missing_fields(state, PROJECT_V4_FIELDS - {"predecessor"}, "project", report)
+    _missing_fields(state, PROJECT_V4_FIELDS - OPTIONAL_PROJECT_FIELDS, "project", report)
     _unexpected_fields(state, PROJECT_V4_FIELDS, "project", report)
 
     if state.get("schema_version") != 4:
@@ -1529,6 +1656,8 @@ def validate_v4_state(
         report.errors.append(f"project: working_directory does not exist: {working_directory}")
     elif check_files:
         report.warnings.extend(self_location_warnings(working_directory))
+    if "worktrees" in state:
+        _validate_worktrees(state["worktrees"], working_directory, report, check_files=check_files)
 
     current_tasks = state.get("current_tasks")
     if not isinstance(current_tasks, list) or not all(_non_empty_string(item) for item in current_tasks):

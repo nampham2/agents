@@ -16,10 +16,10 @@ heading; `--outline` returns headings and the SHA-256 token. Default reads exclu
 select it explicitly. `read <project-dir> evidence --task T01` selects task entries; `--step report`
 selects report-check evidence; omit both for all. `read <project-dir> architecture` or `handoff`
 reads that document. Reads cap at 4,000 characters with `total_chars`, `truncated`, `next_offset`;
-continue with `--offset <next_offset>`. `--max-chars` accepts 1–20,000. Reload changed sources.
+continue with `--offset <next_offset>`. Reload changed sources.
 
 `list-projects <root> --query "<text>" [--status EXECUTING]` searches identity/title/target,
-returning 10 matches. Page with `--limit` (1–100) and `--offset`. Invalid/legacy records remain.
+returning 10 matches. Page with `--limit` (1–100) and `--offset`.
 
 ## Update
 
@@ -73,14 +73,13 @@ research-project append <project-dir> decision --body-file -
 research-project append <project-dir> finding --task T01 --body-file -
 ```
 
-`--entry-id` makes retries idempotent; different content conflicts. Prose is not evidence.
+`--entry-id` makes retries idempotent; different content conflicts.
 
 ## Evidence and effects
 
 `record-evidence <project-dir> --task T01 --json -- <command>` records actual exit code and output
 tail; failure returns nonzero. `--tail-lines` adjusts stored output; `--timeout <seconds>` abandons
-a hung command. References have `root`, `path`, `anchor` (or null). Keep commands free of secrets.
-Undecodable output bytes are stored as `\xNN` escapes.
+a hung command. References have `root`, `path`, `anchor` (or null).
 
 `task ... start` resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`, preserving review state
 and normal dependency/authorization guards. Reopen invalidated review acceptance as `pending`.
@@ -92,8 +91,7 @@ research-project task <project-dir> finish T01 --evidence <record-id> \
 ```
 
 `block` and `skip` require `--reason`. `read <project-dir> evidence --entries --task T01` lists
-selectable checks; `--entry <record-id>` returns one complete entry. Legacy evidence stays valid but
-is not selectable by generated ID.
+selectable checks; `--entry <record-id>` returns one complete entry.
 
 Failed `close` reports whether reflection was saved and state committed. Keep saved drafts;
 reload before retrying uncommitted state. For committed index/validation errors, use the reported

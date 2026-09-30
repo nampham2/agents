@@ -16,7 +16,8 @@ Read only the applicable command reference:
 - [Context](automation-context.md): `resume`, `packet`, conditional/exact `read`, `freshness`,
   `preview`, `impact`, `fingerprint`, `readiness`, `memory-health`, and `recover`.
 - [Records](automation-records.md): `checkpoint`, `round`, `confirm`, `correct`, `reconcile`,
-  `authorize`, `receipt`, `review`, `finalize`, `maintenance`, `cancel`, `assess`, and `report`.
+  `authorize`, `receipt`, `review`, `finalize`, `maintenance`, `cancel`, `assess`, `worktree`, and
+  `report`.
 - [Execution and memory](automation-execution.md): native `worker-event` observations,
   durable `verify` check batches, and retry-safe staged-lesson `triage`.
 

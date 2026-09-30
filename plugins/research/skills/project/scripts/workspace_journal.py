@@ -260,7 +260,7 @@ def _run_operation(
                     if tokens.get(name, "missing") != before:
                         raise WorkspaceConflict(f"document conflict: {name}; supply its current token")
                     prepared[name] = {"before": before, "text": body}
-                candidate = prepare_update(state, patch) if patch is not None else None
+                candidate = prepare_update(state, patch, internal=True) if patch is not None else None
                 if candidate is not None:
                     report = check_state_candidate(project, candidate, expected_revision=expected, check_files=False)
                     if report.errors:

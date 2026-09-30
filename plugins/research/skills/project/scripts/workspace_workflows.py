@@ -9,7 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from memory_search import memory_health
-from workspace_context import checkpoint_freshness, fingerprint, render_checkpoint, resume_bundle, selected_read
+from workspace_context import (
+    checkpoint_freshness,
+    fingerprint,
+    render_checkpoint,
+    resume_bundle,
+    selected_read,
+    worktree_closure_findings,
+    worktree_observation,
+    worktree_registered,
+)
 from workspace_documents import _replace_sections, _section_span
 from workspace_journal import (
     document_path,
@@ -49,6 +58,9 @@ FIELDS = {
     "maintenance": {"tasks", "reason", "continuation"},
     "cancel": {"tasks", "reason", "continuation"},
     "assess": {"topic", "disposition", "reason", "application"},
+    "worktree": {
+        "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
+    },
 }
 READ_ACTIONS = {
     "resume",
@@ -152,13 +164,16 @@ def impact(project: Path, request: dict[str, Any]) -> dict[str, Any]:
 def readiness(project: Path) -> dict[str, Any]:
     """Group existing closure findings without introducing a second gate."""
     report = validate_project(project, close=True, check_index=True)
+    errors, warnings = worktree_closure_findings(_load_state(project))
+    report.errors.extend(errors)
+    report.warnings.extend(warnings)
     groups: dict[str, list[dict[str, str]]] = {}
     for level, findings in (("error", report.errors), ("warning", report.warnings)):
         for finding in findings:
             group = next(
                 (
                     key
-                    for key in ("receipt", "review", "reflection", "memory", "index", "output", "task")
+                    for key in ("worktree", "receipt", "review", "reflection", "memory", "index", "output", "task")
                     if key in finding.lower()
                 ),
                 "project",
@@ -182,6 +197,115 @@ def worker_events(project: Path) -> list[dict[str, Any]]:
                 string_input(event[field])
             latest[(event["task"], event["handle"])] = event
     return [item for item in latest.values() if item["event"] not in ("completed", "stopped", "failed")]
+
+
+def _confirmation(value: object) -> dict[str, str]:
+    confirmation = object_input(value, {"source", "response"}, {"source", "response"})
+    return {key: string_input(confirmation[key]) for key in ("source", "response")}
+
+
+def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Record or close a repository worktree from what Git reports, never from what was claimed.
+
+    `record` stores a worktree the agent created after the user confirmed it (or the linked
+    worktree the target already was, or the fact that the target is no repository) and repoints
+    the target root at it. `close` stores the user's keep/remove/accept-dirty decision beside the
+    dirty snapshot observed at that moment. Neither runs a Git write: creation and removal are the
+    agent's, under the user's authorization, and this only refuses to record what Git contradicts.
+    """
+    worktrees = copy.deepcopy(state.get("worktrees", []))
+    path = string_input(request.get("path"))
+    if not Path(path).is_absolute():
+        raise WorkspaceError("worktree path must be absolute")
+    path = str(Path(path).resolve())
+    working_directory = state["working_directory"]
+    operation = request.get("operation")
+    confirmation = _confirmation(request.get("confirmation"))
+    if operation == "record":
+        kind = request.get("kind", "created")
+        role = request.get("role", "target")
+        if kind not in ("created", "existing", "none") or role not in ("target", "additional"):
+            raise WorkspaceError("worktree kind must be created, existing or none; role target or additional")
+        if any(item["path"] == path for item in worktrees):
+            raise WorkspaceError(f"worktree already recorded: {path}")
+        seen = worktree_observation(Path(path))
+        if not seen["available"]:
+            raise WorkspaceError("Git could not be consulted for the worktree path; retry when it is available")
+        if kind == "none":
+            if role != "target" or path != working_directory or seen["is_repository"]:
+                raise WorkspaceError(
+                    "kind none records that the target itself is not a repository; "
+                    f"observed is_repository={seen['is_repository']} for {path}, target {working_directory}"
+                )
+            entry = {"repository": None, "branch": None, "base_commit": None}
+        else:
+            branch = string_input(request.get("branch"))
+            if not seen["exists"] or not seen["is_repository"] or seen["toplevel"] != path:
+                raise WorkspaceError(f"path is not the root of a Git working tree: {path}")
+            if not seen["is_worktree"]:
+                raise WorkspaceError(f"path is a main checkout, not a linked worktree: {path}")
+            if seen["branch"] != branch:
+                raise WorkspaceError(f"branch mismatch: requested {branch!r}, observed {seen['branch']!r}")
+            repository = str(Path(string_input(request["repository"])).resolve()) if "repository" in request else None
+            if repository is not None and repository != seen["repository"]:
+                raise WorkspaceError(f"repository mismatch: requested {repository}, observed {seen['repository']}")
+            repository = seen["repository"]
+            if not seen["head"]:
+                raise WorkspaceError("the worktree has no commit to record as its base")
+            allowed = {path} if kind == "existing" else {path, repository}
+            if role == "target" and working_directory not in allowed:
+                raise WorkspaceError(
+                    f"a target worktree must be recorded from its repository {repository} or from itself; "
+                    f"working_directory is {working_directory}"
+                )
+            if role == "additional" and path == working_directory:
+                raise WorkspaceError("an additional worktree cannot be the target root")
+            entry = {"repository": repository, "branch": branch, "base_commit": seen["head"]}
+        entry.update(
+            path=path, kind=kind, role=role, status="active", recorded_at=now_iso(),
+            confirmation=confirmation, closure=None,
+        )
+        worktrees.append(entry)
+        patch: dict[str, Any] = {"worktrees": worktrees}
+        if role == "target" and kind != "none":
+            patch["working_directory"] = path
+        return patch, {"worktree": entry, "observed": seen}
+    if operation != "close":
+        raise WorkspaceError("worktree operation must be record or close")
+    decision = request.get("decision")
+    if decision not in ("keep", "accept_dirty", "remove"):
+        raise WorkspaceError("worktree decision must be keep, accept_dirty or remove")
+    entry = next((item for item in worktrees if item["path"] == path), None)
+    if entry is None or entry["status"] != "active" or entry["kind"] == "none":
+        raise WorkspaceError(f"no active repository worktree is recorded at {path}")
+    seen = worktree_observation(Path(path))
+    if not seen["available"]:
+        raise WorkspaceError("Git could not be consulted for the worktree; retry when it is available")
+    if decision == "remove":
+        registered = worktree_registered(Path(entry["repository"]), Path(path))
+        if seen["exists"] or registered is not False:
+            raise WorkspaceError(
+                "the worktree is still present or registered; the user-authorized "
+                "`git worktree remove` must run before recording removal"
+            )
+        dirty: list[str] = []
+    else:
+        if not seen["exists"] or not seen["is_repository"]:
+            raise WorkspaceError(f"the worktree is missing; restore it or record its removal: {path}")
+        dirty = list(seen["dirty"])
+        if decision == "keep" and dirty:
+            raise WorkspaceError(
+                "the worktree has uncommitted changes; commit them (only when the user asks) or record "
+                "accept_dirty with the user's explicit acceptance:\n" + "\n".join(dirty[:50])
+            )
+    entry.update(
+        status="removed" if decision == "remove" else "kept",
+        closure={"decision": decision, "dirty": dirty, "observed_at": now_iso(), **confirmation},
+    )
+    patch = {"worktrees": worktrees}
+    if entry["role"] == "target" and decision == "remove":
+        patch["working_directory"] = entry["repository"]
+    return patch, {"worktree": entry, "observed": seen}
 
 
 def _build(
@@ -315,6 +439,10 @@ def _build(
         }
         result["review"] = patch["review"]
     elif action == "finalize":
+        errors, warnings = worktree_closure_findings(state)
+        if errors:
+            raise WorkspaceError("closure blocked by recorded worktrees:\n- " + "\n- ".join(errors))
+        result["worktree_warnings"] = warnings
         documents["reflection"] = string_input(request.get("reflection")).strip() + "\n"
         patch = {"status": "DONE"}
         result["_after_commit"] = ["handoff"]
@@ -340,12 +468,14 @@ def _build(
         body += string_input(request.get("reason")) + "\n" + string_input(request.get("application"))
         decision(body)
         result["topic"] = {"name": request["topic"], "sha256": topic["sha256"]}
+    elif action == "worktree":
+        patch, result = _worktree(state, request)
     elif action == "report":
         from workspace_reports import render_report
 
         documents["artifacts/report"], result = render_report(project, state, request)
     if "continuation" in request or action in ("checkpoint", "finalize", "maintenance", "cancel", "reconcile"):
-        target = prepare_update(state, patch) if patch else copy.deepcopy(state)
+        target = prepare_update(state, patch, internal=True) if patch else copy.deepcopy(state)
         target["revision"] += int(patch is not None)
         documents["handoff"], metadata = render_checkpoint(project, target, request.get("continuation", {}), documents)
         result["resume_prompt"] = (
