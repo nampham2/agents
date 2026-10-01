@@ -921,7 +921,7 @@ def test_automated_cli_lifecycle_interaction_budget(
         "# Architecture A1\nStatus: draft\n"
         "One module writes three local text files, preserving unrelated paths. "
         "Sequential tasks verify exact text; failed assertions require correction. "
-        "No migration or external actions. Effort: three small writes plus checks.\n"
+        "No migration or external actions. Effort: low overall.\n"
     )
     edit("architecture", architecture)
     checkpoint("ALIGNING", "Await fixture user's architecture A1 confirmation.", "waiting")

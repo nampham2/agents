@@ -27,7 +27,7 @@ dependencies, and failure cases rather than inventing software components.
 | Interfaces and flows | Inputs, outputs, contracts, data models, state transitions, and the important end-to-end paths across boundaries. |
 | Edge cases and failure behavior | Relevant invalid or empty inputs, boundary conditions, partial failures, retries, duplicate operations, concurrency, compatibility, migration, access control, and resource limits. State expected behavior and recovery, not just a list of risks. |
 | Verification and operation | How module contracts and end-to-end behavior will be checked, how failures are detected, and any rollout or recovery needs within scope. |
-| Implementation effort | Work by module or workstream, dependencies, difficult integrations, testing and migration effort, uncertainty, and what could change the estimate. |
+| Implementation effort | Level per workstream and overall, dependencies, difficult integrations, testing, migration, and what could change the level. |
 
 Prioritize diagrams when presenting the design, then use prose for rationale and details. Scale the
 set to the design: when it has more than one module or flow, include a high-level module/dependency
@@ -50,18 +50,26 @@ what the plausible alternatives cost or simplify.
 
 ## Make effort reviewable
 
-Estimate ranges per module or workstream and for the whole project before creating canonical tasks.
-State units, the assumed implementer and staffing, reuse assumptions, and confidence. Distinguish
-implementation effort from elapsed time, including dependencies or external waiting when relevant.
-Include design uncertainty, integration, tests, migration, and rollout where applicable; explain
-what is excluded. Avoid precise promises unsupported by evidence.
+Rate effort per module or workstream and overall as low, medium or high before creating tasks.
+Never estimate in hours, days or other time units; they are unreliable and read as promises. Name
+external waits as dependencies, not estimates.
 
-If an unknown prevents a useful estimate or design choice, name it and propose the smallest
-investigation or disposable prototype that would resolve it. Carry out work already authorized by
-the user; request authorization only when needed for that specific action. Feed the result back
-into requirements, architecture, and effort. Do not quietly defer a blocking architecture decision
-to an implementation task. Residual uncertainty may remain only with explicit shared acceptance of
-its impact and a clear validation or contingency approach.
+- Low: one module or file family, existing patterns, no new interface, migration or external
+  system, existing tests plus small additions, one or two tasks, no open unknowns.
+- Medium: several modules or one new contract, new tests or fixtures, some integration, a
+  handful of tasks, one or two known unknowns with a planned check.
+- High: cross-cutting change, new mechanism, migration or compatibility work, external systems or
+  rollout, many tasks, material uncertainty. Propose splitting the project or an investigation
+  first.
+
+Overall is the highest workstream level unless justified. State implementer, reuse and confidence;
+cover design uncertainty, integration, tests, migration and rollout, and say what is excluded.
+
+If an unknown prevents a useful level or design choice, name it and propose the smallest
+investigation or disposable prototype that would resolve it, within existing authorization. Feed
+the result back into requirements, architecture and effort; never defer a blocking architecture
+decision to an implementation task. Residual uncertainty needs explicit shared acceptance of its
+impact and a validation or contingency approach.
 
 ## Iterate to agreement
 
@@ -71,20 +79,20 @@ its impact and a clear validation or contingency approach.
 2. Collect the user's corrections and decisions. When these expose requirement gaps or trade-offs,
    return to the [requirements grill](grill.md) for the affected branches. Preserve decisions that
    still hold.
-3. Update requirements, design, scenarios, and estimates together. Explain what changed and what
+3. Update requirements, design, scenarios and effort together. Explain what changed and what
    previous conclusions or confirmations it invalidates, then review the affected design again.
 4. When the agent judges the design coherent and feasible, summarize the current requirements,
-   architecture, code organization, edge cases, effort range and assumptions, and any accepted
+   architecture, code organization, edge cases, effort levels and assumptions, and any accepted
    residual uncertainty. Ask the user to explicitly confirm this version as the basis for task
    planning. Wait; silence, a draft, or requirements-only confirmation is not architecture
    agreement.
 5. Record the user's confirmation and its scope, and finalize the agreed `architecture.md`. Only
    then hand that document to task planning.
 
-There is no fixed number of rounds. Revisit requirements and grill as often as the architecture
-needs. If the user changes a material decision after confirmation, reopen the affected review and
-obtain agreement on the revised proposal before planning or implementing affected work. Editorial
-corrections within the agreed design do not require a new approval cycle.
+Rounds are unbounded; revisit requirements and grill as often as the architecture needs. If the user
+changes a material decision after confirmation, reopen the affected review and obtain agreement on
+the revised proposal before planning or implementing affected work. Editorial corrections within the
+agreed design do not require a new approval cycle.
 
 For changes during execution, follow [execution-changes.md](execution-changes.md) to reconcile
 workers, downstream tasks and verification as well as the design. Revised architecture agreement
@@ -100,9 +108,8 @@ required workspace deliverable before task planning, not an optional final repor
 research-project edit <project-dir> architecture --body-file - --expected-sha256 <token-or-missing>
 ```
 
-The token comes from the previous edit, a read, or resume context, which lists `architecture` beside
-the other documents; a stale token is refused, so read before editing and preserve unrelated
-changes.
+The token comes from the previous edit, a read, or resume context; a stale token is refused, so read
+before editing and preserve unrelated changes.
 
 The document must be understandable without the chat transcript and contain:
 
@@ -121,8 +128,8 @@ The document must be understandable without the chat transcript and contain:
   verification approach. Include relevant compatibility, migration, and operational considerations.
 - Consequential alternatives, the chosen trade-offs and rationale, open questions, and explicitly
   accepted residual risks with their validation or contingency approach.
-- Implementation effort by module or workstream and overall, ranges and units, staffing and reuse
-  assumptions, dependencies, confidence, exclusions, and the main sources of uncertainty.
+- Effort level by module or workstream and overall, with reuse assumptions, dependencies,
+  confidence, exclusions and the main sources of uncertainty.
 
 Keep requirements authoritative in `spec.md` and design details authoritative in `architecture.md`.
 Preserve the seven specification sections: link the architecture revision and summarize its key
@@ -148,13 +155,13 @@ On resume, read the linked architecture document and reuse agreement that still 
 proposal. A missing document or draft revision is not a completed gate. For an existing project with
 no recorded agreement, complete the missing alignment before new planning or affected
 implementation; preserve completed tasks and historical evidence. When revisiting a project already
-beyond `ALIGNING`, pause affected work and honor legal status transitions rather than forcing an
-invalid transition. The architecture review is a skill-level gate recorded in `architecture.md`, the
-specification and decision history. Validation warns, and never errors, when a `PLANNING`,
-`EXECUTING` or `REVIEW` project has no `architecture.md`, one without a recognisable status line, or
-one still marked `draft`; it cannot verify conversational agreement, and legacy workspaces stay
-valid. The gate is separate from the optional delivery `review` state, so do not mark that state
-accepted or fabricate delivery review files to represent it.
+beyond `ALIGNING`, pause affected work and honor legal status transitions. The architecture review
+is a skill-level gate recorded in `architecture.md`, the specification and decision history.
+Validation warns, and never errors, when a `PLANNING`, `EXECUTING` or `REVIEW` project has no
+`architecture.md`, one without a recognisable status line, or one still marked `draft`; it cannot
+verify conversational agreement, and legacy workspaces stay valid. The gate is separate from the
+optional delivery `review` state, so do not mark that state accepted or fabricate delivery review
+files to represent it.
 
 Agreement establishes the basis for planning. It does not grant new destructive or external-action
 authorization; existing scoped user authorization still applies.

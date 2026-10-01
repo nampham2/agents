@@ -21,7 +21,7 @@ workspace and never starts work on the strength of the interview alone.
 The alignment loop is iterative: grill requirements, review architecture and effort, revisit
 affected requirements, and repeat until agent and user agree. The required `architecture.md` records
 modules, code organization, interfaces and flows, edge cases, trade-offs, verification, and effort
-ranges with assumptions. Reviews prioritize editable diagrams: module relationships, key flows, a
+levels with assumptions. Reviews prioritize editable diagrams: module relationships, key flows, a
 directory tree, and additional sequence or state diagrams where useful. Only then are implementation
 tasks planned. On resume, reuse current agreement; changes to requirements or design reopen the
 affected review. See [architecture-review.md](references/architecture-review.md) for the document
