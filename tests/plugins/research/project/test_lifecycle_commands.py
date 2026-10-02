@@ -21,6 +21,12 @@ from workspace_workflows import workflow
 from tests.conftest import REPO_ROOT
 from tests.plugins.research.project.test_workflow_automation import fill_spec, invoke, task
 
+REFLECTION = (
+    "# Reflection\n\nOutcome: the work was verified end to end and every success criterion was met.\n\n"
+    "Limitations: none known. Lessons: nothing new beyond what the evidence and the decisions already record, "
+    "and no work is left open for a later session.\n"
+)
+
 
 @pytest.fixture
 def project(tmp_path: Path) -> Path:
@@ -164,7 +170,7 @@ def test_corrections_reconciliation_reviews_and_finalization(project: Path) -> N
         request(
             project,
             "final",
-            reflection="# Reflection\n\nVerified parser. No open work.",
+            reflection=REFLECTION,
             continuation={"next": "No further work", "session": "ready for handoff"},
         ),
     )
@@ -374,7 +380,7 @@ def test_final_handoff_only_after_commit(project: Path) -> None:
     payload = request(
         project,
         "close",
-        reflection="# Reflection\n\nVerified outcome; no remaining work.",
+        reflection=REFLECTION,
         continuation={"next": "None"},
     )
     with patch.object(journal, "_commit_state_locked", side_effect=lib.WorkspaceError("commit rejected")):
@@ -857,7 +863,7 @@ def test_triage_uncertain_promotion_receipt_does_not_duplicate(project: Path) ->
 
 def test_final_note_recovery_conflicts(project: Path) -> None:
     done(project)
-    payload = request(project, reflection="# Reflection\n\nOutcome verified.", continuation={"next": "None"})
+    payload = request(project, reflection=REFLECTION, continuation={"next": "None"})
     original = journal.atomic_write_text
 
     def fail_note(path: Path, text: str) -> None:
@@ -890,7 +896,7 @@ def test_lost_save_acknowledgement_and_final_index_recovery(project: Path) -> No
     assert failure.value.result["saved"] == ["handoff"]
     workflow(project, "checkpoint", payload)
     done(project)
-    final = request(project, "final", reflection="# Reflection\n\nVerified result.", continuation={"next": "None"})
+    final = request(project, "final", reflection=REFLECTION, continuation={"next": "None"})
     with patch.object(journal, "_rebuild_index_after_commit", side_effect=lib.WorkspaceError("index failed")):
         with pytest.raises(journal.OperationError) as failure:
             workflow(project, "finalize", final)
@@ -982,3 +988,125 @@ def test_bundled_resume_call_and_payload_budget(project: Path, history: int) -> 
             }
         )
     )
+
+
+def test_a_verify_check_may_name_its_working_directory(project: Path, tmp_path: Path) -> None:
+    planned(project)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    result = workflow(
+        project,
+        "verify",
+        {"id": "cwd", "checks": [{"task": "T01", "cwd": str(elsewhere), "argv": [sys.executable, "-c", "pass"]}]},
+    )
+    assert result["passed"]
+    assert result["attempts"][0]["working_directory"] == str(elsewhere)
+    with pytest.raises(lib.WorkspaceError):
+        workflow(
+            project,
+            "verify",
+            {"id": "bad-cwd", "checks": [{"task": "T01", "cwd": 3, "argv": [sys.executable, "-c", "pass"]}]},
+        )
+
+
+def _checkpoint(project: Path, identity: str, **continuation: str) -> dict[str, Any]:
+    return workflow(project, "checkpoint", request(project, identity, continuation=continuation))
+
+
+def test_do_not_is_its_own_section_first_and_returned_structurally_by_resume(project: Path) -> None:
+    planned(project)
+    _checkpoint(project, "dn", next="Continue", effects="Nothing pushed", do_not="- Do not push\n- Do not merge")
+    text = (project / "handoff.md").read_text(encoding="utf-8")
+    assert text.index("## Do not") < text.index("## Next") < text.index("## Effects")
+    assert "- Do not push" in text
+    bundle = workflow(project, "resume", {})
+    assert bundle["do_not"] == "- Do not push\n- Do not merge"
+    # Resolving it with empty text removes the section, like any other field.
+    _checkpoint(project, "dn-clear", do_not="")
+    assert "## Do not" not in (project / "handoff.md").read_text(encoding="utf-8")
+    assert workflow(project, "resume", {})["do_not"] == ""
+
+
+def test_resume_has_an_empty_do_not_without_a_checkpoint(project: Path) -> None:
+    planned(project)
+    assert workflow(project, "resume", {})["do_not"] == ""
+
+
+@pytest.mark.parametrize("field", ["do_not", "effects", "next"])
+@pytest.mark.parametrize("heading", ["## Do not", "# Title"])
+def test_a_new_continuation_value_may_not_carry_a_heading(project: Path, field: str, heading: str) -> None:
+    planned(project)
+    values = {"next": "Continue", field: f"text (receipt-1).\n\n{heading}\n- item"}
+    with pytest.raises(lib.WorkspaceError, match="contains the heading"):
+        _checkpoint(project, "bad", **values)
+    assert not (project / "handoff.md").exists()
+
+
+def test_a_deeper_heading_and_a_fenced_heading_are_allowed(project: Path) -> None:
+    planned(project)
+    _checkpoint(project, "ok", next="Continue", partial="### Detail\n\n```\n## not a heading\n```")
+    assert "### Detail" in (project / "handoff.md").read_text(encoding="utf-8")
+
+
+def test_a_value_saved_with_a_heading_before_the_rule_still_re_renders(project: Path) -> None:
+    planned(project)
+    _checkpoint(project, "first", next="Continue", effects="Pushed nothing")
+    handoff = project / "handoff.md"
+    text = handoff.read_text(encoding="utf-8")
+    block = context.CHECKPOINT.match(text)
+    assert block is not None
+    metadata = json.loads(block[1])
+    metadata["continuation"]["effects"] = "Pushed nothing\n\n## Do not\n- push"
+    handoff.write_text(
+        text.replace(block[1], json.dumps(metadata, sort_keys=True)), encoding="utf-8"
+    )
+    _checkpoint(project, "later", next="Continue again")
+    assert "- push" in handoff.read_text(encoding="utf-8")
+
+
+def test_the_banner_and_freshness_report_a_handoff_older_than_the_state(project: Path) -> None:
+    planned(project)
+    state = _load_state(project)
+    assert context.handoff_banner(project, state) == "", "no handoff yet"
+    _checkpoint(project, "banner", next="Plan the work")
+    state = _load_state(project)
+    assert context.handoff_banner(project, state) == ""
+    fresh = workflow(project, "resume", {})
+    assert "handoff_banner" not in fresh
+    assert fresh["freshness"]["phase_changed"] is False
+
+    task_operation(project, "start", "T01", expected_revision=state["revision"])
+    stale = workflow(project, "resume", {})
+    assert f"revision {state['revision']}" in stale["handoff_banner"]
+    assert "phase PLANNING" in stale["handoff_banner"] and "phase EXECUTING" in stale["handoff_banner"]
+    assert stale["freshness"]["revision_changed"] is True
+    assert stale["freshness"]["phase_changed"] is True
+    assert stale["freshness"]["handoff_revision"] == state["revision"]
+    assert stale["freshness"]["handoff_phase"] == "PLANNING"
+    assert "handoff_banner" in context.validated_project_context(project)
+
+
+def test_the_banner_is_silent_for_a_legacy_or_unreadable_handoff(project: Path) -> None:
+    planned(project)
+    (project / "handoff.md").write_text("# Old free-form note\n", encoding="utf-8")
+    assert context.handoff_banner(project, _load_state(project)) == ""
+    (project / "handoff.md").write_text("<!-- research-checkpoint-v1\n{not json\n-->\n", encoding="utf-8")
+    assert context.handoff_banner(project, _load_state(project)) == ""
+
+
+def test_a_finished_project_that_is_still_executing_is_pointed_at_finalize(project: Path) -> None:
+    planned(project)
+    assert "closure_hint" not in workflow(project, "resume", {})
+    task_operation(project, "start", "T01", expected_revision=1)
+    record = workflow(
+        project, "verify", {"id": "v1", "checks": [{"task": "T01", "argv": [sys.executable, "-c", "pass"]}]}
+    )["attempts"][0]["result"]["record_id"]
+    task_operation(project, "finish", "T01", expected_revision=2, evidence_record_ids=[record])
+    assert "closure_hint" not in workflow(project, "resume", {}), "T02 is still TODO"
+    task_operation(project, "skip", "T02", expected_revision=3, reason="Not needed")
+    assert "workflow finalize" in workflow(project, "resume", {})["closure_hint"]
+
+    state = _load_state(project)
+    review = {"cycle": 0, "required": True, "status": "pending", "evidence": []}
+    update_project_data(project, {"review": review}, expected_revision=state["revision"])
+    assert "required delivery review" in workflow(project, "resume", {})["closure_hint"]

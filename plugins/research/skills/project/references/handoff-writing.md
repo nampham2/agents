@@ -44,10 +44,11 @@ exit 1 alone may not distinguish the two. On an ambiguous failure, inspect retai
 check the verifier before diagnosing the subject or restarting an observation window. Keep gated
 actions blocked until a valid passing verdict and the required authorization both exist.
 
-Keep a literal `## Do not` list of applicable prohibitions, or explicitly state none. For each,
-name the reason and the observable condition that would show a violation, plus the evidence or
-authorization needed to lift it. State what is authorized and what remains unauthorized with
-source pointers; neither a passing check nor a handoff grants permission.
+Put the applicable prohibitions, or an explicit statement of none, in the `do_not` field: it renders
+as its own first `## Do not` section and `resume` returns it. For each, name the reason and the
+observable condition that would show a violation, plus the evidence or authorization needed to lift
+it. State what is authorized and what remains unauthorized with source pointers; neither a passing
+check nor a handoff grants permission.
 
 ## Next action, briefs and replacement
 

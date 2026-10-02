@@ -1480,7 +1480,9 @@ class CheckCandidateTests(_CommitFixture):
 
         report = check_candidate(self.project_dir, self._candidate(self.state))
 
-        self.assertEqual(["project uses an unsupported schema version"], report.errors)
+        self.assertEqual(1, len(report.errors))
+        self.assertTrue(report.errors[0].startswith("project uses an unsupported schema version"))
+        self.assertIn("update research@agents", report.errors[0])
 
     def test_an_unusable_recorded_revision_cannot_be_defaulted_from(self) -> None:
         # Only the default path can hit this: a caller who passes --expected-revision gets the

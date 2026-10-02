@@ -154,6 +154,17 @@ def project_context(
     }
     if candidates is not None:
         result["memory_candidates"] = candidates
+    if tasks and all(task["status"] in ("DONE", "SKIPPED") for task in tasks) and state["status"] in (
+        "EXECUTING", "REVIEW"
+    ):
+        review = state["review"]
+        if review["required"] and review["status"] != "accepted":
+            result["closure_hint"] = (
+                "every task is finished but a required delivery review is not accepted: save it with "
+                "workflow review, then close with workflow finalize"
+            )
+        else:
+            result["closure_hint"] = "every task is finished: close the project with workflow finalize"
     if selected is not None:
         result["selected_task"] = selected
     return result
@@ -188,6 +199,11 @@ def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str,
         "documents": documents,
         "validation": {"valid": report.valid, "errors": report.errors, "warnings": report.warnings},
     })
+    from workspace_context import handoff_banner
+
+    banner = handoff_banner(project_dir, after)
+    if banner:
+        result["handoff_banner"] = banner
     return result
 
 

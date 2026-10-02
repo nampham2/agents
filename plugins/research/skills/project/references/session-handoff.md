@@ -29,7 +29,8 @@ when its recovery benefit justifies that cost.
    questions without inventing tasks or agreement.
 4. Run `context <project-dir> --validate`. Inspect target changes, applicable branch/commit and
    dirty-path ownership; inspect receipts for uncertain effects. Resolve validation errors or name
-   the recovery blocker.
+   the recovery blocker. A `handoff_banner` means handoff.md predates the state: trust
+   `project.json` and checkpoint again. `resume` returns `do_not` and a `closure_hint`.
 5. Use [`workflow checkpoint`](automation-records.md) with continuation fields and the handoff
    token; it derives revision/source/Git metadata and returns a resume prompt.
    Mark `Session state: ready for handoff` only after validation and ownership are resolved;

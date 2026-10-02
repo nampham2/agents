@@ -28,9 +28,9 @@ answers, advance phase, or mark agreement. `sections` uses the ordinary spec hea
 | `correct` | Terminal `task`, `reason`, `replacement` with new task fields except ID/status/evidence/authorization/receipts; optional `continuation`. Allocates a new ID and links prior work without copying consent or acceptance. |
 | `reconcile` | Explicit `patch`, `decision`, `continuation`; saves selected dispositions, rewiring and pointers through normal commit guards. |
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |
-| `receipt` | `task`, actual `receipt`: `kind`, `value`, `destination`, `timestamp`; exact duplicates are not appended. |
+| `receipt` | `task`, actual `receipt`: `kind`, `value`, `destination`, `timestamp`; `value` is an HTTP(S) URL or an id prefixed `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:` or `commit:`; exact duplicates are not appended. |
 | `review` | `reviewer`, `version`, `scope`, `findings`, actual `status`; optional `evidence` references and `required`. Allocates the next delivery cycle/file, preserving history. Use `pending` to reopen acceptance. |
-| `finalize` | `reflection`, `continuation`; validates and commits DONE, then saves the final handoff from that committed revision. |
+| `finalize` | `reflection` (at least 200 characters with a heading), `continuation`; validates and commits DONE, then saves the final handoff; returns staged-lesson warnings. |
 | `maintenance` | `reason`, optional `tasks`, `continuation`; reopens DONE as PLANNING. |
 | `cancel` | `reason`, explicit `tasks` dispositions, `continuation`; commits CANCELLED without deleting work or claiming workers stopped. |
 | `assess` | `topic`, `disposition` (`apply`, `reject`, `defer`), `reason`, `application`; saves the lesson assessment with its actual topic token. |
@@ -38,15 +38,15 @@ answers, advance phase, or mark agreement. `sections` uses the ordinary spec hea
 | `report` | Optional canonical report `sections` and boolean `graph`; generates requested Markdown scaffold/accounting and checks generated citations. |
 
 Continuation fields are strings: `next` (required on first checkpoint), `questions`, `pointers`,
-`partial`, `ownership`, `effects`, `lessons`, `session`. Only supplied fields change; empty text
-explicitly resolves a prior field. Session labels: `working`, `waiting`, `blocked`, `ready for
-handoff`. Claim readiness only after validation and actual ownership/effect reconciliation.
-Before supplying continuation, read [handoff-writing.md](handoff-writing.md). Put verifier status
-in `next`/`partial`, sourced external observations in `ownership`/`effects`, and the literal
-`## Do not` list inside `effects`; these are Markdown strings, not new input fields. Checkpoint
+`partial`, `ownership`, `effects`, `lessons`, `do_not`, `session`. Only supplied fields change;
+empty text explicitly resolves a prior field. Session labels: `working`, `waiting`, `blocked`,
+`ready for handoff`. Claim readiness only after validation and actual ownership/effect
+reconciliation. Before supplying continuation, read [handoff-writing.md](handoff-writing.md). Put
+verifier status in `next`/`partial`, sourced external observations in `ownership`/`effects`, and the
+prohibitions in `do_not`; values are body text, and headings in them are refused. Checkpoint
 metadata does not verify their prose, and merged fields retain their original observation times.
-Existing free-form handoffs require `import_legacy: true`; their full text is preserved.
-An unchanged checkpoint is not rewritten. Scripts derive metadata, not the next decision.
+Existing free-form handoffs require `import_legacy: true`; their full text is preserved. An
+unchanged checkpoint is not rewritten. Scripts derive metadata, not the next decision.
 
 Requirements confirmation does not approve architecture. Architecture confirmation requires its
 review identifier in the saved proposal and never authorizes effects or accepts delivery review.

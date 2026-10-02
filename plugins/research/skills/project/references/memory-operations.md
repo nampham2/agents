@@ -37,12 +37,12 @@ agreed design. Workers return new observations; only the coordinator updates sha
 
 ## Stage and resolve lessons
 
-Edit project-local `memory-staging.md` for reusable findings: conditions, lesson/hypothesis and
-evidence pointers. At closure, promote supported reusable findings, fold project-specific ones into
-reflection, or discard with a reason. Record disposition/destination in reflection; remove only
-resolved items. Inspect uncertain promotion results before retrying. Retain unresolved items and
-report deferral if promotion fails/exceeds authority. Staging warns unless memory delivery is
-required; a brief no-new-lessons outcome suffices.
+Stage reusable findings: `research-project stage <project-dir> --title <unique> --body-file -`
+(conditions, lesson/hypothesis, evidence pointers; no headings). At closure, promote supported
+reusable findings, fold project-specific ones into reflection, or discard with a reason. Record
+disposition/destination in reflection; remove only resolved items. A retried promotion adds nothing
+already recorded. Retain unresolved items and report deferral if promotion fails/exceeds authority.
+Staging warns unless memory delivery is required; a brief no-new-lessons outcome suffices.
 
 ## Promote, compact and retire
 

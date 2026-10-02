@@ -398,7 +398,10 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
 def _unexpected_fields(value: dict[str, Any], allowed: set[str], label: str, report: ValidationReport) -> None:
     extras = sorted(set(value) - allowed)
     if extras:
-        report.errors.append(f"{label}: unexpected fields: {', '.join(extras)}; allowed: {', '.join(sorted(allowed))}")
+        report.errors.append(
+            f"{label}: unexpected fields: {', '.join(extras)}; allowed: {', '.join(sorted(allowed))} "
+            f"({NEWER_PLUGIN_HINT})"
+        )
 
 
 def _missing_fields(value: dict[str, Any], required: set[str], label: str, report: ValidationReport) -> None:
@@ -769,6 +772,83 @@ def architecture_status(architecture_markdown: str) -> "str | None":
     """The review status the document declares, `draft` or `agreed`, or None when it declares none."""
     match = ARCHITECTURE_STATUS_PATTERN.search(architecture_markdown)
     return match.group("status").lower() if match else None
+
+
+def _output_paths(task: dict[str, Any]) -> "set[str]":
+    outputs = task.get("outputs")
+    if not isinstance(outputs, list):
+        return set()
+    return {item["path"] for item in outputs if isinstance(item, dict) and isinstance(item.get("path"), str)}
+
+
+def verification_order_warnings(tasks: object) -> "list[str]":
+    """Warn when a task's check names an output that only a later task produces.
+
+    A task cannot be verified by a file that a task depending on it creates: the check is planned
+    to run before it can pass. It was found one task at a time, three times in a row, in a plan that
+    had been accepted whole. Matching is by text, so it is a warning and never an error, and an
+    output the task itself also produces is ignored: later tasks extending a file is ordinary.
+    `tasks` is arbitrary JSON here, so every field is checked before it is read.
+    """
+    if not isinstance(tasks, list):
+        return []
+    by_id = {task["id"]: task for task in tasks if isinstance(task, dict) and isinstance(task.get("id"), str)}
+    children: "dict[str, list[str]]" = {}
+    for task_id, task in by_id.items():
+        depends_on = task.get("depends_on")
+        for dependency in depends_on if isinstance(depends_on, list) else []:
+            if isinstance(dependency, str):
+                children.setdefault(dependency, []).append(task_id)
+    found: "list[str]" = []
+    for task_id, task in by_id.items():
+        verification = task.get("verification")
+        if task.get("status") in ("DONE", "SKIPPED") or not isinstance(verification, str):
+            continue
+        later: "set[str]" = set()
+        pending = list(children.get(task_id, []))
+        while pending:
+            current = pending.pop()
+            if current not in later:
+                later.add(current)
+                pending.extend(children.get(current, []))
+        own = _output_paths(task)
+        for later_id in sorted(later):
+            for path in sorted(_output_paths(by_id[later_id]) - own):
+                if any(len(name) >= 6 and name in verification for name in (path, Path(path).name)):
+                    found.append(
+                        f"task {task_id}: its verification names {path}, an output of {later_id}, which runs "
+                        f"after {task_id}; that check cannot pass before {later_id} is done"
+                    )
+    return found
+
+
+PROJECT_REFERENCE = re.compile(r"\b\d{4}-\d{2}-\d{2}-\d{3}\b")
+
+
+def reason_reference_warnings(before: object, after: object, workspace_root: Path) -> "list[str]":
+    """Warn when a newly set skip or block reason names a project that does not exist.
+
+    An id written before `init` returns it can resolve to a different project: a concurrent session
+    took the number. Only a reason that changed is checked, so terminal history is never re-judged.
+    """
+    if not isinstance(before, list) or not isinstance(after, list):
+        return []
+    previous = {task["id"]: task for task in before if isinstance(task, dict) and isinstance(task.get("id"), str)}
+    found: "list[str]" = []
+    for task in after:
+        if not isinstance(task, dict) or not isinstance(task.get("id"), str):
+            continue
+        for key in ("skip_reason", "block_reason"):
+            reason = task.get(key)
+            if not isinstance(reason, str) or reason == previous.get(task["id"], {}).get(key):
+                continue
+            for reference in sorted(set(PROJECT_REFERENCE.findall(reason))):
+                if not (workspace_root / reference).is_dir():
+                    found.append(
+                        f"task {task['id']} {key} names project {reference}, which does not exist under "
+                        f"{workspace_root}; name a project only after init has returned its id"
+                    )
+    return found
 
 
 def architecture_warnings(project_dir: Path, status: object) -> "list[str]":
@@ -1547,6 +1627,7 @@ def validate_v3_state(
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
         report.warnings.extend(architecture_warnings(project_dir, status))
+        report.warnings.extend(verification_order_warnings(state.get("tasks")))
 
     # The closing report is checked at close and for a project already past it, and at no other
     # point. `CANCELLED` counts: the step runs on that path too, reporting what was abandoned and
@@ -1843,6 +1924,7 @@ def validate_v4_state(
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
         report.warnings.extend(architecture_warnings(project_dir, status))
+        report.warnings.extend(verification_order_warnings(state.get("tasks")))
 
     if check_files and (close or _enum_string(status, {"DONE", "CANCELLED"})):
         report.warnings.extend(report_warnings(project_dir, require_graph=False))
@@ -2125,6 +2207,50 @@ def vcs_warnings(workspace_root: Path) -> "list[str]":
 # The path of this module inside the plugin, used to recognise a working directory that holds the
 # very tools being run.
 PLUGIN_SELF_PATH = Path("plugins/research/skills/project/scripts/workspace_lib.py")
+
+
+PLUGIN_KEY_PREFIX = "research@"
+NEWER_PLUGIN_HINT = (
+    "a newer plugin may have written this: update research@agents (marketplace update, then plugin update) "
+    "and restart, or run the working-tree launcher by its path"
+)
+
+
+def launcher_version_warning(
+    config_dir: "Path | None" = None, running_root: "Path | None" = None
+) -> str:
+    """One line when this process runs a cached plugin version other than the one installed, else ''.
+
+    A plugin update takes effect when the next session starts, so a long-lived shell keeps the old
+    `bin/` on PATH and two versions write the same shared files, each calling the other's output
+    wrong. The failures looked like data problems (a size budget, an unknown field) and cost a
+    project each time before anyone compared versions.
+
+    Silent unless it is sure: only when this copy lives under the host's plugin cache and the host's
+    own record names a different install path for the plugin. A working tree, a Codex session (no
+    such record), an unreadable or unfamiliar file all produce nothing, so the line can be trusted.
+    """
+    try:
+        config = config_dir or Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+        root = (running_root or Path(__file__).resolve().parents[3]).resolve()
+        cache = (config / "plugins" / "cache").resolve()
+        if cache not in root.parents:
+            return ""
+        record = json.loads((config / "plugins" / "installed_plugins.json").read_text(encoding="utf-8"))
+        for key, installs in record["plugins"].items():
+            if not key.startswith(PLUGIN_KEY_PREFIX) or not isinstance(installs, list):
+                continue
+            for install in installs:
+                installed = Path(install["installPath"]).resolve()
+                if installed.parent == root.parent and installed != root:
+                    return (
+                        f"this command is running research plugin {root.name} from {root}, but {installed.name} is "
+                        f"installed at {installed}. An update applies when the session restarts; until then "
+                        "files this command writes may be rendered by the older version."
+                    )
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return ""
+    return ""
 
 
 def self_location_warnings(working_directory: Path) -> "list[str]":
@@ -2556,6 +2682,21 @@ def memory_topic_body(content: str) -> str:
     return ""
 
 
+def memory_entry_marker(entry_id: str, body: str) -> str:
+    """The comment that makes an amendment idempotent: same id and same body is the same entry."""
+    return f"<!-- memory-entry: {entry_id} {document_sha256(body)} -->"
+
+
+def promotion_entry_id(body: str) -> str:
+    """The id a promotion uses when the caller names none: one lesson body, one entry.
+
+    Derived from the body alone because the marker lives in the topic file, so uniqueness only has
+    to hold within a topic. A retry after a failure that came after the write (the index rebuild)
+    then adds nothing, where it used to append a second copy of the incident.
+    """
+    return f"promote-{document_sha256(body)[:16]}"
+
+
 def amend_memory_topic(
     workspace_root: Path,
     slug: str,
@@ -2598,7 +2739,7 @@ def amend_memory_topic(
     if entry_id is not None:
         if not re.fullmatch(r"[a-z0-9-]{1,100}", entry_id):
             raise WorkspaceError("invalid memory entry ID")
-        marker = f"<!-- memory-entry: {entry_id} {document_sha256(body)} -->"
+        marker = memory_entry_marker(entry_id, body)
     try:
         with memory_lock(workspace_root, timeout=lock_timeout):
             original = read_text(path, preserve_newlines=True) if path.exists() else ""
@@ -2918,6 +3059,22 @@ def memory_staging_warnings(project_dir: Path) -> "list[str]":
     would punish exactly the discipline this file exists to encourage.
     """
     path = project_dir / MEMORY_STAGING_FILENAME
+    if not staged_lesson_lines(project_dir):
+        return []
+    return [
+        f"{path} still holds staged lessons at close; promote each one into "
+        f"{MEMORY_DIRECTORY}/<slug>.md, fold it into this project's reflection.md, or drop it"
+    ]
+
+
+# `triage` leaves this record where the drained items were. It names the operation that resolved
+# them and is not a lesson, so a file holding only this is empty.
+TRIAGE_RECORD_PREFIX = "<!-- Resolved lesson records:"
+
+
+def staged_lesson_lines(project_dir: Path) -> "list[str]":
+    """The lines of `memory-staging.md` that are lessons: not scaffolding, headings or triage records."""
+    path = project_dir / MEMORY_STAGING_FILENAME
     if not path.is_file():
         return []
     try:
@@ -2928,16 +3085,13 @@ def memory_staging_warnings(project_dir: Path) -> "list[str]":
     # how to drain the file, so subtracting just the placeholder would make every freshly initialized
     # project warn at close about the very instructions telling it there is nothing to drain.
     scaffolding = set(MEMORY_STAGING_SKELETON.splitlines())
-    staged = [
+    return [
         line
         for line in content.splitlines()
-        if line.strip() and line not in scaffolding and not line.lstrip().startswith("#")
-    ]
-    if not staged:
-        return []
-    return [
-        f"{path} still holds staged lessons at close; promote each one into "
-        f"{MEMORY_DIRECTORY}/<slug>.md, fold it into this project's reflection.md, or drop it"
+        if line.strip()
+        and line not in scaffolding
+        and not line.lstrip().startswith("#")
+        and not line.lstrip().startswith(TRIAGE_RECORD_PREFIX)
     ]
 
 
@@ -2979,9 +3133,11 @@ def memory_findings(workspace_root: Path, *, check_index: bool = False) -> Valid
             if size > MEMORY_INDEX_MAX_BYTES:
                 exceeded.append(f"{size} bytes, above the {MEMORY_INDEX_MAX_BYTES} allowed")
             if exceeded:
+                skew = launcher_version_warning()
                 report.errors.append(
                     f"{index_path} is {' and '.join(exceeded)}; this file is read in full every "
                     "session, so merge or retire topics rather than appending pointers"
+                    + (f". Check this first, it may be version skew and not a real overflow: {skew}" if skew else "")
                 )
 
     for topic in topics:
@@ -3054,7 +3210,7 @@ def validate_project(
         elif version == 4:
             report = validate_v4_state(load_json(project_dir / "project.json"), project_dir, close=close)
         else:
-            report = ValidationReport(errors=[f"unsupported schema_version: {version}"])
+            report = ValidationReport(errors=[f"unsupported schema_version: {version} ({NEWER_PLUGIN_HINT})"])
     except WorkspaceError as error:
         return ValidationReport(errors=[str(error)])
     report.warnings.extend(reflection_warnings(project_dir.parent))
@@ -3178,9 +3334,19 @@ class EvidenceResult:
     exit_code: int
     working_directory: str
     reference: dict[str, Any]
+    # Additive: nothing here changes what was recorded, so a consumer that predates these keys, and a
+    # journal entry written before them, both keep working. A list, not a tuple: the `workflow
+    # verify` journal stores `asdict(result)` as JSON, and a replayed batch must return a value equal
+    # to the first run's, which a tuple would not be after the round trip.
+    warnings: list[str] = field(default_factory=list)
+    hint: str = ""
+    # A dry run validates and reports what would run; nothing runs and nothing is recorded, so it has
+    # no exit code to be mistaken for a pass.
+    dry_run: bool = False
+    command: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "operation": "record-evidence",
             "recorded": True,
             "record_id": self.record_id,
@@ -3189,7 +3355,14 @@ class EvidenceResult:
             "passed": self.exit_code == 0,
             "working_directory": self.working_directory,
             "reference": self.reference,
+            "warnings": list(self.warnings),
         }
+        if self.hint:
+            payload["hint"] = self.hint
+        if self.dry_run:
+            payload.update(recorded=False, dry_run=True, exit_code=None, passed=None, record_id=None,
+                           reference=None, command=list(self.command))
+        return payload
 
 
 def _fence_for(text: str) -> str:
@@ -3308,6 +3481,87 @@ def _misrooted_command_arguments(
     return misrooted
 
 
+# The tools that take a project directory or workspace root as an argument. A relative path handed
+# to one of them resolves in the target repository, which holds neither, so the failure reads as the
+# tool rejecting the project rather than as a path mistake. `ruff check .` and `pytest .` are the
+# same spelling and are correct, so the refusal is tied to these names and not to the argument.
+WORKSPACE_AWARE_TOOLS = frozenset({"research-project", "research-validate"})
+
+
+def _relative_workspace_arguments(command: Sequence[str], project_dir: Path) -> "list[str]":
+    """Relative path arguments given to a workspace-aware tool; `--option=value` is checked by value."""
+    if Path(command[0]).name not in WORKSPACE_AWARE_TOOLS:
+        return []
+    found: "list[str]" = []
+    for argument in command[1:]:
+        value = argument.split("=", 1)[1] if argument.startswith("--") and "=" in argument else argument
+        if not value or value.startswith("-") or Path(value).is_absolute():
+            continue
+        if value in (".", "..") or value.startswith(("./", "../")):
+            found.append(argument)
+            continue
+        try:
+            if (project_dir / value).exists():
+                found.append(argument)
+        except (OSError, ValueError):
+            continue
+    return found
+
+
+SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "dash"})
+_UNGUARDED_PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+
+
+def _inline_shell_script(command: Sequence[str]) -> "str | None":
+    """The script of `bash -c '<script>'` (also -lc, -ec), or None when the command is not that shape."""
+    if Path(command[0]).name not in SHELL_INTERPRETERS:
+        return None
+    for position, argument in enumerate(command[1:-1], start=1):
+        if argument.startswith("-") and not argument.startswith("--") and "c" in argument[1:]:
+            return command[position + 1]
+    return None
+
+
+def _command_warnings(command: Sequence[str]) -> "list[str]":
+    """Shapes of an inline shell script that have recorded a result unrelated to what was meant.
+
+    Warnings, not refusals: each of these is sometimes intended, and the recorder cannot tell. What it
+    can do is say so before the record becomes permanent.
+    """
+    script = _inline_shell_script(command)
+    if script is None:
+        return []
+    found: "list[str]" = []
+    if "<<" in script:
+        found.append(
+            "the inline script contains '<<': a heredoc inside bash -c is quoted twice and has exited 0 "
+            "without running. Write the check to a file and run it by absolute path "
+            "($RESEARCH_PROJECT_DIR is set for the child)."
+        )
+    if "$(" in script:
+        found.append(
+            "the inline script contains '$(': the inner shell evaluates it, not the caller. Confirm the "
+            "quoting gives the value you expect, or write the check to a file."
+        )
+    if _UNGUARDED_PIPE.search(script) and "pipefail" not in script:
+        found.append(
+            "the inline script pipes without 'set -o pipefail': the recorded exit code is the last "
+            "stage's, so an earlier failure is recorded as a pass."
+        )
+    return found
+
+
+def _launch_hint(returncode: int, output: str, working_directory: str, project_dir: Path) -> str:
+    """Say where a 'not found' result most likely came from; empty when there is nothing to add."""
+    if returncode not in (126, 127) and "No such file or directory" not in output:
+        return ""
+    return (
+        f"the command ran in {working_directory}, not in the project directory; a relative path to "
+        f"something inside the project resolves there. Pass absolute paths (project directory: "
+        f"{project_dir}) or read $RESEARCH_PROJECT_DIR inside a bash -c script."
+    )
+
+
 def record_evidence(
     project_dir: Path,
     task_id: "str | None",
@@ -3355,8 +3609,15 @@ def record_evidence_result(
     timeout: float | None = None,
     lock_timeout: float = 5.0,
     observe: Callable[[dict[str, Any]], None] | None = None,
+    cwd: "Path | None" = None,
+    dry_run: bool = False,
 ) -> EvidenceResult:
-    """Run and durably record a command, returning its selectable evidence identity."""
+    """Run and durably record a command, returning its selectable evidence identity.
+
+    `cwd` replaces the project's working directory for this one command and must be an absolute
+    existing directory; it is recorded on the `Working directory:` line like any other. `dry_run`
+    runs every check and returns what would run, recording nothing.
+    """
     project_dir = project_dir.resolve()
     if task_id is not None and step is not None:
         raise WorkspaceError("record-evidence takes --task or --step, not both")
@@ -3386,6 +3647,20 @@ def record_evidence_result(
         or not Path(working_directory).is_dir()
     ):
         raise WorkspaceError(f"working_directory is not an existing directory: {working_directory!r}")
+    if cwd is not None:
+        if not cwd.is_absolute() or not cwd.is_dir():
+            raise WorkspaceError(f"--cwd must be an absolute path to an existing directory: {str(cwd)!r}")
+        working_directory = str(cwd)
+
+    warnings = _command_warnings(command)
+    if task_id is not None:
+        task = next(task for task in tasks if isinstance(task, dict) and task.get("id") == task_id)
+        if task.get("status") != "RUNNING":
+            warnings.insert(
+                0,
+                f"task {task_id} is {task.get('status')}, not RUNNING: start it with 'task start' before the "
+                f"work this evidence covers. Its verification: {task.get('verification')}",
+            )
 
     misrooted = _misrooted_command_arguments(command, project_dir, Path(working_directory))
     if misrooted:
@@ -3399,12 +3674,39 @@ def record_evidence_result(
             "Pass an absolute path for anything inside the project directory."
         )
 
+    relative = _relative_workspace_arguments(command, project_dir)
+    if relative:
+        shown = ", ".join(repr(argument) for argument in relative)
+        raise WorkspaceError(
+            f"{Path(command[0]).name} runs in the project's working directory ({working_directory}), "
+            f"so the relative argument {shown} would not name the project or workspace.\n"
+            f"Pass the absolute project directory instead: {project_dir}"
+        )
+
+    if dry_run:
+        return EvidenceResult(
+            record_id="",
+            owner_kind="task" if task_id is not None else "step",
+            owner_id=task_id or step or "",
+            exit_code=0,
+            working_directory=working_directory,
+            reference={},
+            warnings=warnings,
+            dry_run=True,
+            command=list(command),
+        )
+
     if observe is not None:
         observe({"status": "running", "working_directory": working_directory})
     try:
         completed = subprocess.run(
             list(command),
             cwd=working_directory,
+            env={
+                **os.environ,
+                "RESEARCH_PROJECT_DIR": str(project_dir),
+                "RESEARCH_WORKSPACE_ROOT": str(project_dir.parent),
+            },
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -3460,6 +3762,10 @@ def record_evidence_result(
         exit_code=completed.returncode,
         working_directory=working_directory,
         reference={"root": "workspace", "path": "evidence.md", "anchor": anchor},
+        warnings=warnings,
+        hint=_launch_hint(
+            completed.returncode, completed.stdout + completed.stderr, working_directory, project_dir
+        ),
     )
     if observe is not None:
         observe({"status": "persistable", "result": asdict(result), "lines": lines})
@@ -4011,7 +4317,7 @@ def _done_task_ids(state: dict[str, Any]) -> set[str]:
 
 
 SCHEMA_V3_REQUIRED = "transactional commits require schema v3; migrate the project first"
-SCHEMA_UNSUPPORTED = "project uses an unsupported schema version"
+SCHEMA_UNSUPPORTED = f"project uses an unsupported schema version ({NEWER_PLUGIN_HINT})"
 READER_ONLY_REFUSAL = (
     "this installation can read v4 projects but has no executor; "
     "mutating commands are refused while execution.attempts is non-empty or coordinator_run is set"
