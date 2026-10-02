@@ -2,7 +2,13 @@
 
 Use `BLOCKED` when progress needs input, authority, or external state; record the actual blocker.
 For cancellation, stop running work, resolve ownership, set `CANCELLED` and `cancellation_reason`,
-and preserve partial outputs and evidence without claiming completion.
+and preserve partial outputs and evidence without claiming completion. `workflow <project-dir>
+cancel -` does this in one step (`reason`, explicit `tasks` dispositions, `continuation`); a project
+still in `ALIGNING` may be cancelled the same way.
+
+Find parked work with `list-projects <root> --status ALIGNING --older-than-days 20`: rows carry
+`created` and `updated`, and a project whose age cannot be read is listed rather than hidden. Ask
+the user before cancelling anything; an unaligned project may only be waiting for them.
 
 To maintain a completed deliverable, validate its baseline, transition `DONE → PLANNING`, and
 append tasks with new IDs. Keep terminal tasks, previous reviews and decisions. A successor is

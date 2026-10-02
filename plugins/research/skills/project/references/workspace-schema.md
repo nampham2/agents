@@ -378,6 +378,27 @@ Never edit a recorded entry to make it agree with a conclusion.
 
 Only evidence that no command produced, such as an external delivery receipt, is written by hand.
 
+A check with no command, such as an MCP read or a query, is recorded with `research-project
+record-observation`. Its entry has the same `Record ID`, anchor and `Recorded` lines, a `Source:`
+line, and `- Observation: passed|FAILED (agent-attested, no process ran)` in place of `Exit code:`:
+
+~~~markdown
+## T01 — observation: BigQuery, final_feed table
+
+- Record ID: ev-...
+- Recorded: YYYY-MM-DDTHH:MM:SS+00:00
+- Source: BigQuery, final_feed table
+- Observation: passed (agent-attested, no process ran)
+
+observed (tail):
+~~~
+
+It is the agent's own account with a verdict the agent chose, so it is selectable only by
+`task finish --observation`, and `--evidence` refuses it by name. A reader that requires an exit
+code finds none and treats the entry as not selectable. An entry carrying both an exit code and an
+observation selects as neither. The task graph counts a `FAILED` observation, reading only the part
+of the entry before its first fence so that quoted text cannot be counted as an exit code.
+
 `--task <id>` requires that the id exists in `project.json`, which is what makes a heading in this
 file traceable to a task. Closure work owned by no task — the report check below is the only case
 today — is recorded with `--step <name>` instead, from a fixed vocabulary the tool holds rather than

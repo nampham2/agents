@@ -296,9 +296,28 @@ class ValidateV3StateBranchTests(unittest.TestCase):
         report = validate_v3_state(self._state(working_directory="relative/path"), self.project_dir)
         self.assertTrue(any("working_directory must be absolute" in e for e in report.errors))
 
-    def test_working_directory_not_existing(self) -> None:
-        report = validate_v3_state(self._state(working_directory="/nonexistent/path"), self.project_dir)
-        self.assertTrue(any("working_directory does not exist" in e for e in report.errors))
+    def test_working_directory_not_existing_is_an_error_for_an_active_project(self) -> None:
+        for status in ("ALIGNING", "PLANNING", "EXECUTING", "BLOCKED", "REVIEW"):
+            with self.subTest(status=status):
+                report = validate_v3_state(
+                    self._state(working_directory="/nonexistent/path", status=status), self.project_dir
+                )
+                self.assertTrue(any("working_directory does not exist" in e for e in report.errors))
+
+    def test_working_directory_not_existing_is_history_for_a_finished_project(self) -> None:
+        for status in ("DONE", "CANCELLED"):
+            with self.subTest(status=status):
+                report = validate_v3_state(
+                    self._state(working_directory="/nonexistent/path", status=status), self.project_dir
+                )
+                self.assertFalse(any("working_directory does not exist" in e for e in report.errors))
+                self.assertTrue(
+                    any(
+                        "working_directory does not exist" in w and "history that has moved" in w
+                        for w in report.warnings
+                    ),
+                    report.warnings,
+                )
 
     def test_duplicate_current_tasks_rejected(self) -> None:
         state = self._state(status="EXECUTING")

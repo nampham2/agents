@@ -927,7 +927,7 @@ def test_evidence_saved_before_lost_ack_is_not_duplicated(project: Path) -> None
 def test_bounded_fingerprints_and_closed_inputs(project: Path) -> None:
     from io import BytesIO
 
-    with pytest.raises(lib.WorkspaceError, match="object fields"):
+    with pytest.raises(lib.WorkspaceError, match="unknown field"):
         workflow(project, "read", {"document": "spec", "unknown": 1})
     state = _load_state(project)
     with (

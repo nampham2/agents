@@ -11,7 +11,7 @@ from workspace_lib import launcher_version_warning, validate_project
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog="research-validate", description=__doc__)
     parser.add_argument("project_directory", type=Path)
     parser.add_argument("--close", action="store_true", help="Enforce completion invariants")
     parser.add_argument(

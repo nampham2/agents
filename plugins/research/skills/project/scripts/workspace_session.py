@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from collections import Counter
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -280,17 +281,44 @@ def read_project_text(
     }
 
 
+def _older_than(stamp: str | None, days: int) -> bool:
+    """Whether `stamp` is more than `days` days ago; anything that cannot be judged counts as old.
+
+    Used to find parked projects, so a record whose age is unknown must be listed, not hidden: the
+    point of the filter is to show what nobody has looked at.
+    """
+    if stamp is None:
+        return True
+    try:
+        moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - moment > timedelta(days=days)
+
+
 def list_projects(
     workspace_root: Path, *, query: str = "", status: str | None = None, limit: int = 10, offset: int = 0,
+    older_than_days: int | None = None,
 ) -> dict[str, Any]:
-    """Bound discovery output without trusting the generated index or hiding unreadable records."""
+    """Bound discovery output without trusting the generated index or hiding unreadable records.
+
+    Rows also carry `created` and `updated` for readable projects. They are strings on purpose, and
+    kept out of the query match: the row handling slices and joins its values, and a search for text
+    should not start matching dates. `older_than_days` keeps readable projects not updated for that
+    long; unreadable and legacy rows are always listed, as they are for every other filter.
+    """
     if not 1 <= limit <= 100 or offset < 0:
         raise WorkspaceError("limit must be between 1 and 100; offset must be nonnegative")
+    if older_than_days is not None and older_than_days < 0:
+        raise WorkspaceError("older-than-days must not be negative")
     rows: list[dict[str, Any]] = []
     try:
         for directory in sorted(workspace_root.resolve().iterdir(), reverse=True):
             if not directory.is_dir() or directory.name.startswith("."):
                 continue
+            times: dict[str, str] = {}
             if (directory / "project.json").is_file():
                 try:
                     state = load_json(directory / "project.json")
@@ -298,6 +326,7 @@ def list_projects(
                     if any(not isinstance(state.get(key), str) or not state[key].strip() for key in fields):
                         raise WorkspaceError("missing or malformed discovery fields")
                     row = {key: state[key] for key in fields}
+                    times = {key: state[key] for key in ("created", "updated") if isinstance(state.get(key), str)}
                 except WorkspaceError:
                     row = {"project": directory.name, "title": "Unreadable project.json", "status": "INVALID"}
             elif (directory / "00_meta.yaml").is_file() and (directory / "02_task_plan.md").is_file():
@@ -308,10 +337,11 @@ def list_projects(
             if row["status"] not in ("INVALID", "LEGACY") and (
                 (status is not None and row["status"] != status)
                 or query.casefold() not in " ".join(row.values()).casefold()
+                or (older_than_days is not None and not _older_than(times.get("updated"), older_than_days))
             ):
                 continue
             rows.append({
-                **{key: value[:500] for key, value in row.items() if key != "path"}, "path": row["path"],
+                **{key: value[:500] for key, value in row.items() if key != "path"}, **times, "path": row["path"],
                 "truncated_fields": [key for key, value in row.items() if key != "path" and len(value) > 500],
             })
     except OSError as error:

@@ -18,6 +18,7 @@ from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
     MEMORY_KINDS,
+    OBSERVATION_RESULTS,
     ROOT_SEARCH_MAX_DEPTH,
     WORKSPACE_ROOT_ENV_VAR,
     WorkspaceError,
@@ -40,6 +41,7 @@ from workspace_lib import (
     reason_reference_warnings,
     rebuild_index,
     record_evidence_result,
+    record_observation,
     render_task_graph,
     resolve_workspace_root,
     retire_memory_topic,
@@ -57,11 +59,11 @@ from workspace_session import (
     update_project_data,
     validated_project_context,
 )
-from workspace_workflows import FIELDS, READ_ACTIONS, preview, workflow
+from workspace_workflows import FIELDS, READ_ACTIONS, input_schema, preview, workflow
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(prog="research-project", description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     initialize = subparsers.add_parser("init", help="Atomically allocate and initialize a v4 project")
@@ -87,7 +89,12 @@ def _build_parser() -> argparse.ArgumentParser:
     automation = subparsers.add_parser("workflow", help="Named lifecycle automation with closed JSON input schemas")
     automation.add_argument("project_directory", type=Path)
     automation.add_argument("action", choices=sorted(FIELDS.keys() | READ_ACTIONS))
-    automation.add_argument("input_json", type=Path, help="JSON input file, or '-' for stdin")
+    automation.add_argument("input_json", nargs="?", type=Path, help="JSON input file, or '-' for stdin")
+    automation.add_argument(
+        "--schema",
+        action="store_true",
+        help="print the allowed and required keys of the action as JSON and exit; reads no input",
+    )
 
     context = subparsers.add_parser("context", help="Print bounded resume context without completed task history")
     context.add_argument("project_directory", type=Path)
@@ -119,6 +126,11 @@ def _build_parser() -> argparse.ArgumentParser:
     listing.add_argument("workspace_root", nargs="?", type=Path)
     listing.add_argument("--query", default="")
     listing.add_argument("--status")
+    listing.add_argument(
+        "--older-than-days",
+        type=int,
+        help="only projects not updated for this many days (with --status, finds parked work)",
+    )
     listing.add_argument("--limit", type=int, default=10)
     listing.add_argument("--offset", type=int, default=0)
 
@@ -158,6 +170,13 @@ def _build_parser() -> argparse.ArgumentParser:
     task.add_argument("--expected-revision", type=int, required=True)
     task.add_argument("--reason")
     task.add_argument("--evidence", action="append", default=[], dest="evidence_records")
+    task.add_argument(
+        "--observation",
+        action="append",
+        default=[],
+        dest="observation_records",
+        help="finish on an agent-attested observation record (never accepted by --evidence)",
+    )
     task.add_argument("--start-next")
     task.add_argument(
         "--backfill",
@@ -202,7 +221,7 @@ def _build_parser() -> argparse.ArgumentParser:
     record = subparsers.add_parser(
         "record-evidence",
         help="Run a command and append its real exit code and output tail to evidence.md",
-        usage="manage_workspace.py record-evidence <project-directory> (--task <id> | --step <name>) -- <command>",
+        usage="research-project record-evidence <project-directory> (--task <id> | --step <name>) -- <command>",
         epilog=(
             "The command after '--' is executed verbatim with no shell. The separator is required: "
             "without it a command's own flags are indistinguishable from this script's. Evidence "
@@ -232,6 +251,26 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run every check and report the directory, command and warnings, without running or recording",
     )
+
+    observe = subparsers.add_parser(
+        "record-observation",
+        help="Record what was observed without a process (a tool read, a query) in evidence.md",
+        epilog=(
+            "The entry is labelled as the agent's own account: it carries a verdict you supply and no exit "
+            "code, so it can only be finished on with `task finish --observation`, never with --evidence."
+        ),
+    )
+    observe.add_argument("project_directory", type=Path)
+    observe_owner = observe.add_mutually_exclusive_group(required=True)
+    observe_owner.add_argument("--task", help="task ID the observation belongs to; must exist in project.json")
+    observe_owner.add_argument("--step", choices=CLOSURE_STEPS, help="closure step the observation belongs to")
+    observe.add_argument("--source", required=True, help="one-line label of what was observed and where")
+    observe.add_argument("--result", required=True, choices=OBSERVATION_RESULTS, help="the verdict you reached")
+    observed_text = observe.add_mutually_exclusive_group(required=True)
+    observed_text.add_argument("--body", help="the observed text")
+    observed_text.add_argument("--body-file", type=Path, help="read the observed text from a file, or '-' for stdin")
+    observe.add_argument("--tail-lines", type=int, default=EVIDENCE_TAIL_LINES)
+    observe.add_argument("--json", action="store_true", help="print the selectable record as JSON")
 
     graph = subparsers.add_parser(
         "show-graph",
@@ -478,6 +517,11 @@ def main() -> int:
             return 0
 
         if args.command == "workflow":
+            if args.schema:
+                print(json.dumps(input_schema(args.action), indent=2))
+                return 0
+            if args.input_json is None:
+                raise WorkspaceError("workflow needs an input file, or '-' for stdin; or --schema to print its keys")
             result = workflow(args.project_directory, args.action, _read_json_object(args.input_json))
             print(json.dumps(result, indent=2))
             return 1 if result.get("valid") is False or result.get("passed") is False else 0
@@ -519,7 +563,7 @@ def main() -> int:
         if args.command == "list-projects":
             print(json.dumps(list_projects(
                 resolve_workspace_root(args.workspace_root), query=args.query, status=args.status,
-                limit=args.limit, offset=args.offset,
+                limit=args.limit, offset=args.offset, older_than_days=args.older_than_days,
             ), indent=2))
             return 0
 
@@ -597,6 +641,7 @@ def main() -> int:
                 args.project_directory, args.action, args.task_id, expected_revision=args.expected_revision,
                 reason=args.reason, evidence_record_ids=args.evidence_records, start_next=args.start_next,
                 lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
+                observation_record_ids=args.observation_records,
             ), indent=2))
             return 0
 
@@ -693,6 +738,25 @@ def main() -> int:
             # marks the task done from here has to do so against a non-zero exit it can see.
             print(
                 f"Recorded exit code {exit_code} for {owner} in {evidence_path}; not recording it as a pass",
+                file=sys.stderr,
+            )
+            return 1
+
+        if args.command == "record-observation":
+            observed = args.body if args.body is not None else _read_body(args.body_file)
+            outcome = record_observation(
+                args.project_directory, args.task, observed, step=args.step, source=args.source,
+                result=args.result, tail_lines=args.tail_lines,
+            )
+            if args.json:
+                print(json.dumps(outcome.as_dict(), indent=2))
+                return 0 if outcome.passed else 1
+            where = args.project_directory.resolve() / "evidence.md"
+            if outcome.passed:
+                print(f"Recorded a passing agent-attested observation for {outcome.owner_id} in {where}")
+                return 0
+            print(
+                f"Recorded a FAILED observation for {outcome.owner_id} in {where}; not recording it as a pass",
                 file=sys.stderr,
             )
             return 1

@@ -7,7 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from workspace_context import fingerprint
-from workspace_journal import OperationError, ensure_writable, journal_path, list_input, object_input, string_input
+from workspace_journal import (
+    OperationError,
+    ensure_writable,
+    journal_path,
+    list_input,
+    object_input,
+    schema_input,
+    string_input,
+)
 from workspace_lib import (
     DirectoryLock,
     WorkspaceError,
@@ -22,19 +30,19 @@ from workspace_session import _load_state
 
 def verify(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     """Run each caller-supplied command at most once; retries only repair saved evidence."""
-    object_input(request, {"id", "checks", "continue_on_failure", "fingerprints"}, {"id", "checks"})
-    checks = list_input(request["checks"], 20)
+    schema_input(request, "verify")
+    checks = list_input(request["checks"], 20, "checks")
     if not checks or type(request.get("continue_on_failure", False)) is not bool:
         raise WorkspaceError("checks must be nonempty and continue_on_failure boolean")
     for check in checks:
-        object_input(check, {"task", "step", "argv", "timeout", "cwd"}, {"argv"})
-        argv = list_input(check["argv"], 100)
+        object_input(check, {"task", "step", "argv", "timeout", "cwd"}, {"argv"}, where="workflow verify check")
+        argv = list_input(check["argv"], 100, "argv")
         if not argv or ("task" in check) == ("step" in check):
             raise WorkspaceError("each check requires argv and exactly one of task or step")
         for argument in argv:
             string_input(argument)
         if "cwd" in check:
-            string_input(check["cwd"])
+            string_input(check["cwd"], "cwd")
         timeout = check.get("timeout", 300)
         if type(timeout) not in (int, float) or not 0 < timeout <= 3600:
             raise WorkspaceError("timeout must be positive and at most 3600 seconds")

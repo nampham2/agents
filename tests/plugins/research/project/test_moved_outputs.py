@@ -9,18 +9,25 @@ still has to fire for a task claiming completion right now; it must not fire for
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
+import validate_workspace
 from workspace_lib import (
     WorkspaceError,
     allocate_project,
     commit_candidate,
+    validate_project,
     validate_v4_state,
 )
+from workspace_session import validated_project_context
 
 
 class MovedOutputTests(unittest.TestCase):
@@ -118,7 +125,8 @@ class MovedOutputTests(unittest.TestCase):
             report.warnings,
         )
 
-    def test_standalone_validation_still_reports_an_error(self) -> None:
+    def test_the_low_level_validator_stays_strict_when_told_nothing_about_history(self) -> None:
+        # init and migrate pass no finished-task set, so a DONE task there is judged as new work.
         self._finish_the_task()
         self.deliverable.rename(self.target / "renamed.txt")
         report = validate_v4_state(self._state(), self.project_dir)
@@ -126,6 +134,77 @@ class MovedOutputTests(unittest.TestCase):
             any("required output does not exist" in error for error in report.errors),
             report.errors,
         )
+
+    def test_standalone_validation_treats_a_moved_output_as_history_like_the_commit_path(self) -> None:
+        # 35 of 87 historical projects failed research-validate only through this, while commit
+        # already accepted them: two paths disagreed about the same fact.
+        self._finish_the_task()
+        self.deliverable.rename(self.target / "renamed.txt")
+        report = validate_project(self.project_dir)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(
+            any("deliverable.txt" in w and "history that has moved" in w for w in report.warnings), report.warnings
+        )
+
+    def _validate_command(self) -> tuple[int, str]:
+        stderr = io.StringIO()
+        with (
+            patch.object(sys, "argv", ["research-validate", str(self.project_dir)]),
+            contextlib.redirect_stderr(stderr),
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            code = validate_workspace.main()
+        return code, stderr.getvalue()
+
+    def test_the_validate_command_exits_zero_and_context_reports_valid_for_moved_history(self) -> None:
+        self._finish_the_task()
+        self.deliverable.rename(self.target / "renamed.txt")
+        code, stderr = self._validate_command()
+        self.assertEqual(code, 0, stderr)
+        self.assertIn("history that has moved", stderr)
+        context = validated_project_context(self.project_dir)
+        self.assertTrue(context["validation"]["valid"], context["validation"]["errors"])
+
+    def test_a_finished_tasks_missing_evidence_file_is_history_too(self) -> None:
+        proof = self.target / "proof.txt"
+        proof.write_text("passed\n", encoding="utf-8")
+        task = self._task("DONE")
+        task["evidence"] = [{"root": "target", "path": "proof.txt", "anchor": None}]
+        state = self._start_executing()
+        state["tasks"] = [task]
+        state["current_tasks"] = []
+        self._commit(state)
+        proof.unlink()
+        report = validate_project(self.project_dir)
+        self.assertEqual(report.errors, [])
+        self.assertTrue(
+            any("evidence file does not exist" in w and "history that has moved" in w for w in report.warnings),
+            report.warnings,
+        )
+        strict = validate_v4_state(self._state(), self.project_dir)
+        self.assertTrue(any("evidence file does not exist" in e for e in strict.errors), strict.errors)
+
+    def test_a_task_going_done_now_still_needs_its_evidence_file(self) -> None:
+        task = self._task("DONE")
+        task["evidence"] = [{"root": "target", "path": "never-written.txt", "anchor": None}]
+        state = self._start_executing()
+        state["tasks"] = [task]
+        state["current_tasks"] = []
+        with self.assertRaises(WorkspaceError) as caught:
+            self._commit(state)
+        self.assertIn("evidence file does not exist", str(caught.exception))
+
+    def test_a_finished_project_whose_working_directory_is_gone_still_validates(self) -> None:
+        state = self._finish_the_task()
+        (self.project_dir / "reflection.md").write_text("Shipped it.\n", encoding="utf-8")
+        state["status"] = "DONE"
+        self._commit(state)
+        import shutil
+
+        shutil.rmtree(self.target)
+        report = validate_project(self.project_dir)
+        self.assertFalse(any("working_directory does not exist" in e for e in report.errors), report.errors)
+        self.assertTrue(any("working_directory does not exist" in w for w in report.warnings), report.warnings)
 
     def test_an_output_that_is_still_there_says_nothing(self) -> None:
         self._finish_the_task()

@@ -15,6 +15,7 @@ from workspace_journal import (
     list_input,
     object_input,
     run_operation,
+    schema_input,
     snapshot,
     string_input,
 )
@@ -32,13 +33,11 @@ from workspace_session import _load_state
 
 def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     """Promote selected items before marking them resolved; retries deduplicate by durable identity."""
-    object_input(
-        request, {"id", "expected_revision", "tokens", "items"}, {"id", "expected_revision", "tokens", "items"}
-    )
+    schema_input(request, "triage")
     path = journal_path(project, request["id"])
     if len(request["id"]) > 45:
         raise WorkspaceError("triage ID must be at most 45 characters")
-    items = list_input(request["items"], 20)
+    items = list_input(request["items"], 20, "items")
     if not items:
         raise WorkspaceError("triage needs selected items")
     signature = document_sha256(json.dumps(request, sort_keys=True))
@@ -105,8 +104,8 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                             {"section", "disposition", "reason", "promotion"},
                             {"section", "disposition", "reason"},
                         )
-                        section = string_input(item["section"])
-                        reason = string_input(item["reason"])
+                        section = string_input(item["section"], "section")
+                        reason = string_input(item["reason"], "reason")
                         if section in seen:
                             raise WorkspaceError("duplicate staged selection")
                         seen.add(section)

@@ -12,7 +12,15 @@ from typing import Any
 from memory_search import memory_health
 from workspace_documents import ENTRY_MARKER_PATTERN, _section_span
 from workspace_evidence import evidence_entries
-from workspace_journal import contained, document_path, list_input, object_input, snapshot, string_input
+from workspace_journal import (
+    contained,
+    document_path,
+    list_input,
+    object_input,
+    schema_input,
+    snapshot,
+    string_input,
+)
 from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso
 from workspace_session import _headings, _load_state, project_context, validated_project_context
 
@@ -26,10 +34,8 @@ CONTINUATION_HEADINGS = {"do_not": "Do not"}
 
 def selected_read(project: Path, selection: dict[str, Any]) -> dict[str, Any]:
     """Read a selected section/entry with whole-source hashes and explicit continuation offsets."""
-    selection = object_input(
-        selection, {"document", "section", "entry", "offset", "max_chars", "if_sha256"}, {"document"}
-    )
-    name = string_input(selection["document"])
+    selection = schema_input(selection, "read")
+    name = string_input(selection["document"], "document")
     path = contained(project, "evidence.md") if name == "evidence" else document_path(project, name)
     text, token = snapshot(path)
     result: dict[str, Any] = {"document": name, "sha256": token, "exists": token != "missing"}
@@ -40,7 +46,7 @@ def selected_read(project: Path, selection: dict[str, Any]) -> dict[str, Any]:
     if "section" in selection and "entry" in selection:
         raise WorkspaceError("select a section or entry, not both")
     if "entry" in selection:
-        entry = string_input(selection["entry"])
+        entry = string_input(selection["entry"], "entry")
         if name == "evidence":
             text = evidence_entries(project, record_id=entry, include_text=True)["entries"][0]["text"]
         else:
@@ -51,7 +57,7 @@ def selected_read(project: Path, selection: dict[str, Any]) -> dict[str, Any]:
             index = matches[0]
             text = text[markers[index].start() : markers[index + 1].start() if index + 1 < len(markers) else len(text)]
     elif "section" in selection:
-        _, start, _, end = _section_span(text, string_input(selection["section"]))
+        _, start, _, end = _section_span(text, string_input(selection["section"], "section"))
         text = text[start:end]
     offset, limit = selection.get("offset", 0), selection.get("max_chars", 2000)
     if type(offset) is not int or type(limit) is not int or not 0 <= offset <= len(text) or not 1 <= limit <= 20000:
@@ -416,13 +422,14 @@ def checkpoint_freshness(project: Path) -> dict[str, Any]:
 
 def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     """Read one coherent cooperative-writer snapshot, with bounded explicit selections."""
-    object_input(request, {"task", "selections", "max_chars", "worker", "scope", "lessons"})
+    schema_input(request, "resume")
     maximum = request.get("max_chars", 12000)
     if type(maximum) is not int or not 1 <= maximum <= 40000:
         raise WorkspaceError("bundle max_chars must be between 1 and 40000")
     selections = list_input(
         request.get("selections", [{"document": "handoff"}, {"document": "spec", "section": "Current specification"}]),
         12,
+        "selections",
     )
     with DirectoryLock(project / ".project.lock"):
         context = validated_project_context(project)
@@ -431,7 +438,7 @@ def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
         selected = []
         omitted = []
         for selection in selections:
-            object_input(selection, {"document", "section", "entry", "offset", "max_chars", "if_sha256"}, {"document"})
+            schema_input(selection, "read")
             limit = selection.get("max_chars", 2000)
             if type(limit) is not int or not 1 <= limit <= 20000:
                 raise WorkspaceError("selection max_chars must be between 1 and 20000")
@@ -451,7 +458,9 @@ def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
         context["worktree"] = worktree_status(_load_state(project))
         context["memory_health"] = memory_health(project.parent, context["title"])
         if "task" in request:
-            context["assignment"] = project_context(project, task_id=string_input(request["task"]), task_only=True)
+            context["assignment"] = project_context(
+                project, task_id=string_input(request["task"], "task"), task_only=True
+            )
         context["worker_packet"] = {key: request[key] for key in ("worker", "scope", "lessons") if key in request}
         return context
 

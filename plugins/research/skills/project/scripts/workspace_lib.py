@@ -436,6 +436,28 @@ def _resolve_local_reference(
     return resolved, None
 
 
+# One sentence for every kind of finished work whose files have since moved, so a deliverable, an
+# evidence file and a working directory are described the same way. 35 of 87 historical projects
+# failed standalone validation only through these three, while the commit path already treated
+# them as history; the two paths now agree.
+MOVED_HISTORY_NOTE = (
+    "the task was already terminal, so this is history that has moved rather than an unfinished task. "
+    "Record where it went in a dated correction."
+)
+
+
+def _missing_working_directory(state: dict[str, Any], working_directory: Path, report: ValidationReport) -> None:
+    """A finished project's target may be gone (a removed worktree, a deleted checkout); an active one may not."""
+    message = f"project: working_directory does not exist: {working_directory}"
+    if state.get("status") in ("DONE", "CANCELLED"):
+        report.warnings.append(
+            f"{message}; the project is finished, so this is history that has moved (for example a "
+            "removed worktree), not missing work."
+        )
+    else:
+        report.errors.append(message)
+
+
 def _validate_output_reference(
     value: object,
     label: str,
@@ -479,10 +501,7 @@ def _validate_output_reference(
             # something untrue — the deliverable has moved or gone since. Erroring here would make
             # the project uncommittable, and the dated correction the skill prescribes for exactly
             # this situation is itself a commit.
-            report.warnings.append(
-                f"{label}: {missing}; the task was already terminal, so this is history that has "
-                "moved rather than an unfinished task. Record where it went in a dated correction."
-            )
+            report.warnings.append(f"{label}: {missing}; {MOVED_HISTORY_NOTE}")
 
 
 def _validate_evidence_reference(
@@ -492,6 +511,8 @@ def _validate_evidence_reference(
     working_directory: Path,
     require_exists: bool,
     report: ValidationReport,
+    *,
+    missing_is_error: bool = True,
 ) -> None:
     if not isinstance(value, dict):
         report.errors.append(f"{label}: evidence must be an object")
@@ -517,7 +538,11 @@ def _validate_evidence_reference(
     if error:
         report.errors.append(f"{label}: {error}: {path}")
     elif require_exists and resolved is not None and not resolved.is_file():
-        report.errors.append(f"{label}: evidence file does not exist: {root}:{path}")
+        missing = f"evidence file does not exist: {root}:{path}"
+        if missing_is_error:
+            report.errors.append(f"{label}: {missing}")
+        else:
+            report.warnings.append(f"{label}: {missing}; {MOVED_HISTORY_NOTE}")
 
 
 def _validate_effect(value: object, label: str, report: ValidationReport) -> str | None:
@@ -1333,7 +1358,7 @@ def _validate_worktrees(
         report.errors.append("project: worktrees must be a list")
         return
     seen_paths: set[str] = set()
-    targets = 0
+    target_entries: list[tuple[str, object, str, str]] = []
     for index, entry in enumerate(value, start=1):
         label = f"worktree #{index}"
         if not isinstance(entry, dict):
@@ -1371,13 +1396,7 @@ def _validate_worktrees(
                     report.errors.append(f"{label}: {field_name} must be a non-empty string")
             _validate_worktree_closure(entry.get("closure"), label, status, report)
             if role == "target" and path_value is not None and _non_empty_string(repository):
-                targets += 1
-                expected = repository if status == "removed" else path_value
-                if str(working_directory) != expected:
-                    report.errors.append(
-                        f"{label}: target worktree {status} requires working_directory {expected}, "
-                        f"found {working_directory}"
-                    )
+                target_entries.append((label, status, path_value, repository))
             if check_files and status != "removed" and path_value is not None and not Path(path_value).is_dir():
                 report.warnings.append(f"{label}: recorded worktree is missing on disk: {path_value}")
         if not _is_timestamp(entry.get("recorded_at")):
@@ -1391,8 +1410,23 @@ def _validate_worktrees(
             for field_name in ("source", "response"):
                 if not _non_empty_string(confirmation.get(field_name)):
                     report.errors.append(f"{label}.confirmation: {field_name} must be a non-empty string")
-    if targets > 1:
-        report.errors.append("project: at most one worktree may have role target")
+    # Only the latest target constrains the target root. An earlier one is history once it is removed,
+    # which is what lets a reopened project record a new worktree: the first maintenance reopen after
+    # a worktree was removed otherwise had no legal way to record the next one.
+    if target_entries:
+        *earlier, (label, status, path_value, repository) = target_entries
+        for earlier_label, earlier_status, _, _ in earlier:
+            if earlier_status != "removed":
+                report.errors.append(
+                    f"project: at most one worktree may have role target; {earlier_label} must be removed "
+                    "before another target is recorded"
+                )
+        expected = repository if status == "removed" else path_value
+        if str(working_directory) != expected:
+            report.errors.append(
+                f"{label}: target worktree {status} requires working_directory {expected}, "
+                f"found {working_directory}"
+            )
 
 
 def validate_v3_state(
@@ -1449,7 +1483,7 @@ def validate_v3_state(
     if not working_directory.is_absolute():
         report.errors.append("project: working_directory must be absolute")
     elif check_files and not working_directory.is_dir():
-        report.errors.append(f"project: working_directory does not exist: {working_directory}")
+        _missing_working_directory(state, working_directory, report)
     elif check_files:
         report.warnings.extend(self_location_warnings(working_directory))
     if "worktrees" in state:
@@ -1566,6 +1600,7 @@ def validate_v3_state(
                 working_directory,
                 require_exists=check_files and task_status == "DONE",
                 report=report,
+                missing_is_error=already_done is None or task_id not in already_done,
             )
         if task_status == "DONE" and not evidence:
             report.errors.append(f"{label}: DONE task requires evidence")
@@ -1734,7 +1769,7 @@ def validate_v4_state(
     if not working_directory.is_absolute():
         report.errors.append("project: working_directory must be absolute")
     elif check_files and not working_directory.is_dir():
-        report.errors.append(f"project: working_directory does not exist: {working_directory}")
+        _missing_working_directory(state, working_directory, report)
     elif check_files:
         report.warnings.extend(self_location_warnings(working_directory))
     if "worktrees" in state:
@@ -1868,6 +1903,7 @@ def validate_v4_state(
                 working_directory,
                 require_exists=check_files and task_status == "DONE",
                 report=report,
+                missing_is_error=already_done is None or task_id not in already_done,
             )
         if task_status == "DONE" and not evidence:
             report.errors.append(f"{label}: DONE task requires evidence")
@@ -3206,9 +3242,11 @@ def validate_project(
         elif version == 2:
             report = validate_v2_state(load_json(project_dir / "project.json"), project_dir, close=close)
         elif version == 3:
-            report = validate_v3_state(load_json(project_dir / "project.json"), project_dir, close=close)
+            state = load_json(project_dir / "project.json")
+            report = validate_v3_state(state, project_dir, close=close, already_done=_done_task_ids(state))
         elif version == 4:
-            report = validate_v4_state(load_json(project_dir / "project.json"), project_dir, close=close)
+            state = load_json(project_dir / "project.json")
+            report = validate_v4_state(state, project_dir, close=close, already_done=_done_task_ids(state))
         else:
             report = ValidationReport(errors=[f"unsupported schema_version: {version} ({NEWER_PLUGIN_HINT})"])
     except WorkspaceError as error:
@@ -3363,6 +3401,37 @@ class EvidenceResult:
             payload.update(recorded=False, dry_run=True, exit_code=None, passed=None, record_id=None,
                            reference=None, command=list(self.command))
         return payload
+
+
+# What an observation entry says about itself. A reader that requires an exit code never finds one,
+# so an older launcher treats the entry as not selectable and refuses to finish on it.
+OBSERVATION_RESULTS = ("passed", "FAILED")
+OBSERVATION_LABEL = "agent-attested, no process ran"
+
+
+@dataclass(frozen=True)
+class ObservationResult:
+    """An observation durably appended to `evidence.md`: the agent's own account, not a process result."""
+
+    record_id: str
+    owner_kind: str
+    owner_id: str
+    passed: bool
+    source: str
+    reference: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "operation": "record-observation",
+            "recorded": True,
+            "record_id": self.record_id,
+            "owner": {"kind": self.owner_kind, "id": self.owner_id},
+            "kind": "observation",
+            "attested": True,
+            "passed": self.passed,
+            "source": self.source,
+            "reference": self.reference,
+        }
 
 
 def _fence_for(text: str) -> str:
@@ -3599,6 +3668,29 @@ def record_evidence(
     ).exit_code
 
 
+def _check_owner(task_id: "str | None", step: "str | None", tool: str) -> None:
+    """Evidence belongs to a task or to a closure step, never both and never neither."""
+    if task_id is not None and step is not None:
+        raise WorkspaceError(f"{tool} takes --task or --step, not both")
+    if task_id is None and step is None:
+        raise WorkspaceError(f"{tool} needs --task <id> or --step <name>")
+    if step is not None and step not in CLOSURE_STEPS:
+        allowed = ", ".join(CLOSURE_STEPS)
+        raise WorkspaceError(f"unknown closure step {step!r}; the closure steps are: {allowed}")
+
+
+def _owner_state(project_dir: Path, task_id: "str | None") -> "tuple[dict[str, Any], list[Any]]":
+    """The project's state and task list, refusing a task id the project does not have."""
+    state = load_json(project_dir / "project.json")
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        raise WorkspaceError(f"{project_dir / 'project.json'} has no task list to record against")
+    if task_id is not None and not any(isinstance(task, dict) and task.get("id") == task_id for task in tasks):
+        known = ", ".join(str(task.get("id")) for task in tasks if isinstance(task, dict) and task.get("id"))
+        raise WorkspaceError(f"unknown task {task_id!r}; this project has: {known or '(none)'}")
+    return state, tasks
+
+
 def record_evidence_result(
     project_dir: Path,
     task_id: "str | None",
@@ -3619,26 +3711,14 @@ def record_evidence_result(
     runs every check and returns what would run, recording nothing.
     """
     project_dir = project_dir.resolve()
-    if task_id is not None and step is not None:
-        raise WorkspaceError("record-evidence takes --task or --step, not both")
-    if task_id is None and step is None:
-        raise WorkspaceError("record-evidence needs --task <id> or --step <name>")
-    if step is not None and step not in CLOSURE_STEPS:
-        allowed = ", ".join(CLOSURE_STEPS)
-        raise WorkspaceError(f"unknown closure step {step!r}; the closure steps are: {allowed}")
+    _check_owner(task_id, step, "record-evidence")
     if not command:
         raise WorkspaceError("record-evidence requires a command to run after '--'")
     # Before the project is even read: an argv holding a bare operator is malformed whatever the
     # project says, and reporting that beats reporting whatever the command made of it.
     _refuse_shell_operators(command)
 
-    state = load_json(project_dir / "project.json")
-    tasks = state.get("tasks")
-    if not isinstance(tasks, list):
-        raise WorkspaceError(f"{project_dir / 'project.json'} has no task list to record against")
-    if task_id is not None and not any(isinstance(task, dict) and task.get("id") == task_id for task in tasks):
-        known = ", ".join(str(task.get("id")) for task in tasks if isinstance(task, dict) and task.get("id"))
-        raise WorkspaceError(f"unknown task {task_id!r}; this project has: {known or '(none)'}")
+    state, tasks = _owner_state(project_dir, task_id)
 
     working_directory = state.get("working_directory")
     if (
@@ -3773,6 +3853,58 @@ def record_evidence_result(
     return result
 
 
+def record_observation(
+    project_dir: Path,
+    task_id: "str | None",
+    body: str,
+    *,
+    step: "str | None" = None,
+    source: str,
+    result: str,
+    tail_lines: int = EVIDENCE_TAIL_LINES,
+    lock_timeout: float = 5.0,
+) -> ObservationResult:
+    """Record what was observed without a process: a read through a tool, a query, a page.
+
+    Some checks cannot be wrapped in `record-evidence`: an MCP read or a query has no command and no
+    exit code. The entry is labelled as the agent's own account and carries its verdict as text, so it
+    is selectable only by an explicit `task finish --observation`, never mistaken for command evidence.
+    """
+    project_dir = project_dir.resolve()
+    _check_owner(task_id, step, "record-observation")
+    if result not in OBSERVATION_RESULTS:
+        raise WorkspaceError("--result must be passed or FAILED")
+    source = " ".join(source.split())
+    if not source or len(source) > 200:
+        raise WorkspaceError("--source must be a short one-line label of what was observed and where")
+    if not body.strip():
+        raise WorkspaceError("an observation needs the observed text; an empty one records nothing")
+    _owner_state(project_dir, task_id)
+    record_id = f"ev-{uuid.uuid4().hex}"
+    anchor = f"evidence-{record_id[3:]}"
+    lines = [
+        "",
+        f"## {task_id or step} — {_evidence_heading_command('observation: ' + source)}",
+        "",
+        f'<a id="{anchor}"></a>',
+        f"- Record ID: {record_id}",
+        f"- Recorded: {now_iso()}",
+        f"- Source: {source}",
+        f"- Observation: {result} ({OBSERVATION_LABEL})",
+        "",
+        *_format_output_tail(body, "observed (tail)", tail_lines),
+    ]
+    _append_evidence_entry(project_dir, lines, lock_timeout=lock_timeout)
+    return ObservationResult(
+        record_id=record_id,
+        owner_kind="task" if task_id is not None else "step",
+        owner_id=task_id or step or "",
+        passed=result == "passed",
+        source=source,
+        reference={"root": "workspace", "path": "evidence.md", "anchor": anchor},
+    )
+
+
 def _append_evidence_entry(project_dir: Path, lines: "list[str]", *, lock_timeout: float) -> None:
     """Add one entry to `evidence.md` under the project lock, replacing the file in one step.
 
@@ -3834,6 +3966,9 @@ class EvidenceSpan:
     # ignored, so a task with three unreadable stamps renders as unmeasured-with-entries instead of
     # looking like a task nobody ever ran.
     unplaceable: int = 0
+    # Entries that are an agent's own observation rather than a process result; counted apart so
+    # a summary can say "checks" instead of "commands" and never present them as exit codes.
+    observations: int = 0
 
     @property
     def measured(self) -> bool:
@@ -3911,6 +4046,8 @@ class TaskGraph:
 _EVIDENCE_ENTRY_HEADING = re.compile(r"^##[ \t]+(?P<owner>\S+)[ \t]+—", re.MULTILINE)
 _EVIDENCE_RECORDED_STAMP = re.compile(r"^-[ \t]+Recorded:[ \t]*(?P<stamp>.+?)[ \t]*$", re.MULTILINE)
 _EVIDENCE_EXIT_CODE = re.compile(r"^-[ \t]+Exit code:[ \t]*(?P<code>-?\d+)\b", re.MULTILINE)
+_EVIDENCE_OBSERVATION = re.compile(r"^-[ \t]+Observation:[ \t]*(?P<label>passed|FAILED)\b", re.MULTILINE)
+_EVIDENCE_FENCE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})", re.MULTILINE)
 
 
 def _placeable_instant(value: str) -> "datetime | None":
@@ -3945,9 +4082,18 @@ def parse_evidence_spans(evidence_markdown: str) -> "dict[str, EvidenceSpan]":
         body = evidence_markdown[heading.end() : end]
         span = spans.setdefault(heading.group("owner"), EvidenceSpan())
         span.entries += 1
-        exit_code = _EVIDENCE_EXIT_CODE.search(body)
-        if exit_code is not None and int(exit_code.group("code")) != 0:
-            span.failed += 1
+        # An observation is identified before its first fence only: its body is free text and may
+        # itself contain a line that looks like an exit code, which must not be counted as one.
+        fence = _EVIDENCE_FENCE.search(body)
+        observation = _EVIDENCE_OBSERVATION.search(body[: fence.start()] if fence is not None else body)
+        if observation is not None:
+            span.observations += 1
+            if observation.group("label") == "FAILED":
+                span.failed += 1
+        else:
+            exit_code = _EVIDENCE_EXIT_CODE.search(body)
+            if exit_code is not None and int(exit_code.group("code")) != 0:
+                span.failed += 1
         stamp = _EVIDENCE_RECORDED_STAMP.search(body)
         instant = _placeable_instant(stamp.group("stamp")) if stamp is not None else None
         if instant is None:
@@ -4173,9 +4319,12 @@ def _task_graph_warnings(graph: TaskGraph) -> "list[str]":
 
     failed = [node for node in graph.nodes if node.span.failed]
     if failed:
-        lines.extend(["", "Non-zero exit codes recorded:"])
+        mixed = any(node.span.observations for node in failed)
+        lines.extend(["", "Non-zero exit codes or failed observations recorded:" if mixed else "Non-zero exit codes recorded:"])
         lines.extend(
-            f"  {node.id}  {node.span.failed} of {node.span.entries} recorded commands failed" for node in failed
+            f"  {node.id}  {node.span.failed} of {node.span.entries} recorded "
+            f"{'checks' if node.span.observations else 'commands'} failed"
+            for node in failed
         )
 
     unplaceable = [node for node in graph.nodes if node.span.unplaceable]
