@@ -1024,12 +1024,12 @@ def test_do_not_is_its_own_section_first_and_returned_structurally_by_resume(pro
     # Resolving it with empty text removes the section, like any other field.
     _checkpoint(project, "dn-clear", do_not="")
     assert "## Do not" not in (project / "handoff.md").read_text(encoding="utf-8")
-    assert workflow(project, "resume", {})["do_not"] == ""
+    assert "do_not" not in workflow(project, "resume", {}), "resolved: nothing to say, nothing sent"
 
 
-def test_resume_has_an_empty_do_not_without_a_checkpoint(project: Path) -> None:
+def test_resume_has_no_do_not_without_a_checkpoint(project: Path) -> None:
     planned(project)
-    assert workflow(project, "resume", {})["do_not"] == ""
+    assert "do_not" not in workflow(project, "resume", {})
 
 
 @pytest.mark.parametrize("field", ["do_not", "effects", "next"])
@@ -1073,7 +1073,9 @@ def test_the_banner_and_freshness_report_a_handoff_older_than_the_state(project:
     assert context.handoff_banner(project, state) == ""
     fresh = workflow(project, "resume", {})
     assert "handoff_banner" not in fresh
-    assert fresh["freshness"]["phase_changed"] is False
+    assert not {"handoff_revision", "handoff_phase", "phase_changed"} & fresh["freshness"].keys(), (
+        "a current handoff adds nothing to the payload"
+    )
 
     task_operation(project, "start", "T01", expected_revision=state["revision"])
     stale = workflow(project, "resume", {})

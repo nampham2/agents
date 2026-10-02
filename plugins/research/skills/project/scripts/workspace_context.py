@@ -397,15 +397,21 @@ def checkpoint_freshness(project: Path) -> dict[str, Any]:
         actual = snapshot(document_path(project, name))[1]
         sources[name] = "missing" if actual == "missing" else "unchanged" if actual == old else "changed"
     git = git_observation(Path(state["working_directory"]))
-    return {
+    freshness: dict[str, Any] = {
         "revision_changed": state["revision"] != previous["revision"],
-        "handoff_revision": previous["revision"],
-        "handoff_phase": previous.get("phase"),
-        "phase_changed": previous.get("phase") != state["status"],
         "sources": sources,
         "target": "unknown" if not git.get("available") else "unchanged" if git == previous["git"] else "changed",
         "ownership": "requires host observations; matching hashes do not establish stopped processes",
     }
+    # Only when they say something: this is in every resume, and a bundle is worth having only while
+    # it stays smaller than the separate reads it replaces.
+    if freshness["revision_changed"] or previous.get("phase") != state["status"]:
+        freshness.update(
+            handoff_revision=previous["revision"],
+            handoff_phase=previous.get("phase"),
+            phase_changed=previous.get("phase") != state["status"],
+        )
+    return freshness
 
 
 def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
@@ -436,13 +442,12 @@ def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
             maximum -= len(item.get("text", ""))
             selected.append(item)
         checkpoint = checkpoint_data(project)
-        context.update(
-            sources=selected,
-            omitted=omitted,
-            freshness=checkpoint_freshness(project),
-            # Structured, so it is not subject to the 2000-character slice of the handoff text.
-            do_not=checkpoint["continuation"].get("do_not", "") if checkpoint else "",
-        )
+        context.update(sources=selected, omitted=omitted, freshness=checkpoint_freshness(project))
+        # Structured, so it is not subject to the 2000-character slice of the handoff text; absent
+        # when there is nothing to say, to keep the common payload as small as it was.
+        do_not = checkpoint["continuation"].get("do_not", "") if checkpoint else ""
+        if do_not:
+            context["do_not"] = do_not
         context["worktree"] = worktree_status(_load_state(project))
         context["memory_health"] = memory_health(project.parent, context["title"])
         if "task" in request:
