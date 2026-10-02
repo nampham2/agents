@@ -63,6 +63,23 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.19.0 recorder, handoff and launcher guards
+
+Built from what 85 past projects actually tripped over:
+
+- `record-evidence` refuses a relative path given to `research-validate` or `research-project`,
+  exports `RESEARCH_PROJECT_DIR`, adds `--cwd` and `--dry-run`, and warns (without blocking) on
+  evidence for a task that is not `RUNNING`, a heredoc or an unguarded pipe inside `bash -c`.
+- `task finish --backfill --note` records work done before `task start` as two guarded commits.
+- Handoffs gain a first-class `do_not` field, a stale-handoff banner, and a closure hint;
+  `finalize` refuses a reflection that is not a post-mortem; a kept worktree can be recorded as
+  removed.
+- Every command warns on stderr when a cached, out-of-date plugin copy is running.
+- `research-project stage` writes a triage-ready staged lesson; `promote-memory` is idempotent.
+
+Compatibility: a handoff written with `do_not` cannot be read by an older launcher. Update the
+plugin, restart Claude Code, and then resume projects.
+
 ### 0.17.0 execution change
 
 Projects now use normal task execution and scoped native subagents. The automatic executor and

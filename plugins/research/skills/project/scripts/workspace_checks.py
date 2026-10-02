@@ -27,12 +27,14 @@ def verify(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     if not checks or type(request.get("continue_on_failure", False)) is not bool:
         raise WorkspaceError("checks must be nonempty and continue_on_failure boolean")
     for check in checks:
-        object_input(check, {"task", "step", "argv", "timeout"}, {"argv"})
+        object_input(check, {"task", "step", "argv", "timeout", "cwd"}, {"argv"})
         argv = list_input(check["argv"], 100)
         if not argv or ("task" in check) == ("step" in check):
             raise WorkspaceError("each check requires argv and exactly one of task or step")
         for argument in argv:
             string_input(argument)
+        if "cwd" in check:
+            string_input(check["cwd"])
         timeout = check.get("timeout", 300)
         if type(timeout) not in (int, float) or not 0 < timeout <= 3600:
             raise WorkspaceError("timeout must be positive and at most 3600 seconds")
@@ -105,6 +107,7 @@ def verify(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                             step=check.get("step"),
                             timeout=check.get("timeout", 300),
                             observe=observe,
+                            cwd=Path(check["cwd"]) if "cwd" in check else None,
                         )
                     except WorkspaceError as error:
                         attempt["error"] = str(error)

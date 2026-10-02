@@ -25,6 +25,13 @@ GIT_ENV = {
     "GIT_CONFIG_SYSTEM": os.devnull,
 }
 
+REFLECTION = (
+    "# Reflection\n\nOutcome: the work was verified end to end and every success criterion was met.\n\n"
+    "Limitations: none known. Lessons: nothing new beyond what the evidence and the decisions already record, "
+    "and no work is left open for a later session.\n"
+)
+
+
 
 def git(cwd: Path, *arguments: str) -> str:
     completed = subprocess.run(
@@ -423,6 +430,30 @@ class TestCloseWorktree:
         git(repository, "worktree", "remove", "--force", str(linked))
         refused(recorded, "worktree is missing", close, linked, "keep")
 
+    def test_a_kept_worktree_can_later_be_recorded_as_removed(
+        self, recorded: Path, repository: Path, linked: Path
+    ) -> None:
+        close(recorded, linked, "keep")
+        refused(recorded, "still present or registered", close, linked, "remove")
+        assert load_state(recorded)["worktrees"][0]["status"] == "kept", "a refused removal changes nothing"
+        git(repository, "worktree", "remove", "--force", str(linked))
+        result = close(recorded, linked, "remove", confirmation={"source": "user", "response": "removed it"})
+        state = load_state(recorded)
+        assert result["worktree"]["status"] == "removed"
+        assert state["worktrees"][0]["closure"]["decision"] == "remove"
+        assert state["worktrees"][0]["closure"]["response"] == "removed it"
+        assert state["working_directory"] == str(repository.resolve())
+        from workspace_lib import validate_project
+
+        assert validate_project(recorded).valid
+        refused(recorded, "no active or kept repository worktree", close, linked, "remove")
+
+    def test_only_removal_may_follow_a_keep(self, recorded: Path, linked: Path) -> None:
+        close(recorded, linked, "keep")
+        refused(recorded, "no active repository worktree", close, linked, "keep")
+        refused(recorded, "no active repository worktree", close, linked, "accept_dirty")
+        assert load_state(recorded)["worktrees"][0]["closure"]["decision"] == "keep"
+
     def test_close_refusals(self, recorded: Path, tmp_path: Path, linked: Path) -> None:
         refused(recorded, "decision must be", close, linked, "drop")
         refused(recorded, "no active repository worktree", close, tmp_path / "absent", "keep")
@@ -539,7 +570,7 @@ class TestGuards:
         record(project, linked)
 
         def finalize(identity: str) -> dict[str, Any]:
-            payload = request(project, identity, reflection="Done.", continuation={"next": "none"})
+            payload = request(project, identity, reflection=REFLECTION, continuation={"next": "none"})
             return workflow(project, "finalize", payload)
 
         groups = workflow(project, "readiness", {})["groups"]
@@ -569,8 +600,58 @@ class TestGuards:
         git(repository, "worktree", "remove", "--force", str(linked))
         errors, warnings = worktree_closure_findings(load_state(project))
         assert errors == [] and "missing on disk" in warnings[0]
+        assert "close, decision remove" in warnings[0], "the advice must name a transition that now exists"
         plain = tmp_path / "plain"
         plain.mkdir()
         exempt = make_project(tmp_path / "second", plain)
         record(exempt, plain, kind="none")
         assert worktree_closure_findings(load_state(exempt)) == ([], [])
+
+
+class TestFinalizeReflection:
+    @pytest.fixture
+    def finished(self, tmp_path: Path, repository: Path) -> Path:
+        from tests.plugins.research.project.test_lifecycle_commands import done
+
+        project = make_project(tmp_path, repository)
+        done(project)
+        return project
+
+    def finalize(self, project: Path, identity: str, reflection: str) -> dict[str, Any]:
+        from workspace_workflows import workflow
+
+        from tests.plugins.research.project.test_lifecycle_commands import request
+
+        payload = request(project, identity, reflection=reflection, continuation={"next": "none"})
+        return workflow(project, "finalize", payload)
+
+    @pytest.mark.parametrize(
+        "reflection",
+        [
+            "aae983d8" * 8,  # a bare 64-character hash was once saved as a reflection
+            "# Reflection\n\nToo short.",
+            "No heading here, " + "but it is long enough to pass the length rule. " * 6,
+            "```\n# only inside a fence\n```\n" + "padding " * 40,
+        ],
+    )
+    def test_a_token_a_stub_or_a_headingless_text_is_refused_and_nothing_is_committed(
+        self, finished: Path, reflection: str
+    ) -> None:
+        from workspace_lib import WorkspaceError
+
+        before = (load_state(finished)["revision"], (finished / "reflection.md").exists())
+        with pytest.raises(WorkspaceError, match="post-mortem of at least 200 characters"):
+            self.finalize(finished, "bad", reflection)
+        assert (load_state(finished)["revision"], (finished / "reflection.md").exists()) == before
+        assert load_state(finished)["status"] != "DONE"
+
+    def test_a_real_reflection_closes_and_staged_lessons_are_surfaced_not_blocking(self, finished: Path) -> None:
+        (finished / "memory-staging.md").write_text(
+            "# Staged lessons\n\n## A lesson nobody triaged\n\nSomething surprising.\n", encoding="utf-8"
+        )
+        result = self.finalize(finished, "good", REFLECTION)
+        assert load_state(finished)["status"] == "DONE"
+        assert result["memory_staging_warnings"], "an untriaged staged lesson must be reported at finalize"
+
+    def test_a_clean_staging_file_reports_nothing(self, finished: Path) -> None:
+        assert self.finalize(finished, "clean", REFLECTION)["memory_staging_warnings"] == []

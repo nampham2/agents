@@ -7,6 +7,8 @@ derived from the completed process, and a failing command can never be recorded 
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import shlex
 import subprocess
@@ -26,6 +28,7 @@ from workspace_lib import (
     WorkspaceError,
     allocate_project,
     record_evidence,
+    record_evidence_result,
 )
 
 from tests.conftest import MANAGER
@@ -618,3 +621,269 @@ class EvidenceAppendDurabilityTests(_ProjectFixture):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class WorkspaceAwareToolTests(_ProjectFixture):
+    """`research-validate .` recorded from the target: seven incidents, four after the lesson existed.
+
+    The 0.4.5 guard cannot see it, because `.` exists under both the project directory and the
+    target. The refusal is tied to the tool name, not the argument, because `ruff check .` and
+    `pytest .` are the same spelling and are right.
+    """
+
+    def _tool(self, name: str) -> str:
+        directory = self.root / "bin"
+        directory.mkdir(exist_ok=True)
+        script = directory / name
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.chmod(0o755)
+        return str(script)
+
+    def _refused(self, command: list[str]) -> str:
+        before = self.evidence.read_text(encoding="utf-8")
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence(self.project_dir, "T01", command)
+        self.assertEqual(self.evidence.read_text(encoding="utf-8"), before, "a refusal must not be recorded")
+        message = str(caught.exception)
+        # The older misroot guard also raises WorkspaceError; pin that this refusal is the new one.
+        self.assertIn("would not name the project or workspace", message)
+        return message
+
+    def test_a_bare_dot_is_refused_and_the_message_names_the_absolute_project_directory(self) -> None:
+        message = self._refused(["research-validate", ".", "--report"])
+        self.assertIn("'.'", message)
+        self.assertIn(str(self.project_dir), message)
+        self.assertIn(str(self.target), message)
+
+    def test_the_launcher_may_be_named_by_its_absolute_path(self) -> None:
+        message = self._refused([self._tool("research-project"), "context", "./project"])
+        self.assertIn("'./project'", message)
+
+    def test_a_parent_relative_and_a_dot_slash_argument_are_refused(self) -> None:
+        self.assertIn("'..'", self._refused(["research-validate", ".."]))
+        self.assertIn("'../x'", self._refused(["research-validate", "../x"]))
+
+    def test_an_option_value_is_checked_by_value(self) -> None:
+        message = self._refused(["research-project", "search-memory", "q", "--workspace-root=."])
+        self.assertIn("'--workspace-root=.'", message)
+
+    def test_a_relative_name_that_exists_in_the_project_directory_is_refused(self) -> None:
+        # Present in both places, so the older misroot guard stays silent and only this one can fire.
+        (self.project_dir / "spec.md").write_text("# spec\n", encoding="utf-8")
+        (self.target / "spec.md").write_text("# target spec\n", encoding="utf-8")
+        self.assertIn("'spec.md'", self._refused(["research-validate", "spec.md"]))
+
+    def test_the_same_spelling_is_accepted_for_any_other_tool(self) -> None:
+        (self.target / "x.py").write_text("pass\n", encoding="utf-8")
+        for command in (
+            [sys.executable, "-c", "pass", "."],
+            [sys.executable, "-c", "pass", "./x.py"],
+            [sys.executable, "-c", "pass", "--root=."],
+        ):
+            with self.subTest(command=command[3:]):
+                self.assertEqual(record_evidence(self.project_dir, "T01", command), 0)
+
+    def test_absolute_options_words_and_empty_arguments_are_left_alone(self) -> None:
+        tool = self._tool("research-project")
+        for arguments in (
+            [str(self.project_dir)],
+            ["context", "--validate"],
+            ["context", ""],
+            ["x" * 300],  # too long to be a filename: probing it raises, which means "not a path"
+        ):
+            with self.subTest(arguments=[argument[:20] for argument in arguments]):
+                self.assertEqual(record_evidence(self.project_dir, "T01", [tool, *arguments]), 0)
+
+    def test_the_command_sees_the_project_directory_and_the_workspace_root(self) -> None:
+        code = record_evidence(
+            self.project_dir,
+            "T01",
+            [
+                sys.executable,
+                "-c",
+                "import os; print(os.environ['RESEARCH_PROJECT_DIR']); print(os.environ['RESEARCH_WORKSPACE_ROOT'])",
+            ],
+        )
+        self.assertEqual(code, 0)
+        text = self.evidence.read_text(encoding="utf-8")
+        self.assertIn(str(self.project_dir.resolve()), text)
+        self.assertIn(str(self.workspace_root.resolve()), text)
+
+
+class LaunchHintTests(_ProjectFixture):
+    """A recorded 126/127 says only that something was not found; the hint says where it looked."""
+
+    def test_exit_127_carries_a_hint_naming_both_directories(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", ["bash", "-c", "exit 127"])
+        self.assertEqual(result.exit_code, 127)
+        self.assertIn(str(self.target), result.hint)
+        self.assertIn(str(self.project_dir.resolve()), result.hint)
+        self.assertIn("RESEARCH_PROJECT_DIR", result.hint)
+
+    def test_a_no_such_file_message_carries_the_hint_whatever_the_exit_code(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", ["ls", "no-such-file-anywhere"])
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertNotIn(result.exit_code, (126, 127))
+        self.assertTrue(result.hint)
+
+    def test_a_passing_or_ordinary_failure_has_no_hint(self) -> None:
+        passing = record_evidence_result(self.project_dir, "T01", [sys.executable, "-c", "pass"])
+        failing = record_evidence_result(self.project_dir, "T01", [sys.executable, "-c", "raise SystemExit(3)"])
+        self.assertEqual((passing.hint, failing.hint), ("", ""))
+        self.assertNotIn("hint", passing.as_dict())
+
+    def test_the_json_result_gains_an_empty_warnings_list_and_the_hint_only_when_set(self) -> None:
+        state = self._state()
+        state["tasks"][0]["status"] = "RUNNING"  # a TODO task would add its own warning
+        self._write(state)
+        passing = record_evidence_result(self.project_dir, "T01", [sys.executable, "-c", "pass"]).as_dict()
+        hinted = record_evidence_result(self.project_dir, "T01", ["bash", "-c", "exit 127"]).as_dict()
+        self.assertEqual(passing["warnings"], [])
+        self.assertEqual(passing["recorded"], True)
+        self.assertIn("hint", hinted)
+
+    def test_the_cli_prints_the_hint_on_stderr_for_a_human_reader(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = _call_manage(
+                ["record-evidence", str(self.project_dir), "--task", "T01", "--", "bash", "-c", "exit 127"]
+            )
+        self.assertEqual(code, 1)
+        self.assertIn("HINT:", stderr.getvalue())
+        self.assertIn(str(self.target), stderr.getvalue())
+
+
+class CwdAndDryRunTests(_ProjectFixture):
+    """`--cwd` and `--dry-run`: the two ways to find out where a command will run before it is permanent."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.elsewhere = self.root / "elsewhere"
+        self.elsewhere.mkdir()
+
+    def test_cwd_runs_the_command_there_and_records_that_directory(self) -> None:
+        result = record_evidence_result(
+            self.project_dir,
+            "T01",
+            [sys.executable, "-c", "import os; print(os.getcwd())"],
+            cwd=self.elsewhere,
+        )
+        self.assertEqual(result.working_directory, str(self.elsewhere))
+        text = self.evidence.read_text(encoding="utf-8")
+        self.assertIn(f"- Working directory: {self.elsewhere}", text)
+        self.assertIn(str(self.elsewhere.resolve()), text)
+
+    def test_cwd_must_be_an_absolute_existing_directory(self) -> None:
+        (self.root / "a-file").write_text("x", encoding="utf-8")
+        for bad in (Path("elsewhere"), self.root / "missing", self.root / "a-file"):
+            with self.subTest(cwd=str(bad)):
+                with self.assertRaises(WorkspaceError) as caught:
+                    record_evidence_result(self.project_dir, "T01", [sys.executable, "-c", "pass"], cwd=bad)
+                self.assertIn("--cwd", str(caught.exception))
+
+    def test_the_misroot_guard_judges_against_the_chosen_directory(self) -> None:
+        (self.project_dir / "check.sh").write_text("exit 0\n", encoding="utf-8")
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence_result(self.project_dir, "T01", ["bash", "check.sh"], cwd=self.elsewhere)
+        self.assertIn(str(self.elsewhere), str(caught.exception))
+
+    def test_a_dry_run_runs_nothing_records_nothing_and_has_no_exit_code(self) -> None:
+        before = self.evidence.read_text(encoding="utf-8")
+        with patch.object(workspace_lib.subprocess, "run", side_effect=AssertionError("must not run")):
+            result = record_evidence_result(
+                self.project_dir, "T01", ["bash", "-c", "ls | wc -l"], dry_run=True, cwd=self.elsewhere
+            )
+        self.assertEqual(self.evidence.read_text(encoding="utf-8"), before)
+        payload = result.as_dict()
+        self.assertEqual(
+            (payload["recorded"], payload["dry_run"], payload["exit_code"], payload["passed"]),
+            (False, True, None, None),
+        )
+        self.assertEqual(payload["command"], ["bash", "-c", "ls | wc -l"])
+        self.assertEqual(payload["working_directory"], str(self.elsewhere))
+        self.assertTrue(payload["warnings"], "the warnings are the point of a dry run")
+
+    def test_a_dry_run_still_refuses_what_a_real_run_would_refuse(self) -> None:
+        with self.assertRaises(WorkspaceError):
+            record_evidence_result(self.project_dir, "T01", ["research-validate", "."], dry_run=True)
+
+    def test_the_cli_reports_a_dry_run_in_both_output_modes(self) -> None:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = _call_manage(
+                ["record-evidence", str(self.project_dir), "--task", "T01", "--dry-run", "--cwd", str(self.elsewhere),
+                 "--", "bash", "-c", "cat <<EOF\nx\nEOF"]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("Dry run: would run", stdout.getvalue())
+        self.assertIn(str(self.elsewhere), stdout.getvalue())
+        self.assertIn("WARNING:", stderr.getvalue())
+
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = _call_manage(
+                ["record-evidence", str(self.project_dir), "--task", "T01", "--dry-run", "--json",
+                 "--", sys.executable, "-c", "pass"]
+            )
+        self.assertEqual(code, 0)
+        self.assertFalse(json.loads(stdout.getvalue())["recorded"])
+
+
+class CommandWarningTests(_ProjectFixture):
+    """Warnings, never refusals: each shape is sometimes intended, and the record must still be made."""
+
+    def _warnings(self, command: list[str]) -> list[str]:
+        return record_evidence_result(self.project_dir, "T01", command, dry_run=True).warnings
+
+    def _shell_warnings(self, script: str) -> list[str]:
+        return [w for w in self._warnings(["bash", "-c", script]) if "task T01" not in w]
+
+    def test_a_heredoc_inside_an_inline_script_is_warned_about(self) -> None:
+        found = self._shell_warnings("cat <<EOF\nx\nEOF")
+        self.assertEqual(len(found), 1)
+        self.assertIn("'<<'", found[0])
+
+    def test_command_substitution_inside_an_inline_script_is_warned_about(self) -> None:
+        found = self._shell_warnings("echo $(date)")
+        self.assertEqual(len(found), 1)
+        self.assertIn("'$('", found[0])
+
+    def test_an_unguarded_pipe_is_warned_about_and_pipefail_or_or_silences_it(self) -> None:
+        self.assertIn("pipefail", self._shell_warnings("pytest | tail -5")[0])
+        self.assertEqual(self._shell_warnings("set -o pipefail; pytest | tail -5"), [])
+        self.assertEqual(self._shell_warnings("a || b"), [])
+
+    def test_other_interpreters_flag_spellings_and_non_inline_commands_are_left_alone(self) -> None:
+        for command in (
+            ["bash", "check.sh"],
+            ["bash", "-c"],
+            ["bash", "--norc", "check.sh", "x | y"],
+            [sys.executable, "-c", "print(1 | 2)"],
+        ):
+            with self.subTest(command=command):
+                self.assertEqual([w for w in self._warnings(command) if "task T01" not in w], [])
+        self.assertTrue(self._shell_warnings("ls | wc") and self._warnings(["sh", "-lc", "cat <<X\nX"]))
+
+    def test_a_task_that_is_not_running_is_warned_about_with_its_verification_and_still_recorded(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [sys.executable, "-c", "pass"])
+        self.assertEqual(len(result.warnings), 1)
+        self.assertIn("TODO", result.warnings[0])
+        self.assertIn("A command says so", result.warnings[0])
+        self.assertIn(result.record_id, self.evidence.read_text(encoding="utf-8"))
+
+    def test_a_running_task_and_a_closure_step_get_no_task_warning(self) -> None:
+        state = self._state()
+        state["tasks"][0]["status"] = "RUNNING"
+        self._write(state)
+        self.assertEqual(self._warnings([sys.executable, "-c", "pass"]), [])
+        step = record_evidence_result(self.project_dir, None, [sys.executable, "-c", "pass"], step="report")
+        self.assertEqual(step.warnings, [])
+
+    def test_the_cli_prints_warnings_on_stderr_for_a_real_run(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = _call_manage(
+                ["record-evidence", str(self.project_dir), "--task", "T01", "--", sys.executable, "-c", "pass"]
+            )
+        self.assertEqual(code, 0)
+        self.assertIn("WARNING: task T01 is TODO", stderr.getvalue())

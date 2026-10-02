@@ -1000,3 +1000,241 @@ def test_automated_cli_lifecycle_interaction_budget(
     assert metrics["observations"] <= max_calls
     assert metrics["input_bytes"] + metrics["output_bytes"] <= max_bytes
     print(json.dumps(metrics, sort_keys=True))
+
+
+NOTE = "verification ran while drafting; no separate start"
+
+
+def _state(project: Path) -> dict[str, Any]:
+    return json.loads((project / "project.json").read_text(encoding="utf-8"))
+
+
+def _status(project: Path, task_id: str) -> str:
+    return next(item for item in _state(project)["tasks"] if item["id"] == task_id)["status"]
+
+
+def _evidence(project: Path, task_id: str) -> str:
+    return record_evidence_result(project, task_id, [sys.executable, "-c", "pass"]).record_id
+
+
+def test_backfill_is_a_start_and_a_finish_with_the_reason_on_record(project: Path) -> None:
+    plan(project)
+    record = _evidence(project, "T01")
+    result = task_operation(
+        project, "finish", "T01", expected_revision=1, evidence_record_ids=[record], backfill=True, note=NOTE
+    )
+    assert result["backfilled"] is True
+    assert result["revisions"] == [2, 3]
+    assert _status(project, "T01") == "DONE"
+    assert _state(project)["status"] == "EXECUTING"
+    notes = (project / "tasks" / "T01.md").read_text(encoding="utf-8")
+    assert "Backfilled" in notes and NOTE in notes
+    # The ordinary path still works for the rest of the plan.
+    second = _evidence(project, "T02")
+    task_operation(project, "start", "T02", expected_revision=3)
+    task_operation(project, "finish", "T02", expected_revision=4, evidence_record_ids=[second])
+
+
+def test_backfill_can_start_the_next_task(project: Path) -> None:
+    plan(project)
+    result = task_operation(
+        project, "finish", "T01", expected_revision=1, evidence_record_ids=[_evidence(project, "T01")],
+        start_next="T02", backfill=True, note=NOTE,
+    )
+    assert result["changed_tasks"] == [{"id": "T01", "status": "DONE"}, {"id": "T02", "status": "RUNNING"}]
+
+
+def test_backfill_refusals_change_nothing(project: Path) -> None:
+    plan(project)
+    update_project_data(
+        project,
+        {"tasks": [{**task("T03"), "effect": {"kind": "external", "description": "push"}}]},
+        expected_revision=1,
+    )
+    revision = _state(project)["revision"]
+    refusals = [
+        ("T02", [_evidence(project, "T02")], "dependenc", NOTE),  # T01 is not DONE
+        ("T03", [_evidence(project, "T03")], "authoriz", NOTE),
+        ("T01", [], "explicit evidence record", NOTE),
+        ("T01", [_evidence(project, "T01")], "non-empty --note", "  "),
+    ]
+    for task_id, records, message, note in refusals:
+        with pytest.raises(WorkspaceError, match=message):
+            task_operation(
+                project, "finish", task_id, expected_revision=revision, evidence_record_ids=records,
+                backfill=True, note=note,
+            )
+        assert _state(project)["revision"] == revision
+        assert _status(project, task_id) == "TODO"
+    with pytest.raises(WorkspaceError, match="non-empty --note"):
+        task_operation(project, "finish", "T01", expected_revision=revision, backfill=True)
+    assert not (project / "tasks" / "T01.md").exists(), "a refused backfill must not leave a note"
+
+
+def test_backfill_applies_only_to_finish_and_only_to_a_task_never_started(project: Path) -> None:
+    plan(project)
+    with pytest.raises(WorkspaceError, match="only to task finish"):
+        task_operation(project, "start", "T01", expected_revision=1, backfill=True, note=NOTE)
+    task_operation(project, "start", "T01", expected_revision=1)
+    with pytest.raises(WorkspaceError, match="T01 is RUNNING"):
+        task_operation(
+            project, "finish", "T01", expected_revision=2, evidence_record_ids=[_evidence(project, "T01")],
+            backfill=True, note=NOTE,
+        )
+
+
+def test_an_interrupted_backfill_leaves_a_running_task_that_a_plain_finish_completes(project: Path) -> None:
+    plan(project)
+    record = _evidence(project, "T01")
+    real = task_operation
+
+    def finish_fails(project_dir: Path, action: str, *args: Any, **kwargs: Any) -> dict[str, Any]:
+        if action == "finish":
+            raise WorkspaceError("simulated failure of the second commit")
+        return real(project_dir, action, *args, **kwargs)
+
+    with patch.object(workspace_operations, "task_operation", side_effect=finish_fails):
+        with pytest.raises(WorkspaceError, match="started by --backfill but not finished"):
+            real(project, "finish", "T01", expected_revision=1, evidence_record_ids=[record], backfill=True, note=NOTE)
+    assert _status(project, "T01") == "RUNNING"
+    assert NOTE in (project / "tasks" / "T01.md").read_text(encoding="utf-8"), "the reason is saved before finish"
+    done = task_operation(project, "finish", "T01", expected_revision=2, evidence_record_ids=[record])
+    assert done["changed_tasks"] == [{"id": "T01", "status": "DONE"}]
+
+
+def test_a_backfill_whose_note_cannot_be_saved_leaves_the_task_running(project: Path) -> None:
+    plan(project)
+    record = _evidence(project, "T01")
+    with patch.object(workspace_operations, "append_record", side_effect=WorkspaceError("disk full")):
+        with pytest.raises(WorkspaceError, match=r"not finished \(disk full\)"):
+            task_operation(
+                project, "finish", "T01", expected_revision=1, evidence_record_ids=[record],
+                backfill=True, note=NOTE,
+            )
+    assert _status(project, "T01") == "RUNNING"
+
+
+def test_backfill_through_the_cli(project: Path) -> None:
+    plan(project)
+    record = _evidence(project, "T01")
+    code, stdout, _ = invoke([
+        "task", str(project), "finish", "T01", "--backfill", "--note", NOTE,
+        "--evidence", record, "--expected-revision", "1",
+    ])
+    assert code == 0
+    assert json.loads(stdout)["backfilled"] is True
+    assert _status(project, "T01") == "DONE"
+
+
+def _out(path: str) -> dict[str, object]:
+    return {"root": "target", "path": path, "required": True}
+
+
+def _planned_task(
+    task_id: str, verification: str, outputs: list[str], depends_on: list[str] | None = None
+) -> dict[str, Any]:
+    return {"id": task_id, "verification": verification, "outputs": [_out(path) for path in outputs],
+            "depends_on": depends_on or [], "status": "TODO"}
+
+
+class TestVerificationOrderWarnings:
+    # Resolved when called, not when the module is imported: a build without the function must fail
+    # these tests one by one, not fail to import and hide every test in the module.
+    @staticmethod
+    def warn(tasks: object) -> list[str]:
+        return workspace_lib.verification_order_warnings(tasks)
+
+    def test_a_check_naming_a_later_tasks_output_is_flagged_by_path_or_by_name(self) -> None:
+        for verification in ("pytest tests/unit/test_parser.py", "run test_parser.py"):
+            tasks = [
+                _planned_task("T01", verification, ["src/parser.py"]),
+                _planned_task("T02", "review", ["tests/unit/test_parser.py"], ["T01"]),
+            ]
+            found = self.warn(tasks)
+            assert len(found) == 1
+            assert "T01" in found[0] and "tests/unit/test_parser.py" in found[0] and "T02" in found[0]
+
+    def test_a_dependency_chain_is_followed_and_a_cycle_terminates(self) -> None:
+        tasks = [
+            _planned_task("T01", "run test_parser.py", ["a.txt"]),
+            _planned_task("T02", "x", ["b.txt"], ["T01"]),
+            _planned_task("T03", "x", ["tests/test_parser.py"], ["T02"]),
+        ]
+        assert len(self.warn(tasks)) == 1
+        tasks[0]["depends_on"] = ["T03"]  # a cycle: it must still finish
+        assert isinstance(self.warn(tasks), list)
+
+    def test_shared_short_finished_and_unrelated_outputs_are_not_flagged(self) -> None:
+        shared = [
+            _planned_task("T01", "pytest tests/test_parser.py", ["tests/test_parser.py"]),
+            _planned_task("T02", "x", ["tests/test_parser.py"], ["T01"]),
+        ]
+        assert self.warn(shared) == [], "a later task extending the same file is ordinary"
+        short = [_planned_task("T01", "run a.py", []), _planned_task("T02", "x", ["a.py"], ["T01"])]
+        assert self.warn(short) == []
+        done = [
+            {**_planned_task("T01", "pytest test_parser.py", []), "status": "DONE"},
+            _planned_task("T02", "x", ["test_parser.py"], ["T01"]),
+        ]
+        assert self.warn(done) == []
+        unrelated = [_planned_task("T01", "pytest", []), _planned_task("T02", "x", ["test_parser.py"])]
+        assert self.warn(unrelated) == []
+
+    def test_arbitrary_json_never_raises(self) -> None:
+        assert self.warn("nope") == []
+        assert self.warn([1, {"id": 3}, {"id": "T01", "verification": 5, "depends_on": "x", "outputs": 7}]) == []
+        assert self.warn([
+            {"id": "T01", "verification": "test_parser.py", "depends_on": [3]},
+            {"id": "T02", "depends_on": ["T01"], "outputs": [3, {"path": 4}, {"path": "test_parser.py"}]},
+        ]) != []
+
+
+class TestReasonReferenceWarnings:
+    @staticmethod
+    def warn(before: object, after: object, workspace_root: Path) -> list[str]:
+        return workspace_lib.reason_reference_warnings(before, after, workspace_root)
+
+    def test_a_new_reason_naming_a_missing_project_is_flagged_once_per_id(self, tmp_path: Path) -> None:
+        (tmp_path / "2026-10-01-001").mkdir()
+        before = [{"id": "T01", "skip_reason": None, "block_reason": None}]
+        after = [{"id": "T01", "skip_reason": "see 2026-10-01-009, 2026-10-01-009 and 2026-10-01-001",
+                  "block_reason": None}]
+        found = self.warn(before, after, tmp_path)
+        assert len(found) == 1 and "2026-10-01-009" in found[0] and "skip_reason" in found[0]
+
+    def test_an_unchanged_reason_and_arbitrary_json_are_left_alone(self, tmp_path: Path) -> None:
+        same = [{"id": "T01", "skip_reason": "see 2026-10-01-009", "block_reason": 3}]
+        assert self.warn(same, same, tmp_path) == []
+        assert self.warn("x", same, tmp_path) == [] and self.warn(same, "x", tmp_path) == []
+        assert self.warn([5], [5, {"id": 7}, {"id": "T01", "skip_reason": None}], tmp_path) == []
+
+
+def test_plan_warnings_reach_preview_committed_update_and_task_skip_and_block(project: Path) -> None:
+    plan(project)
+    patch = {"tasks": [{"id": "T01", "verification": "pytest tests/test_late.py"},
+                       {"id": "T02", "outputs": [_out("tests/test_late.py")]}]}
+    code, stdout, _ = invoke(["update", str(project), "-", "--expected-revision", "1", "--dry-run"],
+                             stdin=json.dumps(patch))
+    assert code == 0
+    assert any("tests/test_late.py" in warning for warning in json.loads(stdout)["warnings"])
+
+    code, stdout, _ = invoke(
+        ["update", str(project), "-", "--expected-revision", "1", "--json"], stdin=json.dumps(patch)
+    )
+    assert code == 0
+    assert any("tests/test_late.py" in warning for warning in json.loads(stdout)["warnings"])
+
+    code, _, stderr = invoke(["update", str(project), "-", "--expected-revision", "2"], stdin=json.dumps(
+        {"tasks": [{"id": "T02", "status": "BLOCKED", "block_reason": "waits for 2099-01-01-009"}]}))
+    assert code == 0
+    assert "WARNING:" in stderr and "2099-01-01-009" in stderr and "tests/test_late.py" in stderr
+
+    blocked = task_operation(project, "block", "T01", expected_revision=3, reason="waits for 2099-01-01-008")
+    assert "2099-01-01-008" in blocked["warnings"][0]
+    skipped = task_operation(project, "skip", "T02", expected_revision=4, reason=f"replaced by {project.name}")
+    assert skipped["warnings"] == []
+
+    preview_patch = {"tasks": [{"id": "T01", "block_reason": "waits for 2099-01-01-007"}]}
+    code, stdout, _ = invoke(["update", str(project), "-", "--expected-revision", "5", "--dry-run"],
+                             stdin=json.dumps(preview_patch))
+    assert any("2099-01-01-007" in warning for warning in json.loads(stdout)["warnings"])

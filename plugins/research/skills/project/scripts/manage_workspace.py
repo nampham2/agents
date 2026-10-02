@@ -5,12 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from pathlib import Path
 from typing import Any
 
 from memory_search import creation_gate, rank_topics, search_postmortems
-from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document
+from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document, stage_lesson
 from workspace_evidence import evidence_entries
 from workspace_journal import OperationError
 from workspace_lib import (
@@ -28,11 +29,15 @@ from workspace_lib import (
     compact_memory_topic,
     find_workspace_roots,
     index_headroom,
+    launcher_version_warning,
     load_memory_topics,
+    memory_entry_marker,
     migration_candidate,
     project_task_graph,
+    promotion_entry_id,
     read_memory_topic,
     read_text,
+    reason_reference_warnings,
     rebuild_index,
     record_evidence_result,
     render_task_graph,
@@ -40,9 +45,11 @@ from workspace_lib import (
     retire_memory_topic,
     validate_v3_state,
     vcs_warnings,
+    verification_order_warnings,
 )
 from workspace_operations import CloseOperationError, close_project, task_operation
 from workspace_session import (
+    _load_state,
     list_projects,
     project_context,
     read_project_text,
@@ -152,6 +159,12 @@ def _build_parser() -> argparse.ArgumentParser:
     task.add_argument("--reason")
     task.add_argument("--evidence", action="append", default=[], dest="evidence_records")
     task.add_argument("--start-next")
+    task.add_argument(
+        "--backfill",
+        action="store_true",
+        help="finish a task whose work was done before it was started: a start and a finish, two commits",
+    )
+    task.add_argument("--note", help="with --backfill: why the task was not started first")
     task.add_argument("--lock-timeout", type=float, default=5.0)
 
     close = subparsers.add_parser("close", help="Write an optional reflection and guardedly close a project")
@@ -208,6 +221,17 @@ def _build_parser() -> argparse.ArgumentParser:
     record.add_argument("--tail-lines", type=int, default=EVIDENCE_TAIL_LINES)
     record.add_argument("--timeout", type=float, default=None, help="seconds before the command is abandoned")
     record.add_argument("--json", action="store_true", help="print the selectable evidence record as JSON")
+    record.add_argument(
+        "--cwd",
+        type=Path,
+        default=None,
+        help="absolute directory to run the command in, instead of the project's working directory",
+    )
+    record.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="run every check and report the directory, command and warnings, without running or recording",
+    )
 
     graph = subparsers.add_parser(
         "show-graph",
@@ -297,6 +321,10 @@ def _build_parser() -> argparse.ArgumentParser:
     promote.add_argument("--updated", default="", help="YYYY-MM-DD; defaults to today")
     promote.add_argument("--keywords", default="", help="comma-separated retrieval terms; sets the keywords field")
     promote.add_argument(
+        "--entry-id",
+        help="lowercase-hyphenated id making a retry a no-op; defaults to one derived from the body",
+    )
+    promote.add_argument(
         "--create",
         action="store_true",
         help="allow a new topic file; without it a new slug is refused with the nearest existing topics listed",
@@ -307,6 +335,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}",
     )
     promote.add_argument("--lock-timeout", type=float, default=5.0)
+
+    stage = subparsers.add_parser(
+        "stage",
+        help="Stage a candidate lesson in the project's memory-staging.md as a triage-ready section",
+        epilog=(
+            "Writes a '## <title>' section that `workflow triage` can later promote, fold into the "
+            "reflection or discard. The same title with the same text is a no-op; the same title with "
+            "different text conflicts, so a retry is safe. The text may not contain headings."
+        ),
+    )
+    stage.add_argument("project_directory", type=Path)
+    stage.add_argument("--title", required=True, help="unique one-line title of the lesson")
+    stage_body = stage.add_mutually_exclusive_group(required=True)
+    stage_body.add_argument("--body", help="the lesson: conditions, the lesson itself, and an evidence pointer")
+    stage_body.add_argument("--body-file", type=Path, help="read the lesson from a file, or '-' for stdin")
+    stage.add_argument("--lock-timeout", type=float, default=5.0)
 
     read_topic = subparsers.add_parser(
         "read-memory",
@@ -405,6 +449,9 @@ def main() -> int:
     parser = _build_parser()
     options, command_argv = _split_at_separator(list(sys.argv[1:]))
     args = parser.parse_args(options)
+    skew = launcher_version_warning()
+    if skew:
+        print(f"WARNING: {skew}", file=sys.stderr)
     try:
         if args.command == "init":
             workspace_root = resolve_workspace_root(args.workspace_root)
@@ -481,6 +528,7 @@ def main() -> int:
                 result = preview(args.project_directory, _read_json_object(args.patch_json), args.expected_revision)
                 print(json.dumps(result, indent=2))
                 return 0 if result["valid"] else 1
+            before_tasks = _load_state(args.project_directory)["tasks"]
             if str(args.patch_json) == "-":
                 patch = _read_json_object(args.patch_json)
                 state = update_project_data(
@@ -492,13 +540,18 @@ def main() -> int:
                     args.project_directory, args.patch_json,
                     expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
                 )
+            warnings = verification_order_warnings(state["tasks"]) + reason_reference_warnings(
+                before_tasks, state["tasks"], args.project_directory.resolve().parent
+            )
             if args.json:
                 print(json.dumps({
                     "operation": "project.update", "project_directory": str(args.project_directory.resolve()),
                     "committed": True, "revision": state["revision"], "status": state["status"],
-                    "current_tasks": state["current_tasks"],
+                    "current_tasks": state["current_tasks"], "warnings": warnings,
                 }, indent=2))
                 return 0
+            for warning in warnings:
+                print(f"WARNING: {warning}", file=sys.stderr)
             print(f"Committed revision {state['revision']}: {args.project_directory.resolve()}")
             return 0
 
@@ -543,7 +596,7 @@ def main() -> int:
             print(json.dumps(task_operation(
                 args.project_directory, args.action, args.task_id, expected_revision=args.expected_revision,
                 reason=args.reason, evidence_record_ids=args.evidence_records, start_next=args.start_next,
-                lock_timeout=args.lock_timeout,
+                lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
             ), indent=2))
             return 0
 
@@ -615,12 +668,24 @@ def main() -> int:
                 step=args.step,
                 tail_lines=args.tail_lines,
                 timeout=args.timeout,
+                cwd=args.cwd,
+                dry_run=args.dry_run,
             )
             exit_code = result.exit_code
             if args.json:
                 print(json.dumps(result.as_dict(), indent=2))
                 return 0 if exit_code == 0 else 1
+            for warning in result.warnings:
+                print(f"WARNING: {warning}", file=sys.stderr)
+            if result.dry_run:
+                print(
+                    f"Dry run: would run {shlex.join(command_argv)} in {result.working_directory}; "
+                    "nothing was run or recorded"
+                )
+                return 0
             evidence_path = args.project_directory.resolve() / "evidence.md"
+            if result.hint:
+                print(f"HINT: {result.hint}", file=sys.stderr)
             if exit_code == 0:
                 print(f"Recorded a passing result for {owner} in {evidence_path}")
                 return 0
@@ -688,7 +753,10 @@ def main() -> int:
         if args.command == "promote-memory":
             workspace_root = resolve_workspace_root(args.workspace_root)
             body = args.body if args.body is not None else _read_body(args.body_file)
-            existed = (workspace_root / "memory" / f"{args.slug}.md").is_file()
+            topic_path = workspace_root / "memory" / f"{args.slug}.md"
+            existed = topic_path.is_file()
+            entry_id = args.entry_id or promotion_entry_id(body)
+            duplicate = existed and memory_entry_marker(entry_id, body) in topic_path.read_text(encoding="utf-8")
             creation_gate(workspace_root, args.slug, f"{args.description}\n{args.scope}\n{body}", create=args.create)
             path = amend_memory_topic(
                 workspace_root,
@@ -701,7 +769,14 @@ def main() -> int:
                 updated=args.updated,
                 keywords=args.keywords,
                 lock_timeout=args.lock_timeout,
+                entry_id=entry_id,
             )
+            if duplicate:
+                print(
+                    f"NOTE: entry {entry_id} is already recorded in {args.slug}; nothing was appended and its "
+                    "sources are unchanged",
+                    file=sys.stderr,
+                )
             # Regenerated after the memory lock is released, never inside it: the rebuild takes the
             # index lock, and these mkdir-based locks are not reentrant across each other's holders.
             rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
@@ -709,7 +784,16 @@ def main() -> int:
             topic_warnings = read_memory_topic(workspace_root, args.slug)["warnings"]
             for warning in [*headroom.pop("warnings"), *topic_warnings]:
                 print(f"WARNING: {warning}", file=sys.stderr)
-            print(json.dumps({"path": str(path), "created": not existed, **headroom}, indent=2))
+            print(json.dumps({
+                "path": str(path), "created": not existed, "duplicate": duplicate, "entry_id": entry_id, **headroom
+            }, indent=2))
+            return 0
+
+        if args.command == "stage":
+            body = args.body if args.body is not None else _read_body(args.body_file)
+            print(json.dumps(
+                stage_lesson(args.project_directory, args.title, body, lock_timeout=args.lock_timeout), indent=2
+            ))
             return 0
 
         if args.command == "retire-memory":

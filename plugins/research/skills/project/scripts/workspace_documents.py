@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Any
 
 from workspace_lib import (
+    MEMORY_STAGING_FILENAME,
+    MEMORY_STAGING_PLACEHOLDER,
+    MEMORY_STAGING_SKELETON,
     SPEC_CANONICAL_SECTIONS,
     DirectoryLock,
     WorkspaceConflict,
@@ -264,5 +267,50 @@ def append_record(
         raise WorkspaceError(f"cannot write {path}: {error}") from error
     return {
         "operation": f"{kind}.append", "entry_id": entry_id, "path": str(path), "anchor": entry_id,
+        "document_sha256": document_sha256(replacement), "existing": False,
+    }
+
+
+def stage_lesson(project_dir: Path, title: str, body: str, *, lock_timeout: float = 5.0) -> dict[str, Any]:
+    """Add one candidate lesson to `memory-staging.md` as a section `workflow triage` can select.
+
+    Nothing wrote this file but a hand edit, and a hand edit is a step that gets skipped: most
+    projects closed with the skeleton untouched and rebuilt their lessons from memory at the end.
+    Triage selects items by an exact, unique level-two title and refuses any heading below it, so
+    the section is written in exactly that shape and the title and body are held to it here.
+    """
+    title = title.strip()
+    body = body.strip()
+    if not title or "\n" in title or title.startswith("#") or len(title) > 120:
+        raise WorkspaceError("a lesson title must be one non-empty line of at most 120 characters, without a leading #")
+    if not body:
+        raise WorkspaceError("a staged lesson needs a non-empty body")
+    if _headings(body):
+        raise WorkspaceError("a staged lesson may not contain headings: triage selects a section by its title alone")
+    project_dir = project_dir.resolve()
+    path = project_dir / MEMORY_STAGING_FILENAME
+    try:
+        with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
+            current = read_text(path, preserve_newlines=True) if path.exists() else MEMORY_STAGING_SKELETON
+            matches = [(level, offset) for level, name, offset in _headings(current) if name == title]
+            if matches:
+                if len(matches) != 1 or matches[0][0] != 2:
+                    raise WorkspaceError(f"the title {title!r} collides with another heading in {path.name}")
+                _, start, _, end = _section_span(current, title)
+                if current[start:end].split("\n", 1)[1].strip() == body:
+                    return {
+                        "operation": "lesson.stage", "title": title, "path": str(path),
+                        "document_sha256": document_sha256(current), "existing": True,
+                    }
+                raise WorkspaceConflict(
+                    f"a staged lesson titled {title!r} already exists with different text; choose another title"
+                )
+            kept = current.replace(MEMORY_STAGING_PLACEHOLDER + "\n", "", 1).rstrip("\r\n")
+            replacement = f"{kept}\n\n## {title}\n\n{body}\n"
+            atomic_write_text(path, replacement)
+    except OSError as error:
+        raise WorkspaceError(f"cannot write {path}: {error}") from error
+    return {
+        "operation": "lesson.stage", "title": title, "path": str(path),
         "document_sha256": document_sha256(replacement), "existing": False,
     }

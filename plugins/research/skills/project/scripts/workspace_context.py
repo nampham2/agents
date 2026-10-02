@@ -14,10 +14,14 @@ from workspace_documents import ENTRY_MARKER_PATTERN, _section_span
 from workspace_evidence import evidence_entries
 from workspace_journal import contained, document_path, list_input, object_input, snapshot, string_input
 from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso
-from workspace_session import _load_state, project_context, validated_project_context
+from workspace_session import _headings, _load_state, project_context, validated_project_context
 
 CHECKPOINT = re.compile(r"\A<!-- research-checkpoint-v1\n(.*?)\n-->\n", re.DOTALL)
-CONTINUATION_FIELDS = {"next", "questions", "pointers", "partial", "ownership", "effects", "lessons", "session"}
+CONTINUATION_FIELDS = {
+    "next", "questions", "pointers", "partial", "ownership", "effects", "lessons", "do_not", "session",
+}
+# `key.title()` would print "Do_Not"; the one field whose heading is not its name.
+CONTINUATION_HEADINGS = {"do_not": "Do not"}
 
 
 def selected_read(project: Path, selection: dict[str, Any]) -> dict[str, Any]:
@@ -232,7 +236,10 @@ def worktree_closure_findings(state: dict[str, Any]) -> tuple[list[str], list[st
         if not seen["available"]:
             warnings.append(f"worktree {path} could not be observed at closure; mark it UNVERIFIED in the handoff")
         elif not seen["exists"]:
-            warnings.append(f"worktree {path} was kept but is missing on disk; record its removal if intended")
+            warnings.append(
+                f"worktree {path} was kept but is missing on disk; record its removal with "
+                "`workflow <project-dir> worktree` close, decision remove"
+            )
         elif seen["dirty"] and item["closure"]["decision"] == "keep":
             errors.append(
                 f"worktree {path} was kept as clean but now has uncommitted changes: "
@@ -303,6 +310,15 @@ def render_checkpoint(
                 raise WorkspaceError(
                     "continuation fields must be strings; use empty text to explicitly resolve a field"
                 )
+            # Only what is supplied now: a value saved before this rule that holds a heading must
+            # still re-render, or one old handoff would be unrecoverable. A heading inside a field
+            # renders as a section of its own, or, glued to a line, as no heading at all.
+            for level, title, _ in _headings(value):
+                if level <= 2:
+                    raise WorkspaceError(
+                        f"continuation field {key!r} contains the heading {title!r}; a field is body text under "
+                        "its own heading. Put the Do not list in the do_not field."
+                    )
             continuation[key] = value
     string_input(continuation.get("next"))
     if continuation.get("session", "working") not in ("working", "waiting", "blocked", "ready for handoff"):
@@ -335,8 +351,12 @@ def render_checkpoint(
     text = "<!-- research-checkpoint-v1\n" + json.dumps(metadata, ensure_ascii=True, sort_keys=True) + "\n-->\n"
     text += f"# Continuation\n\nSession state: {continuation.get('session', 'working')}\n"
     text += f"Phase: {state['status']}; revision: {state['revision']}\n"
+    # The Do not list leads: it is the part of a handoff a resuming session must not miss.
+    order = ["do_not", *(key for key in continuation if key not in ("session", "do_not"))]
     text += "".join(
-        f"\n## {key.title()}\n\n{value}\n" for key, value in continuation.items() if key != "session" and value
+        f"\n## {CONTINUATION_HEADINGS.get(key, key.title())}\n\n{continuation[key]}\n"
+        for key in order
+        if continuation.get(key)
     )
     legacy = existing if previous is None else ""
     if previous and "\n## Preserved legacy note\n" in existing:
@@ -344,6 +364,26 @@ def render_checkpoint(
     if legacy:
         text += "\n## Preserved legacy note\n\n" + legacy.strip() + "\n"
     return text, metadata
+
+
+def handoff_banner(project: Path, state: dict[str, Any]) -> str:
+    """Say so when the handoff was written at a different revision or phase than the state now has.
+
+    Nothing refreshes a handoff when a task starts or finishes, so a session that ends mid-work
+    leaves one whose Phase and Next describe an earlier moment. Empty when it is current, missing,
+    legacy or unreadable: this is a hint for a reader, never a reason to fail a read.
+    """
+    try:
+        previous = checkpoint_data(project)
+    except WorkspaceError:
+        return ""
+    if previous is None or (previous["revision"] == state["revision"] and previous.get("phase") == state["status"]):
+        return ""
+    return (
+        f"handoff.md was written at revision {previous['revision']} (phase {previous.get('phase', 'unknown')}); the "
+        f"project is now at revision {state['revision']} (phase {state['status']}). Its Phase and Next may be out "
+        "of date: trust project.json, and refresh the handoff with workflow checkpoint."
+    )
 
 
 def checkpoint_freshness(project: Path) -> dict[str, Any]:
@@ -357,12 +397,21 @@ def checkpoint_freshness(project: Path) -> dict[str, Any]:
         actual = snapshot(document_path(project, name))[1]
         sources[name] = "missing" if actual == "missing" else "unchanged" if actual == old else "changed"
     git = git_observation(Path(state["working_directory"]))
-    return {
+    freshness: dict[str, Any] = {
         "revision_changed": state["revision"] != previous["revision"],
         "sources": sources,
         "target": "unknown" if not git.get("available") else "unchanged" if git == previous["git"] else "changed",
         "ownership": "requires host observations; matching hashes do not establish stopped processes",
     }
+    # Only when they say something: this is in every resume, and a bundle is worth having only while
+    # it stays smaller than the separate reads it replaces.
+    if freshness["revision_changed"] or previous.get("phase") != state["status"]:
+        freshness.update(
+            handoff_revision=previous["revision"],
+            handoff_phase=previous.get("phase"),
+            phase_changed=previous.get("phase") != state["status"],
+        )
+    return freshness
 
 
 def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
@@ -392,7 +441,13 @@ def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
             item = selected_read(project, {**selection, "max_chars": min(maximum, limit)})
             maximum -= len(item.get("text", ""))
             selected.append(item)
+        checkpoint = checkpoint_data(project)
         context.update(sources=selected, omitted=omitted, freshness=checkpoint_freshness(project))
+        # Structured, so it is not subject to the 2000-character slice of the handoff text; absent
+        # when there is nothing to say, to keep the common payload as small as it was.
+        do_not = checkpoint["continuation"].get("do_not", "") if checkpoint else ""
+        if do_not:
+            context["do_not"] = do_not
         context["worktree"] = worktree_status(_load_state(project))
         context["memory_health"] = memory_health(project.parent, context["title"])
         if "task" in request:

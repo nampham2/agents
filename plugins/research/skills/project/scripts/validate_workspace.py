@@ -7,7 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from workspace_lib import validate_project
+from workspace_lib import launcher_version_warning, validate_project
 
 
 def main() -> int:
@@ -40,6 +40,9 @@ def main() -> int:
         help="Acknowledge the limited guarantees of closing an unmigrated schema-v1 project",
     )
     args = parser.parse_args()
+    skew = launcher_version_warning()
+    if skew:
+        print(f"WARNING: {skew}", file=sys.stderr)
 
     report = validate_project(
         args.project_directory,

@@ -101,7 +101,7 @@ research-project update <project-dir> - --expected-revision <revision> --json
 ```
 
 The tool applies task defaults, derives `current_tasks`, and preserves commit guards. Reconcile
-revision conflicts. Avoid temporary patch files.
+revision conflicts.
 
 ## Execute and verify
 
@@ -112,7 +112,8 @@ For invalidated assignments, inputs or agreement, follow
 tasks for terminal work without copying old acceptance or consent.
 
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
-and roots; it resumes `EXECUTING` from `REVIEW`. Supply applicable constraints. Dependencies must be
+and roots; it resumes `EXECUTING` from `REVIEW`. Start before writing; `finish --backfill --note`
+records earlier work. Supply applicable constraints. Dependencies must be
 `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
 existing authorization counts. A repository target needs a user-confirmed, recorded worktree
 before its first write: follow [worktrees.md](references/worktrees.md) when the assignment warns.
@@ -128,11 +129,11 @@ single checks may use:
 research-project record-evidence <project-dir> --task T01 --json -- <command>
 ```
 
-Commands run in the target; pipelines need an explicit shell. Inspect failures with `read ...
-evidence --entry <record-id>`; never rewrite them as passes. Finish with passing record IDs only
-when success criteria are met, not merely on zero exit. `--start-next T02` atomically starts a
-planned successor and returns its assignment. Prose uses `append ... finding --task T01`, not
-evidence.
+Commands run in the target: use absolute paths and an explicit shell for pipelines. Inspect failures
+with `read ... evidence --entry <record-id>`; never rewrite them as passes. Show a new check failing
+on bad input first. Finish with passing record IDs only when success criteria are met, not merely on
+zero exit. `--start-next T02` atomically starts a planned successor and returns its assignment.
+Prose uses `append ... finding --task T01`, not evidence.
 
 ## Review and close
 
@@ -150,5 +151,4 @@ Supply reflection, continuation, retry ID, revision and document tokens. Fix clo
 use reported same-ID recovery for partial writes, never replay effects. Report result and path.
 
 Load [reports](references/report-design.md), [layout](references/durable-context.md) and
-[maintenance](references/maintenance.md) only when needed. Reports, task graphs and delivery reviews
-are optional unless required.
+[maintenance](references/maintenance.md) only when needed.

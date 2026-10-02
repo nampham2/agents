@@ -6,9 +6,16 @@ import copy
 from pathlib import Path
 from typing import Any
 
-from workspace_documents import edit_document
-from workspace_evidence import selected_evidence_references
-from workspace_lib import WorkspaceConflict, WorkspaceError, commit_state, validate_project
+from workspace_documents import append_record, edit_document
+from workspace_evidence import evidence_entries, selected_evidence_references
+from workspace_lib import (
+    WorkspaceConflict,
+    WorkspaceError,
+    commit_state,
+    reason_reference_warnings,
+    staged_lesson_lines,
+    validate_project,
+)
 from workspace_session import _load_state
 
 
@@ -78,10 +85,22 @@ def task_operation(
     evidence_record_ids: list[str] | None = None,
     start_next: str | None = None,
     lock_timeout: float = 5.0,
+    backfill: bool = False,
+    note: str | None = None,
 ) -> dict[str, Any]:
-    """Start, finish, block, or skip a named task with one guarded state commit."""
+    """Start, finish, block, or skip a named task with one guarded state commit.
+
+    `backfill` finishes a task whose work already happened without `task start`: it is a start and
+    a finish, each an ordinary guarded commit, with the reason saved between them.
+    """
     project_dir = project_dir.resolve()
+    if backfill:
+        return _backfill_finish(
+            project_dir, action, task_id, expected_revision=expected_revision,
+            evidence_record_ids=evidence_record_ids, start_next=start_next, lock_timeout=lock_timeout, note=note,
+        )
     state = copy.deepcopy(_load_state(project_dir))
+    before_tasks = copy.deepcopy(state["tasks"])
     selected = _task(state, task_id)
     changed = [task_id]
     locked_guard = None
@@ -129,7 +148,82 @@ def task_operation(
         locked_guard=locked_guard,
     )
     assignment = task_id if action == "start" else start_next if action == "finish" else None
-    return _result(f"task.{action}", project_dir, committed, changed, selected_task_id=assignment)
+    result = _result(f"task.{action}", project_dir, committed, changed, selected_task_id=assignment)
+    if action in ("block", "skip"):
+        result["warnings"] = reason_reference_warnings(before_tasks, committed["tasks"], project_dir.parent)
+    if action == "finish" and _had_failed_attempt(project_dir, task_id) and not staged_lesson_lines(project_dir):
+        result["lesson_hint"] = (
+            f"a recorded attempt for {task_id} failed before it passed, and nothing is staged. If it taught "
+            "something, stage it now while the cause is in view: research-project stage <project-dir> "
+            '--title "<one line>" --body-file -'
+        )
+    return result
+
+
+def _had_failed_attempt(project_dir: Path, task_id: str) -> bool:
+    offset: int | None = 0
+    while offset is not None:
+        page = evidence_entries(project_dir, task_id=task_id, offset=offset, limit=100)
+        if any(entry["passed"] is False for entry in page["entries"]):
+            return True
+        offset = page["next_offset"]
+    return False
+
+
+def _backfill_finish(
+    project_dir: Path,
+    action: str,
+    task_id: str,
+    *,
+    expected_revision: int,
+    evidence_record_ids: list[str] | None,
+    start_next: str | None,
+    lock_timeout: float,
+    note: str | None,
+) -> dict[str, Any]:
+    """Record a task whose work preceded `task start`, without relaxing `TODO -> DONE`.
+
+    Two commits, so every guard an ordinary start and finish enforces still applies to each: the
+    dependencies, the authorization, the evidence ownership and the `current_tasks` rule. The order
+    is chosen so that no state is misleading. Everything that can be refused cheaply is refused
+    first, the note is saved while the task is merely RUNNING, and only then is it finished. If the
+    second commit fails the task is left RUNNING with its reason on record, and a plain `task
+    finish` completes it.
+    """
+    if action != "finish":
+        raise WorkspaceError("--backfill applies only to task finish")
+    if note is None or not note.strip():
+        raise WorkspaceError("--backfill requires a non-empty --note saying why the task was not started first")
+    state = _load_state(project_dir)
+    status = _task(state, task_id)["status"]
+    if status != "TODO":
+        raise WorkspaceError(
+            f"--backfill is for a task that was never started; {task_id} is {status}. "
+            "Use a plain task finish for a RUNNING task."
+        )
+    # Refused before anything is written: a record that is missing, failing or another task's.
+    selected_evidence_references(project_dir, task_id, evidence_record_ids or [])
+    started = task_operation(
+        project_dir, "start", task_id, expected_revision=expected_revision, lock_timeout=lock_timeout
+    )
+    try:
+        append_record(
+            project_dir, "finding",
+            f"Backfilled: the work for {task_id} was done before it was started. Reason: {note.strip()}",
+            task_id=task_id, entry_id=f"backfill-{task_id.lower()}", lock_timeout=lock_timeout,
+        )
+        finished = task_operation(
+            project_dir, "finish", task_id, expected_revision=started["revision"],
+            evidence_record_ids=evidence_record_ids, start_next=start_next, lock_timeout=lock_timeout,
+        )
+    except WorkspaceError as error:
+        raise WorkspaceError(
+            f"{task_id} was started by --backfill but not finished ({error}); "
+            "finish it with a plain 'task finish'"
+        ) from error
+    finished["backfilled"] = True
+    finished["revisions"] = [started["revision"], finished["revision"]]
+    return finished
 
 
 def close_project(

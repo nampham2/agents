@@ -36,12 +36,16 @@ from workspace_lib import (
     WorkspaceError,
     check_state_candidate,
     document_sha256,
+    memory_staging_warnings,
     now_iso,
+    reason_reference_warnings,
     validate_project,
 )
 from workspace_operations import _task
-from workspace_session import _load_state, prepare_update
+from workspace_session import _headings, _load_state, prepare_update
 
+# Shortest reflection `finalize` accepts: enough for an outcome and a limitation, not a bare token.
+REFLECTION_MIN_CHARS = 200
 COMMON = {"id", "expected_revision", "tokens"}
 FIELDS = {
     "checkpoint": {"continuation"},
@@ -102,7 +106,8 @@ def preview(project: Path, patch: dict[str, Any], expected_revision: int) -> dic
         "revision": current["revision"],
         "valid": report.valid,
         "errors": report.errors,
-        "warnings": report.warnings,
+        "warnings": report.warnings
+        + reason_reference_warnings(current["tasks"], candidate["tasks"], project.resolve().parent),
         "project": {
             key: {"before": current[key], "after": value}
             for key, value in candidate.items()
@@ -276,8 +281,12 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
     if decision not in ("keep", "accept_dirty", "remove"):
         raise WorkspaceError("worktree decision must be keep, accept_dirty or remove")
     entry = next((item for item in worktrees if item["path"] == path), None)
-    if entry is None or entry["status"] != "active" or entry["kind"] == "none":
-        raise WorkspaceError(f"no active repository worktree is recorded at {path}")
+    # A kept worktree can still be removed afterwards, by the user and outside the tool; recording
+    # that is the one decision that may follow an earlier closure. Keeping or accepting dirty paths a
+    # second time would only overwrite the first decision, so those still need an active entry.
+    closable = ("active", "kept") if decision == "remove" else ("active",)
+    if entry is None or entry["status"] not in closable or entry["kind"] == "none":
+        raise WorkspaceError(f"no {' or '.join(closable)} repository worktree is recorded at {path}")
     seen = worktree_observation(Path(path))
     if not seen["available"]:
         raise WorkspaceError("Git could not be consulted for the worktree; retry when it is available")
@@ -443,7 +452,16 @@ def _build(
         if errors:
             raise WorkspaceError("closure blocked by recorded worktrees:\n- " + "\n- ".join(errors))
         result["worktree_warnings"] = warnings
-        documents["reflection"] = string_input(request.get("reflection")).strip() + "\n"
+        reflection = string_input(request.get("reflection")).strip()
+        # A reflection that is one token or one line is not a post-mortem; one was saved that was a
+        # 64-character hash. The check is on shape only: whether it is any good is the reader's call.
+        if len(reflection) < REFLECTION_MIN_CHARS or not any(level for level, _, _ in _headings(reflection)):
+            raise WorkspaceError(
+                f"the reflection must be a post-mortem of at least {REFLECTION_MIN_CHARS} characters with a "
+                "Markdown heading (for example '# Reflection'); nothing was committed"
+            )
+        documents["reflection"] = reflection + "\n"
+        result["memory_staging_warnings"] = memory_staging_warnings(project)
         patch = {"status": "DONE"}
         result["_after_commit"] = ["handoff"]
     elif action in ("maintenance", "cancel"):
