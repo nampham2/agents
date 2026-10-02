@@ -191,6 +191,42 @@ class ValidateV4StateTests(unittest.TestCase):
                 report = validate_v4_state(self._state(tasks=[changed]), self.project_dir)
                 self.assertTrue(any(message in error for error in report.errors))
 
+    def test_v4_task_stamps_are_optional_timezone_aware_and_ordered(self) -> None:
+        done = _base_task("T01", "DONE")
+        done["evidence"] = [{"root": "workspace", "path": "evidence.md", "anchor": None}]
+        done["started_at"] = "2026-10-02T10:00:00+02:00"
+        done["finished_at"] = "2026-10-02T10:30:00+02:00"
+        report = validate_v4_state(self._state(tasks=[done]), self.project_dir, check_files=False)
+        self.assertEqual([], report.errors)
+        running = _base_task("T01", "RUNNING")
+        running["started_at"] = "2026-10-02T10:00:00Z"
+        executing = self._state(status="EXECUTING", tasks=[running], current_tasks=["T01"])
+        self.assertEqual([], validate_v4_state(executing, self.project_dir).errors)
+
+        cases = [
+            ({"started_at": "2026-10-02T10:00:00"}, "started_at must be timezone-aware"),
+            ({"finished_at": "soon"}, "finished_at must be timezone-aware"),
+            ({"finished_at": "2026-10-02T10:30:00+02:00"}, "finished_at belongs only to a DONE task"),
+        ]
+        for fields, message in cases:
+            with self.subTest(fields=fields):
+                changed = _base_task("T01", "TODO")
+                changed.update(fields)
+                report = validate_v4_state(self._state(tasks=[changed]), self.project_dir)
+                self.assertTrue(any(message in error for error in report.errors), report.errors)
+        reversed_done = dict(done, started_at="2026-10-02T11:00:00+02:00")
+        report = validate_v4_state(self._state(tasks=[reversed_done]), self.project_dir, check_files=False)
+        self.assertTrue(any("finished_at is earlier than started_at" in e for e in report.errors), report.errors)
+
+    def test_v3_rejects_the_stamp_fields_as_unexpected(self) -> None:
+        from workspace_lib import validate_v3_state
+
+        task = _base_task("T01", "TODO")
+        task["started_at"] = "2026-10-02T10:00:00+02:00"
+        v3_state = _base_v3_state(self.project_dir, self.target_dir) | {"tasks": [task]}
+        report = validate_v3_state(v3_state, self.project_dir)
+        self.assertTrue(any("unexpected fields: started_at" in e for e in report.errors), report.errors)
+
     # ---- schema_version -------------------------------------------------------
 
     def test_schema_version_not_4_rejected(self) -> None:

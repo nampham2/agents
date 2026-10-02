@@ -63,6 +63,26 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.21.0 alignment gate and task stamps for new projects
+
+Two changes that apply only to projects created on or after the release instant recorded in
+`GATES_ENFORCED_FROM` (`workspace_lib.py`); every project that existed before it keeps the warnings
+it always had, and no older launcher is locked out by the gate itself.
+
+- **Alignment gate.** A new project may not leave `ALIGNING` (or `BLOCKED`) for `PLANNING` or
+  `EXECUTING` until its seven specification sections are filled, `architecture.md` is agreed, and
+  `workflow confirm` recorded both a requirements and an architecture confirmation. The refusal
+  names each missing fact and the command that records it. Only that transition is gated; a reopen
+  and a draft design revision mid-execution go through. It proves the tool's confirmation path ran,
+  not that the user agreed.
+- **Task stamps.** A new project's tasks carry `started_at` (first start; a restart after `BLOCKED`
+  keeps it) and `finished_at`; `--backfill` sets `finished_at` only. The task graph prefers them to
+  evidence stamps.
+
+Compatibility: a launcher older than 0.21.0 cannot read a project whose tasks carry the stamps; it
+reports the unexpected field and names a newer plugin as the likely cause. Update the plugin and
+restart before resuming such a project.
+
 ### 0.20.0 validation agrees, observations, discoverability
 
 - Standalone validation and the commit path now agree about finished work whose files moved: a

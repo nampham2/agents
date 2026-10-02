@@ -157,11 +157,11 @@ no recorded agreement, complete the missing alignment before new planning or aff
 implementation; preserve completed tasks and historical evidence. When revisiting a project already
 beyond `ALIGNING`, pause affected work and honor legal status transitions. The architecture review
 is a skill-level gate recorded in `architecture.md`, the specification and decision history.
-Validation warns, and never errors, when a `PLANNING`, `EXECUTING` or `REVIEW` project has no
-`architecture.md`, one without a recognisable status line, or one still marked `draft`; it cannot
-verify conversational agreement, and legacy workspaces stay valid. The gate is separate from the
-optional delivery `review` state, so do not mark that state accepted or fabricate delivery review
-files to represent it.
+Validation only warns when a `PLANNING`, `EXECUTING` or `REVIEW` project lacks an agreed
+`architecture.md`; a project created on or after the gate cutoff is refused leaving `ALIGNING` until
+its spec, agreed architecture and both confirmations are recorded. Neither proves agreement. The
+gate is separate from the optional delivery `review` state; never mark that state accepted or
+fabricate review files for it.
 
 Agreement establishes the basis for planning. It does not grant new destructive or external-action
 authorization; existing scoped user authorization still applies.

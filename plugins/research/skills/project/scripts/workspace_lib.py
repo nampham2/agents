@@ -118,7 +118,11 @@ TASK_FIELDS = {
     "skip_reason",
     "block_reason",
 }
-TASK_V4_FIELDS = TASK_FIELDS | {"reads"}
+# `started_at` and `finished_at` are optional and written only for v4 projects created on or after
+# `GATES_ENFORCED_FROM`: an older launcher rejects a task that carries them, so projects already in
+# flight must never gain one. The task graph prefers them to evidence stamps when present.
+TASK_STAMP_FIELDS = ("started_at", "finished_at")
+TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS}
 
 
 @dataclass
@@ -266,6 +270,55 @@ def _is_timestamp(value: object) -> bool:
     except ValueError:
         return False
     return parsed.tzinfo is not None
+
+
+# Projects created on or after this instant are "new": the alignment gates that older projects only
+# get warned about are enforced for them, and their tasks carry start and finish stamps. It is a
+# date and not a schema field so that no existing project changes shape and no older launcher is
+# locked out by the gate itself. Set once, to the release instant of 0.21.0, which shipped the gate;
+# every project in the workspace at that moment had been created earlier. Read at call time so
+# tests can move it.
+GATES_ENFORCED_FROM = "2026-10-02T12:27:00+00:00"
+
+
+def is_new_project(state: dict[str, Any]) -> bool:
+    """Whether `state` was created on or after `GATES_ENFORCED_FROM`.
+
+    Anything that cannot be judged is legacy: a missing, unparseable or naive `created` (migrated
+    projects carry approximate ones) must never turn enforcement on by accident.
+    """
+    created = state.get("created")
+    if not _non_empty_string(created):
+        return False
+    try:
+        moment = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        cutoff = datetime.fromisoformat(GATES_ENFORCED_FROM.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if moment.tzinfo is None or cutoff.tzinfo is None:
+        return False
+    return moment >= cutoff
+
+
+# What `workflow confirm` leaves behind so a later check can tell that the tool's confirmation path
+# ran for a given proposal, rather than that someone typed "kind: architecture" into a decision.
+# It proves the code path, not consent: the response text is still the agent's.
+CONFIRMATION_MARKER = re.compile(
+    r"<!-- research-confirmation: kind=(?P<kind>requirements|architecture) "
+    r"review_id=(?P<review_id>\S+) proposal_sha256=(?P<sha>[0-9a-f]{64}) -->"
+)
+
+
+def confirmation_marker(kind: str, review_id: str, proposal_sha256: str) -> str:
+    return f"<!-- research-confirmation: kind={kind} review_id={review_id} proposal_sha256={proposal_sha256} -->"
+
+
+def recorded_confirmations(spec_markdown: str) -> "dict[str, list[tuple[str, str]]]":
+    """Confirmations the tool recorded in `spec.md`, by kind, as (review_id, proposal_sha256) pairs."""
+    found: "dict[str, list[tuple[str, str]]]" = {"requirements": [], "architecture": []}
+    for match in CONFIRMATION_MARKER.finditer(spec_markdown):
+        found[match.group("kind")].append((match.group("review_id"), match.group("sha")))
+    return found
 
 
 def is_external_reference(value: str) -> bool:
@@ -797,6 +850,66 @@ def architecture_status(architecture_markdown: str) -> "str | None":
     """The review status the document declares, `draft` or `agreed`, or None when it declares none."""
     match = ARCHITECTURE_STATUS_PATTERN.search(architecture_markdown)
     return match.group("status").lower() if match else None
+
+
+# The transition the alignment gate guards: leaving the alignment phases for the working ones.
+GATE_FROM = frozenset({"ALIGNING", "BLOCKED"})
+GATE_TO = frozenset({"PLANNING", "EXECUTING"})
+
+
+def task_stamps_enabled(state: dict[str, Any]) -> bool:
+    """Whether task start and finish may write `started_at` and `finished_at` into this project."""
+    return state.get("schema_version") == 4 and is_new_project(state)
+
+
+def alignment_gate_errors(project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]) -> "list[str]":
+    """Why a new project may not leave ALIGNING yet; empty for a legacy project or any other move.
+
+    85 projects could leave ALIGNING on a legal transition alone: the specification, the agreed
+    architecture and the confirmations were warnings at most, and projects did. For a project created
+    on or after `GATES_ENFORCED_FROM` this refuses the one transition that matters and names what is
+    missing and the command that records it. Only that transition: a reopened project, a design
+    revision reopened as a draft mid-execution, and every other move stay ungated, because a check on
+    the whole state would wedge exactly the design revision the skill requires.
+
+    What it can prove is that the tool's confirmation path ran for the proposal the documents now
+    hold. It cannot prove the user agreed; the response text is the agent's. That is why several
+    independent facts are required rather than one.
+    """
+    if previous.get("status") not in GATE_FROM or candidate.get("status") not in GATE_TO:
+        return []
+    if not is_new_project(candidate):
+        return []
+    missing: list[str] = []
+    spec_path = project_dir / "spec.md"
+    spec_text = read_text(spec_path) if spec_path.is_file() else ""
+    sections = spec_section_warnings(spec_text) if spec_text else ["spec.md is missing"]
+    if sections:
+        missing.append(
+            "the specification is incomplete (" + "; ".join(sections) + "); fill the seven sections with "
+            "'workflow round' or 'edit spec --sections-json'"
+        )
+    architecture_path = project_dir / ARCHITECTURE_FILENAME
+    architecture_text = read_text(architecture_path) if architecture_path.is_file() else ""
+    status = architecture_status(architecture_text) if architecture_text else None
+    if status != "agreed":
+        state_word = "missing" if not architecture_text else ("has no status line" if status is None else "is a draft")
+        missing.append(f"{ARCHITECTURE_FILENAME} {state_word}; it must be agreed through 'workflow confirm' (kind architecture)")
+    recorded = recorded_confirmations(spec_text)
+    if not recorded["requirements"]:
+        missing.append("no requirements confirmation was recorded; record the user's answer with 'workflow confirm' (kind requirements)")
+    reviewed = [review_id for review_id, _ in recorded["architecture"] if review_id in architecture_text]
+    if not reviewed:
+        missing.append(
+            "no architecture confirmation naming a review identifier present in architecture.md was recorded; "
+            "record the user's answer with 'workflow confirm' (kind architecture)"
+        )
+    if not missing:
+        return []
+    return [
+        f"a project created on or after {GATES_ENFORCED_FROM} may not leave {previous.get('status')} for "
+        f"{candidate.get('status')} until it is aligned: " + " | ".join(missing)
+    ]
 
 
 def _output_paths(task: dict[str, Any]) -> "set[str]":
@@ -1858,6 +1971,17 @@ def validate_v4_state(
         for field_name in ("name", "success_criteria", "verification"):
             if not _non_empty_string(task.get(field_name)):
                 report.errors.append(f"{label}: {field_name} must be a non-empty string")
+
+        for stamp_field in TASK_STAMP_FIELDS:
+            if stamp_field in task and not _is_timestamp(task.get(stamp_field)):
+                report.errors.append(f"{label}: {stamp_field} must be timezone-aware ISO-8601")
+        if "finished_at" in task and task_status != "DONE":
+            report.errors.append(f"{label}: finished_at belongs only to a DONE task")
+        if _is_timestamp(task.get("started_at")) and _is_timestamp(task.get("finished_at")):
+            started = datetime.fromisoformat(str(task["started_at"]).replace("Z", "+00:00"))
+            finished = datetime.fromisoformat(str(task["finished_at"]).replace("Z", "+00:00"))
+            if finished < started:
+                report.errors.append(f"{label}: finished_at is earlier than started_at")
 
         if "reads" in task:
             reads = task.get("reads")
@@ -3969,6 +4093,9 @@ class EvidenceSpan:
     # Entries that are an agent's own observation rather than a process result; counted apart so
     # a summary can say "checks" instead of "commands" and never present them as exit codes.
     observations: int = 0
+    # True when `first` or `last` came from the task's own started_at/finished_at rather than from
+    # evidence stamps; the summary then describes task spans, not verification spans.
+    stamped: bool = False
 
     @property
     def measured(self) -> bool:
@@ -4106,6 +4233,29 @@ def parse_evidence_spans(evidence_markdown: str) -> "dict[str, EvidenceSpan]":
     return spans
 
 
+def _with_task_stamps(span: EvidenceSpan, task: dict[str, Any]) -> EvidenceSpan:
+    """The span a task's own stamps give, over the one its evidence gives.
+
+    `started_at` and `finished_at` are the moments the task actually began and finished; evidence
+    stamps only bound the moments its checks ran, which made a task with one recorded command look
+    instantaneous. A stamp that cannot be placed (none can pass the validator, but this reads
+    arbitrary JSON) is ignored and the evidence span stands.
+    """
+    started = _placeable_instant(str(task["started_at"])) if _non_empty_string(task.get("started_at")) else None
+    finished = _placeable_instant(str(task["finished_at"])) if _non_empty_string(task.get("finished_at")) else None
+    if started is None and finished is None:
+        return span
+    stamped = EvidenceSpan(
+        entries=span.entries, failed=span.failed, first=span.first, last=span.last,
+        unplaceable=span.unplaceable, observations=span.observations, stamped=True,
+    )
+    if started is not None:
+        stamped.first = started
+    if finished is not None:
+        stamped.last = finished
+    return stamped
+
+
 def _dependency_levels(dependencies: "dict[str, list[str]]") -> "dict[str, int]":
     """A dependency level per task: 0 with no prerequisite in the plan, else one past the deepest.
 
@@ -4150,6 +4300,7 @@ def build_task_graph(state: dict[str, Any], evidence_markdown: str = "") -> Task
         if not _non_empty_string(task_id):
             continue
         declared = dependencies[task_id]
+        span = _with_task_stamps(spans.get(task_id, EvidenceSpan()), task)
         effect = task.get("effect") if isinstance(task.get("effect"), dict) else {}
         authorization = task.get("authorization") if isinstance(task.get("authorization"), dict) else {}
         receipts = task.get("receipts")
@@ -4163,7 +4314,7 @@ def build_task_graph(state: dict[str, Any], evidence_markdown: str = "") -> Task
                 unknown_depends_on=[dep for dep in declared if dep not in dependencies],
                 effect_kind=str(effect.get("kind") or ""),
                 authorization_status=str(authorization.get("status") or ""),
-                span=spans.get(task_id, EvidenceSpan()),
+                span=span,
                 receipts=len(receipts) if isinstance(receipts, list) else 0,
             )
         )
@@ -4280,7 +4431,8 @@ def render_task_graph(graph: TaskGraph) -> str:
     if first is not None and last is not None:
         started = [node for node in graph.nodes if node.status in {"RUNNING", "DONE"}]
         unmeasured = [node for node in started if not node.span.measured]
-        span = f"verification spans {first:%Y-%m-%d %H:%M} -> {last:%H:%M} ({_format_duration((last - first).total_seconds())})"
+        what = "task spans" if any(node.span.stamped for node in graph.nodes) else "verification spans"
+        span = f"{what} {first:%Y-%m-%d %H:%M} -> {last:%H:%M} ({_format_duration((last - first).total_seconds())})"
         if unmeasured:
             span += f" | {len(unmeasured)} of {len(started)} started tasks unmeasured"
         summary.append(span)
@@ -4550,6 +4702,8 @@ def check_state_candidate(
     report.errors.extend(_revision_conflicts(current, candidate, expected_revision))
     report.errors.extend(_immutable_field_changes(current, candidate))
     report.errors.extend(check_state_transition(current, candidate))
+    if check_files:
+        report.errors.extend(alignment_gate_errors(project_dir, current, candidate))
     simulated = copy.deepcopy(candidate)
     simulated["revision"] = expected_revision + 1
     simulated["updated"] = now_iso()
@@ -4625,7 +4779,7 @@ def _commit_state_locked(
     immutable_changes = _immutable_field_changes(current, candidate)
     if immutable_changes:
         raise WorkspaceError(immutable_changes[0])
-    transition_errors = check_state_transition(current, candidate)
+    transition_errors = check_state_transition(current, candidate) + alignment_gate_errors(project_dir, current, candidate)
     if transition_errors:
         raise WorkspaceError("; ".join(transition_errors))
     candidate["revision"] = expected_revision + 1

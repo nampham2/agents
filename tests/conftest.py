@@ -22,3 +22,30 @@ VALIDATOR = SKILL_SCRIPTS / "validate_workspace.py"
 
 if str(SKILL_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SKILL_SCRIPTS))
+
+
+# The alignment gates are enforced only for projects created on or after a cutoff date. Every test
+# project is created "now", so once that date is in the past the whole suite would be gated. The
+# cutoff is therefore held in the far future for every test, and the tests of the gate itself move
+# it into the past for the projects they mean to gate. A project exercised through a subprocess is
+# beyond a monkeypatch; `backdate_project` edits its `created` on disk instead.
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def far_future_gate_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    import workspace_lib
+
+    # raising=False: a build without the constant (the baseline a mutation check runs against) must
+    # be left alone, or every test would error in setup there and the check would prove nothing.
+    monkeypatch.setattr(workspace_lib, "GATES_ENFORCED_FROM", "2099-01-01T00:00:00+00:00", raising=False)
+
+
+def backdate_project(project_dir: Path, created: str = "2020-01-01T00:00:00+00:00") -> None:
+    """Make a project legacy for a launcher that reads the production cutoff: rewrite `created` on disk."""
+    import json
+
+    path = project_dir / "project.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["created"] = created
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
