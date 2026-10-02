@@ -21,12 +21,14 @@ from workspace_context import (
 )
 from workspace_documents import _replace_sections, _section_span
 from workspace_journal import (
+    READ_INPUTS,
     document_path,
     journal_path,
     list_input,
     object_input,
     recover_operation,
     run_operation,
+    schema_input,
     snapshot,
     string_input,
 )
@@ -47,6 +49,8 @@ from workspace_session import _headings, _load_state, prepare_update
 # Shortest reflection `finalize` accepts: enough for an outcome and a limitation, not a bare token.
 REFLECTION_MIN_CHARS = 200
 COMMON = {"id", "expected_revision", "tokens"}
+# Every write action needs these two; per-action rules are checked when the operation runs.
+WRITE_REQUIRED = {"id", "expected_revision"}
 FIELDS = {
     "checkpoint": {"continuation"},
     "round": {"sections", "decisions", "architecture", "continuation"},
@@ -66,20 +70,19 @@ FIELDS = {
         "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
     },
 }
-READ_ACTIONS = {
-    "resume",
-    "packet",
-    "read",
-    "freshness",
-    "fingerprint",
-    "preview",
-    "impact",
-    "readiness",
-    "memory-health",
-    "recover",
-    "verify",
-    "triage",
-}
+# Derived, not listed twice: an action is a read action exactly when it has an input table.
+READ_ACTIONS = set(READ_INPUTS)
+
+
+def input_schema(action: str) -> dict[str, Any]:
+    """Allowed and required top-level keys of a workflow action, from the tables validation uses."""
+    if action in FIELDS:
+        allowed, required = COMMON | FIELDS[action], WRITE_REQUIRED
+        note = "write action: further per-action rules are checked when it runs (see references/automation-records.md)"
+    else:
+        allowed, required = READ_INPUTS[action]
+        note = "read action: the keys below are the whole request"
+    return {"action": action, "allowed": sorted(allowed), "required": sorted(required), "note": note}
 
 
 def _entry(text: str, entry_id: str, body: str, *, decision: bool = False) -> str:
@@ -130,9 +133,9 @@ def preview(project: Path, patch: dict[str, Any], expected_revision: int) -> dic
 
 def impact(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     """Compute graph candidates and declared path overlaps, not semantic invalidation."""
-    object_input(request, {"tasks", "paths"}, {"tasks"})
+    schema_input(request, "impact")
     state = _load_state(project)
-    ids = {string_input(value) for value in list_input(request["tasks"])}
+    ids = {string_input(value, "tasks") for value in list_input(request["tasks"], field="tasks")}
     for task_id in ids:
         _task(state, task_id)
     while True:
@@ -143,8 +146,8 @@ def impact(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     paths = list_input(request.get("paths", []))
     for ref in paths:
         object_input(ref, {"root", "path"}, {"root", "path"})
-        string_input(ref["root"])
-        string_input(ref["path"])
+        string_input(ref["root"], "root")
+        string_input(ref["path"], "path")
     overlaps = []
     for task in state["tasks"]:
         reads = [{"root": "target", "path": path} for path in task.get("reads", [])]
@@ -199,14 +202,14 @@ def worker_events(project: Path) -> list[dict[str, Any]]:
                 raise WorkspaceError("invalid worker event JSON") from error
             object_input(event, FIELDS["worker-event"] | {"recorded"}, FIELDS["worker-event"])
             for field in ("task", "handle", "event", "scope", "observation"):
-                string_input(event[field])
+                string_input(event[field], field)
             latest[(event["task"], event["handle"])] = event
     return [item for item in latest.values() if item["event"] not in ("completed", "stopped", "failed")]
 
 
 def _confirmation(value: object) -> dict[str, str]:
     confirmation = object_input(value, {"source", "response"}, {"source", "response"})
-    return {key: string_input(confirmation[key]) for key in ("source", "response")}
+    return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 
 def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -219,7 +222,7 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
     agent's, under the user's authorization, and this only refuses to record what Git contradicts.
     """
     worktrees = copy.deepcopy(state.get("worktrees", []))
-    path = string_input(request.get("path"))
+    path = string_input(request.get("path"), "path")
     if not Path(path).is_absolute():
         raise WorkspaceError("worktree path must be absolute")
     path = str(Path(path).resolve())
@@ -232,7 +235,10 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
         if kind not in ("created", "existing", "none") or role not in ("target", "additional"):
             raise WorkspaceError("worktree kind must be created, existing or none; role target or additional")
         if any(item["path"] == path for item in worktrees):
-            raise WorkspaceError(f"worktree already recorded: {path}")
+            raise WorkspaceError(
+                f"worktree already recorded: {path}; a path stays recorded as history even after the worktree is "
+                "removed, so a new worktree needs a new path"
+            )
         seen = worktree_observation(Path(path))
         if not seen["available"]:
             raise WorkspaceError("Git could not be consulted for the worktree path; retry when it is available")
@@ -244,14 +250,18 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
                 )
             entry = {"repository": None, "branch": None, "base_commit": None}
         else:
-            branch = string_input(request.get("branch"))
+            branch = string_input(request.get("branch"), "branch")
             if not seen["exists"] or not seen["is_repository"] or seen["toplevel"] != path:
                 raise WorkspaceError(f"path is not the root of a Git working tree: {path}")
             if not seen["is_worktree"]:
                 raise WorkspaceError(f"path is a main checkout, not a linked worktree: {path}")
             if seen["branch"] != branch:
                 raise WorkspaceError(f"branch mismatch: requested {branch!r}, observed {seen['branch']!r}")
-            repository = str(Path(string_input(request["repository"])).resolve()) if "repository" in request else None
+            repository = (
+                str(Path(string_input(request["repository"], "repository")).resolve())
+                if "repository" in request
+                else None
+            )
             if repository is not None and repository != seen["repository"]:
                 raise WorkspaceError(f"repository mismatch: requested {repository}, observed {seen['repository']}")
             repository = seen["repository"]
@@ -338,19 +348,19 @@ def _build(
                 raise WorkspaceError("sections must map headings to text")
             documents["spec"] = _replace_sections(read("spec"), request["sections"])
         if "architecture" in request:
-            documents["architecture"] = string_input(request["architecture"]).strip() + "\n"
-        for item in list_input(request.get("decisions", [])):
+            documents["architecture"] = string_input(request["architecture"], "architecture").strip() + "\n"
+        for item in list_input(request.get("decisions", []), field="decisions"):
             object_input(item, {"id", "body"}, {"id", "body"})
             documents["spec"] = _entry(read("spec"), item["id"], item["body"], decision=True)
     elif action == "confirm":
-        kind = string_input(request.get("kind"))
+        kind = string_input(request.get("kind"), "kind")
         if kind not in ("requirements", "architecture"):
             raise WorkspaceError("confirmation kind must be requirements or architecture")
         name = "spec" if kind == "requirements" else "architecture"
         if snapshot(document_path(project, name))[1] != string_input(request.get("proposal_sha256")):
             raise WorkspaceError("proposal token changed; confirmation must cover the current proposal")
         for field in ("review_id", "response", "source", "scope"):
-            string_input(request.get(field))
+            string_input(request.get(field), field)
         body = "\n".join(
             f"{key}: {request[key]}" for key in ("kind", "review_id", "proposal_sha256", "response", "source", "scope")
         )
@@ -374,7 +384,7 @@ def _build(
                 },
             )
     elif action == "correct":
-        old = _task(state, string_input(request.get("task")))
+        old = _task(state, string_input(request.get("task"), "task"))
         if old["status"] not in ("DONE", "SKIPPED"):
             raise WorkspaceError("correction source must be terminal")
         replacement = object_input(
@@ -396,11 +406,11 @@ def _build(
         patch = object_input(
             request.get("patch"), {"title", "status", "review", "cancellation_reason", "predecessor", "tasks"}
         )
-        decision(string_input(request.get("decision")))
+        decision(string_input(request.get("decision"), "decision"))
     elif action == "worker-event":
-        _task(state, string_input(request.get("task")))
+        _task(state, string_input(request.get("task"), "task"))
         for field in ("handle", "scope", "observation"):
-            string_input(request.get(field))
+            string_input(request.get(field), field)
         if request.get("event") not in ("intent", "launched", "observed", "completed", "stopped", "failed"):
             raise WorkspaceError("unsupported worker observation")
         if (
@@ -415,7 +425,7 @@ def _build(
             read(name), request["id"], "<!-- research-worker " + json.dumps(event, sort_keys=True) + " -->"
         )
     elif action in ("authorize", "receipt"):
-        task = _task(state, string_input(request.get("task")))
+        task = _task(state, string_input(request.get("task"), "task"))
         if action == "authorize":
             value = object_input(
                 request.get("authorization"), {"required", "status", "scope", "source", "authorized_at"}
@@ -427,7 +437,7 @@ def _build(
         patch = {"tasks": [{"id": task["id"], **change}]}
     elif action == "review":
         for field in ("reviewer", "version", "scope", "findings", "status"):
-            string_input(request.get(field))
+            string_input(request.get(field), field)
         cycle = state["review"]["cycle"] + 1
         name = f"reviews/review_{cycle:02d}"
         documents[name] = (
@@ -452,7 +462,7 @@ def _build(
         if errors:
             raise WorkspaceError("closure blocked by recorded worktrees:\n- " + "\n- ".join(errors))
         result["worktree_warnings"] = warnings
-        reflection = string_input(request.get("reflection")).strip()
+        reflection = string_input(request.get("reflection"), "reflection").strip()
         # A reflection that is one token or one line is not a post-mortem; one was saved that was a
         # 64-character hash. The check is on shape only: whether it is any good is the reader's call.
         if len(reflection) < REFLECTION_MIN_CHARS or not any(level for level, _, _ in _headings(reflection)):
@@ -465,7 +475,7 @@ def _build(
         patch = {"status": "DONE"}
         result["_after_commit"] = ["handoff"]
     elif action in ("maintenance", "cancel"):
-        reason = string_input(request.get("reason"))
+        reason = string_input(request.get("reason"), "reason")
         patch = {
             "status": "PLANNING" if action == "maintenance" else "CANCELLED",
             "tasks": list_input(request.get("tasks", [])),
@@ -479,11 +489,15 @@ def _build(
     elif action == "assess":
         from workspace_lib import read_memory_topic
 
-        topic = read_memory_topic(project.parent, string_input(request.get("topic")))
+        topic = read_memory_topic(project.parent, string_input(request.get("topic"), "topic"))
         if request.get("disposition") not in ("apply", "reject", "defer"):
             raise WorkspaceError("lesson disposition must be apply, reject or defer")
         body = f"Lesson {request['topic']} ({topic['sha256']}): {request['disposition']}\n"
-        body += string_input(request.get("reason")) + "\n" + string_input(request.get("application"))
+        body += (
+            string_input(request.get("reason"), "reason")
+            + "\n"
+            + string_input(request.get("application"), "application")
+        )
         decision(body)
         result["topic"] = {"name": request["topic"], "sha256": topic["sha256"]}
     elif action == "worktree":
@@ -514,8 +528,10 @@ def workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, A
 
 def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, Any]:
     project = project.resolve()
+    if action not in FIELDS and action not in READ_INPUTS:
+        raise WorkspaceError(f"unknown workflow action: {action}")
     if action in FIELDS:
-        object_input(request, COMMON | FIELDS[action], {"id", "expected_revision"})
+        object_input(request, COMMON | FIELDS[action], WRITE_REQUIRED, where=f"workflow {action}")
         return run_operation(project, action, request, lambda state: _build(project, action, request, state))
     if action == "verify":
         from workspace_checks import verify
@@ -526,6 +542,7 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
 
         return triage(project, request)
     if action in ("resume", "packet"):
+        schema_input(request, action)
         result = resume_bundle(project, request)
         events = worker_events(project)
         result["unresolved_workers"] = events[:20]
@@ -536,21 +553,20 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
     if action == "impact":
         return impact(project, request)
     if action == "preview":
-        object_input(request, {"patch", "expected_revision"}, {"patch", "expected_revision"})
+        schema_input(request, "preview")
         return preview(project, request["patch"], request["expected_revision"])
     if action == "fingerprint":
-        object_input(request, {"references"}, {"references"})
+        schema_input(request, "fingerprint")
         return {"fingerprints": fingerprint(project, request["references"])}
     if action == "recover":
-        object_input(request, {"id", "apply"}, {"id"})
+        schema_input(request, "recover")
         if "apply" in request and type(request["apply"]) is not bool:
             raise WorkspaceError("recover apply must be boolean")
         return recover_operation(project, request["id"], apply=request.get("apply", False))
-    object_input(request, set())
+    schema_input(request, action)
     if action == "freshness":
         return checkpoint_freshness(project)
     if action == "readiness":
         return readiness(project)
-    if action == "memory-health":
-        return memory_health(project.parent, _load_state(project)["title"])
-    raise WorkspaceError(f"unknown workflow action: {action}")
+    # Every other action returned above, and the unknown ones were refused at the top.
+    return memory_health(project.parent, _load_state(project)["title"])

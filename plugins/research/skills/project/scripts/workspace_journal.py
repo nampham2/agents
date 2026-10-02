@@ -40,25 +40,77 @@ class OperationError(WorkspaceError):
         self.result = result
 
 
-def object_input(value: Any, allowed: set[str], required: set[str] | frozenset[str] = frozenset()) -> dict[str, Any]:
-    """Validate closed object fields before traversal."""
-    if not isinstance(value, dict) or value.keys() - allowed or required - value.keys():
-        raise WorkspaceError(f"expected object fields {sorted(allowed)}; required {sorted(required)}")
+def object_input(
+    value: Any,
+    allowed: set[str] | frozenset[str],
+    required: set[str] | frozenset[str] = frozenset(),
+    where: str | None = None,
+) -> dict[str, Any]:
+    """Validate closed object fields before traversal, naming the field and the action that failed.
+
+    `where` is the action or object being read (`workflow resume`). The message used to be one
+    sentence for a non-object, an unknown key and a missing key, and it never named the offender.
+    """
+    prefix = f"{where}: " if where else ""
+    if not isinstance(value, dict):
+        raise WorkspaceError(f"{prefix}expected a JSON object, got {type(value).__name__}")
+    unknown = sorted(value.keys() - allowed)
+    if unknown:
+        raise WorkspaceError(f"{prefix}unknown field(s) {unknown}; allowed: {sorted(allowed)}")
+    missing = sorted(required - value.keys())
+    if missing:
+        raise WorkspaceError(f"{prefix}missing required field(s) {missing}; required: {sorted(required)}")
     return value
 
 
-def string_input(value: Any) -> str:
-    """Require meaningful caller-authored text."""
+def string_input(value: Any, field: str | None = None) -> str:
+    """Require meaningful caller-authored text, naming the field when the caller knows it."""
     if not isinstance(value, str) or not value.strip():
-        raise WorkspaceError("expected non-empty text")
+        raise WorkspaceError(f"{field} must be non-empty text" if field else "expected non-empty text")
     return value
 
 
-def list_input(value: Any, maximum: int = 50) -> list[Any]:
-    """Bound request fanout."""
+def list_input(value: Any, maximum: int = 50, field: str | None = None) -> list[Any]:
+    """Bound request fanout, naming the field when the caller knows it."""
     if not isinstance(value, list) or len(value) > maximum:
-        raise WorkspaceError(f"expected an array of at most {maximum} items")
+        what = f"{field} must be" if field else "expected"
+        raise WorkspaceError(f"{what} an array of at most {maximum} items")
     return value
+
+
+# The input of every read-style workflow action: (allowed keys, required keys). One table, read by
+# the modules that validate their own request and by `workflow <action> --schema`, so the help a
+# caller sees cannot drift from what the action accepts. Write actions are derived from FIELDS in
+# workspace_workflows; those are `COMMON` plus their own keys, with `id` and `expected_revision` required.
+READ_INPUTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
+    "resume": (frozenset({"task", "selections", "max_chars", "worker", "scope", "lessons"}), frozenset()),
+    "packet": (frozenset({"task", "selections", "max_chars", "worker", "scope", "lessons"}), frozenset()),
+    "read": (
+        frozenset({"document", "section", "entry", "offset", "max_chars", "if_sha256"}),
+        frozenset({"document"}),
+    ),
+    "verify": (
+        frozenset({"id", "checks", "continue_on_failure", "fingerprints"}),
+        frozenset({"id", "checks"}),
+    ),
+    "triage": (
+        frozenset({"id", "expected_revision", "tokens", "items"}),
+        frozenset({"id", "expected_revision", "tokens", "items"}),
+    ),
+    "impact": (frozenset({"tasks", "paths"}), frozenset({"tasks"})),
+    "preview": (frozenset({"patch", "expected_revision"}), frozenset({"patch", "expected_revision"})),
+    "fingerprint": (frozenset({"references"}), frozenset({"references"})),
+    "recover": (frozenset({"id", "apply"}), frozenset({"id"})),
+    "freshness": (frozenset(), frozenset()),
+    "readiness": (frozenset(), frozenset()),
+    "memory-health": (frozenset(), frozenset()),
+}
+
+
+def schema_input(value: Any, action: str) -> dict[str, Any]:
+    """Validate a read-style action's request against its entry in `READ_INPUTS`."""
+    allowed, required = READ_INPUTS[action]
+    return object_input(value, allowed, required, where=f"workflow {action}")
 
 
 def contained(root: Path, relative: str) -> Path:

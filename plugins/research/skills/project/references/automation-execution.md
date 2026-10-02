@@ -2,6 +2,12 @@
 
 ## Worker observations and checks
 
+`record-observation` is not a workflow action. For a check that has no command, such as an MCP read
+or a query, it records `--source`, `--result passed|FAILED` and the observed text (`--body` or
+`--body-file -`) under a task or closure step. The entry has an `Observation:` line and no exit
+code, so `task finish --evidence` refuses it and `--observation` accepts it. A finish resting only
+on observations appends an attested-finish note to the task, and a `FAILED` one never finishes it.
+
 `worker-event` uses the [common metadata fields](automation-records.md) plus `task`, `handle`,
 `event`, `scope`, `observation`, `assignment_revision`. Events: `intent`, `launched`, `observed`,
 `completed`, `stopped`, `failed`. It appends to `tasks/<id>.md`; supply the existing note's token.

@@ -36,8 +36,8 @@ Total token consumption and peak context are separate measurements.
 Phase boundaries checkpoint progress and continue in the same session. Fresh sessions are for user
 requests or context pressure that impairs continuation. Routine corrections within the current
 assignment use task findings and affected checks; material changes reconcile dependencies and
-agreement. Starting a correction task from `REVIEW` returns to `EXECUTING`, preserving review state
-and normal guards. Reopen invalidated delivery acceptance before closure.
+agreement. Starting a task from `PLANNING`, `BLOCKED` or `REVIEW` moves the project to `EXECUTING`,
+preserving review state and normal guards. Reopen invalidated delivery acceptance before closure.
 
 Project status and task definitions live in `project.json`; `tasks/<id>.md` holds optional findings
 and worker-recovery notes. `artifacts/` holds durable supporting files and requested deliverables.
@@ -53,27 +53,56 @@ and agreement are completed before new planning or affected implementation. Vali
 project in `PLANNING`, `EXECUTING`, or `REVIEW` lacks an agreed `architecture.md`; it cannot verify
 conversational agreement, and legacy projects stay valid.
 
+A repository target needs a user-confirmed, recorded worktree before the first write; see
+[worktrees.md](references/worktrees.md). A removed target does not stop a reopened project from
+recording a new one, at a new path. An optional briefing (`init --briefing`) can seed the grill; it
+is checked only when `briefing.md` exists and is never required.
+
 ## Commands
 
 Claude uses launchers on `PATH`; Codex resolves them beside the loaded skill.
 
 ```sh
 research-project list-projects /path/to/workspace --query parser
+research-project list-projects /path/to/workspace --status ALIGNING --older-than-days 20
+research-project workflow /path/to/project resume -            # JSON {} on stdin
+research-project workflow /path/to/project resume --schema     # allowed and required keys
 research-project context /path/to/project --validate
 research-project read /path/to/project spec --outline
 research-project edit /path/to/project spec --sections-json - --expected-sha256 TOKEN
 research-project update /path/to/project - --expected-revision 2 --json
 research-project task /path/to/project start T01 --expected-revision 3
 research-project record-evidence /path/to/project --task T01 --json -- uv run pytest -q
+research-project record-evidence /path/to/project --task T01 --dry-run -- uv run pytest -q
+research-project record-observation /path/to/project --task T01 --source "query" \
+  --result passed --body-file -
 research-project task /path/to/project finish T01 --evidence RECORD_ID --expected-revision 4
-research-project close /path/to/project --expected-revision 5 --reflection-file - \
-  --expected-reflection-sha256 missing
+research-project task /path/to/project finish T01 --observation RECORD_ID --expected-revision 4
+research-project task /path/to/project finish T01 --backfill --note "why" --evidence RECORD_ID \
+  --expected-revision 4
+research-project stage /path/to/project --title "One line" --body-file -
+research-project workflow /path/to/project finalize -          # closes the project
 ```
+
+`close` is the older closing command and remains for existing scripts; `workflow finalize` also
+saves the final handoff. Every command warns on stderr when a cached, out-of-date plugin copy is
+the one running.
+
+Four commands are rarely needed. `commit` applies a full candidate state through the guards, and
+`commit --dry-run` reports every problem it would hit. `migrate` previews a schema migration unless
+told to apply it. `rebuild-index` regenerates `INDEX.md` after a reported index failure.
+`show-graph` prints a project's task graph.
 
 Resume context bounds active tasks and specification text. Task-only and worker views preserve the
 complete task and direct dependency references without loading the specification or logs. Supply
 applicable constraints before acting. Paged reads explicitly report truncation and the next offset;
 follow pages until relevant requirements are complete. Validation still checks filesystem evidence.
+
+Evidence that no command can produce, such as an MCP read or a query, is recorded with
+`record-observation`. The entry is labelled as the agent's own account, carries the verdict you
+supply and no exit code, and is finished on only with `task finish --observation`; `--evidence`
+refuses it. That makes it weaker than a recorded exit code, and an observation-only finish leaves a
+note saying so.
 
 Guarded Markdown edits use document hashes to reject stale writes. Decisions and task findings
 append without custom rewrite scripts. Updates preserve revision, transition, dependency,

@@ -112,9 +112,9 @@ For invalidated assignments, inputs or agreement, follow
 tasks for terminal work without copying old acceptance or consent.
 
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
-and roots; it resumes `EXECUTING` from `REVIEW`. Start before writing; `finish --backfill --note`
-records earlier work. Supply applicable constraints. Dependencies must be
-`DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
+and roots; it resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`. Start before writing;
+`finish --backfill --note` records earlier work. Supply applicable constraints. Dependencies must
+be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
 existing authorization counts. A repository target needs a user-confirmed, recorded worktree
 before its first write: follow [worktrees.md](references/worktrees.md) when the assignment warns.
 

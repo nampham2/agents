@@ -195,6 +195,40 @@ class TestWorktreeSchema:
         assert any("duplicate worktree path" in e for e in errors)
         assert any("at most one worktree may have role target" in e for e in errors)
 
+    @pytest.mark.parametrize("v3", [False, True])
+    def test_a_removed_target_followed_by_a_new_target_is_valid(self, tmp_path: Path, v3: bool) -> None:
+        first = entry(path="/repo.worktrees/a", status="removed", closure=closure(decision="remove"))
+        second = entry(path="/repo.worktrees/b")
+        errors = errors_for(tmp_path, [first, second], working_directory="/repo.worktrees/b", v3=v3)
+        assert errors == []
+
+    def test_any_number_of_removed_targets_may_precede_the_current_one(self, tmp_path: Path) -> None:
+        removed = [
+            entry(path=f"/repo.worktrees/{name}", status="removed", closure=closure(decision="remove"))
+            for name in ("a", "b")
+        ]
+        current = entry(path="/repo.worktrees/c")
+        assert errors_for(tmp_path, [*removed, current], working_directory="/repo.worktrees/c") == []
+
+    @pytest.mark.parametrize("earlier_status", ["active", "kept"])
+    def test_an_earlier_target_must_be_removed_before_another_is_recorded(
+        self, tmp_path: Path, earlier_status: str
+    ) -> None:
+        earlier = entry(
+            path="/repo.worktrees/a", status=earlier_status, closure=closure() if earlier_status == "kept" else None
+        )
+        errors = errors_for(tmp_path, [earlier, entry(path="/repo.worktrees/b")], working_directory="/repo.worktrees/b")
+        assert any(
+            "at most one worktree may have role target" in e and "worktree #1 must be removed" in e for e in errors
+        ), errors
+
+    def test_only_the_latest_target_decides_the_target_root(self, tmp_path: Path) -> None:
+        removed_first = entry(path="/repo.worktrees/a", status="removed", closure=closure(decision="remove"))
+        removed_last = entry(path="/repo.worktrees/b", status="removed", closure=closure(decision="remove"))
+        assert errors_for(tmp_path, [removed_first, removed_last], working_directory="/repo") == []
+        errors = errors_for(tmp_path, [removed_first, removed_last], working_directory="/repo.worktrees/a")
+        assert any("worktree #2" in e and "requires working_directory /repo" in e for e in errors), errors
+
     def test_missing_directory_only_warns_with_check_files(self, tmp_path: Path) -> None:
         state, project = state_with(tmp_path, [entry(role="additional")])
         report = validate_v4_state(state, project, check_files=True)
@@ -655,3 +689,55 @@ class TestFinalizeReflection:
 
     def test_a_clean_staging_file_reports_nothing(self, finished: Path) -> None:
         assert self.finalize(finished, "clean", REFLECTION)["memory_staging_warnings"] == []
+
+
+class TestRetargetAfterRemoval:
+    """The first maintenance reopen after a worktree was removed had no legal way to record the next one."""
+
+    @pytest.fixture
+    def removed(self, tmp_path: Path, repository: Path, linked: Path) -> Path:
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        git(repository, "worktree", "remove", "--force", str(linked))
+        close(project, linked, "remove")
+        assert load_state(project)["working_directory"] == str(repository.resolve())
+        return project
+
+    def test_a_new_target_can_be_recorded_after_the_first_was_removed(self, removed: Path, repository: Path) -> None:
+        second = add_worktree(repository, "second", "npham/second")
+        record(removed, second, branch="npham/second")
+        state = load_state(removed)
+        assert state["working_directory"] == str(second.resolve())
+        assert [w["status"] for w in state["worktrees"]] == ["removed", "active"]
+        assert [w["role"] for w in state["worktrees"]] == ["target", "target"]
+        from workspace_lib import validate_project
+
+        assert not [e for e in validate_project(removed).errors if "worktree" in e], "the history must validate"
+
+    def test_the_new_target_can_itself_be_closed_and_the_root_goes_back_to_the_repository(
+        self, removed: Path, repository: Path
+    ) -> None:
+        second = add_worktree(repository, "second", "npham/second")
+        record(removed, second, branch="npham/second")
+        git(repository, "worktree", "remove", "--force", str(second))
+        close(removed, second, "remove")
+        state = load_state(removed)
+        assert state["working_directory"] == str(repository.resolve())
+        assert [w["status"] for w in state["worktrees"]] == ["removed", "removed"]
+
+    def test_a_removed_path_cannot_be_reused_and_the_message_says_what_to_do(
+        self, removed: Path, repository: Path
+    ) -> None:
+        again = add_worktree(repository, branch="npham/again")  # the same path as the removed worktree
+        refused(removed, "a new worktree needs a new path", record, again, branch="npham/again")
+
+    @pytest.mark.parametrize("earlier", ["active", "kept"])
+    def test_a_second_target_is_refused_while_the_first_still_stands(
+        self, tmp_path: Path, repository: Path, linked: Path, earlier: str
+    ) -> None:
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        if earlier == "kept":
+            close(project, linked, "keep")
+        second = add_worktree(repository, "second", "npham/second")
+        refused(project, "must be recorded from its repository", record, second, branch="npham/second")

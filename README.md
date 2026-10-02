@@ -63,6 +63,23 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.20.0 validation agrees, observations, discoverability
+
+- Standalone validation and the commit path now agree about finished work whose files moved: a
+  finished task's missing required output or evidence file, and a finished project's missing working
+  directory, are warnings on every path. 35 of 87 historical projects failed `research-validate` only
+  for this; none do now, and no project that passed fails. A task becoming `DONE` still errors.
+- A reopened project can record a new target worktree after the earlier one was removed, at a new
+  path; only the latest target constrains the target root.
+- `research-project record-observation` records a check with no command (an MCP read, a query) as an
+  agent-attested entry, finished on only with `task finish --observation`; `--evidence` refuses it.
+- `workflow <action> --schema` prints an action's allowed and required keys from the same table that
+  validates it; input errors name the offending key and the action; `--help` names `research-project`.
+- `list-projects` shows `created` and `updated` and takes `--older-than-days`.
+
+Compatibility: nothing in this release adds a field an older launcher rejects. An older launcher sees
+an observation entry as not selectable and refuses to finish on it.
+
 ### 0.19.0 recorder, handoff and launcher guards
 
 Built from what 85 past projects actually tripped over:
@@ -79,6 +96,24 @@ Built from what 85 past projects actually tripped over:
 
 Compatibility: a handoff written with `do_not` cannot be read by an older launcher. Update the
 plugin, restart Claude Code, and then resume projects.
+
+### 0.18.1 effort scale
+
+Effort in architecture proposals is rated low, medium or high per workstream and overall, anchored
+on scope signals, and never estimated in hours or days. External waits are named as dependencies.
+
+### 0.18.0 git worktree discipline
+
+Every repository a project writes to gets a user-confirmed, recorded git worktree before the first
+write (`workflow worktree`, `record` and `close`), and closure needs the user's commit and
+keep or remove decision for each one. `project.json` gains an optional `worktrees` list; older
+launchers cannot read a project that records one.
+
+### 0.17.1 checkable handoffs
+
+Handoffs follow the provenance, verifier-status and preservation rules in `handoff-writing.md`:
+a claim the successor will rely on carries its source and observation time, and one that was not
+checked is marked `UNVERIFIED` with the re-check.
 
 ### 0.17.0 execution change
 
