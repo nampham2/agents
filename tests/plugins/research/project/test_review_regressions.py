@@ -31,7 +31,7 @@ from workspace_lib import (
     validate_v3_state,
 )
 
-from tests.conftest import MANAGER, REPO_ROOT, VALIDATOR
+from tests.conftest import MANAGER, REPO_ROOT, VALIDATOR, backdate_project
 
 TIMESTAMP = "2026-08-28T10:00:00+02:00"
 
@@ -660,6 +660,7 @@ class PostCommitFilesystemFailureTests(unittest.TestCase):
 
     def test_unpaired_surrogate_after_commit_is_reported_without_a_traceback(self) -> None:
         project_dir = workspace_lib.allocate_project(self.workspace, title="Ordered", working_directory=self.root)
+        backdate_project(project_dir)  # the commit runs in a subprocess and must not be gated here
         malformed_dir = self.workspace / "malformed"
         malformed_dir.mkdir()
         malformed_state = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))

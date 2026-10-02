@@ -14,7 +14,7 @@ import pytest
 from workspace_lib import WorkspaceError, allocate_project, atomic_write_json, record_evidence, validate_project
 from workspace_session import project_context, update_project, update_project_data
 
-from tests.conftest import REPO_ROOT
+from tests.conftest import REPO_ROOT, backdate_project
 from tests.plugins.research.project.test_workspace import WorkspaceFixture
 
 
@@ -281,6 +281,7 @@ def test_both_host_launchers_support_small_updates(tmp_path: Path, surface: str)
         check=True,
     )
     project = Path(initialized.stdout.strip())
+    backdate_project(project)  # the launcher reads the production cutoff; this test plans without alignment
     assert not (project / "briefing.md").exists()
     path = tmp_path / "patch.json"
     atomic_write_json(path, {"status": "PLANNING", "tasks": [task()]})

@@ -21,7 +21,8 @@ way and carry the same rule; see [Workspace root files](#workspace-root-files).
 
 ## Canonical v4 state
 
-Every listed field is required except `predecessor`, `worktrees` and the v4-only task `reads`
+Every listed field is required except `predecessor`, `worktrees` and the v4-only task `reads`,
+`started_at` and `finished_at`
 declaration:
 
 ```json
@@ -111,6 +112,14 @@ Fresh projects have no coordinator or attempts and create no execution store. An
 non-null `coordinator_run` or non-empty `attempts` blocks writes: see
 [legacy-executor.md](legacy-executor.md). Removing the engine does not release its old ownership.
 
+A v4 task of a project created on or after `GATES_ENFORCED_FROM` also carries `started_at`, set by
+the first `task start` (a restart after `BLOCKED` keeps it), and `finished_at`, set by `task
+finish`; `--start-next` stamps the successor and `--backfill` sets `finished_at` only, because both
+of its commits happen at once. Both are timezone-aware ISO-8601, `finished_at` belongs only to a
+`DONE` task and is never earlier than `started_at`. The task graph prefers them to evidence stamps.
+A launcher older than the release that introduced them rejects a task that carries them and names a
+newer plugin as the likely cause, which is why projects created earlier never gain one.
+
 The optional v4 task `reads` list remains accepted for compatibility and input documentation;
 it no longer controls automatic dispatch. Schema-v3 task objects remain unchanged.
 
@@ -152,6 +161,22 @@ State coherence rules:
 - `CANCELLED` has a non-empty `cancellation_reason` and no running tasks.
 - Other statuses have a null `cancellation_reason`.
 - `DONE` satisfies every completion invariant below.
+
+### The alignment gate for new projects
+
+A project created on or after `GATES_ENFORCED_FROM` (the release date of the release that shipped
+the gate; the constant lives in `workspace_lib.py`) may not move from `ALIGNING` or `BLOCKED` to
+`PLANNING` or `EXECUTING` until three facts are on record: the seven `### Current specification`
+sections are filled, `architecture.md` declares `Status: agreed`, and `workflow confirm` recorded
+both a requirements and an architecture confirmation whose review identifier appears in
+`architecture.md`. The refusal names each missing fact and the command that records it. Projects
+created before the cutoff keep the warnings they always had, so no existing project changes shape
+and no older launcher is locked out by the gate itself. Only that transition is gated: a reopen
+(`DONE` to `PLANNING`) and a design revision reopened as a draft while executing go through.
+
+What the gate proves is that the tool's confirmation path ran for the proposal the documents now
+hold. It cannot prove the user agreed: the response text is the agent's, and `edit` can still write
+a status by hand. That is why several independent facts are required rather than one.
 
 ## Task lifecycle and dependencies
 
@@ -346,7 +371,11 @@ deliverables, and authorization state.
 - YYYY-MM-DD — Decision or accepted change, with source when useful.
 ```
 
-Current requirements are maintained in place; decision history is append-only.
+Current requirements are maintained in place; decision history is append-only. A decision written by
+`workflow confirm` opens with a marker the alignment gate looks for, in the form `<!--
+research-confirmation: kind=architecture review_id=A1 proposal_sha256=<64 hex> -->`; the same line
+is appended to `architecture.md` with the confirmation. A hand-typed `kind: architecture` is not
+one.
 
 `evidence.md` records concise milestone evidence. Entries for commands are written by
 `research-project record-evidence <project-directory> --task <id> -- <command>`, which runs the

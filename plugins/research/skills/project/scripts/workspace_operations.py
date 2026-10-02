@@ -13,8 +13,10 @@ from workspace_lib import (
     WorkspaceConflict,
     WorkspaceError,
     commit_state,
+    now_iso,
     reason_reference_warnings,
     staged_lesson_lines,
+    task_stamps_enabled,
     validate_project,
 )
 from workspace_session import _load_state
@@ -89,6 +91,7 @@ def task_operation(
     backfill: bool = False,
     note: str | None = None,
     observation_record_ids: list[str] | None = None,
+    stamp_start: bool = True,
 ) -> dict[str, Any]:
     """Start, finish, block, or skip a named task with one guarded state commit.
 
@@ -107,8 +110,12 @@ def task_operation(
     selected = _task(state, task_id)
     changed = [task_id]
     locked_guard = None
+    stamps = task_stamps_enabled(state)
     if action == "start":
         selected.update(status="RUNNING", block_reason=None, skip_reason=None)
+        # The first start only: a task restarted after BLOCKED keeps the moment work began.
+        if stamps and stamp_start and "started_at" not in selected:
+            selected["started_at"] = now_iso()
         if state["status"] in ("PLANNING", "BLOCKED", "REVIEW"):
             state["status"] = "EXECUTING"
     elif action == "finish":
@@ -127,6 +134,8 @@ def task_operation(
                 task_id=task_id, entry_id=f"attested-{task_id.lower()}-{digest}", lock_timeout=lock_timeout,
             )
         selected["status"] = "DONE"
+        if stamps:
+            selected["finished_at"] = now_iso()
         selected["evidence"] = list(selected["evidence"])
         for reference in [*references, *observed]:
             if reference not in selected["evidence"]:
@@ -136,6 +145,8 @@ def task_operation(
                 raise WorkspaceError("--start-next must name a different task")
             successor = _task(state, start_next)
             successor.update(status="RUNNING", block_reason=None, skip_reason=None)
+            if stamps and "started_at" not in successor:
+                successor["started_at"] = now_iso()
             changed.append(start_next)
 
         def guard(current: dict[str, Any]) -> None:
@@ -238,8 +249,11 @@ def _backfill_finish(
         )
     # Refused before anything is written: a record that is missing, failing or another task's.
     _finish_references(project_dir, task_id, evidence_record_ids or [], observation_record_ids or [])
+    # No started_at for a backfill: both of its commits happen now, and a start stamp would claim a
+    # zero-length interval for exactly the work that was done earlier. finished_at is still true.
     started = task_operation(
-        project_dir, "start", task_id, expected_revision=expected_revision, lock_timeout=lock_timeout
+        project_dir, "start", task_id, expected_revision=expected_revision, lock_timeout=lock_timeout,
+        stamp_start=False,
     )
     try:
         append_record(

@@ -24,7 +24,7 @@ answers, advance phase, or mark agreement. `sections` uses the ordinary spec hea
 | --- | --- |
 | `checkpoint` | `continuation`; derives phase, revision, spec/design tokens and Git observations; returns saved tokens and a resume prompt. |
 | `round` | Optional `sections`, `decisions` (`{id,body}`), `architecture`, `continuation`. |
-| `confirm` | `kind` (`requirements` or `architecture`), exact `proposal_sha256`, `review_id`, actual `response`, `source`, `scope`; optional `continuation`. Appends confirmation; architecture also updates its status and spec link. |
+| `confirm` | `kind` (`requirements` or `architecture`), exact `proposal_sha256`, `review_id`, actual `response`, `source`, `scope`; optional `continuation`. Appends a confirmation carrying a `research-confirmation` marker; architecture also updates its status and spec link. |
 | `correct` | Terminal `task`, `reason`, `replacement` with new task fields except ID/status/evidence/authorization/receipts; optional `continuation`. Allocates a new ID and links prior work without copying consent or acceptance. |
 | `reconcile` | Explicit `patch`, `decision`, `continuation`; saves selected dispositions, rewiring and pointers through normal commit guards. |
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |

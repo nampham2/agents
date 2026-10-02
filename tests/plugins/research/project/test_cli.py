@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from tests.conftest import MANAGER, VALIDATOR
+from tests.conftest import MANAGER, VALIDATOR, backdate_project
 
 
 class _CliFixture(unittest.TestCase):
@@ -62,6 +62,7 @@ class CliIntegrationTests(_CliFixture):
             MANAGER, "init", self.workspace_root, "--title", "CLI project", "--working-directory", self.target
         )
         project_dir = Path(initialized.stdout.strip())
+        backdate_project(project_dir)  # these are legacy-lifecycle tests: they plan without alignment
         state = json.loads((project_dir / "project.json").read_text(encoding="utf-8"))
         self.assertEqual("ALIGNING", state["status"])
         self.assertIn(project_dir.name, (self.workspace_root / "INDEX.md").read_text(encoding="utf-8"))
@@ -105,6 +106,9 @@ class DryRunCommitTests(_CliFixture):
             MANAGER, "init", self.workspace_root, "--title", "Dry run", "--working-directory", self.target
         )
         self.project_dir = Path(initialized.stdout.strip())
+        # Legacy-lifecycle fixture: plans without alignment. Not the helper's default date, which one
+        # test below uses as the value of a *changed* immutable field.
+        backdate_project(self.project_dir, "2019-01-01T00:00:00+00:00")
         state = self.state()
         state["status"] = "PLANNING"
         state["tasks"] = [self.task("TODO")]

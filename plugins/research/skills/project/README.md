@@ -51,7 +51,10 @@ A unique root is used and stated; ambiguous or missing roots need a choice. New 
 requested location. Existing v3/v4 projects need no schema migration; missing architecture records
 and agreement are completed before new planning or affected implementation. Validation warns when a
 project in `PLANNING`, `EXECUTING`, or `REVIEW` lacks an agreed `architecture.md`; it cannot verify
-conversational agreement, and legacy projects stay valid.
+conversational agreement, and legacy projects stay valid. A project created on or after the gate
+cutoff is refused the move out of `ALIGNING` until its specification is filled, its architecture is
+agreed and `workflow confirm` recorded both confirmations; its tasks also carry `started_at` and
+`finished_at`, which an older launcher cannot read.
 
 A repository target needs a user-confirmed, recorded worktree before the first write; see
 [worktrees.md](references/worktrees.md). A removed target does not stop a reopened project from

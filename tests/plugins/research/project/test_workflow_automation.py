@@ -30,7 +30,7 @@ from workspace_lib import (
 from workspace_operations import CloseOperationError, close_project, task_operation
 from workspace_session import update_project_data, validated_project_context
 
-from tests.conftest import MANAGER, REPO_ROOT
+from tests.conftest import MANAGER, REPO_ROOT, backdate_project
 
 
 def invoke(arguments: list[str], *, stdin: str = "") -> tuple[int, str, str]:
@@ -497,6 +497,7 @@ def test_review_corrections_resume_through_both_hosts(
 
 def test_cli_accepts_stdin_updates_and_validated_context(project: Path) -> None:
     fill_spec(project)
+    backdate_project(project)  # a subprocess reads the production cutoff; this test plans without alignment
     patch = json.dumps({"status": "PLANNING", "tasks": [task("T01")]})
     updated = subprocess.run(
         [sys.executable, str(MANAGER), "update", str(project), "-", "--expected-revision", "0", "--json"],

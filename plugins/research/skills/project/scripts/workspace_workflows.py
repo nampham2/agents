@@ -37,6 +37,7 @@ from workspace_lib import (
     PROJECT_TRANSITIONS,
     WorkspaceError,
     check_state_candidate,
+    confirmation_marker,
     document_sha256,
     memory_staging_warnings,
     now_iso,
@@ -361,7 +362,7 @@ def _build(
             raise WorkspaceError("proposal token changed; confirmation must cover the current proposal")
         for field in ("review_id", "response", "source", "scope"):
             string_input(request.get(field), field)
-        body = "\n".join(
+        body = confirmation_marker(kind, str(request["review_id"]), str(request["proposal_sha256"])) + "\n" + "\n".join(
             f"{key}: {request[key]}" for key in ("kind", "review_id", "proposal_sha256", "response", "source", "scope")
         )
         decision(body)
