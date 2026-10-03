@@ -19,6 +19,7 @@ from workspace_lib import (
     document_sha256,
     now_iso,
     read_text,
+    stale_confirmations,
 )
 from workspace_session import _headings, _load_state
 
@@ -202,10 +203,22 @@ def edit_document(
             atomic_write_text(path, replacement)
     except OSError as error:
         raise WorkspaceError(f"cannot write {path}: {error}") from error
-    return {
+    result = {
         "operation": "document.edit", "document": document, "path": str(path), "revision": state["revision"],
         "previous_sha256": actual, "document_sha256": document_sha256(replacement),
     }
+    if document in ("spec", "architecture"):
+        spec_path, architecture_path = project_dir / "spec.md", project_dir / "architecture.md"
+        spec_text = replacement if document == "spec" else (read_text(spec_path) if spec_path.is_file() else "")
+        architecture_text = (
+            replacement
+            if document == "architecture"
+            else (read_text(architecture_path) if architecture_path.is_file() else "")
+        )
+        stale = stale_confirmations(spec_text, architecture_text)
+        if stale:
+            result["stale_confirmations"] = stale
+    return result
 
 
 def append_record(

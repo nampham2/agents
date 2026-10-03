@@ -321,6 +321,67 @@ def recorded_confirmations(spec_markdown: str) -> "dict[str, list[tuple[str, str
     return found
 
 
+# Second line of a confirmation: the digest of the proposal's content as the user agreed to it, so the
+# gate can tell that the text it now reads is that text. The whole-document token cannot do this: it
+# changes with every write, including the ones `workflow confirm` itself makes, which is why the
+# gate used to look only for a review identifier somewhere in the document.
+PROPOSAL_MARKER = re.compile(
+    r"<!-- research-proposal: kind=(?P<kind>requirements|architecture) "
+    r"review_id=(?P<review_id>\S+) content_sha256=(?P<sha>[0-9a-f]{64}) -->"
+)
+AGREED_ARCHITECTURE_LINE = re.compile(r"^Agreed architecture: \[revision [^\]]*\]\(architecture\.md\)\.[ \t]*$", re.MULTILINE)
+CONFIRMATION_BLOCK = re.compile(r"^Confirmation \([^)\n]*\):[ \t]*$", re.MULTILINE)
+
+
+def proposal_marker(kind: str, review_id: str, content_sha256: str) -> str:
+    return f"<!-- research-proposal: kind={kind} review_id={review_id} content_sha256={content_sha256} -->"
+
+
+def recorded_proposals(spec_markdown: str) -> "dict[str, list[tuple[str, str]]]":
+    """Content digests the tool recorded in `spec.md`, by kind, as (review_id, content_sha256), oldest first."""
+    found: "dict[str, list[tuple[str, str]]]" = {"requirements": [], "architecture": []}
+    for match in PROPOSAL_MARKER.finditer(spec_markdown):
+        found[match.group("kind")].append((match.group("review_id"), match.group("sha")))
+    return found
+
+
+def proposal_digest(kind: str, text: str) -> str:
+    """SHA-256 of the substantive content of a proposal, ignoring what the tool itself writes around it.
+
+    Requirements are `## Current specification` alone: the decision history is append-only and must
+    not unconfirm anything, and the `Agreed architecture` link is added by the architecture
+    confirmation. An architecture is the document with its status word read as `draft` and without
+    the `Confirmation (...)` block appended on agreement. Blank lines and trailing whitespace carry
+    no content, so a reflow is not a change; any other edit is.
+    """
+    if kind == "requirements":
+        body = AGREED_ARCHITECTURE_LINE.sub("", _section_content(text, "Current specification") or "")
+    else:
+        match = ARCHITECTURE_STATUS_PATTERN.search(text)
+        body = text if match is None else text[: match.start("status")] + "draft" + text[match.end("status") :]
+        block = CONFIRMATION_BLOCK.search(body)
+        if block is not None:
+            body = body[: block.start()]
+    lines = [line.rstrip() for line in body.splitlines() if line.strip()]
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def stale_confirmations(spec_markdown: str, architecture_markdown: str) -> "list[str]":
+    """Confirmed proposals whose current content is no longer what the latest confirmation covered."""
+    stale: "list[str]" = []
+    proposals = recorded_proposals(spec_markdown)
+    for kind, text, name in (
+        ("requirements", spec_markdown, "specification"),
+        ("architecture", architecture_markdown, ARCHITECTURE_FILENAME),
+    ):
+        if proposals[kind] and proposals[kind][-1][1] != proposal_digest(kind, text):
+            stale.append(
+                f"the {kind} confirmation {proposals[kind][-1][0]} no longer covers the current {name}; "
+                f"after the user agrees to the new text, record it with workflow confirm (kind {kind})"
+            )
+    return stale
+
+
 def is_external_reference(value: str) -> bool:
     if any(character.isspace() for character in value):
         return False
@@ -862,6 +923,18 @@ def task_stamps_enabled(state: dict[str, Any]) -> bool:
     return state.get("schema_version") == 4 and is_new_project(state)
 
 
+def _stale_confirmation_message(document: str, kind: str, bound: bool) -> str:
+    if bound:
+        return (
+            f"{document} changed after its {kind} confirmation, so that confirmation no longer covers it; "
+            f"once the user agrees to the current text, record it again with 'workflow confirm' (kind {kind})"
+        )
+    return (
+        f"the {kind} confirmation predates content binding and cannot show it covers the current {document}; "
+        f"record the user's answer again with 'workflow confirm' (kind {kind})"
+    )
+
+
 def alignment_gate_errors(project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]) -> "list[str]":
     """Why a new project may not leave ALIGNING yet; empty for a legacy project or any other move.
 
@@ -896,13 +969,24 @@ def alignment_gate_errors(project_dir: Path, previous: dict[str, Any], candidate
         state_word = "missing" if not architecture_text else ("has no status line" if status is None else "is a draft")
         missing.append(f"{ARCHITECTURE_FILENAME} {state_word}; it must be agreed through 'workflow confirm' (kind architecture)")
     recorded = recorded_confirmations(spec_text)
+    proposals = recorded_proposals(spec_text)
+    requirements_digest = proposal_digest("requirements", spec_text)
+    architecture_digest = proposal_digest("architecture", architecture_text)
     if not recorded["requirements"]:
         missing.append("no requirements confirmation was recorded; record the user's answer with 'workflow confirm' (kind requirements)")
+    elif not any(sha == requirements_digest for _, sha in proposals["requirements"]):
+        missing.append(
+            _stale_confirmation_message("the specification", "requirements", bool(proposals["requirements"]))
+        )
     reviewed = [review_id for review_id, _ in recorded["architecture"] if review_id in architecture_text]
     if not reviewed:
         missing.append(
             "no architecture confirmation naming a review identifier present in architecture.md was recorded; "
             "record the user's answer with 'workflow confirm' (kind architecture)"
+        )
+    elif not any(sha == architecture_digest and review_id in architecture_text for review_id, sha in proposals["architecture"]):
+        missing.append(
+            _stale_confirmation_message(ARCHITECTURE_FILENAME, "architecture", bool(proposals["architecture"]))
         )
     if not missing:
         return []
@@ -1500,7 +1584,7 @@ def _validate_worktrees(
                     report.errors.append(f"{label}: {field_name} must be null when kind is none")
             if status != "active" or entry.get("closure") is not None:
                 report.errors.append(f"{label}: a non-repository record stays active with no closure")
-        elif kind in WORKTREE_KINDS:
+        elif _enum_string(kind, WORKTREE_KINDS):
             repository = entry.get("repository")
             if not _non_empty_string(repository) or not Path(repository).is_absolute():
                 report.errors.append(f"{label}: repository must be an absolute path")
@@ -1542,6 +1626,22 @@ def _validate_worktrees(
             )
 
 
+def _add_worktree_closure_findings(state: dict[str, Any], report: ValidationReport) -> None:
+    """Add what stops a project closing: every repository worktree needs the user's decision.
+
+    One rule for every way of closing. `workflow finalize` refused an active recorded worktree while
+    `close` and an `update` to DONE committed it and reported valid, so the same project was open or
+    closed depending on the command. Validation owns the rule now, which also makes `--close` and
+    `workflow readiness` report exactly what a commit would refuse. Called only for well-formed
+    worktree records: the findings read their fields without guards.
+    """
+    from workspace_context import worktree_closure_findings
+
+    errors, warnings = worktree_closure_findings(state)
+    report.errors.extend(errors)
+    report.warnings.extend(warnings)
+
+
 def validate_v3_state(
     state: dict[str, Any],
     project_dir: Path,
@@ -1549,6 +1649,7 @@ def validate_v3_state(
     close: bool = False,
     check_files: bool = True,
     already_done: set[str] | None = None,
+    worktree_closure: bool = True,
 ) -> ValidationReport:
     """Validate a v3 candidate. `already_done` names tasks that were DONE before this candidate.
 
@@ -1599,8 +1700,11 @@ def validate_v3_state(
         _missing_working_directory(state, working_directory, report)
     elif check_files:
         report.warnings.extend(self_location_warnings(working_directory))
+    worktrees_valid = False
     if "worktrees" in state:
+        errors_before = len(report.errors)
         _validate_worktrees(state["worktrees"], working_directory, report, check_files=check_files)
+        worktrees_valid = len(report.errors) == errors_before
 
     current_tasks = state.get("current_tasks")
     if not isinstance(current_tasks, list) or not all(_non_empty_string(item) for item in current_tasks):
@@ -1785,6 +1889,8 @@ def validate_v3_state(
         report.warnings.extend(report_warnings(project_dir, require_graph=False))
 
     if close or status == "DONE":
+        if close and check_files and worktree_closure and worktrees_valid:
+            _add_worktree_closure_findings(state, report)
         incomplete = sorted(
             task_id
             for task_id, task in tasks_by_id.items()
@@ -1820,6 +1926,7 @@ def validate_v4_state(
     close: bool = False,
     check_files: bool = True,
     already_done: set[str] | None = None,
+    worktree_closure: bool = True,
 ) -> ValidationReport:
     """Validate a v4 candidate. Mirrors v3 validation but accepts the execution block."""
     report = ValidationReport()
@@ -1885,8 +1992,11 @@ def validate_v4_state(
         _missing_working_directory(state, working_directory, report)
     elif check_files:
         report.warnings.extend(self_location_warnings(working_directory))
+    worktrees_valid = False
     if "worktrees" in state:
+        errors_before = len(report.errors)
         _validate_worktrees(state["worktrees"], working_directory, report, check_files=check_files)
+        worktrees_valid = len(report.errors) == errors_before
 
     current_tasks = state.get("current_tasks")
     if not isinstance(current_tasks, list) or not all(_non_empty_string(item) for item in current_tasks):
@@ -2090,6 +2200,8 @@ def validate_v4_state(
         report.warnings.extend(report_warnings(project_dir, require_graph=False))
 
     if close or status == "DONE":
+        if close and check_files and worktree_closure and worktrees_valid:
+            _add_worktree_closure_findings(state, report)
         incomplete = sorted(
             task_id
             for task_id, task in tasks_by_id.items()
@@ -4704,6 +4816,11 @@ def check_state_candidate(
     report.errors.extend(check_state_transition(current, candidate))
     if check_files:
         report.errors.extend(alignment_gate_errors(project_dir, current, candidate))
+        from workspace_evidence import newly_terminal_task_errors
+
+        accept_errors, accept_warnings = newly_terminal_task_errors(project_dir, current, candidate)
+        report.errors.extend(accept_errors)
+        report.warnings.extend(accept_warnings)
     simulated = copy.deepcopy(candidate)
     simulated["revision"] = expected_revision + 1
     simulated["updated"] = now_iso()
@@ -4715,6 +4832,7 @@ def check_state_candidate(
             close=simulated.get("status") == "DONE",
             check_files=check_files,
             already_done=_done_task_ids(current),
+            worktree_closure=current.get("status") != "DONE",
         )
     )
     return report
@@ -4780,6 +4898,9 @@ def _commit_state_locked(
     if immutable_changes:
         raise WorkspaceError(immutable_changes[0])
     transition_errors = check_state_transition(current, candidate) + alignment_gate_errors(project_dir, current, candidate)
+    from workspace_evidence import newly_terminal_task_errors
+
+    transition_errors += newly_terminal_task_errors(project_dir, current, candidate)[0]
     if transition_errors:
         raise WorkspaceError("; ".join(transition_errors))
     candidate["revision"] = expected_revision + 1
@@ -4791,6 +4912,7 @@ def _commit_state_locked(
         close=candidate.get("status") == "DONE",
         check_files=True,
         already_done=_done_task_ids(current),
+        worktree_closure=current.get("status") != "DONE",
     )
     if report.errors:
         raise WorkspaceError("candidate validation failed:\n- " + "\n- ".join(report.errors))

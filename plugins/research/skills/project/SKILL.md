@@ -86,9 +86,8 @@ Save related spec sections, decisions, design drafts and continuation with `work
 Use `workflow ... confirm` for actual agreement against the proposal token. Single findings can
 use `append ... finding`; avoid transcripts and duplicate task narratives.
 
-Record explicit requirements/design agreement and `Status: agreed` before planning. Follow the
-architecture reference's coverage and transition rules.
-Reuse current agreement on resume; missing records or material changes reopen affected choices.
+Record explicit requirements/design agreement and `Status: agreed` before planning; reuse current
+agreement on resume, and reopen affected choices for missing records or material changes.
 
 ## Plan tasks
 

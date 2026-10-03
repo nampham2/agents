@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -141,27 +142,106 @@ def test_default_instruction_payload_budget() -> None:
         assert len((entry + routine + router + selected).split()) <= 2350
 
 
-@pytest.mark.parametrize("scenario,references,budget", [
-    ("alignment", ("durable-context", "grill", "architecture-review", "memory-operations"), 5800),
-    ("resume", ("durable-context", "session-handoff", "memory-operations"), 3400),
-    ("alignment-and-handoff", (
-        "durable-context", "grill", "architecture-review", "memory-operations", "session-handoff",
-    ), 6600),
-    ("material-change-after-resume", (
-        "durable-context", "session-handoff", "memory-operations", "execution-changes",
-        "grill", "architecture-review",
-    ), 8000),
-])
-def test_required_lifecycle_instruction_budget(scenario: str, references: tuple[str, ...], budget: int) -> None:
-    """Count phase load sets, including required references, rather than only entrypoint routing.
+SKILL_DIR = REPO_ROOT / "plugins/research/skills/project"
+CORE = ("SKILL", "commands")
+ALIGNMENT = ("durable-context", "grill", "architecture-review", "memory-operations", "automation",
+             "automation-records", "handoff-writing")
+RESUME = ("durable-context", "session-handoff", "memory-operations", "automation", "automation-context",
+          "automation-records", "handoff-writing")
 
-    Keep these sets aligned with reference routing when procedures move. Each file is loaded once
-    per session; a fresh session pays again. These are words, not billed or cache-adjusted tokens.
-    Reports, workers and schema repairs are outside these scenarios, not free operations.
+# Each scenario is the complete set of documents the routing requires for that piece of work, in the
+# order SKILL.md reaches them. The first version of these budgets omitted the automation router, the
+# records reference and the handoff guide that alignment cannot proceed without, so the measured
+# cost was about a quarter lower than the cost paid. Documents reached only conditionally are
+# classified in CONDITIONAL, below, not left out silently.
+SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7031),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6550),
+    "resume": ((*CORE, *RESUME), 5000),
+    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5200),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7800),
+    "material-change-after-resume": ((*CORE, *RESUME, "execution-changes", "grill", "architecture-review"), 9000),
+    "closure": ((*CORE, "durable-context", "memory-operations", "memory-promotion", "automation",
+                 "automation-records", "handoff-writing", "worktrees"), 4450),
+}
+
+# Words in the same repository-target alignment set as measured at commit 4b3a68f (version 0.21.0),
+# before this work added the compact path and removed duplicated procedure. The budget above must stay
+# at least 10 percent below it: a simpler procedure, not instructions moved outside the count.
+ORIGINAL_ALIGNMENT_WORDS = 7813
+
+# Documents a loaded document links to but that only some work needs, and what triggers the read.
+# A link to anything not in the scenario and not listed here is routing drift: either the scenario
+# is missing a required read or this table is missing a classification.
+CONDITIONAL = {
+    "architecture-review": "only when a change reopens alignment",
+    "automation-context": "only for context reads such as resume, packet and readiness",
+    "automation-execution": "only for worker events, verify batches and lesson triage",
+    "execution-changes": "only when execution invalidates assignments, inputs or agreement",
+    "grill": "only when a change reopens requirements",
+    "handoff-verifiers": "only when a handoff gives the successor a verifier",
+    "legacy-executor": "only for old executor ownership or storage",
+    "maintenance": "only when reopening a closed project",
+    "memory-architecture": "only for memory format, migration or validation repairs",
+    "memory-promotion": "only when closing with a promotion, compaction or retirement",
+    "report-design": "only when a report is requested",
+    "report-execution": "only when an execution report is requested",
+    "report-html": "only when an HTML report is requested",
+    "session-handoff": "only for handoff or interruption recovery",
+    "task-workers": "only when delegating to workers",
+    "workspace-schema": "only for schema, migration or validation-error repairs",
+    "worktrees": "only for a repository target",
+}
+
+
+def document(name: str) -> Path:
+    return SKILL_DIR / ("SKILL.md" if name == "SKILL" else f"references/{name}.md")
+
+
+def linked_references(name: str) -> set[str]:
+    text = document(name).read_text(encoding="utf-8")
+    return {match.group(1) for match in re.finditer(r"\]\((?:references/)?([a-z-]+)\.md(?:#[^)]*)?\)", text)}
+
+
+@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+def test_required_lifecycle_instruction_budget(scenario: str) -> None:
+    """Count the complete load set for each phase, not only the entrypoint and its router.
+
+    Each file is loaded once per session and a fresh session pays again. These are source words, not
+    billed or cache-adjusted tokens. Reports, workers and schema repairs are conditional (below).
     """
-    skill = REPO_ROOT / "plugins/research/skills/project"
-    documents = [skill / "SKILL.md", skill / "references/commands.md"]
-    documents.extend(skill / "references" / f"{name}.md" for name in references)
-    words = sum(len(document.read_text(encoding="utf-8").split()) for document in documents)
+    names, budget = SCENARIOS[scenario]
+    words = sum(len(document(name).read_text(encoding="utf-8").split()) for name in names)
     assert words <= budget, f"{scenario}: {words} words exceeds {budget}"
     print(json.dumps({"scenario": scenario, "instruction_words": words, "budget": budget}))
+
+
+@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+def test_every_reachable_reference_is_loaded_or_classified_as_conditional(scenario: str) -> None:
+    """Routing drift: a link added to a loaded document must be counted or classified, never ignored."""
+    names, _ = SCENARIOS[scenario]
+    reachable = set().union(*(linked_references(name) for name in names)) - set(names)
+    unclassified = sorted(reachable - set(CONDITIONAL))
+    assert not unclassified, f"{scenario} reaches {unclassified} without loading or classifying them"
+
+
+def test_every_reference_is_in_a_scenario_or_classified() -> None:
+    placed = {name for names, _ in SCENARIOS.values() for name in names}
+    on_disk = {path.stem for path in (SKILL_DIR / "references").glob("*.md")}
+    unplaced = sorted(on_disk - placed - set(CONDITIONAL))
+    assert not unplaced, f"references no scenario loads and nothing classifies: {unplaced}"
+    missing = sorted(name for name in placed | set(CONDITIONAL) if name != "SKILL" and name not in on_disk)
+    assert not missing, f"scenarios or classifications name documents that do not exist: {missing}"
+
+
+def test_the_drift_check_notices_a_required_read_missing_from_a_scenario() -> None:
+    """A scenario without the records reference must be reported, or the check proves nothing."""
+    names = tuple(name for name in SCENARIOS["alignment-repository"][0] if name != "automation-records")
+    reachable = set().union(*(linked_references(name) for name in names)) - set(names)
+    assert "automation-records" in reachable - set(CONDITIONAL)
+
+
+def test_the_compact_alignment_path_costs_at_least_ten_percent_less_than_it_did() -> None:
+    names, budget = SCENARIOS["alignment-repository"]
+    words = sum(len(document(name).read_text(encoding="utf-8").split()) for name in names)
+    assert budget <= ORIGINAL_ALIGNMENT_WORDS * 0.9 and words <= ORIGINAL_ALIGNMENT_WORDS * 0.9

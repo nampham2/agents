@@ -353,3 +353,234 @@ class TestCutoffConstant:
 
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         assert "### 0.21.0" in readme and "GATES_ENFORCED_FROM" in readme
+
+
+class TestAgreementIsBoundToContent:
+    """Confirming A1 and then rewriting it left the review id and status in place, and PLANNING still succeeded.
+
+    The gate now compares the digest recorded when the user agreed with the digest of what the
+    documents hold, ignoring only what the tool itself writes: decision history, the architecture
+    link, the status word, the confirmation block, blank lines.
+    """
+
+    @pytest.fixture
+    def aligned(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setattr(lib, "GATES_ENFORCED_FROM", "2020-01-01T00:00:00+00:00")
+        align(project)
+        return project
+
+    def leave(self, project: Path) -> dict[str, Any]:
+        from workspace_session import update_project_data
+
+        return update_project_data(project, plan_patch(), expected_revision=state_of(project)["revision"])
+
+    def edit_architecture(self, project: Path, transform: Any) -> dict[str, Any]:
+        from workspace_documents import document_snapshot, edit_document
+
+        text = (project / "architecture.md").read_text(encoding="utf-8")
+        token = document_snapshot(project, "architecture")["document_sha256"]
+        return edit_document(project, "architecture", expected_sha256=token, body=transform(text))
+
+    def edit_spec(self, project: Path, heading: str, body: str) -> dict[str, Any]:
+        from workspace_documents import document_snapshot, edit_document
+
+        token = document_snapshot(project, "spec")["document_sha256"]
+        return edit_document(project, "spec", expected_sha256=token, sections={heading: body})
+
+    def test_an_architecture_rewritten_after_agreement_cannot_leave_aligning(self, aligned: Path) -> None:
+        self.edit_architecture(aligned, lambda text: text.replace("One parser.", "A different design entirely."))
+        text = (aligned / "architecture.md").read_text(encoding="utf-8")
+        assert "A1" in text and lib.architecture_status(text) == "agreed", "status and review id still look agreed"
+        before = state_of(aligned)["revision"]
+        with pytest.raises(lib.WorkspaceError, match=r"architecture\.md changed after its architecture confirmation"):
+            self.leave(aligned)
+        assert state_of(aligned)["revision"] == before
+
+    def test_a_specification_rewritten_after_agreement_cannot_leave_aligning(self, aligned: Path) -> None:
+        self.edit_spec(aligned, "In scope", "Something the user never saw.")
+        with pytest.raises(lib.WorkspaceError, match="the specification changed after its requirements confirmation"):
+            self.leave(aligned)
+
+    def test_confirming_the_current_text_again_repairs_it(self, aligned: Path) -> None:
+        self.edit_architecture(aligned, lambda text: text.replace("One parser.", "A different design entirely."))
+        with pytest.raises(lib.WorkspaceError, match="changed after"):
+            self.leave(aligned)
+        confirmer = TestConfirmationMarker()
+        confirmer.confirm(aligned, "architecture", "A1", "confirm-a1-again")
+        assert self.leave(aligned)["status"] == "PLANNING"
+
+    def test_the_tools_own_writes_do_not_unconfirm_anything(self, aligned: Path) -> None:
+        from workspace_documents import append_record
+
+        append_record(aligned, "decision", "A later decision.", entry_id="later-decision")
+        spec = (aligned / "spec.md").read_text(encoding="utf-8")
+        assert lib.proposal_digest("requirements", spec) == lib.recorded_proposals(spec)["requirements"][-1][1]
+        self.edit_architecture(aligned, lambda text: text.replace("\n\n", "\n\n\n").replace("Modules", "Modules  "))
+        assert self.leave(aligned)["status"] == "PLANNING"
+
+    def test_a_confirmation_that_predates_content_binding_is_refused_with_a_repair(self, aligned: Path) -> None:
+        spec_path = aligned / "spec.md"
+        lines = spec_path.read_text(encoding="utf-8").splitlines(keepends=True)
+        spec_path.write_text("".join(line for line in lines if "research-proposal" not in line), encoding="utf-8")
+        with pytest.raises(lib.WorkspaceError) as excinfo:
+            self.leave(aligned)
+        assert str(excinfo.value).count("predates content binding") == 2
+        assert "workflow confirm" in str(excinfo.value)
+
+    def test_edits_report_which_confirmations_they_made_stale(self, aligned: Path) -> None:
+        result = self.edit_architecture(aligned, lambda text: text.replace("One parser.", "Two parsers."))
+        assert [item.split(" confirmation")[0] for item in result["stale_confirmations"]] == ["the architecture"]
+        assert "A1" in result["stale_confirmations"][0]
+        spec_result = self.edit_spec(aligned, "In scope", "Changed scope.")
+        assert len(spec_result["stale_confirmations"]) == 2
+        TestConfirmationMarker().confirm(aligned, "requirements", "R1", "confirm-r1-again")
+        TestConfirmationMarker().confirm(aligned, "architecture", "A1", "confirm-a1-again")
+        quiet = self.edit_spec(aligned, "In scope", "Changed scope.")
+        assert "stale_confirmations" not in quiet
+
+    def test_a_round_reports_a_confirmation_it_made_stale_until_it_is_repaired(self, aligned: Path) -> None:
+        payload = request(aligned, "round-stale", sections={"Out of scope": "Newly excluded work."})
+        [stale] = workflow(aligned, "round", payload)["stale_confirmations"]
+        assert stale.startswith("the requirements confirmation R1")
+        decisions = request(aligned, "round-decision", decisions=[{"id": "just-a-note", "body": "A note."}])
+        assert "stale_confirmations" in workflow(aligned, "round", decisions), "it persists until repaired"
+
+    def test_an_unconfirmed_draft_has_nothing_to_go_stale(self, project: Path) -> None:
+        fill_spec(project)
+        (project / "architecture.md").write_text(ARCHITECTURE, encoding="utf-8")
+        payload = request(project, "round-draft", sections={"Out of scope": "Anything."})
+        assert "stale_confirmations" not in workflow(project, "round", payload)
+
+    def test_editing_another_document_reports_nothing(self, aligned: Path) -> None:
+        from workspace_documents import edit_document
+
+        result = edit_document(aligned, "reflection", expected_sha256="missing", body="# Reflection\n\nNothing yet.")
+        assert "stale_confirmations" not in result
+
+
+class TestProposalDigest:
+    def test_the_architecture_status_word_and_confirmation_block_are_ignored(self) -> None:
+        draft = "# A1\n\nStatus: draft\n\nOne parser.\n"
+        agreed = draft.replace("draft", "agreed") + "\nConfirmation (2026-10-02T10:00:00+02:00):\n\nresponse: yes\n"
+        assert lib.proposal_digest("architecture", draft) == lib.proposal_digest("architecture", agreed)
+        assert lib.proposal_digest("architecture", draft) != lib.proposal_digest("architecture", draft + "More.\n")
+
+    def test_an_architecture_without_a_status_line_is_digested_as_written(self) -> None:
+        assert lib.proposal_digest("architecture", "# A1\n\nBody.\n") != lib.proposal_digest(
+            "architecture", "# A1\n\nOther body.\n"
+        )
+
+    def test_requirements_are_the_current_specification_alone(self) -> None:
+        base = "# T\n\n## Current specification\n\n### In scope\n\nWork.\n\n## Decision history\n\n- one\n"
+        grown = base + "- two\n"
+        linked = base.replace("Work.\n", "Work.\n\nAgreed architecture: [revision A1](architecture.md).\n")
+        assert lib.proposal_digest("requirements", base) == lib.proposal_digest("requirements", grown)
+        assert lib.proposal_digest("requirements", base) == lib.proposal_digest("requirements", linked)
+        assert lib.proposal_digest("requirements", base) != lib.proposal_digest(
+            "requirements", base.replace("Work.", "Other work.")
+        )
+
+    def test_a_document_without_a_specification_digests_as_empty(self) -> None:
+        assert lib.proposal_digest("requirements", "# T\n") == lib.proposal_digest("requirements", "# U\n\nx\n")
+
+
+class TestAlignmentConfirmation:
+    """One reply that confirms requirements and design together, for a proposal small enough to read at once."""
+
+    @pytest.fixture
+    def drafted(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+        monkeypatch.setattr(lib, "GATES_ENFORCED_FROM", "2020-01-01T00:00:00+00:00")
+        fill_spec(project)
+        (project / "architecture.md").write_text(ARCHITECTURE, encoding="utf-8")
+        return project
+
+    def tokens(self, project: Path) -> dict[str, str]:
+        return {
+            "requirements_sha256": lib.document_sha256((project / "spec.md").read_text(encoding="utf-8")),
+            "architecture_sha256": lib.document_sha256((project / "architecture.md").read_text(encoding="utf-8")),
+        }
+
+    def confirm(self, project: Path, identity: str = "align-1", **overrides: Any) -> dict[str, Any]:
+        fields: dict[str, Any] = {
+            "kind": "alignment", **self.tokens(project), "review_id": "A1", "response": "Yes, go ahead",
+            "source": "user reply", "scope": "requirements and design together",
+            "continuation": {"next": "Plan", "questions": ""},
+        }
+        fields.update(overrides)
+        fields = {key: value for key, value in fields.items() if value is not None}
+        return workflow(project, "confirm", request(project, identity, **fields))
+
+    def files(self, project: Path) -> dict[str, str]:
+        return {
+            name: (project / name).read_text(encoding="utf-8")
+            for name in ("spec.md", "architecture.md", "project.json")
+        }
+
+    def test_one_reply_satisfies_the_gate_for_both_documents(self, drafted: Path) -> None:
+        from workspace_session import update_project_data
+
+        tokens = self.tokens(drafted)
+        self.confirm(drafted)
+        spec = (drafted / "spec.md").read_text(encoding="utf-8")
+        architecture = (drafted / "architecture.md").read_text(encoding="utf-8")
+        assert lib.recorded_confirmations(spec) == {
+            "requirements": [("A1", tokens["requirements_sha256"])],
+            "architecture": [("A1", tokens["architecture_sha256"])],
+        }
+        proposals = lib.recorded_proposals(spec)
+        assert proposals["requirements"][0][1] == lib.proposal_digest("requirements", spec)
+        assert proposals["architecture"][0][1] == lib.proposal_digest("architecture", architecture)
+        assert lib.architecture_status(architecture) == "agreed"
+        assert "Agreed architecture: [revision A1](architecture.md)." in spec
+        assert "align-1-requirements" in spec and "align-1-architecture" in spec
+        patched = update_project_data(drafted, plan_patch(), expected_revision=state_of(drafted)["revision"])
+        assert patched["status"] == "PLANNING"
+
+    def test_editing_after_an_alignment_confirmation_is_still_caught(self, drafted: Path) -> None:
+        from workspace_documents import document_snapshot, edit_document
+        from workspace_session import update_project_data
+
+        self.confirm(drafted)
+        token = document_snapshot(drafted, "architecture")["document_sha256"]
+        text = (drafted / "architecture.md").read_text(encoding="utf-8")
+        edit_document(drafted, "architecture", expected_sha256=token, body=text.replace("One parser.", "Two."))
+        with pytest.raises(lib.WorkspaceError, match="changed after its architecture confirmation"):
+            update_project_data(drafted, plan_patch(), expected_revision=state_of(drafted)["revision"])
+
+    @pytest.mark.parametrize(
+        ("overrides", "fragment"),
+        [
+            ({"requirements_sha256": "0" * 64}, "proposal token changed"),
+            ({"architecture_sha256": "0" * 64}, "proposal token changed"),
+            ({"proposal_sha256": "0" * 64}, "not proposal_sha256"),
+            ({"architecture_sha256": None}, "architecture_sha256"),
+            ({"requirements_sha256": None}, "requirements_sha256"),
+            ({"review_id": "Z9"}, "declare its status and reviewed identifier"),
+            ({"response": None}, "response"),
+        ],
+    )
+    def test_each_refusal_leaves_every_file_unchanged(
+        self, drafted: Path, overrides: dict[str, Any], fragment: str
+    ) -> None:
+        before = self.files(drafted)
+        with pytest.raises(lib.WorkspaceError, match=fragment):
+            self.confirm(drafted, **overrides)
+        assert self.files(drafted) == before
+
+    def test_the_single_document_kinds_refuse_the_alignment_tokens(self, drafted: Path) -> None:
+        before = self.files(drafted)
+        with pytest.raises(lib.WorkspaceError, match="only kind alignment"):
+            self.confirm(drafted, kind="requirements", proposal_sha256=self.tokens(drafted)["requirements_sha256"])
+        with pytest.raises(lib.WorkspaceError, match="confirmation kind must be requirements, architecture or"):
+            self.confirm(drafted, kind="everything")
+        assert self.files(drafted) == before
+
+    def test_a_retry_with_the_same_input_adds_nothing(self, drafted: Path) -> None:
+        payload = request(
+            drafted, "align-retry", kind="alignment", **self.tokens(drafted), review_id="A1", response="Yes",
+            source="user reply", scope="both", continuation={"next": "Plan"},
+        )
+        first = workflow(drafted, "confirm", payload)
+        assert workflow(drafted, "confirm", payload) == first
+        spec = (drafted / "spec.md").read_text(encoding="utf-8")
+        assert spec.count("<!-- research-confirmation:") == 2 and spec.count("<!-- research-proposal:") == 2

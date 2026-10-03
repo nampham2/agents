@@ -23,7 +23,6 @@ Read only the applicable command reference:
 
 Prefer `init ... --json` for initial paths/tokens and `update ... --dry-run` for patch previews.
 `workflow <project-dir> <action> --schema` prints an action's allowed and required keys.
-Writes return tokens, revisions and partial outcomes. Retain exact operation input for retries.
-Use a new ID for new work, not to bypass a conflict. Same-ID recovery repairs bookkeeping;
-unknown command outcomes require inspection, never blind replay. A saved draft or passing check
-does not establish user agreement, effect authorization, task acceptance or stopped workers.
+Writes return tokens, revisions and partial outcomes. Use a new ID for new work, not to bypass a
+conflict; unknown command outcomes require inspection, never blind replay. A saved draft or passing
+check does not establish user agreement, effect authorization, task acceptance or stopped workers.

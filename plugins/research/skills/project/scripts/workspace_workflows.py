@@ -41,7 +41,10 @@ from workspace_lib import (
     document_sha256,
     memory_staging_warnings,
     now_iso,
+    proposal_digest,
+    proposal_marker,
     reason_reference_warnings,
+    stale_confirmations,
     validate_project,
 )
 from workspace_operations import _task
@@ -55,7 +58,10 @@ WRITE_REQUIRED = {"id", "expected_revision"}
 FIELDS = {
     "checkpoint": {"continuation"},
     "round": {"sections", "decisions", "architecture", "continuation"},
-    "confirm": {"kind", "proposal_sha256", "review_id", "response", "source", "scope", "continuation"},
+    "confirm": {
+        "kind", "proposal_sha256", "requirements_sha256", "architecture_sha256", "review_id", "response", "source",
+        "scope", "continuation",
+    },
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
     "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
@@ -173,9 +179,6 @@ def impact(project: Path, request: dict[str, Any]) -> dict[str, Any]:
 def readiness(project: Path) -> dict[str, Any]:
     """Group existing closure findings without introducing a second gate."""
     report = validate_project(project, close=True, check_index=True)
-    errors, warnings = worktree_closure_findings(_load_state(project))
-    report.errors.extend(errors)
-    report.warnings.extend(warnings)
     groups: dict[str, list[dict[str, str]]] = {}
     for level, findings in (("error", report.errors), ("warning", report.warnings)):
         for finding in findings:
@@ -292,12 +295,13 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
     if decision not in ("keep", "accept_dirty", "remove"):
         raise WorkspaceError("worktree decision must be keep, accept_dirty or remove")
     entry = next((item for item in worktrees if item["path"] == path), None)
-    # A kept worktree can still be removed afterwards, by the user and outside the tool; recording
-    # that is the one decision that may follow an earlier closure. Keeping or accepting dirty paths a
-    # second time would only overwrite the first decision, so those still need an active entry.
-    closable = ("active", "kept") if decision == "remove" else ("active",)
-    if entry is None or entry["status"] not in closable or entry["kind"] == "none":
-        raise WorkspaceError(f"no {' or '.join(closable)} repository worktree is recorded at {path}")
+    # A kept worktree stays decidable: the user may change their mind, work may resume after
+    # maintenance reopens the project, and removal can happen outside the tool. Replacing a closure
+    # would erase the earlier consent, so the caller saves the superseded decision to the decision
+    # history (`superseded` below) and only then is the new one recorded. A removed worktree is final.
+    if entry is None or entry["status"] not in ("active", "kept") or entry["kind"] == "none":
+        raise WorkspaceError(f"no active or kept repository worktree is recorded at {path}")
+    superseded = copy.deepcopy(entry["closure"]) if entry["status"] == "kept" else None
     seen = worktree_observation(Path(path))
     if not seen["available"]:
         raise WorkspaceError("Git could not be consulted for the worktree; retry when it is available")
@@ -325,7 +329,10 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
     patch = {"worktrees": worktrees}
     if entry["role"] == "target" and decision == "remove":
         patch["working_directory"] = entry["repository"]
-    return patch, {"worktree": entry, "observed": seen}
+    outcome: dict[str, Any] = {"worktree": entry, "observed": seen}
+    if superseded is not None:
+        outcome["superseded"] = superseded
+    return patch, outcome
 
 
 def _build(
@@ -338,8 +345,8 @@ def _build(
     def read(name: str) -> str:
         return documents.get(name, snapshot(document_path(project, name))[0])
 
-    def decision(body: str) -> None:
-        documents["spec"] = _entry(read("spec"), request["id"], body, decision=True)
+    def decision(body: str, entry_id: str | None = None) -> None:
+        documents["spec"] = _entry(read("spec"), entry_id or request["id"], body, decision=True)
 
     if action == "round":
         if "sections" in request:
@@ -353,37 +360,69 @@ def _build(
         for item in list_input(request.get("decisions", []), field="decisions"):
             object_input(item, {"id", "body"}, {"id", "body"})
             documents["spec"] = _entry(read("spec"), item["id"], item["body"], decision=True)
+        stale = stale_confirmations(read("spec"), read("architecture"))
+        if stale:
+            result["stale_confirmations"] = stale
     elif action == "confirm":
         kind = string_input(request.get("kind"), "kind")
-        if kind not in ("requirements", "architecture"):
-            raise WorkspaceError("confirmation kind must be requirements or architecture")
-        name = "spec" if kind == "requirements" else "architecture"
-        if snapshot(document_path(project, name))[1] != string_input(request.get("proposal_sha256")):
-            raise WorkspaceError("proposal token changed; confirmation must cover the current proposal")
+        if kind not in ("requirements", "architecture", "alignment"):
+            raise WorkspaceError("confirmation kind must be requirements, architecture or alignment")
+        # `alignment` is one reply covering both documents, for a proposal small enough to be read and
+        # agreed in one message. It records exactly what two separate confirmations would: each kind's
+        # own marker, content digest and effect, against that document's current token.
+        if kind == "alignment":
+            if "proposal_sha256" in request:
+                raise WorkspaceError("alignment takes requirements_sha256 and architecture_sha256, not proposal_sha256")
+            tokens = {
+                "requirements": string_input(request.get("requirements_sha256"), "requirements_sha256"),
+                "architecture": string_input(request.get("architecture_sha256"), "architecture_sha256"),
+            }
+        else:
+            if "requirements_sha256" in request or "architecture_sha256" in request:
+                raise WorkspaceError("only kind alignment takes requirements_sha256 and architecture_sha256")
+            tokens = {kind: string_input(request.get("proposal_sha256"))}
+        for confirmed in tokens:
+            current = snapshot(document_path(project, "spec" if confirmed == "requirements" else "architecture"))[1]
+            if current != tokens[confirmed]:
+                raise WorkspaceError("proposal token changed; confirmation must cover the current proposal")
         for field in ("review_id", "response", "source", "scope"):
             string_input(request.get(field), field)
-        body = confirmation_marker(kind, str(request["review_id"]), str(request["proposal_sha256"])) + "\n" + "\n".join(
-            f"{key}: {request[key]}" for key in ("kind", "review_id", "proposal_sha256", "response", "source", "scope")
-        )
-        decision(body)
-        if kind == "architecture":
-            architecture = read("architecture")
-            match = ARCHITECTURE_STATUS_PATTERN.search(architecture)
-            if match is None or request["review_id"] not in architecture:
-                raise WorkspaceError("architecture must declare its status and reviewed identifier")
-            documents["architecture"] = (
-                architecture[: match.start("status")] + "agreed" + architecture[match.end("status") :]
+        review_id = str(request["review_id"])
+        for confirmed, token in tokens.items():
+            name = "spec" if confirmed == "requirements" else "architecture"
+            body = (
+                confirmation_marker(confirmed, review_id, token)
+                + "\n"
+                + proposal_marker(confirmed, review_id, proposal_digest(confirmed, read(name)))
+                + "\n"
+                + "\n".join(
+                    f"{key}: {value}"
+                    for key, value in (
+                        ("kind", confirmed), ("review_id", review_id), ("proposal_sha256", token),
+                        ("response", request["response"]), ("source", request["source"]),
+                        ("scope", request["scope"]),
+                    )
+                )
             )
-            documents["architecture"] += f"\nConfirmation ({now_iso()}):\n\n{body}\n"
-            heading = "Constraints and important assumptions"
-            _, _, start, end = _section_span(read("spec"), heading)
-            documents["spec"] = _replace_sections(
-                read("spec"),
-                {
-                    heading: read("spec")[start:end].rstrip()
-                    + f"\n\nAgreed architecture: [revision {request['review_id']}](architecture.md)."
-                },
-            )
+            decision(body, f"{request['id'][:50]}-{confirmed}" if kind == "alignment" else None)
+            if confirmed == "architecture":
+                architecture = read("architecture")
+                match = ARCHITECTURE_STATUS_PATTERN.search(architecture)
+                if match is None or review_id not in architecture:
+                    raise WorkspaceError("architecture must declare its status and reviewed identifier")
+                documents["architecture"] = (
+                    architecture[: match.start("status")] + "agreed" + architecture[match.end("status") :]
+                )
+                documents["architecture"] += f"\nConfirmation ({now_iso()}):\n\n{body}\n"
+                heading = "Constraints and important assumptions"
+                _, _, begin, finish = _section_span(read("spec"), heading)
+                documents["spec"] = _replace_sections(
+                    read("spec"),
+                    {
+                        heading: read("spec")[begin:finish].rstrip()
+                        + f"\n\nAgreed architecture: [revision {review_id}](architecture.md)."
+                    },
+                )
     elif action == "correct":
         old = _task(state, string_input(request.get("task"), "task"))
         if old["status"] not in ("DONE", "SKIPPED"):
@@ -503,6 +542,15 @@ def _build(
         result["topic"] = {"name": request["topic"], "sha256": topic["sha256"]}
     elif action == "worktree":
         patch, result = _worktree(state, request)
+        if "superseded" in result:
+            before, after = result["superseded"], result["worktree"]["closure"]
+            decision(
+                f"Worktree {result['worktree']['path']}: closure decision superseded. Previous: "
+                f"{before['decision']} observed {before['observed_at']}, source {before['source']!r}, response "
+                f"{before['response']!r}, accepted dirty paths {before['dirty']!r}. New: {after['decision']}, "
+                f"source {after['source']!r}, response {after['response']!r}, dirty paths {after['dirty']!r}. "
+                "The earlier decision stays in this history; only the latest one governs closure."
+            )
     elif action == "report":
         from workspace_reports import render_report
 
