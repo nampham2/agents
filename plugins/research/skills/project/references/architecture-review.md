@@ -1,52 +1,46 @@
 # Architecture review before task planning
 
-Every project goes through this review after its initial requirements grill. Requirements, design,
-and effort are one iterative agreement loop inside `ALIGNING`, not a one-way handoff. Task planning
-starts only when both the agent and user understand and agree on the current proposal. Read-only
-investigation and review artifacts are part of alignment; do not create implementation tasks to
-stand in for unresolved design decisions.
+Every project goes through this review after its requirements grill. Requirements, design and
+effort are one iterative agreement loop inside `ALIGNING`; task planning starts only when agent and
+user agree on the current proposal. Read-only investigation and review artifacts belong to
+alignment; do not create implementation tasks to stand in for unresolved design decisions.
 
 ## Prepare a concrete proposal
 
-Use [memory-operations.md](memory-operations.md) to assess lessons relevant to the design. Reuse
-the requirements-stage assessment where it still applies; evaluate uncovered design risks. Link
-applied lessons to concrete design choices or checks and record rejection/deferral reasons.
+Use [memory-operations.md](memory-operations.md) to assess lessons relevant to the design, reusing
+the requirements-stage assessment where it applies. Link applied lessons to concrete design choices
+or checks and record rejection or deferral reasons.
 
-Read the current specification, confirmed decisions, and relevant existing code or other target
-material. Establish facts from those sources and identify assumptions. Present a concrete design
-for the user to react to, with recommendations and the consequential alternatives and trade-offs.
-Review each applicable area in depth; explain why an area does not apply instead of silently
-omitting it. For non-code projects, use the corresponding deliverable structure, responsibilities,
-dependencies, and failure cases rather than inventing software components.
+Read the current specification, confirmed decisions and the relevant existing code or material.
+Establish facts from them and name assumptions. Present a concrete design for the user to react to,
+with recommendations and the consequential alternatives and trade-offs. Review each applicable area
+in depth and say why an area does not apply instead of omitting it. For non-code projects use the
+deliverable structure, responsibilities, dependencies and failure cases, not invented components.
 
-| Area | Shared understanding to establish |
-| --- | --- |
-| Requirements and boundaries | Goals and acceptance criteria served by the design, exclusions, constraints, and unresolved assumptions. |
-| High-level modules | Each module's responsibility, ownership of state, boundaries, dependencies, and reasons for the split. Distinguish existing pieces to reuse from changes and new pieces. |
-| Code organization | Proposed directories, files or packages, entry points, public interfaces, test locations, and mapping from modules to concrete paths and output roots. |
-| Interfaces and flows | Inputs, outputs, contracts, data models, state transitions, and the important end-to-end paths across boundaries. |
-| Edge cases and failure behavior | Relevant invalid or empty inputs, boundary conditions, partial failures, retries, duplicate operations, concurrency, compatibility, migration, access control, and resource limits. State expected behavior and recovery, not just a list of risks. |
-| Verification and operation | How module contracts and end-to-end behavior will be checked, how failures are detected, and any rollout or recovery needs within scope. |
-| Implementation effort | Level per workstream and overall, dependencies, difficult integrations, testing, migration, and what could change the level. |
+Review each of these in depth, establishing the shared understanding the final document records:
+requirements and boundaries; high-level modules (responsibility, state ownership, dependencies,
+reuse versus change); code organization; interfaces and flows; edge cases and failure behavior;
+verification and operation; implementation effort.
 
-Prioritize diagrams when presenting the design, then use prose for rationale and details. Scale the
-set to the design: when it has more than one module or flow, include a high-level module/dependency
-diagram, a diagram of the key end-to-end flow, and a directory tree mapping modules to proposed code
-locations. A single-module or single-deliverable design may replace any of these with a short list,
-and says so rather than omitting it silently. For non-code work, show the corresponding deliverable
-structure. Prefer editable Mermaid diagrams embedded in `architecture.md` and fenced text for the
-directory tree; keep labels consistent with actual module names and paths.
+Lead with diagrams, then prose for rationale. When the design has more than one module or flow,
+include a module/dependency diagram, a diagram of the key end-to-end flow, and a directory tree
+mapping modules to code locations; a single-module design may use a short list and says so. For
+non-code work show the deliverable structure. Prefer editable Mermaid in `architecture.md` and
+fenced text for the tree, with labels matching actual module names and paths.
 
-Add sequence diagrams for consequential interactions, state diagrams for lifecycle or concurrency
-behavior, and data relationship or deployment diagrams where those relationships matter. Show
-important error, recovery, and boundary paths, not only the happy path. Use several focused diagrams
-when one overview would become unreadable. Explain how to read each visual and the decision it
-supports; do not replace contract details or effort assumptions with unlabeled boxes and arrows.
+Add sequence diagrams for consequential interactions, state diagrams for lifecycle or concurrency,
+and data or deployment diagrams where those relationships matter. Show error, recovery and boundary
+paths, not only the happy path, using several focused diagrams rather than one unreadable one.
+Explain how to read each visual and the decision it supports; never replace contract details or
+effort assumptions with unlabeled boxes and arrows.
 
 Walk through the diagrams with representative success and failure scenarios so the user can
-challenge boundaries and edge-case behavior. Update diagrams in the same review round as the
-requirements or design they depict. Tie consequential choices back to requirements and explain
-what the plausible alternatives cost or simplify.
+challenge boundaries and edge cases. Update diagrams in the same round as the design they depict,
+and tie consequential choices to requirements and to what the alternatives cost or simplify.
+
+For low effort with nothing open, a short architecture is enough: lists may replace diagrams, and
+the proposal may be confirmed with the combined `alignment` confirmation described in
+[grill.md](grill.md). Medium and high effort keep the full coverage and separate confirmations.
 
 ## Make effort reviewable
 
@@ -65,103 +59,90 @@ external waits as dependencies, not estimates.
 Overall is the highest workstream level unless justified. State implementer, reuse and confidence;
 cover design uncertainty, integration, tests, migration and rollout, and say what is excluded.
 
-If an unknown prevents a useful level or design choice, name it and propose the smallest
-investigation or disposable prototype that would resolve it, within existing authorization. Feed
-the result back into requirements, architecture and effort; never defer a blocking architecture
-decision to an implementation task. Residual uncertainty needs explicit shared acceptance of its
-impact and a validation or contingency approach.
+If an unknown blocks a useful level or design choice, name it and propose the smallest
+investigation or disposable prototype that would resolve it, within existing authorization. Feed the
+result back into requirements, architecture and effort; never defer a blocking architecture decision
+to an implementation task. Residual uncertainty needs explicit shared acceptance of its impact and a
+validation or contingency approach.
 
 ## Iterate to agreement
 
-1. Present the proposed architecture, its requirement assumptions, edge-case behavior, and effort.
-   State the agent's assessment and any concerns; do not claim readiness while material decisions
-   remain unresolved.
-2. Collect the user's corrections and decisions. When these expose requirement gaps or trade-offs,
-   return to the [requirements grill](grill.md) for the affected branches. Preserve decisions that
-   still hold.
-3. Update requirements, design, scenarios and effort together. Explain what changed and what
-   previous conclusions or confirmations it invalidates, then review the affected design again.
-4. When the agent judges the design coherent and feasible, summarize the current requirements,
-   architecture, code organization, edge cases, effort levels and assumptions, and any accepted
-   residual uncertainty. Ask the user to explicitly confirm this version as the basis for task
-   planning. Wait; silence, a draft, or requirements-only confirmation is not architecture
-   agreement.
-5. Record the user's confirmation and its scope, and finalize the agreed `architecture.md`. Only
-   then hand that document to task planning.
+1. Present the architecture, its requirement assumptions, edge-case behavior and effort, with your
+   assessment and concerns; do not claim readiness while material decisions are unresolved.
+2. Collect the user's corrections. When they expose requirement gaps or trade-offs, return to the
+   [requirements grill](grill.md) for the affected branches and keep decisions that still hold.
+3. Update requirements, design, scenarios and effort together, say what changed and which earlier
+   conclusions or confirmations it invalidates, then review the affected design again.
+4. When the design is coherent and feasible, summarize requirements, architecture, code
+   organization, edge cases, effort, assumptions and any accepted residual uncertainty, and ask the
+   user to confirm this version as the basis for task planning. Wait: silence, a draft, or
+   requirements-only confirmation is not architecture agreement.
+5. Record the confirmation and its scope and finalize the agreed `architecture.md`; only then hand
+   it to task planning.
 
-Rounds are unbounded; revisit requirements and grill as often as the architecture needs. If the user
-changes a material decision after confirmation, reopen the affected review and obtain agreement on
-the revised proposal before planning or implementing affected work. Editorial corrections within the
-agreed design do not require a new approval cycle.
+Rounds are unbounded. If the user changes a material decision after confirmation, reopen the
+affected review and obtain agreement on the revised proposal before planning or implementing
+affected work. Editorial corrections within the agreed design need no new approval.
 
-For changes during execution, follow [execution-changes.md](execution-changes.md) to reconcile
-workers, downstream tasks and verification as well as the design. Revised architecture agreement
-does not by itself update existing assignments or make old evidence applicable.
+For changes during execution follow [execution-changes.md](execution-changes.md): revised agreement
+does not by itself update assignments or make old evidence applicable.
 
 ## Produce the architecture document
 
-Create `<project-dir>/architecture.md` during review and update it as the proposal evolves. It is a
-required workspace deliverable before task planning, not an optional final report. Read it with
-`read <project-dir> architecture` and write it whole with the guarded edit:
+Create `<project-dir>/architecture.md` during review and update it as the proposal evolves; it is a
+required workspace deliverable before task planning. Read it with `read <project-dir> architecture`
+and write it whole with the guarded `edit ... architecture` in [commands.md](commands.md): a stale
+token is refused, so read before editing and preserve unrelated changes. The document must stand
+without the chat transcript:
 
-```sh
-research-project edit <project-dir> architecture --body-file - --expected-sha256 <token-or-missing>
-```
+- Review identifier and a status line `Status: draft` or `Status: agreed` near the top, in any
+  Markdown emphasis; validation reads the first such line. Add the confirmation date and source when
+  agreed. Substantive changes create a new draft needing agreement.
+- Requirements and scope summary linked to `spec.md`, with constraints and assumptions.
+- Module responsibilities, dependencies, state ownership and the module/dependency diagram.
+- Concrete paths, roots, entry points, public interfaces, test locations, reuse versus change, and
+  the directory tree.
+- Interfaces, data models and the important success and failure flows, with the end-to-end diagram
+  and any sequence, state, data or deployment diagrams.
+- Edge cases and recovery: invalid or empty inputs, boundaries, partial failures, retries,
+  duplicates, concurrency, compatibility, migration, access control and resource limits, each with
+  expected behavior, responsible module and verification, not a list of risks.
+- Verification and operation: how contracts and end-to-end behavior are checked, how failures are
+  detected, and any rollout or recovery within scope.
+- Consequential alternatives, trade-offs and rationale, open questions, and accepted residual risks
+  with their validation or contingency.
+- Effort by module or workstream and overall, with reuse, dependencies, confidence, exclusions and
+  sources of uncertainty.
 
-The token comes from the previous edit, a read, or resume context; a stale token is refused, so read
-before editing and preserve unrelated changes.
-
-The document must be understandable without the chat transcript and contain:
-
-- Review identifier and a status line reading `Status: draft` or `Status: agreed` near the top, in
-  any Markdown emphasis; the first such line is the one validation reads. Add the actual
-  confirmation date and source when agreed. Changing substantive content creates a new draft
-  revision needing agreement.
-- Requirements and scope summary linked to the current `spec.md`, constraints, and assumptions.
-- High-level architecture: module responsibilities, dependency relationships, state ownership,
-  and the module/dependency diagram used in review.
-- Code and deliverable organization: concrete paths, roots, entry points, public interfaces, test
-  locations, which pieces are reused, changed, or new, and the proposed directory tree.
-- Interfaces, data models, and important success and failure flows across modules, including the
-  end-to-end flow diagram and applicable sequence, state, data, or deployment diagrams.
-- Edge cases and recovery: each relevant scenario's expected behavior, responsible module, and
-  verification approach. Include relevant compatibility, migration, and operational considerations.
-- Consequential alternatives, the chosen trade-offs and rationale, open questions, and explicitly
-  accepted residual risks with their validation or contingency approach.
-- Effort level by module or workstream and overall, with reuse assumptions, dependencies,
-  confidence, exclusions and the main sources of uncertainty.
-
-Keep requirements authoritative in `spec.md` and design details authoritative in `architecture.md`.
-Preserve the seven specification sections: link the architecture revision and summarize its key
-constraints under `Constraints and important assumptions`; list `architecture.md` as a `workspace`
-deliverable under `Deliverables and roots`; keep acceptance criteria under `Success and verification
-criteria` aligned with the design's scenarios. Use guarded specification edits and read complete
-relevant sections when bounded context truncates them. Avoid copying the whole design into the spec.
+Keep requirements authoritative in `spec.md` and design details in `architecture.md`. Preserve the
+seven specification sections: link the architecture revision and summarize its key constraints under
+`Constraints and important assumptions`; list `architecture.md` as a `workspace` deliverable under
+`Deliverables and roots`; keep `Success and verification criteria` aligned with the design's
+scenarios. Use guarded specification edits, reading complete sections when context truncates them,
+and do not copy the whole design into the spec.
 
 ## Persist agreement and resume
 
-Persist each review round before waiting or starting dependent work, following
-[durable-context.md](durable-context.md). Save rejected alternatives and rationale alongside the
-current design; keep unanswered questions and the exact revision awaiting confirmation in the live
-continuation note. A saved proposal remains a draft until the user agrees.
+Persist each review round before waiting or starting dependent work ([durable-context.md]
+(durable-context.md)). Save rejected alternatives with the design, and keep unanswered questions and
+the revision awaiting confirmation in the continuation note. A saved proposal stays a draft until
+the user agrees.
 
-Append dated decisions for consequential review changes and a confirmation entry identifying the
-agreed requirements and architecture revision, effort assumptions, and the user's actual response.
-Use a simple review identifier such as A1, A2 in `architecture.md`, its specification link, and
-decisions so later edits cannot silently reuse approval of a different proposal. Maintain current
-content in place and preserve history; do not invent confirmation or overwrite earlier agreements.
+Append dated decisions for consequential changes and a confirmation entry naming the agreed
+requirements and architecture revision, effort assumptions and the user's actual response. Use a
+review identifier such as A1, A2 in `architecture.md`, its spec link and the decisions, so approval
+cannot be reused for a different proposal; a later substantive edit makes the confirmation stale and
+it must be recorded again. Maintain current content in place, preserve history, never invent
+confirmation.
 
-On resume, read the linked architecture document and reuse agreement that still covers the current
-proposal. A missing document or draft revision is not a completed gate. For an existing project with
-no recorded agreement, complete the missing alignment before new planning or affected
-implementation; preserve completed tasks and historical evidence. When revisiting a project already
-beyond `ALIGNING`, pause affected work and honor legal status transitions. The architecture review
-is a skill-level gate recorded in `architecture.md`, the specification and decision history.
-Validation only warns when a `PLANNING`, `EXECUTING` or `REVIEW` project lacks an agreed
-`architecture.md`; a project created on or after the gate cutoff is refused leaving `ALIGNING` until
-its spec, agreed architecture and both confirmations are recorded. Neither proves agreement. The
-gate is separate from the optional delivery `review` state; never mark that state accepted or
-fabricate review files for it.
+On resume, read the linked architecture and reuse agreement that still covers the current proposal;
+a missing document or draft is not a completed gate. A project with no recorded agreement completes
+alignment before new planning or affected implementation, keeping completed tasks and evidence.
+Pause affected work in a project beyond `ALIGNING` and honor legal transitions. Validation warns
+when a `PLANNING`, `EXECUTING` or `REVIEW` project lacks an agreed `architecture.md`; a project
+created on or after the gate cutoff cannot leave `ALIGNING` until its spec, agreed architecture and
+both confirmations are recorded. Neither proves agreement. The gate is separate from the optional
+delivery `review` state; never mark that accepted or fabricate review files.
 
 Agreement establishes the basis for planning. It does not grant new destructive or external-action
 authorization; existing scoped user authorization still applies.

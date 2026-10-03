@@ -16,15 +16,11 @@ input with the same ID conflicts. Metadata operations never replay commands or e
  "continuation":{"next":"Ask for A2 confirmation","questions":"Confirm A2?"}}
 ```
 
-This is a `round` input. It saves the supplied sections, decisions, optional architecture and
-continuation together. Existing architecture/handoff require their tokens too. It does not infer
-answers, advance phase, or mark agreement. `sections` uses the ordinary spec heading/body mapping.
-
 | Action | Additional input and behavior |
 | --- | --- |
 | `checkpoint` | `continuation`; derives phase, revision, spec/design tokens and Git observations; returns saved tokens and a resume prompt. |
-| `round` | Optional `sections`, `decisions` (`{id,body}`), `architecture`, `continuation`. |
-| `confirm` | `kind` (`requirements` or `architecture`), exact `proposal_sha256`, `review_id`, actual `response`, `source`, `scope`; optional `continuation`. Appends a confirmation carrying a `research-confirmation` marker; architecture also updates its status and spec link. |
+| `round` | Saves optional `sections` (spec heading to body), `decisions` (`{id,body}`), `architecture` and `continuation` together; existing architecture/handoff need their tokens. Infers no answers, advances no phase, marks no agreement. |
+| `confirm` | `kind` (`requirements`, `architecture` or `alignment`), exact `proposal_sha256` (`alignment`: `requirements_sha256` and `architecture_sha256`), `review_id`, actual `response`, `source`, `scope`; optional `continuation`. Appends a marked confirmation; architecture also updates its status and spec link. |
 | `correct` | Terminal `task`, `reason`, `replacement` with new task fields except ID/status/evidence/authorization/receipts; optional `continuation`. Allocates a new ID and links prior work without copying consent or acceptance. |
 | `reconcile` | Explicit `patch`, `decision`, `continuation`; saves selected dispositions, rewiring and pointers through normal commit guards. |
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |
@@ -43,15 +39,17 @@ empty text explicitly resolves a prior field. Session labels: `working`, `waitin
 `ready for handoff`. Claim readiness only after validation and actual ownership/effect
 reconciliation. Before supplying continuation, read [handoff-writing.md](handoff-writing.md). Put
 verifier status in `next`/`partial`, sourced external observations in `ownership`/`effects`, and the
-prohibitions in `do_not`; values are body text, and headings in them are refused. Checkpoint
-metadata does not verify their prose, and merged fields retain their original observation times.
+prohibitions in `do_not`; values are body text, and headings in them are refused. Metadata does
+not verify the prose; merged fields keep their observation times.
 Existing free-form handoffs require `import_legacy: true`; their full text is preserved. An
-unchanged checkpoint is not rewritten. Scripts derive metadata, not the next decision.
+unchanged checkpoint is not rewritten.
 
-Requirements confirmation does not approve architecture. Architecture confirmation requires its
-review identifier in the saved proposal and never authorizes effects or accepts delivery review.
+Requirements confirmation does not approve architecture; only `alignment` records both from one
+reply. Architecture confirmation needs its review identifier in the saved proposal and never
+authorizes effects or accepts delivery review. A later substantive edit makes a confirmation stale
+(`edit` and `round` return `stale_confirmations`); the gate refuses until it is confirmed again.
 Scripts validate record shape and tokens; agents remain responsible for truthful quoted consent.
 
-Reports are opt-in. Supply conclusions and limitations; missing sections remain marked unwritten.
-Generated citation findings concern file/anchor integrity, not claim support or arbitrary prose
-links. Use the existing report reference/checker for requested HTML and presentation requirements.
+Reports are opt-in: supply conclusions and limitations; missing sections stay marked unwritten.
+Citation findings cover file/anchor integrity, not claim support. Use the report reference for HTML
+or presentation requests.

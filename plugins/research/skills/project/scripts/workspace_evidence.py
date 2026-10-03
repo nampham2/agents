@@ -6,7 +6,15 @@ import re
 from pathlib import Path
 from typing import Any
 
-from workspace_lib import CLOSURE_STEPS, OBSERVATION_LABEL, WorkspaceError, read_text
+from workspace_lib import (
+    CLOSURE_STEPS,
+    OBSERVATION_LABEL,
+    WorkspaceError,
+    _done_task_ids,
+    _non_empty_string,
+    is_new_project,
+    read_text,
+)
 from workspace_session import _headings, _load_state
 
 RECORD_ID = re.compile(r"^- Record ID: (?P<id>ev-[0-9a-f]{32})$", re.MULTILINE)
@@ -143,3 +151,98 @@ def selected_evidence_references(
             raise WorkspaceError(f"evidence record did not pass: {record_id}")
         references.append({"root": "workspace", "path": "evidence.md", "anchor": row["anchor"]})
     return references
+
+
+GENERATED_ANCHOR = re.compile(r"evidence-[0-9a-f]{32}")
+SAFE_TASK_ID = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def newly_terminal_task_errors(
+    project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """Errors and warnings for tasks that become DONE in this commit, whichever command commits them.
+
+    `task finish` has always refused a failed, foreign or ambiguous record, but a revision-checked
+    `update` setting the same task DONE with the same reference was accepted: shared validation only
+    checked that a reference was well formed and its file existed. This is the one check every
+    commit path shares. It judges only tasks that were not already DONE in `previous`, so terminal
+    history is never re-read.
+
+    A record that was recorded and did not pass, or belongs to another task, is an error in every
+    project. A reference the tool did not generate (a legacy anchor), or one that matches no entry,
+    cannot be judged: a warning for a project created before the gate cutoff, an error after it,
+    where it must also leave at least one passing record. An observation-only finish needs the
+    attested-finish finding `task finish --observation` writes first, because a terminal task cannot
+    be annotated later.
+    """
+    errors: list[str] = []
+    warnings: list[str] = []
+    tasks = candidate.get("tasks")
+    if not isinstance(tasks, list):
+        return errors, warnings
+    already = _done_task_ids(previous)
+    gated = is_new_project(candidate)
+    rows_by_anchor: dict[str, list[dict[str, Any]]] | None = None
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("status") != "DONE":
+            continue
+        task_id = task.get("id")
+        if not _non_empty_string(task_id) or task_id in already:
+            continue
+        if rows_by_anchor is None:
+            rows_by_anchor = {}
+            path = project_dir / "evidence.md"
+            for row in _entry_rows(read_text(path)) if path.is_file() else []:
+                if row["anchor"] is not None:
+                    rows_by_anchor.setdefault(row["anchor"], []).append(row)
+        label = f"task {task_id}"
+        unjudged = errors if gated else warnings
+        errors_before = len(errors)
+        commands = observations = 0
+        references = task.get("evidence")
+        for reference in references if isinstance(references, list) else []:
+            if not isinstance(reference, dict) or reference.get("root") != "workspace":
+                continue
+            if reference.get("path") != "evidence.md":
+                continue
+            anchor = reference.get("anchor")
+            if not isinstance(anchor, str) or GENERATED_ANCHOR.fullmatch(anchor) is None:
+                unjudged.append(
+                    f"{label}: evidence anchor {anchor!r} is not a recorded evidence entry, so its verdict "
+                    "cannot be checked; cite a record from record-evidence"
+                )
+                continue
+            matches = rows_by_anchor.get(anchor, [])
+            if len(matches) != 1 or not matches[0]["selectable"]:
+                unjudged.append(f"{label}: evidence {anchor} matches no single well-formed recorded entry")
+                continue
+            row = matches[0]
+            if row["owner"] != task_id:
+                errors.append(f"{label}: evidence record {row['record_id']} belongs to {row['owner']}, not {task_id}")
+            elif not row["passed"]:
+                errors.append(
+                    f"{label}: evidence record {row['record_id']} did not pass; a task cannot finish on a failed "
+                    "record"
+                )
+            elif row["kind"] == "observation":
+                observations += 1
+            else:
+                commands += 1
+        if not gated or len(errors) > errors_before:
+            continue
+        if not commands and not observations:
+            errors.append(f"{label}: finishing requires at least one passing evidence record from this task")
+        elif not commands:
+            note = project_dir / "tasks" / f"{task_id}.md"
+            attested = (
+                SAFE_TASK_ID.fullmatch(task_id) is not None
+                and note.is_file()
+                and f"research-entry: attested-{task_id.lower()}-" in read_text(note)
+            )
+            if not attested:
+                errors.append(
+                    f"{label}: finishing on agent-attested observations alone must go through "
+                    "`task finish --observation`, which records the attested finish first"
+                )
+    return errors, warnings
+

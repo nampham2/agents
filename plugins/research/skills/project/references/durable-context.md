@@ -45,33 +45,31 @@ Requested cleanup must preserve cited outputs, evidence, receipts and recovery r
 
 ### Delivery-review checkpoints
 
-Use delivery review only when required by the user, acceptance criteria or repository workflow.
-Use [`workflow review`](automation-records.md) with reviewer, scope/version, findings/dispositions,
-outcome and evidence; it allocates `reviews/review_NN.md` and aligns canonical review state.
-File existence or passing tests do not establish acceptance. Preserve earlier cycles.
-Requirements/design agreement stays in spec/architecture; implementation fixes use task notes and
-new correction tasks for terminal work. Reopen acceptance invalidated by corrections as `pending`.
+Use delivery review only when the user, acceptance criteria or repository workflow require it, via
+[`workflow review`](automation-records.md) with reviewer, scope/version, findings, outcome and
+evidence; it allocates `reviews/review_NN.md` and aligns review state. File existence or passing
+tests do not establish acceptance; preserve earlier cycles. Requirements/design agreement stays in
+spec/architecture; fixes use task notes and correction tasks for terminal work, and acceptance a
+correction invalidates reopens as `pending`.
 
 ## Maintain the continuation note while working
 
-Read [handoff-writing.md](handoff-writing.md) before writing continuation fields or a brief; apply
-its provenance, verifier-status and preservation rules to routine checkpoints and closure too.
+Read [handoff-writing.md](handoff-writing.md) before writing continuation fields or a brief,
+including for routine checkpoints and closure.
 
-Keep `handoff.md` short: focus/next action, open decisions, partial work, relevant pointers,
-agreement, current revision/spec/design tokens, and worker/command ownership or uncertain effects.
-Mark it `Session state: working`, `waiting`, `blocked`, or `ready for handoff`.
-These labels do not change canonical status or ownership.
+Keep `handoff.md` short: next action, open decisions, partial work, pointers, agreement, current
+revision/spec/design tokens, and worker/command ownership or uncertain effects. Mark it `Session
+state: working`, `waiting`, `blocked` or `ready for handoff`; labels change neither canonical status
+nor ownership. Refresh after material changes, before waiting or ending a turn, and before a risky
+operation, batching related saves: a routine task transition already in state/evidence needs no
+duplicate narrative. Use [`workflow checkpoint`](automation-records.md) with the last token and
+continuation fields. Move lasting facts to owning records before replacing the note, keeping
+unresolved entries.
 
-Refresh after material continuation changes, before waiting/ending a turn or a risky operation.
-Batch related saves; a routine task transition already captured in state/evidence needs no duplicate
-narrative. Use [`workflow checkpoint`](automation-records.md) with the last token and continuation
-fields; metadata is derived. Read only for missing context or conflicts.
-Move lasting facts to owning records before replacing the note, retaining unresolved entries.
-
-Write owning records first. Check every result: cross-document writes are not one transaction.
-On conflict, reread and reconcile; on failure, pause dependent work and report unsaved essentials.
+Write owning records first and check every result: cross-document writes are not one transaction.
+On conflict reread and reconcile; on failure pause dependent work and report unsaved essentials.
 Active executor guards require legacy recovery, never bypassing.
 
-For handoff or interruption recovery, use [session-handoff.md](session-handoff.md).
-Reconcile records and ownership before writes; resume agreement/open questions without replaying
-history. Change a ready note to `working` before continuing; its label proves no process stopped.
+For handoff or interruption recovery use [session-handoff.md](session-handoff.md): reconcile records
+and ownership before writes, resume agreement and open questions without replaying history, and set
+a ready note to `working` before continuing; its label proves no process stopped.

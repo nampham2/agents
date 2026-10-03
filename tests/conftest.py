@@ -41,6 +41,21 @@ def far_future_gate_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workspace_lib, "GATES_ENFORCED_FROM", "2099-01-01T00:00:00+00:00", raising=False)
 
 
+@pytest.fixture
+def current_mode(monkeypatch: pytest.MonkeyPatch) -> str:
+    """Make every project created in the test a current one: the gate cutoff moves into the past.
+
+    The counterpart of the autouse fixture above, for the tests of behaviour that only current
+    projects have. Move it after a project reaches PLANNING if the test must not be gated on the way.
+    A launcher subprocess reads the production cutoff, so a project it creates now is already current.
+    """
+    import workspace_lib
+
+    cutoff = "2020-01-01T00:00:00+00:00"
+    monkeypatch.setattr(workspace_lib, "GATES_ENFORCED_FROM", cutoff, raising=False)
+    return cutoff
+
+
 def backdate_project(project_dir: Path, created: str = "2020-01-01T00:00:00+00:00") -> None:
     """Make a project legacy for a launcher that reads the production cutoff: rewrite `created` on disk."""
     import json

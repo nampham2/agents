@@ -63,6 +63,43 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.22.0 one rule per transition, agreement tied to content, compact alignment
+
+Fixes for eight findings of a review of 0.21.0, where the same transition was allowed or refused
+depending on which command asked. Nothing adds a field to `project.json`, so a 0.21.0 launcher still
+reads everything this release writes; it simply does not enforce the new rules. New checks judge only
+the transition being committed: a task already `DONE` and a project already closed are never
+re-judged.
+
+- **Agreement is tied to content.** `workflow confirm` records a digest of the text the user agreed
+  to beside its confirmation. Rewriting the specification or `architecture.md` afterwards makes the
+  confirmation stale: the gate refuses `ALIGNING` to `PLANNING` and names the changed document, and
+  `edit` and `round` return `stale_confirmations`. Decision history, the architecture link, the
+  status word, the confirmation block and blank lines do not count as changes.
+- **Finishing a task is one rule.** An `update` setting a task `DONE` is refused for a failed,
+  foreign or ambiguous evidence record, as `task finish` always was. A reference the tool did not
+  record cannot be judged: a warning for projects created before the cutoff, an error after it, and
+  an observation-only finish must go through `task finish --observation`.
+- **Closing a project is one rule.** `close` and an `update` to `DONE` refuse a recorded worktree
+  with no keep or remove decision, as `finalize` did; `workflow readiness` and
+  `research-validate --close` report the same finding once.
+- **Worktree decisions can change.** `keep`, `accept_dirty` and `remove` may be recorded again on a
+  kept worktree; the earlier decision is quoted into the decision history first, so the call needs
+  the `spec` token. `accept_dirty` covers the paths dirty at that moment, and a new path is a closure
+  finding. A removed worktree stays final.
+- **Malformed worktree records** are findings, not a crash in validation.
+- **Compact alignment.** `workflow confirm` accepts `kind: alignment`, one reply recorded against both
+  document tokens, for a clear low-effort proposal. The full alignment reading path is 10.8 percent
+  shorter (7,813 to 6,966 words) after removing duplicated procedure, and two pieces of guidance now
+  load only when needed: `handoff-verifiers.md` and `memory-promotion.md`.
+- **Tests.** The instruction budgets count every required read and a routing-drift test fails when a
+  loaded reference links one that is neither counted nor classified; a complete current-project
+  lifecycle runs through both launchers as subprocesses.
+
+Compatibility: a project confirmed by 0.21.0 that has not yet left `ALIGNING` has no content digest;
+0.22.0 refuses it with a message to confirm again. A project that already left `ALIGNING` is not
+affected.
+
 ### 0.21.0 alignment gate and task stamps for new projects
 
 Two changes that apply only to projects created on or after the release instant recorded in

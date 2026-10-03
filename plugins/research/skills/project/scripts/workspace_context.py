@@ -218,6 +218,11 @@ def worktree_status(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _status_path(line: str) -> str:
+    """The path part of a `git status --short` line: two status columns and a space precede it."""
+    return line[3:]
+
+
 def worktree_closure_findings(state: dict[str, Any]) -> tuple[list[str], list[str]]:
     """Errors that must stop closure and warnings that must reach the handoff.
 
@@ -246,12 +251,27 @@ def worktree_closure_findings(state: dict[str, Any]) -> tuple[list[str], list[st
                 f"worktree {path} was kept but is missing on disk; record its removal with "
                 "`workflow <project-dir> worktree` close, decision remove"
             )
-        elif seen["dirty"] and item["closure"]["decision"] == "keep":
-            errors.append(
-                f"worktree {path} was kept as clean but now has uncommitted changes: "
-                + ", ".join(seen["dirty"][:10])
-                + "; commit them (only when the user asks) or record accept_dirty"
-            )
+        elif item["closure"]["decision"] == "keep":
+            if seen["dirty"]:
+                errors.append(
+                    f"worktree {path} was kept as clean but now has uncommitted changes: "
+                    + ", ".join(seen["dirty"][:10])
+                    + "; commit them (only when the user asks) or record accept_dirty"
+                )
+        else:
+            # accept_dirty accepted the paths that were dirty then, not whatever becomes dirty later.
+            # Matching is by path: staging an accepted file or committing it is no new work, but a
+            # path the user never saw is. A change to the content of an accepted path is not visible
+            # to `git status`, so that is outside what this can detect.
+            accepted = {_status_path(line) for line in item["closure"]["dirty"]}
+            beyond = [line for line in seen["dirty"] if _status_path(line) not in accepted]
+            if beyond:
+                errors.append(
+                    f"worktree {path} has uncommitted changes beyond the accepted dirty snapshot: "
+                    + ", ".join(beyond[:10])
+                    + "; commit them (only when the user asks) or record accept_dirty again with the user's "
+                    "explicit acceptance"
+                )
     return errors, warnings
 
 

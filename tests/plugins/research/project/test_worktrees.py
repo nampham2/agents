@@ -305,7 +305,8 @@ def run(project: Path, request: dict[str, Any], **fields: Any) -> dict[str, Any]
     from workspace_workflows import workflow
 
     revision = load_state(project)["revision"]
-    tokens = {name: snapshot(project / f"{name}.md")[1] for name in ("handoff",) if (project / f"{name}.md").exists()}
+    names = [name for name in ("handoff", "spec") if (project / f"{name}.md").exists()]
+    tokens = {name: snapshot(project / f"{name}.md")[1] for name in names}
     request = {"id": f"op-{next(OPERATION_IDS)}", "expected_revision": revision, "tokens": tokens, **request, **fields}
     return workflow(project, "worktree", request)
 
@@ -443,7 +444,6 @@ class TestCloseWorktree:
         assert entry["status"] == "kept" and entry["closure"]["decision"] == "keep"
         assert entry["closure"]["dirty"] == [] and entry["closure"]["response"] == "keep"
         assert result["observed"]["dirty"] == []
-        refused(recorded, "no active repository worktree", close, linked, "keep")
 
     def test_keep_dirty_needs_acceptance(self, recorded: Path, linked: Path) -> None:
         (linked / "wip.txt").write_text("x\n", encoding="utf-8")
@@ -482,22 +482,65 @@ class TestCloseWorktree:
         assert validate_project(recorded).valid
         refused(recorded, "no active or kept repository worktree", close, linked, "remove")
 
-    def test_only_removal_may_follow_a_keep(self, recorded: Path, linked: Path) -> None:
+    def test_a_keep_can_be_superseded_and_the_first_decision_is_not_lost(self, recorded: Path, linked: Path) -> None:
+        close(recorded, linked, "keep", confirmation={"source": "reply 1", "response": "keep it clean"})
+        (linked / "wip.txt").write_text("x\n", encoding="utf-8")
+        result = close(
+            recorded, linked, "accept_dirty", confirmation={"source": "reply 2", "response": "wip is fine"}
+        )
+        closure = load_state(recorded)["worktrees"][0]["closure"]
+        assert closure["decision"] == "accept_dirty" and closure["dirty"] == ["?? wip.txt"]
+        assert result["superseded"]["decision"] == "keep" and result["superseded"]["response"] == "keep it clean"
+        history = (recorded / "spec.md").read_text(encoding="utf-8")
+        assert "closure decision superseded" in history
+        assert "'keep it clean'" in history and "'wip is fine'" in history
+
+    def test_the_first_closure_leaves_no_supersession_entry(self, recorded: Path, linked: Path) -> None:
+        result = close(recorded, linked, "keep")
+        assert "superseded" not in result
+        assert "superseded" not in (recorded / "spec.md").read_text(encoding="utf-8")
+
+    def test_a_removal_after_a_keep_also_keeps_the_earlier_consent(
+        self, recorded: Path, repository: Path, linked: Path
+    ) -> None:
+        close(recorded, linked, "keep", confirmation={"source": "reply 1", "response": "keep it"})
+        git(repository, "worktree", "remove", "--force", str(linked))
+        close(recorded, linked, "remove", confirmation={"source": "reply 2", "response": "gone"})
+        history = (recorded / "spec.md").read_text(encoding="utf-8")
+        assert "closure decision superseded" in history and "'keep it'" in history
+
+    def test_a_removed_worktree_is_final(self, recorded: Path, repository: Path, linked: Path) -> None:
+        git(repository, "worktree", "remove", "--force", str(linked))
+        close(recorded, linked, "remove")
+        for decision in ("keep", "accept_dirty", "remove"):
+            refused(recorded, "no active or kept repository worktree", close, linked, decision)
+
+    def test_replaying_a_supersession_adds_no_second_history_entry(self, recorded: Path, linked: Path) -> None:
+        from workspace_workflows import workflow
+
         close(recorded, linked, "keep")
-        refused(recorded, "no active repository worktree", close, linked, "keep")
-        refused(recorded, "no active repository worktree", close, linked, "accept_dirty")
-        assert load_state(recorded)["worktrees"][0]["closure"]["decision"] == "keep"
+        (linked / "wip.txt").write_text("x\n", encoding="utf-8")
+        from workspace_journal import snapshot
+
+        request = {
+            "id": "again-1", "expected_revision": load_state(recorded)["revision"], "operation": "close",
+            "tokens": {"spec": snapshot(recorded / "spec.md")[1]},
+            "path": str(linked), "decision": "accept_dirty", "confirmation": {"source": "s", "response": "ok"},
+        }
+        first = workflow(recorded, "worktree", request)
+        assert workflow(recorded, "worktree", request) == first
+        assert (recorded / "spec.md").read_text(encoding="utf-8").count("closure decision superseded") == 1
 
     def test_close_refusals(self, recorded: Path, tmp_path: Path, linked: Path) -> None:
         refused(recorded, "decision must be", close, linked, "drop")
-        refused(recorded, "no active repository worktree", close, tmp_path / "absent", "keep")
+        refused(recorded, "no active or kept repository worktree", close, tmp_path / "absent", "keep")
         with patch.object(workspace_context, "_git", side_effect=OSError("gone")):
             refused(recorded, "could not be consulted", close, linked, "keep")
         plain = tmp_path / "plain"
         plain.mkdir()
         project = make_project(tmp_path / "second", plain)
         record(project, plain, kind="none")
-        refused(project, "no active repository worktree", close, plain, "keep")
+        refused(project, "no active or kept repository worktree", close, plain, "keep")
 
     def test_same_operation_id_replays_and_changed_input_conflicts(self, recorded: Path, linked: Path) -> None:
         from workspace_lib import WorkspaceError
@@ -741,3 +784,143 @@ class TestRetargetAfterRemoval:
             close(project, linked, "keep")
         second = add_worktree(repository, "second", "npham/second")
         refused(project, "must be recorded from its repository", record, second, branch="npham/second")
+
+
+CLOSING_ENTRIES = ["close", "update", "finalize"]
+
+
+class TestEveryClosingEntryPointAgrees:
+    """`finalize` refused an active worktree while `close` and `update` committed DONE over it.
+
+    The rule now lives in close-mode validation, which every way of closing runs, so the same
+    project is open or closed whichever command asks. `readiness` and `--close` report the finding
+    a commit would refuse.
+    """
+
+    @pytest.fixture
+    def ready(self, tmp_path: Path, repository: Path, linked: Path) -> Path:
+        from tests.plugins.research.project.test_lifecycle_commands import done
+
+        project = make_project(tmp_path, repository)
+        done(project)
+        record(project, linked)
+        (project / "reflection.md").write_text(REFLECTION, encoding="utf-8")
+        return project
+
+    def attempt(self, project: Path, entry: str) -> Any:
+        from workspace_operations import close_project
+        from workspace_session import update_project_data
+        from workspace_workflows import workflow
+
+        from tests.plugins.research.project.test_lifecycle_commands import request
+
+        revision = load_state(project)["revision"]
+        if entry == "close":
+            return close_project(project, expected_revision=revision)
+        if entry == "update":
+            return update_project_data(project, {"status": "DONE"}, expected_revision=revision)
+        payload = request(project, f"final-{revision}", reflection=REFLECTION, continuation={"next": "none"})
+        return workflow(project, "finalize", payload)
+
+    @pytest.mark.parametrize("entry", CLOSING_ENTRIES)
+    def test_an_active_worktree_blocks_every_way_of_closing(self, ready: Path, entry: str) -> None:
+        refused(ready, "no closure decision", self.attempt, entry)
+        assert load_state(ready)["status"] != "DONE"
+
+    @pytest.mark.parametrize("entry", CLOSING_ENTRIES)
+    def test_a_kept_clean_worktree_that_turned_dirty_blocks_every_way_of_closing(
+        self, ready: Path, linked: Path, entry: str
+    ) -> None:
+        close(ready, linked, "keep")
+        (linked / "late.txt").write_text("x\n", encoding="utf-8")
+        refused(ready, "kept as clean but now has uncommitted changes", self.attempt, entry)
+
+    @pytest.mark.parametrize("entry", CLOSING_ENTRIES)
+    def test_a_decided_worktree_lets_every_way_of_closing_through(self, ready: Path, linked: Path, entry: str) -> None:
+        close(ready, linked, "keep")
+        self.attempt(ready, entry)
+        assert load_state(ready)["status"] == "DONE"
+
+    def test_readiness_and_close_validation_report_what_a_commit_refuses(self, ready: Path) -> None:
+        from workspace_lib import validate_project
+        from workspace_workflows import workflow
+
+        groups = workflow(ready, "readiness", {})["groups"]
+        findings = [item["finding"] for item in groups["worktree"]]
+        assert len([finding for finding in findings if "no closure decision" in finding]) == 1
+        assert any("no closure decision" in error for error in validate_project(ready, close=True).errors)
+        assert not any("closure decision" in error for error in validate_project(ready).errors)
+
+    def test_a_project_that_is_already_done_is_not_rejudged_by_later_commits(
+        self, ready: Path, linked: Path
+    ) -> None:
+        from workspace_lib import validate_project
+        from workspace_session import update_project_data
+
+        close(ready, linked, "keep")
+        self.attempt(ready, "close")
+        (linked / "after.txt").write_text("x\n", encoding="utf-8")
+        update_project_data(ready, {"title": "Renamed after closure"}, expected_revision=load_state(ready)["revision"])
+        assert load_state(ready)["title"] == "Renamed after closure"
+        assert any("now has uncommitted changes" in error for error in validate_project(ready, close=True).errors)
+
+    @pytest.mark.parametrize("v3", [False, True])
+    def test_both_validators_apply_the_rule_and_a_caller_can_opt_out(self, tmp_path: Path, v3: bool) -> None:
+        state, project = state_with(tmp_path, [entry(role="additional")], v3=v3)
+        validator = validate_v3_state if v3 else validate_v4_state
+        assert any("no closure decision" in error for error in validator(state, project, close=True).errors)
+        opted_out = validator(state, project, close=True, worktree_closure=False).errors
+        assert not any("closure decision" in error for error in opted_out)
+        assert not any("closure decision" in error for error in validator(state, project, close=False).errors)
+
+
+class TestAcceptedDirtyIsScopedToWhatTheUserSaw:
+    """Both observed F4 symptoms: a kept entry could not be re-decided, and one accepted snapshot covered anything."""
+
+    @pytest.fixture
+    def recorded(self, tmp_path: Path, repository: Path, linked: Path) -> Path:
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        return project
+
+    def findings(self, project: Path) -> list[str]:
+        from workspace_context import worktree_closure_findings
+
+        return worktree_closure_findings(load_state(project))[0]
+
+    def test_readiness_advice_to_accept_dirty_can_be_followed_after_a_keep(
+        self, recorded: Path, linked: Path
+    ) -> None:
+        close(recorded, linked, "keep")
+        (linked / "late.txt").write_text("x\n", encoding="utf-8")
+        assert any("record accept_dirty" in finding for finding in self.findings(recorded))
+        close(recorded, linked, "accept_dirty")
+        assert self.findings(recorded) == []
+
+    def test_a_file_added_after_the_acceptance_is_a_finding(self, recorded: Path, linked: Path) -> None:
+        (linked / "wip.txt").write_text("x\n", encoding="utf-8")
+        close(recorded, linked, "accept_dirty")
+        assert self.findings(recorded) == []
+        (linked / "late.txt").write_text("x\n", encoding="utf-8")
+        [finding] = self.findings(recorded)
+        assert "beyond the accepted dirty snapshot" in finding and "late.txt" in finding and "wip.txt" not in finding
+        close(recorded, linked, "accept_dirty")
+        assert self.findings(recorded) == []
+
+    def test_committing_or_staging_accepted_paths_is_not_new_work(self, recorded: Path, linked: Path) -> None:
+        (linked / "wip.txt").write_text("x\n", encoding="utf-8")
+        close(recorded, linked, "accept_dirty")
+        git(linked, "add", "wip.txt")
+        assert self.findings(recorded) == [], "staging changes the status columns, not the path"
+        git(linked, "-c", "user.name=T", "-c", "user.email=t@example.com", "commit", "-q", "-m", "wip")
+        assert self.findings(recorded) == []
+
+    def test_the_closure_commands_refuse_while_a_path_is_beyond_the_snapshot(
+        self, recorded: Path, linked: Path
+    ) -> None:
+        from workspace_lib import validate_project
+
+        (linked / "wip.txt").write_text("x\n", encoding="utf-8")
+        close(recorded, linked, "accept_dirty")
+        (linked / "late.txt").write_text("x\n", encoding="utf-8")
+        assert any("beyond the accepted" in error for error in validate_project(recorded, close=True).errors)

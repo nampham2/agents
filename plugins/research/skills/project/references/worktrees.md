@@ -7,13 +7,13 @@ and only after the user has confirmed them in their own words.
 ## Before the first write
 
 1. `task ... start` and `workflow ... resume` return `worktree`. A warning means the target is a
-   repository (or a linked worktree) with no record. Legacy projects warn the same way.
+   repository (or linked worktree) with no record; legacy projects warn the same way.
 2. Propose, do not assume. Path: `<repo-parent>/<repo-name>.worktrees/<project-id>`. Branch:
-   `<prefix>/<project-id>-<slug>`, where `<prefix>` is the prefix the repository's local branches
-   already use (for example `npham/`), falling back to `project/`, and `<slug>` comes from the
-   title. Show both, let the user confirm or edit, and keep their words for the record.
-3. Create it: `git -C <repo> worktree add -b <branch> <path>`. Run `git status --short --branch`
-   in the main checkout before and after; it must read the same.
+   `<prefix>/<project-id>-<slug>`, with the prefix the repository's local branches already use (for
+   example `npham/`), else `project/`, and `<slug>` from the title. Show both, let the user confirm
+   or edit, and keep their words for the record.
+3. Create it with `git -C <repo> worktree add -b <branch> <path>`. `git status --short --branch` in
+   the main checkout must read the same before and after.
 4. Record it:
 
    ```json
@@ -25,17 +25,17 @@ and only after the user has confirmed them in their own words.
 
    `workflow <project-dir> worktree -` checks that the path is a linked worktree of the repository
    on that branch, stores its head as `base_commit`, and repoints `working_directory` (the `target`
-   root) to the worktree. Use absolute paths in later commands. Repeat with `"role":"additional"`
-   for each further repository; those do not repoint. `"kind":"existing"` records a target that
-   already is a linked worktree; `"kind":"none"` records once that the target is not a repository.
-5. A mismatched path, branch or repository is refused and nothing is written. Fix the worktree,
-   not the request.
+   root) to it; use absolute paths afterwards. Repeat with `"role":"additional"` for each further
+   repository (these do not repoint). `"kind":"existing"` records a target that already is a linked
+   worktree; `"kind":"none"` records once that the target is not a repository.
+5. A mismatched path, branch or repository is refused and nothing is written: fix the worktree, not
+   the request.
 
 ## Before closing
 
-1. `workflow ... readiness` lists worktree findings. For each recorded worktree, show the user
-   `git status --short --branch` and ask two things: whether to commit now (commit only when asked,
-   never implicitly) and whether to keep or remove the worktree.
+1. For each recorded worktree show the user `git status --short --branch` (`workflow ... readiness`
+   lists findings) and ask whether to commit now (only when asked, never implicitly) and whether to
+   keep or remove it.
 2. Record the answer:
 
    ```json
@@ -45,15 +45,17 @@ and only after the user has confirmed them in their own words.
    ```
 
    `keep` requires a clean tree. `accept_dirty` stores the dirty paths beside the user's explicit
-   acceptance. `remove` is destructive: with the user's authorization the agent runs
+   acceptance, and covers only those paths: a later path is a closure finding until accepted again.
+   `remove` is destructive: with the user's authorization the agent runs
    `git worktree remove <path>` (and `git branch -d <branch>` only if asked) first; the tool then
    verifies the worktree is gone and points the target back at the repository.
-3. `finalize` refuses while any repository worktree is still active or a worktree kept as clean is
-   dirty again. When Git cannot be consulted the guard degrades to warnings: mark those worktrees
+   A kept entry can be decided again (`keep`, `accept_dirty` or `remove`); the earlier decision is
+   saved to the spec's decision history, so include the `spec` token. A removed entry is final.
+3. `finalize`, `close` and an `update` to DONE refuse an undecided worktree, or one kept as clean
+   that is dirty again. Without Git the guard degrades to warnings: mark those worktrees
    `UNVERIFIED` in the handoff with the re-check command.
 
 ## Never
 
-- Create, commit, push or remove without the user's words for that specific action.
-- Record a worktree from memory or from the request; the tools read Git and refuse contradictions.
-- Treat the research workspace root as a project repository. It is exempt.
+Create, commit, push or remove without the user's words for that specific action, and never treat
+the research workspace root as a project repository: it is exempt.
