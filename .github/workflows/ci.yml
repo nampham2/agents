@@ -28,6 +28,14 @@ jobs:
       - name: Version consistency
         run: uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py
 
+      # An alpha version belongs to a project branch. It never reaches main, so a PR to main and a
+      # push to main must carry a plain release version.
+      - name: Release version on main
+        if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
+        run: uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py
+        env:
+          REQUIRE_RELEASE_VERSION: "1"
+
       # Lint and type-check everything, tests included: the shipped code lives under
       # plugins/, and scoping these narrower than the repo is what let two copies of
       # the library drift apart unnoticed.
