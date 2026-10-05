@@ -63,6 +63,27 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.23.0 writing rules and advisory style findings
+
+Project records now follow writing rules that ASD-STE100 inspired, and the validators give advice
+when a living record does not. Nothing adds a field to `project.json`, so older launchers read
+everything this release writes and simply give no advice.
+
+- **Writing rules.** `references/writing-rules.md` holds 45 rules and a ten-term glossary. Thirteen
+  rules come from the public list of STE rules and 32 are the project's own; each is marked. The
+  file adds 774 words to every scenario that writes records. `references/writing-rules-extra.md`
+  holds the preferred-word table and the STE rules the project does not apply, and is read only on
+  demand. The project has no official copy of ASD-STE100, claims no compliance, and says so.
+- **Advice, never a block.** For projects created on or after 2026-10-05T10:40:00Z, `research-validate`
+  and `context --validate` report up to five findings per document and count the rest: sentences over
+  25 words (20 for the task `verification` field and for numbered items in `handoff.md`), paragraphs
+  over six sentences, preferred words, contractions, and `will`, `should` or `could`. The check reads
+  the current specification, `architecture.md`, `handoff.md` and the task fields, in every status.
+  It checks form only. About 40 of the 45 rules have no code check, because they need a parser.
+- **Word budgets.** Each scenario budget rose by the 774 words. The alignment guard changed from
+  10 percent below the 0.21.0 size to below it: alignment (repository) is 7,746 words against 7,813,
+  a margin of 67 words.
+
 ### 0.22.0 one rule per transition, agreement tied to content, compact alignment
 
 Fixes for eight findings of a review of 0.21.0, where the same transition was allowed or refused
