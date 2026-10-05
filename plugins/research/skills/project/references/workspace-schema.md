@@ -251,6 +251,27 @@ and `base_commit` are null). `role` is `target` for the one entry that owns `wor
 `working_directory` equals its `path`; once removed it equals `repository`. `finalize` refuses an
 `active` repository worktree or a kept-clean one that is dirty again; a missing directory warns.
 
+Delivery records are optional fields of an entry, written only by the `pull_request`, `alpha`,
+`release` and `merge` operations of `workflow <project-dir> worktree`:
+
+- `pull_request`: `host` (`github` or `gitlab`), `url`, `number`, `recorded_at`. The URL host
+  equals the host of the `origin` remote. `pr_exemption` (`reason` `no_remote`, `source`,
+  `response`) replaces it for a repository with no remote.
+- `version_line`: `files` (`path`, `style` `pep440` or `semver`), `base` (plain `X.Y.Z`), `alpha`,
+  `history` (`alpha`, `recorded_at`, `reason`) and `release` (null or `version`, `recorded_at`).
+  `alpha` only increases and `base` never changes. Each file holds `X.Y.ZaN` (`pep440`) or
+  `X.Y.Z-alpha.N` (`semver`). `release` equals `base` and no file keeps an alpha spelling.
+  `version_exemption` (`source`, `response`) replaces the line for a repository with no version.
+- `merge`: `state` (`merged` or `declined`), `method` (`squash`, `merge`, `rebase`; null if
+  declined), `evidence`, `source`, `response`, `recorded_at`. `merged` needs the release when a
+  `version_line` exists. A merged record is final. `close` with `remove` needs a merged record when
+  a `pull_request` exists.
+
+`DELIVERY_GATES_FROM` in `workspace_lib.py` turns on two gates for projects created at or after it.
+`task start` refuses a task with `target` outputs while the active target worktree lacks an MR or
+exemption and an alpha line or exemption. `finalize`, `close` and an update to DONE refuse a
+worktree with no MR or exemption, no merge decision for its MR, or no version line or exemption.
+
 ## Effects and authorization
 
 Every task classifies its effect:
