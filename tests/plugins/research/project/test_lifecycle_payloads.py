@@ -144,30 +144,35 @@ def test_default_instruction_payload_budget() -> None:
 
 SKILL_DIR = REPO_ROOT / "plugins/research/skills/project"
 CORE = ("SKILL", "commands")
-ALIGNMENT = ("durable-context", "grill", "architecture-review", "memory-operations", "automation",
+ALIGNMENT = ("durable-context", "writing-rules", "grill", "architecture-review", "memory-operations", "automation",
              "automation-records", "handoff-writing")
-RESUME = ("durable-context", "session-handoff", "memory-operations", "automation", "automation-context",
-          "automation-records", "handoff-writing")
+RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operations", "automation",
+          "automation-context", "automation-records", "handoff-writing")
 
 # Each scenario is the complete set of documents the routing requires for that piece of work, in the
 # order SKILL.md reaches them. The first version of these budgets omitted the automation router, the
 # records reference and the handoff guide that alignment cannot proceed without, so the measured
 # cost was about a quarter lower than the cost paid. Documents reached only conditionally are
 # classified in CONDITIONAL, below, not left out silently.
+# Words that references/writing-rules.md adds to every scenario that writes records (0.23.0). Each
+# budget below is its old value plus this, and no more: a measured cost, not a round allowance.
+RULES = 774
+
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
-    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7031),
-    "alignment-plain": ((*CORE, *ALIGNMENT), 6550),
-    "resume": ((*CORE, *RESUME), 5000),
-    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5200),
-    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7800),
-    "material-change-after-resume": ((*CORE, *RESUME, "execution-changes", "grill", "architecture-review"), 9000),
-    "closure": ((*CORE, "durable-context", "memory-operations", "memory-promotion", "automation",
-                 "automation-records", "handoff-writing", "worktrees"), 4450),
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7031 + RULES),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6550 + RULES),
+    "resume": ((*CORE, *RESUME), 5000 + RULES),
+    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5200 + RULES),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7800 + RULES),
+    "material-change-after-resume": (
+        (*CORE, *RESUME, "execution-changes", "grill", "architecture-review"), 9000 + RULES),
+    "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
+                 "automation-records", "handoff-writing", "worktrees"), 4450 + RULES),
 }
 
 # Words in the same repository-target alignment set as measured at commit 4b3a68f (version 0.21.0),
-# before this work added the compact path and removed duplicated procedure. The budget above must stay
-# at least 10 percent below it: a simpler procedure, not instructions moved outside the count.
+# before the compact path existed. The budget above must stay below it: a simpler procedure, not
+# instructions moved outside the count. (Until 0.23.0 the margin was 10 percent.)
 ORIGINAL_ALIGNMENT_WORDS = 7813
 
 # Documents a loaded document links to but that only some work needs, and what triggers the read.
@@ -191,6 +196,7 @@ CONDITIONAL = {
     "task-workers": "only when delegating to workers",
     "workspace-schema": "only for schema, migration or validation-error repairs",
     "worktrees": "only for a repository target",
+    "writing-rules-extra": "only when a style finding names a preferred word or the rule set changes",
 }
 
 
@@ -241,7 +247,25 @@ def test_the_drift_check_notices_a_required_read_missing_from_a_scenario() -> No
     assert "automation-records" in reachable - set(CONDITIONAL)
 
 
-def test_the_compact_alignment_path_costs_at_least_ten_percent_less_than_it_did() -> None:
+def test_the_alignment_path_stays_below_its_0_21_0_size() -> None:
+    """The earlier guard demanded 10 percent less than 0.21.0. Adding the writing rules (0.23.0) cost
+    more than that margin, so by the user's decision (2026-10-05) the guard is now 'below the 0.21.0
+    size': the alignment path may not grow back past what it was before the compact path existed."""
     names, budget = SCENARIOS["alignment-repository"]
     words = sum(len(document(name).read_text(encoding="utf-8").split()) for name in names)
-    assert budget <= ORIGINAL_ALIGNMENT_WORDS * 0.9 and words <= ORIGINAL_ALIGNMENT_WORDS * 0.9
+    assert budget < ORIGINAL_ALIGNMENT_WORDS and words < ORIGINAL_ALIGNMENT_WORDS
+
+
+def test_writing_rules_is_loaded_in_every_scenario_that_writes_records() -> None:
+    for scenario, (names, _) in SCENARIOS.items():
+        assert "writing-rules" in names, scenario
+
+
+def test_the_rules_budget_increase_is_the_measured_size_of_the_file() -> None:
+    assert RULES == len(document("writing-rules").read_text(encoding="utf-8").split())
+
+
+def test_durable_context_points_to_the_writing_rules_in_one_sentence() -> None:
+    text = document("durable-context").read_text(encoding="utf-8")
+    assert "Write each record as [writing-rules.md](writing-rules.md) says." in text
+    assert "writing-rules" in linked_references("durable-context")

@@ -118,6 +118,13 @@ Requested reports default to concise Markdown. Use `--report-format markdown --r
 concise` to check without task-graph accounting. Legacy report commands remain strict; execution
 reports, HTML and paired formats remain available. Closure keeps a short `reflection.md`.
 
+Agents write records to the project's own [writing rules](references/writing-rules.md), which
+ASD-STE100 inspired: 45 rules and a short glossary. For projects created after the style cutoff,
+`research-validate` and `context --validate` add advice for the living records: long sentences and
+paragraphs, preferred words, contractions, and `will`, `should` or `could`. The advice never blocks
+a command and checks form only. The [word table](references/writing-rules-extra.md) lists the
+preferred words and the STE rules that the project does not apply.
+
 See [SKILL.md](SKILL.md) for the lifecycle and [commands.md](references/commands.md) for command
 semantics. Specialized references are loaded only for their operation. Installed copies are managed
 by host marketplaces: source edits require a host update/reinstall to take effect in a new session.

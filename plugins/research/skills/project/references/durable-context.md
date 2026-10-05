@@ -2,6 +2,7 @@
 
 Save facts that change the next action, its constraints or rationale. Persistence is event-driven,
 not background autosave. Use guarded commands from [commands.md](commands.md).
+Write each record as [writing-rules.md](writing-rules.md) says.
 
 ## Save at the point of use
 

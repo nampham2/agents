@@ -20,6 +20,15 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from workspace_style import (
+    LIMIT_STEP,
+    LIMIT_TEXT,
+    document_findings,
+    format_warning,
+    section_only,
+    task_field_findings,
+)
+
 if TYPE_CHECKING:  # TypeGuard is 3.10+; the scripts must still import on system python 3.9.
     from collections.abc import Sequence
     from typing import Callable, TypeGuard
@@ -281,23 +290,69 @@ def _is_timestamp(value: object) -> bool:
 GATES_ENFORCED_FROM = "2026-10-02T12:27:00+00:00"
 
 
+def _created_on_or_after(state: dict[str, Any], cutoff_text: str) -> bool:
+    """Whether `state` was created on or after the cutoff instant; anything unjudgeable is no."""
+    created = state.get("created")
+    if not _non_empty_string(created):
+        return False
+    try:
+        moment = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        cutoff = datetime.fromisoformat(cutoff_text.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if moment.tzinfo is None or cutoff.tzinfo is None:
+        return False
+    return moment >= cutoff
+
+
 def is_new_project(state: dict[str, Any]) -> bool:
     """Whether `state` was created on or after `GATES_ENFORCED_FROM`.
 
     Anything that cannot be judged is legacy: a missing, unparseable or naive `created` (migrated
     projects carry approximate ones) must never turn enforcement on by accident.
     """
-    created = state.get("created")
-    if not _non_empty_string(created):
-        return False
-    try:
-        moment = datetime.fromisoformat(created.replace("Z", "+00:00"))
-        cutoff = datetime.fromisoformat(GATES_ENFORCED_FROM.replace("Z", "+00:00"))
-    except ValueError:
-        return False
-    if moment.tzinfo is None or cutoff.tzinfo is None:
-        return False
-    return moment >= cutoff
+    return _created_on_or_after(state, GATES_ENFORCED_FROM)
+
+
+# Projects created on or after this instant get the advisory style findings on their living records.
+# It is separate from GATES_ENFORCED_FROM: style is a warning, not a gate, and a project that began
+# before the writing rules existed was not written to them. Set to the release instant of the
+# version that ships the rules (0.23.0). Read at call time so tests can move it.
+STYLE_CHECKED_FROM = "2026-10-05T10:40:00+00:00"
+
+
+def is_style_checked(state: dict[str, Any]) -> bool:
+    """Whether `state` was created on or after `STYLE_CHECKED_FROM`; unjudgeable means no."""
+    return _created_on_or_after(state, STYLE_CHECKED_FROM)
+
+
+def style_warnings(project_dir: Path, state: dict[str, Any]) -> list[str]:
+    """Advisory style findings for the living records: form only, never an error.
+
+    Reads the current specification (not the append-only decision history), architecture.md,
+    handoff.md and the task fields. A missing or unreadable file is skipped: the checks that own
+    those files already report them.
+    """
+    warnings: list[str] = []
+    for name in ("spec.md", "architecture.md", "handoff.md"):
+        path = project_dir / name
+        if not path.is_file():
+            continue
+        try:
+            text = read_text(path)
+        except WorkspaceError:
+            continue
+        if name == "spec.md":
+            text = section_only(text, "Current specification")
+        # Numbered items are steps only in the handoff; elsewhere they list requirements or findings.
+        step_limit = LIMIT_STEP if name == "handoff.md" else LIMIT_TEXT
+        warning = format_warning(name, document_findings(text, step_limit=step_limit))
+        if warning:
+            warnings.append(warning)
+    task_warning = format_warning("task fields", task_field_findings(state.get("tasks")))
+    if task_warning:
+        warnings.append(task_warning)
+    return warnings
 
 
 # What `workflow confirm` leaves behind so a later check can tell that the tool's confirmation path
@@ -2195,6 +2250,11 @@ def validate_v4_state(
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
         report.warnings.extend(architecture_warnings(project_dir, status))
         report.warnings.extend(verification_order_warnings(state.get("tasks")))
+
+    # Unlike the specification-section warnings, style does not depend on a record being complete,
+    # and most records are written while ALIGNING, so this runs in every status.
+    if check_files and is_style_checked(state):
+        report.warnings.extend(style_warnings(project_dir, state))
 
     if check_files and (close or _enum_string(status, {"DONE", "CANCELLED"})):
         report.warnings.extend(report_warnings(project_dir, require_graph=False))

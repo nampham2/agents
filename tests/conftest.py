@@ -41,6 +41,20 @@ def far_future_gate_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workspace_lib, "GATES_ENFORCED_FROM", "2099-01-01T00:00:00+00:00", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def far_future_style_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the advisory style findings off for every test project, as the gate cutoff is.
+
+    Every test project is created "now", so once the cutoff is past each of them would carry style
+    warnings and any test asserting a clean report would fail. The tests of the style findings move
+    it into the past themselves. raising=False for the same reason as above: a baseline build
+    without the constant must be left alone.
+    """
+    import workspace_lib
+
+    monkeypatch.setattr(workspace_lib, "STYLE_CHECKED_FROM", "2099-01-01T00:00:00+00:00", raising=False)
+
+
 @pytest.fixture
 def current_mode(monkeypatch: pytest.MonkeyPatch) -> str:
     """Make every project created in the test a current one: the gate cutoff moves into the past.
