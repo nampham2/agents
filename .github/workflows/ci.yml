@@ -28,14 +28,6 @@ jobs:
       - name: Version consistency
         run: uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py
 
-      # An alpha version belongs to a project branch. It never reaches main, so a PR to main and a
-      # push to main must carry a plain release version.
-      - name: Release version on main
-        if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
-        run: uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py
-        env:
-          REQUIRE_RELEASE_VERSION: "1"
-
       # Lint and type-check everything, tests included: the shipped code lives under
       # plugins/, and scoping these narrower than the repo is what let two copies of
       # the library drift apart unnoticed.
@@ -51,6 +43,15 @@ jobs:
           # Tests that create repositories must not inherit a developer or runner Git identity.
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_NOSYSTEM: "1"
+
+      # An alpha version belongs to a project branch. It never reaches main, so a PR to main and a
+      # push to main must carry a plain release version. This step runs last so that a branch on an
+      # alpha line still runs lint, types and tests.
+      - name: Release version on main
+        if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
+        run: uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py
+        env:
+          REQUIRE_RELEASE_VERSION: "1"
 
   python39-compat:
     # SKILL.md tells Claude to run the scripts with plain `python3`, which on many
