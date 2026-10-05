@@ -78,6 +78,17 @@ def _result(
     return result
 
 
+def _refuse_without_delivery_records(state: dict[str, Any], task: dict[str, Any]) -> None:
+    """A task that writes to the target needs its merge request and alpha line first (gated projects)."""
+    if not any(output["root"] == "target" for output in task["outputs"]):
+        return
+    from workspace_delivery import start_findings
+
+    findings = start_findings(state)
+    if findings:
+        raise WorkspaceError(f"task {task['id']} writes to the target: " + "; ".join(findings))
+
+
 def task_operation(
     project_dir: Path,
     action: str,
@@ -112,6 +123,7 @@ def task_operation(
     locked_guard = None
     stamps = task_stamps_enabled(state)
     if action == "start":
+        _refuse_without_delivery_records(state, selected)
         selected.update(status="RUNNING", block_reason=None, skip_reason=None)
         # The first start only: a task restarted after BLOCKED keeps the moment work began.
         if stamps and stamp_start and "started_at" not in selected:
@@ -144,6 +156,7 @@ def task_operation(
             if start_next == task_id:
                 raise WorkspaceError("--start-next must name a different task")
             successor = _task(state, start_next)
+            _refuse_without_delivery_records(state, successor)
             successor.update(status="RUNNING", block_reason=None, skip_reason=None)
             if stamps and "started_at" not in successor:
                 successor["started_at"] = now_iso()

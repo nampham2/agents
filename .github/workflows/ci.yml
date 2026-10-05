@@ -68,7 +68,7 @@ jobs:
       - name: Smoke-test the shipped scripts on Python 3.9
         working-directory: plugins/research/skills/project/scripts
         run: |
-          python -c "import workspace_documents, workspace_evidence, workspace_lib, workspace_operations, workspace_session"
+          python -c "import workspace_delivery, workspace_documents, workspace_evidence, workspace_lib, workspace_operations, workspace_session"
           workdir="$(mktemp -d)"
           # init refuses to create a workspace root implicitly, so a fresh root is explicit here and
           # resolution from the environment is exercised in the same breath.
