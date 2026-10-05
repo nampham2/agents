@@ -231,7 +231,9 @@ def worktree_closure_findings(state: dict[str, Any]) -> tuple[list[str], list[st
     finalize is fine, new uncommitted work is not. Untouched observation failures are warnings so
     that a machine without Git can still close a project whose decisions are recorded.
     """
-    errors: list[str] = []
+    from workspace_delivery import closure_findings
+
+    errors: list[str] = closure_findings(state)
     warnings: list[str] = []
     for item in state.get("worktrees", []):
         if item["kind"] == "none" or item["status"] == "removed":

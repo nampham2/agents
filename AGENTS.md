@@ -58,10 +58,16 @@ placement. Keep these surfaces aligned:
   (`skills/project/references/grill.md`) is the precedent. Never reach for `disable-model-invocation`
   to hide a skill: it is the opposite lever, blocking the model from loading the skill, which would
   break the skill that invokes it.
-- `pyproject.toml` `[project].version` is canonical. It must exactly match the `agents` package in
-  `uv.lock` and the Claude and Codex plugin manifests. Committed manifests use plain SemVer,
-  without a Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:
+- `pyproject.toml` `[project].version` is canonical. It must match the `agents` package in
+  `uv.lock` and the Claude and Codex plugin manifests, after the alpha spellings normalize. Committed manifests use SemVer, without a
+  Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:
   `uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py`.
+- A project branch works on one alpha line: the release version with an alpha number that only goes
+  up. Python files spell it `0.24.0a3` and plugin manifests spell it `0.24.0-alpha.3`. Never change
+  the base version or lower the number during a project, and bump the number before each test
+  deploy or plugin refresh. An alpha version never merges to `main`: commit the plain release
+  version before the merge. CI fails a PR to `main` that carries an alpha version, through
+  `REQUIRE_RELEASE_VERSION=1`.
 - Installed plugins are copied into host-managed caches. A release change needs a canonical version
   bump and a host update/reinstall; editing the working tree does not modify an installed copy.
 

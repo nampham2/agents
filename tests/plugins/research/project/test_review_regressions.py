@@ -707,7 +707,7 @@ class PluginCacheTests(unittest.TestCase):
         # and the install cache is keyed on it — an unchanged version suppresses `plugin update`.
         manifest = json.loads(self._read("plugins/research/.claude-plugin/plugin.json"))
         version = manifest["version"]
-        self.assertRegex(version, r"^\d+\.\d+\.\d+$")
+        self.assertRegex(version, r"^\d+\.\d+\.\d+(-alpha\.\d+)?$")
 
     def test_the_docs_do_not_claim_marketplace_update_refreshes_the_cache(self) -> None:
         # It reports success and changes nothing about the installed copy; saying otherwise sends

@@ -107,6 +107,8 @@ WORKTREE_FIELDS = {
     "confirmation",
     "closure",
 }
+# Delivery records written by `workflow worktree` operations; see workspace_delivery.py.
+WORKTREE_OPTIONAL_FIELDS = {"pull_request", "pr_exemption", "version_line", "version_exemption", "merge"}
 WORKTREE_KINDS = {"created", "existing", "none"}
 WORKTREE_ROLES = {"target", "additional"}
 WORKTREE_STATUSES = {"active", "kept", "removed"}
@@ -319,6 +321,19 @@ def is_new_project(state: dict[str, Any]) -> bool:
 # before the writing rules existed was not written to them. Set to the release instant of the
 # version that ships the rules (0.23.0). Read at call time so tests can move it.
 STYLE_CHECKED_FROM = "2026-10-05T10:40:00+00:00"
+
+
+# Projects created on or after this instant get the delivery gates: a merge request and an alpha line
+# before work in a repository, and a merge decision and release version before closure. Set to the
+# release instant of the version that ships the gates (0.24.0); the placeholder in the future kept
+# them off until then. Read at call time so tests can move it.
+DELIVERY_GATES_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
+DELIVERY_GATES_FROM = "2026-10-05T14:56:34+00:00"
+
+
+def is_delivery_gated(state: dict[str, Any]) -> bool:
+    """Whether `state` was created on or after `DELIVERY_GATES_FROM`; unjudgeable means no."""
+    return _created_on_or_after(state, DELIVERY_GATES_FROM)
 
 
 def is_style_checked(state: dict[str, Any]) -> bool:
@@ -1617,7 +1632,10 @@ def _validate_worktrees(
             report.errors.append(f"{label}: must be an object")
             continue
         _missing_fields(entry, WORKTREE_FIELDS, label, report)
-        _unexpected_fields(entry, WORKTREE_FIELDS, label, report)
+        _unexpected_fields(entry, WORKTREE_FIELDS | WORKTREE_OPTIONAL_FIELDS, label, report)
+        from workspace_delivery import delivery_errors
+
+        report.errors.extend(delivery_errors(entry, label))
         kind, role, status = entry.get("kind"), entry.get("role"), entry.get("status")
         if not _enum_string(kind, WORKTREE_KINDS):
             report.errors.append(f"{label}: kind must be one of {', '.join(sorted(WORKTREE_KINDS))}")

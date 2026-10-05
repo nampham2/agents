@@ -118,6 +118,15 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         project, "worktree", "wt-record", operation="record", path=str(worktree), branch="feat/p1-current",
         confirmation={"source": "user reply in the test", "response": "yes"}), refused=False)
     assert state_of(project)["working_directory"] == str(worktree)
+    # A current project also owes the delivery records. The repository has no remote and no version
+    # file, so both are exemptions; test_delivery.py covers the refusals and the real records.
+    user = {"source": "user reply in the test", "response": "no remote, no version"}
+    step("record-pull-request", cli.flow(
+        project, "worktree", "wt-pr", operation="pull_request", path=str(worktree), exempt="no_remote",
+        confirmation=user), refused=False)
+    step("record-alpha-exemption", cli.flow(
+        project, "worktree", "wt-alpha", operation="alpha", path=str(worktree), exempt=True,
+        confirmation=user), refused=False)
 
     step("start", cli.run("task", project, "start", "T01", "--expected-revision", state_of(project)["revision"]),
          refused=False)
@@ -168,7 +177,7 @@ def test_a_current_project_runs_from_init_to_a_validated_close(tmp_path: Path, s
 def test_both_launcher_surfaces_agree_step_for_step(tmp_path: Path) -> None:
     outcomes = [run_lifecycle(tmp_path / label, surface) for label, surface in zip("ab", SURFACES, strict=True)]
     assert outcomes[0] == outcomes[1]
-    assert len(outcomes[0]) == 18, "a shortened run would agree trivially"
+    assert len(outcomes[0]) == 20, "a shortened run would agree trivially"
 
 
 @pytest.mark.parametrize("surface", SURFACES)

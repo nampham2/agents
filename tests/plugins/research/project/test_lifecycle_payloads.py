@@ -167,8 +167,12 @@ SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
     "material-change-after-resume": (
         (*CORE, *RESUME, "execution-changes", "grill", "architecture-review"), 9000 + RULES),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
-                 "automation-records", "handoff-writing", "worktrees"), 4450 + RULES),
+                 "automation-records", "handoff-writing", "worktrees", "pull-requests"), 5016 + RULES),
 }
+
+# The closure budget rose from 4450 to 5016 (plus RULES) in 0.24.0 by the user's decision of 2026-10-05:
+# pull-requests.md (comment sweep, release, merge, cleanup, project commit) is required at repository
+# closure, and about 190 of its words moved there from worktrees.md. The other limits did not move.
 
 # Words in the same repository-target alignment set as measured at commit 4b3a68f (version 0.21.0),
 # before the compact path existed. The budget above must stay below it: a simpler procedure, not
@@ -189,6 +193,7 @@ CONDITIONAL = {
     "maintenance": "only when reopening a closed project",
     "memory-architecture": "only for memory format, migration or validation repairs",
     "memory-promotion": "only when closing with a promotion, compaction or retirement",
+    "pull-requests": "only before a review ask or test deploy in a repository, and at repository closure",
     "report-design": "only when a report is requested",
     "report-execution": "only when an execution report is requested",
     "report-html": "only when an HTML report is requested",

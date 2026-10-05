@@ -87,7 +87,7 @@ Use `workflow ... confirm` for actual agreement against the proposal token. Sing
 use `append ... finding`; avoid transcripts and duplicate task narratives.
 
 Record explicit requirements/design agreement and `Status: agreed` before planning; reuse current
-agreement on resume, and reopen affected choices for missing records or material changes.
+agreement on resume; reopen affected choices for missing records or material changes.
 
 ## Plan tasks
 
@@ -105,7 +105,7 @@ revision conflicts.
 ## Execute and verify
 
 Apply routine corrections directly when scope, dependencies, authorization and acceptance criteria
-remain valid. Settle affected workers first; record useful findings and rerun affected checks.
+stay valid. Settle affected workers first; record useful findings and rerun affected checks.
 For invalidated assignments, inputs or agreement, follow
 [execution-changes.md](references/execution-changes.md). `workflow ... correct` allocates correction
 tasks for terminal work without copying old acceptance or consent.
@@ -114,12 +114,12 @@ tasks for terminal work without copying old acceptance or consent.
 and roots; it resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`. Start before writing;
 `finish --backfill --note` records earlier work. Supply applicable constraints. Dependencies must
 be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
-existing authorization counts. A repository target needs a user-confirmed, recorded worktree
+existing authorization counts. A repository target needs a recorded worktree, MR and alpha line
 before its first write: follow [worktrees.md](references/worktrees.md) when the assignment warns.
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
 [legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs
-startup and repeated discovery; read [task-workers.md](references/task-workers.md) when doing so.
+startup and repeated discovery ([task-workers.md](references/task-workers.md)).
 
 Work in the target. Use `workflow ... verify` for explicit check batches with durable attempts;
 single checks may use:
@@ -132,22 +132,24 @@ Commands run in the target: use absolute paths and an explicit shell for pipelin
 with `read ... evidence --entry <record-id>`; never rewrite them as passes. Show a new check failing
 on bad input first. Finish with passing record IDs only when success criteria are met, not merely on
 zero exit. `--start-next T02` atomically starts a planned successor and returns its assignment.
-Prose uses `append ... finding --task T01`, not evidence.
+Prose uses `append ... finding --task T01`, not evidence. Before review or test deploy, follow
+[pull-requests.md](references/pull-requests.md).
 
 ## Review and close
 
 Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional;
 `workflow ... review` saves supplied findings and review state together.
 When tasks are `DONE` or justified `SKIPPED`, required reviews accepted, receipts present, and
-each recorded worktree has the user's commit and keep/remove decision
-([worktrees.md](references/worktrees.md)), close:
+each recorded worktree has its release, merge and the user's keep/remove choice
+([pull-requests.md](references/pull-requests.md)), close:
 
 ```sh
 research-project workflow <project-dir> finalize -
 ```
 
 Supply reflection, continuation, retry ID, revision and document tokens. Fix closure errors;
-use reported same-ID recovery for partial writes, never replay effects. Report result and path.
+use reported same-ID recovery for partial writes, never replay effects. Report result and path, then
+commit the project ([pull-requests.md](references/pull-requests.md)).
 
 Load [reports](references/report-design.md), [layout](references/durable-context.md) and
 [maintenance](references/maintenance.md) only when needed.

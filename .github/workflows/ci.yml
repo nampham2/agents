@@ -44,6 +44,15 @@ jobs:
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_NOSYSTEM: "1"
 
+      # An alpha version belongs to a project branch. It never reaches main, so a PR to main and a
+      # push to main must carry a plain release version. This step runs last so that a branch on an
+      # alpha line still runs lint, types and tests.
+      - name: Release version on main
+        if: github.base_ref == 'main' || github.ref == 'refs/heads/main'
+        run: uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py
+        env:
+          REQUIRE_RELEASE_VERSION: "1"
+
   python39-compat:
     # SKILL.md tells Claude to run the scripts with plain `python3`, which on many
     # machines is still 3.9. The dev toolchain needs >=3.11, but the shipped scripts
@@ -59,7 +68,7 @@ jobs:
       - name: Smoke-test the shipped scripts on Python 3.9
         working-directory: plugins/research/skills/project/scripts
         run: |
-          python -c "import workspace_documents, workspace_evidence, workspace_lib, workspace_operations, workspace_session"
+          python -c "import workspace_delivery, workspace_documents, workspace_evidence, workspace_lib, workspace_operations, workspace_session"
           workdir="$(mktemp -d)"
           # init refuses to create a workspace root implicitly, so a fresh root is explicit here and
           # resolution from the environment is exercised in the same breath.

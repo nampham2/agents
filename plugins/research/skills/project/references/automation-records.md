@@ -30,7 +30,7 @@ input with the same ID conflicts. Metadata operations never replay commands or e
 | `maintenance` | `reason`, optional `tasks`, `continuation`; reopens DONE as PLANNING. |
 | `cancel` | `reason`, explicit `tasks` dispositions, `continuation`; commits CANCELLED without deleting work or claiming workers stopped. |
 | `assess` | `topic`, `disposition` (`apply`, `reject`, `defer`), `reason`, `application`; saves the lesson assessment with its actual topic token. |
-| `worktree` | `operation` `record` (`path`, `branch`, optional `repository`, `kind`, `role`) or `close` (`path`, `decision` `keep`/`accept_dirty`/`remove`), plus quoted `confirmation`; verifies against Git and repoints the target; see [worktrees.md](worktrees.md). |
+| `worktree` | `operation` `record` (`path`, `branch`, optional `repository`, `kind`, `role`) or `close` (`path`, `decision` `keep`/`accept_dirty`/`remove`), or a delivery record: `pull_request`, `alpha`, `release`, `merge`; plus quoted `confirmation`; verifies against Git and repoints the target; see [worktrees.md](worktrees.md). |
 | `report` | Optional canonical report `sections` and boolean `graph`; generates requested Markdown scaffold/accounting and checks generated citations. |
 
 Continuation fields are strings: `next` (required on first checkpoint), `questions`, `pointers`,

@@ -42,6 +42,18 @@ def far_future_gate_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def far_future_delivery_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the delivery gates (MR, alpha line, merge, release) off for every test project.
+
+    The same reason as the alignment gates: every test project is created "now". The tests of the
+    delivery gates move the cutoff into the past themselves. raising=False for a baseline build.
+    """
+    import workspace_lib
+
+    monkeypatch.setattr(workspace_lib, "DELIVERY_GATES_FROM", "2099-01-01T00:00:00+00:00", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def far_future_style_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the advisory style findings off for every test project, as the gate cutoff is.
 

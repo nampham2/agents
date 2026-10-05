@@ -377,7 +377,7 @@ class TestRecordWorktree:
         refused(from_worktree, "cannot be the target root", record, linked, role="additional")
         refused(project, "kind must be", record, linked, kind="cloned")
         refused(project, "kind must be", record, linked, role="main")
-        refused(project, "must be record or close", run, {"operation": "prune", "path": str(linked),
+        refused(project, "must be record, close, pull_request", run, {"operation": "prune", "path": str(linked),
                                                              "confirmation": {"source": "s", "response": "r"}})
         refused(project, "must be absolute", record, Path("relative"))
         other = make_repository(tmp_path / "elsewhere")

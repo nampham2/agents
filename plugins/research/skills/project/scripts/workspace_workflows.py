@@ -19,6 +19,7 @@ from workspace_context import (
     worktree_observation,
     worktree_registered,
 )
+from workspace_delivery import DELIVERY_OPERATIONS, delivery_operation
 from workspace_documents import _replace_sections, _section_span
 from workspace_journal import (
     READ_INPUTS,
@@ -75,6 +76,8 @@ FIELDS = {
     "assess": {"topic", "disposition", "reason", "application"},
     "worktree": {
         "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
+        "host", "url", "number", "exempt", "files", "base", "alpha", "reason", "version", "merge_state", "method",
+        "evidence",
     },
 }
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
@@ -289,8 +292,11 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
         if role == "target" and kind != "none":
             patch["working_directory"] = path
         return patch, {"worktree": entry, "observed": seen}
+    if operation in DELIVERY_OPERATIONS:
+        entry = delivery_operation(worktrees, path, operation, request, confirmation)
+        return {"worktrees": worktrees}, {"worktree": entry}
     if operation != "close":
-        raise WorkspaceError("worktree operation must be record or close")
+        raise WorkspaceError("worktree operation must be record, close, pull_request, alpha, release or merge")
     decision = request.get("decision")
     if decision not in ("keep", "accept_dirty", "remove"):
         raise WorkspaceError("worktree decision must be keep, accept_dirty or remove")
@@ -301,6 +307,10 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
     # history (`superseded` below) and only then is the new one recorded. A removed worktree is final.
     if entry is None or entry["status"] not in ("active", "kept") or entry["kind"] == "none":
         raise WorkspaceError(f"no active or kept repository worktree is recorded at {path}")
+    if decision == "remove" and "pull_request" in entry and entry.get("merge", {}).get("state") != "merged":
+        raise WorkspaceError(
+            "the merge request is not merged; record operation merge, merged, before removing the worktree"
+        )
     superseded = copy.deepcopy(entry["closure"]) if entry["status"] == "kept" else None
     seen = worktree_observation(Path(path))
     if not seen["available"]:
