@@ -66,6 +66,21 @@ class PluginVersionTests(unittest.TestCase):
             version = json.loads((REPO_ROOT / relative).read_text(encoding="utf-8"))["version"]
             self.assertRegex(version, RELEASE, relative)
 
+    @unittest.skipUnless(
+        os.environ.get("REQUIRE_RELEASE_VERSION") == "1",
+        "set REQUIRE_RELEASE_VERSION=1 to require a plain release version",
+    )
+    def test_the_release_sets_the_delivery_gate_cutoff(self) -> None:
+        """The placeholder keeps the gates off. The release commit must replace it with the release instant.
+
+        The test reads the shipped source: `tests/conftest.py` holds the imported value in the far future.
+        """
+        source = (REPO_ROOT / "plugins/research/skills/project/scripts/workspace_lib.py").read_text(encoding="utf-8")
+        shipped = re.search(r'^DELIVERY_GATES_FROM = "([^"]+)"$', source, re.MULTILINE)
+        placeholder = re.search(r'^DELIVERY_GATES_PLACEHOLDER = "([^"]+)"$', source, re.MULTILINE)
+        assert shipped and placeholder
+        self.assertNotEqual(placeholder.group(1), shipped.group(1))
+
     def test_readme_leads_with_marketplace_installation_for_every_host(self) -> None:
         readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
         marketplace_install = readme.index("## Install through a marketplace")

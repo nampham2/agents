@@ -324,11 +324,11 @@ STYLE_CHECKED_FROM = "2026-10-05T10:40:00+00:00"
 
 
 # Projects created on or after this instant get the delivery gates: a merge request and an alpha line
-# before work in a repository, and a merge decision and release version before closure. It is a
-# placeholder in the future until the release commit of the version that ships the gates sets it to
-# that release instant. Read at call time so tests can move it.
+# before work in a repository, and a merge decision and release version before closure. Set to the
+# release instant of the version that ships the gates (0.24.0); the placeholder in the future kept
+# them off until then. Read at call time so tests can move it.
 DELIVERY_GATES_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
-DELIVERY_GATES_FROM = DELIVERY_GATES_PLACEHOLDER
+DELIVERY_GATES_FROM = "2026-10-05T14:56:34+00:00"
 
 
 def is_delivery_gated(state: dict[str, Any]) -> bool:
