@@ -20,7 +20,11 @@ from tests.conftest import REPO_ROOT
 
 BIN = REPO_ROOT / "plugins/research/bin"
 SKILL_SCRIPTS = REPO_ROOT / "plugins/research/skills/project/scripts"
-WRAPPERS = {"research-project": "manage_workspace.py", "research-validate": "validate_workspace.py"}
+WRAPPERS = {
+    "research-project": "manage_workspace.py",
+    "research-validate": "validate_workspace.py",
+    "research-dashboard": "workspace_dashboard.py",
+}
 ENTRY_SURFACES = (BIN, SKILL_SCRIPTS)
 
 

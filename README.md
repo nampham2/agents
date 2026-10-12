@@ -16,8 +16,8 @@ claude plugin marketplace add nampham2/agents
 claude plugin install research@agents
 ```
 
-Confirm with `claude plugin list`. The plugin installs one user-facing skill,
-`research:project`.
+Confirm with `claude plugin list`. The plugin installs two user-facing skills, `research:project`
+and `research:dashboard`.
 
 ### Codex
 
@@ -62,6 +62,29 @@ claude plugin install research@agents
 Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
+
+### 0.25.0 local dashboard
+
+A read-only web page over the research workspace. `research-dashboard` starts it, and the
+`research:dashboard` skill starts it in the background for an agent. Nothing adds a field to
+`project.json`.
+
+- **The page.** One list of every project, grouped by the day it last moved, newest first. A row
+  shows the status on a five-stop rail, the repository, the task progress, and one word when the
+  project waits on you. A row opens in place into the tasks, the decisions, the handoff, the
+  worktrees and the merge request. Filters: status, moved since (updated or created), repository,
+  search, and needs you. The page refreshes when a project file changes.
+- **Claude sessions.** A project lists the session it recorded, then up to three sessions whose
+  transcripts show work on it, newest first. Each has a button that copies
+  `cd <directory> && claude --resume <id>`. The checkpoint in `handoff.md` now records
+  `CLAUDE_CODE_SESSION_ID` and the directory, so a project touched from this release names its exact
+  session. Older projects use the transcript search under `~/.claude`.
+- **Command.** `research-dashboard [ROOT] [--port 8765] [--no-browser] [--claude-dir ~/.claude]`.
+  The root defaults to `$RESEARCH_WORKSPACE`, else the one established root. No root or several
+  roots is exit code 2. The server binds `127.0.0.1`, answers only requests that name that address,
+  offers no write, and stops on Ctrl-C.
+- **Constraints kept.** Standard library only, Python 3.9, no build step. The `python39-compat` CI
+  job starts the server on 3.9 and requests the project list.
 
 ### 0.23.0 writing rules and advisory style findings
 

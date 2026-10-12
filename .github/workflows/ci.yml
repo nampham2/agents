@@ -68,7 +68,7 @@ jobs:
       - name: Smoke-test the shipped scripts on Python 3.9
         working-directory: plugins/research/skills/project/scripts
         run: |
-          python -c "import workspace_delivery, workspace_documents, workspace_evidence, workspace_lib, workspace_operations, workspace_session"
+          python -c "import workspace_delivery, workspace_documents, workspace_evidence, workspace_lib, workspace_operations, workspace_session, workspace_dashboard"
           workdir="$(mktemp -d)"
           # init refuses to create a workspace root implicitly, so a fresh root is explicit here and
           # resolution from the environment is exercised in the same breath.
@@ -83,3 +83,19 @@ jobs:
           # rather than the table; the table's 3.9 output is compared against the dev interpreter's,
           # byte for byte, over every real project by tasks/check_python39_floor.py in 2026-09-10-003.
           python manage_workspace.py show-graph "$project"
+          # The dashboard is a server, so import is not enough either: serve the fresh workspace, answer
+          # one request on 3.9, and stop it. An async job in a non-interactive shell ignores SIGINT, so
+          # it is stopped with TERM, and its exit status is not judged here. The suite covers Ctrl-C.
+          python workspace_dashboard.py "$workdir/ws" --no-browser --port 0 --claude-dir "$workdir/claude" \
+            > "$workdir/dashboard.out" &
+          dashboard=$!
+          for _ in 1 2 3 4 5 6 7 8 9 10; do
+            grep -q '^Dashboard: ' "$workdir/dashboard.out" && break
+            sleep 1
+          done
+          url="$(sed -n 's/^Dashboard: //p' "$workdir/dashboard.out")"
+          test -n "$url"
+          curl --fail --silent "$url/api/projects" \
+            | python -c "import json, sys; assert json.load(sys.stdin)['projects'], 'no projects'"
+          kill "$dashboard"
+          wait "$dashboard" || true

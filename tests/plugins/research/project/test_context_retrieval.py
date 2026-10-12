@@ -258,12 +258,13 @@ class TestParkedProjectDiscovery:
         return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
 
     def test_readable_rows_carry_created_and_updated_and_unreadable_ones_do_not(self, tmp_path: Path) -> None:
-        project = self.make(tmp_path, "Carries times", "ALIGNING", self.ago(3))
+        stamp = self.ago(3)  # once: a second boundary between two calls would differ
+        project = self.make(tmp_path, "Carries times", "ALIGNING", stamp)
         broken = project.parent / "2026-01-01-001"
         broken.mkdir()
         atomic_write_json(broken / "project.json", {"title": []})
         rows = {row["project"]: row for row in list_projects(project.parent)["projects"]}
-        assert rows[project.name]["created"] and rows[project.name]["updated"] == self.ago(3)
+        assert rows[project.name]["created"] and rows[project.name]["updated"] == stamp
         assert rows["2026-01-01-001"]["status"] == "INVALID"
         assert "created" not in rows["2026-01-01-001"] and "updated" not in rows["2026-01-01-001"]
 
