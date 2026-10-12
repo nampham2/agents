@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -30,6 +31,7 @@ CONTINUATION_FIELDS = {
 }
 # `key.title()` would print "Do_Not"; the one field whose heading is not its name.
 CONTINUATION_HEADINGS = {"do_not": "Do not"}
+SESSION_FIELDS = {"host", "id", "cwd"}
 
 
 def selected_read(project: Path, selection: dict[str, Any]) -> dict[str, Any]:
@@ -301,7 +303,19 @@ def checkpoint_data(project: Path) -> dict[str, Any] | None:
         raise WorkspaceError("checkpoint metadata is unreadable") from error
     object_input(
         value,
-        {"version", "revision", "phase", "sources", "git", "worktrees", "continuation", "recorded", "tasks", "review"},
+        {
+            "version",
+            "revision",
+            "phase",
+            "sources",
+            "git",
+            "worktrees",
+            "continuation",
+            "recorded",
+            "tasks",
+            "review",
+            "session",
+        },
         {"version", "revision", "sources", "continuation", "git"},
     )
     if (
@@ -316,7 +330,27 @@ def checkpoint_data(project: Path) -> dict[str, Any] | None:
     object_input(value["continuation"], CONTINUATION_FIELDS)
     if not all(isinstance(item, str) for item in [*value["sources"].values(), *value["continuation"].values()]):
         raise WorkspaceError("invalid checkpoint fields")
+    # Checkpoints written before the session block have no key; a recorded one is a closed object.
+    session = value.get("session")
+    if session is not None:
+        object_input(session, SESSION_FIELDS, SESSION_FIELDS, where="checkpoint session")
+        if not all(isinstance(session[field], str) and session[field] for field in SESSION_FIELDS):
+            raise WorkspaceError("invalid checkpoint session")
     return value
+
+
+def session_observation() -> dict[str, str] | None:
+    """Name the agent session that writes this checkpoint, when the host says which one it is.
+
+    Claude Code sets `CLAUDE_CODE_SESSION_ID` in the session shell. Its transcript is filed under
+    the directory Claude was started in, and `claude --resume` finds the session through that
+    directory, so the working directory is recorded beside the id. No time: the checkpoint's own
+    `recorded` dates the save, and a per-call stamp would make every checkpoint look changed.
+    """
+    identity = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
+    if not identity:
+        return None
+    return {"host": "claude", "id": identity, "cwd": os.getcwd()}
 
 
 def render_checkpoint(
@@ -372,6 +406,7 @@ def render_checkpoint(
             if task["id"] in state["current_tasks"]
         ],
         "review": state["review"],
+        "session": session_observation(),
     }
     if previous and all(previous.get(key) == value for key, value in metadata.items()):
         return existing, previous

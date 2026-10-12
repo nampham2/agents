@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Research projects</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600&family=Public+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --paper: #EEF0EC; --sheet: #FFFFFF; --ink: #1B2430; --ink-muted: #5B6675; --line: #CFD4D0;
+  --teal: #0B6E6E; --teal-soft: #DCEBEA; --amber: #B8780A; --amber-soft: #F6E7C6;
+  --band: #F6F7F4; --focus: #0B6E6E; --slate: #3457A6;
+  --c-aligning: #7A4FBF; --c-planning: #2F6FB7; --c-executing: #0B6E6E; --c-review: #B35C9E;
+  --c-blocked: #B8780A; --c-done: #3C8A5A; --c-cancelled: #7B8794; --c-unreadable: #B3433A;
+  --display: "Bricolage Grotesque", "Avenir Next", "Helvetica Neue", Arial, sans-serif;
+  --text: "Public Sans", -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #141A1F; --sheet: #1C242B; --ink: #E6EAEE; --ink-muted: #97A3B0; --line: #313B45;
+    --teal: #4FB3AE; --teal-soft: #1E3A3A; --amber: #E0A23A; --amber-soft: #3E3118; --band: #202931; --focus: #4FB3AE; --slate: #8FA8E8;
+    --c-aligning: #B392E6; --c-planning: #7FB0E8; --c-executing: #4FB3AE; --c-review: #E08CC9;
+    --c-blocked: #E0A23A; --c-done: #6FBF8C; --c-cancelled: #8A96A3; --c-unreadable: #E07A70;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #141A1F; --sheet: #1C242B; --ink: #E6EAEE; --ink-muted: #97A3B0; --line: #313B45;
+  --teal: #4FB3AE; --teal-soft: #1E3A3A; --amber: #E0A23A; --amber-soft: #3E3118; --band: #202931; --focus: #4FB3AE; --slate: #8FA8E8;
+  --c-aligning: #B392E6; --c-planning: #7FB0E8; --c-executing: #4FB3AE; --c-review: #E08CC9;
+  --c-blocked: #E0A23A; --c-done: #6FBF8C; --c-cancelled: #8A96A3; --c-unreadable: #E07A70;
+}
+* { box-sizing: border-box; }
+.ic { width: 14px; height: 14px; vertical-align: -2px; margin-right: 5px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.s-ALIGNING { color: var(--c-aligning); } .s-PLANNING { color: var(--c-planning); } .s-EXECUTING { color: var(--c-executing); }
+.s-REVIEW { color: var(--c-review); } .s-BLOCKED { color: var(--c-blocked); } .s-DONE { color: var(--c-done); }
+.s-CANCELLED { color: var(--c-cancelled); } .s-UNREADABLE { color: var(--c-unreadable); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: currentColor; margin-right: 6px; vertical-align: 1px; }
+html { font-size: 15px; }
+body {
+  margin: 0; background: var(--paper); color: var(--ink); font-family: var(--text); line-height: 1.45;
+  font-feature-settings: "tnum" 1; -webkit-font-smoothing: antialiased;
+}
+a { color: var(--teal); text-decoration-thickness: 1px; text-underline-offset: 2px; }
+button { font: inherit; color: inherit; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+.wrap { max-width: 1320px; margin: 0 auto; padding: 0 16px; }
+
+/* Header */
+.masthead { padding: 28px 0 18px; display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 28px; }
+.masthead h1 { font-family: var(--display); font-weight: 600; font-size: 30px; letter-spacing: -0.01em; margin: 0; }
+.masthead .root { color: var(--ink-muted); font-size: 13px; word-break: break-all; }
+.masthead .tally { flex-basis: 100%; color: var(--ink-muted); font-size: 14px; }
+.masthead .tally b { color: var(--ink); font-weight: 600; }
+
+/* Needs you */
+.chip .dot { margin-right: 5px; }
+.detail .facts li { color: var(--ink-muted); } .detail .facts li b { color: var(--ink); font-weight: 500; }
+.day > .date b .ic { color: var(--ink-muted); }
+
+/* Layout */
+.board { display: grid; grid-template-columns: 220px 1fr; gap: 28px; align-items: start; padding-bottom: 60px; }
+.rail { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 18px; font-size: 14px; }
+.rail fieldset { border: 0; margin: 0; padding: 0; }
+.rail legend, .rail label.title { font-weight: 600; margin-bottom: 6px; display: block; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: var(--sheet); border-radius: 3px; padding: 3px 9px; cursor: pointer; font-size: 13px; }
+.chip[aria-pressed="true"] { background: var(--teal); border-color: var(--teal); color: #fff; }
+.chip .n { color: inherit; opacity: .7; margin-left: 4px; }
+.rail input[type="date"], .rail input[type="search"], .rail select {
+  width: 100%; font: inherit; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--sheet); color: var(--ink);
+}
+.rail .radios { display: flex; gap: 12px; margin-top: 6px; color: var(--ink-muted); }
+.rail .radios label { display: flex; gap: 4px; align-items: center; }
+.rail .toggle { display: flex; gap: 8px; align-items: center; }
+.rail .clear { align-self: flex-start; background: none; border: 0; padding: 0; color: var(--teal); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+
+/* Register */
+.register { background: var(--sheet); }
+.day { display: grid; grid-template-columns: 92px 1fr; border-top: 1px solid var(--line); }
+.day:first-child { border-top: 0; }
+.day > .date { padding: 16px 0 0 16px; color: var(--ink-muted); font-size: 13px; }
+.day > .date b { display: block; color: var(--ink); font-weight: 600; font-size: 15px; }
+.rows { display: flex; flex-direction: column; }
+.row { display: grid; grid-template-columns: 112px minmax(0, 1fr) 118px 150px; grid-template-areas: "id title status rail" "id meta meta rail" "detail detail detail detail"; gap: 2px 16px; padding: 14px 16px 14px 0; align-items: baseline; cursor: pointer; }
+.row:hover { background: var(--band); }
+.row + .row { border-top: 1px dashed var(--line); }
+.row .id { grid-area: id; font-weight: 500; color: var(--slate); }
+.row .title { grid-area: title; font-weight: 500; line-height: 1.35; }
+.row .status { grid-area: status; font-size: 13px; font-weight: 600; text-align: left; white-space: nowrap; }
+.row .meta .repo { color: var(--slate); }
+.row .meta { grid-area: meta; display: flex; flex-wrap: wrap; gap: 2px 18px; color: var(--ink-muted); font-size: 13px; min-width: 0; }
+.row .meta .ses { color: var(--amber); font-weight: 600; }
+.row { padding-top: 12px; padding-bottom: 12px; }
+.detail .facts { list-style: none; padding: 0; margin: 0 0 14px; }
+.detail .sessions { list-style: none; padding: 0; margin: 0 0 14px; }
+.detail .sessions li { padding: 8px 0; border-top: 1px solid var(--line); }
+.detail .sessions li:first-child { border-top: 0; padding-top: 0; }
+.detail .sessions .prompt { font-size: 13px; margin: 2px 0 6px; max-width: 70ch; }
+.detail .sessions button { border: 1px solid var(--line); background: var(--sheet); border-radius: 3px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
+.detail .sessions button:hover { border-color: var(--teal); color: var(--teal); }
+.detail .facts li { margin-bottom: 2px; }
+.row .railbox { grid-area: rail; align-self: center; }
+.row .detail { grid-area: detail; display: none; }
+.row.open .detail { display: grid; }
+
+/* Status rail */
+.srail { display: flex; align-items: center; gap: 0; width: 140px; height: 18px; }
+.srail i { display: block; width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+.srail s { display: block; height: 2px; background: var(--line); flex: 1; text-decoration: none; }
+.srail i.on { background: var(--rc, var(--teal)); }
+.srail s.on { background: var(--rc, var(--teal)); }
+.srail i.cur { width: 11px; height: 11px; }
+.srail i.hollow { background: var(--sheet); border: 2px solid var(--c-blocked); }
+.srail.cancelled { position: relative; }
+.srail.cancelled::after { content: ""; position: absolute; left: 0; right: 0; top: 8px; height: 2px; background: var(--ink-muted); transform: rotate(-6deg); }
+.srail.unreadable s { background: repeating-linear-gradient(90deg, var(--line) 0 4px, transparent 4px 8px); }
+.srail-legend { color: var(--ink-muted); font-size: 12px; margin-top: 4px; }
+
+/* Finished */
+
+/* Detail */
+.detail { grid-template-columns: 1fr 1fr; gap: 20px 32px; padding: 14px 0 6px; margin-top: 10px; border-top: 1px solid var(--line); cursor: default; font-size: 14px; }
+.detail h3 { font-size: 13px; font-weight: 600; margin: 0 0 6px; color: var(--ink-muted); }
+.detail section { margin-bottom: 18px; min-width: 0; }
+.detail p { margin: 0 0 8px; max-width: 70ch; }
+.detail .mute { color: var(--ink-muted); }
+.detail table { border-collapse: collapse; width: 100%; }
+.detail td, .detail th { text-align: left; padding: 4px 10px 4px 0; vertical-align: top; border-top: 1px solid var(--line); font-weight: 400; }
+.detail th { border-top: 0; color: var(--ink-muted); font-weight: 500; font-size: 13px; }
+.detail td.st { white-space: nowrap; }
+.detail td.st.RUNNING { color: var(--teal); font-weight: 600; }
+.detail td.st.BLOCKED { color: var(--amber); font-weight: 600; }
+.detail ul { margin: 0; padding-left: 18px; }
+.detail li { margin-bottom: 4px; }
+.detail .copies { display: flex; flex-wrap: wrap; gap: 8px; }
+.detail .copies button { border: 1px solid var(--line); background: var(--sheet); border-radius: 3px; padding: 4px 10px; cursor: pointer; font-size: 13px; }
+.detail .copies button:hover { border-color: var(--teal); color: var(--teal); }
+.detail .donot { border-left: 3px solid var(--amber); padding-left: 10px; }
+.detail .inscope { white-space: pre-wrap; font-size: 13px; color: var(--ink-muted); max-height: 160px; overflow: auto; }
+
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 8px 14px; border-radius: 3px; font-size: 14px; opacity: 0; transition: opacity .15s; pointer-events: none; }
+.toast.show { opacity: 1; }
+.none { padding: 28px 16px; color: var(--ink-muted); }
+.notice { margin: 0 0 18px; padding: 10px 14px; background: var(--sheet); border-left: 3px solid var(--c-blocked); font-size: 14px; }
+.notice[hidden] { display: none; }
+.rowbtn { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.rowbtn:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
+
+@media (max-width: 900px) {
+  .board { grid-template-columns: 1fr; gap: 16px; }
+  .rail { position: static; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; }
+  .rail fieldset.status { grid-column: 1 / -1; }
+  .day { grid-template-columns: 1fr; }
+  .day > .date { padding: 12px 16px 0; }
+  .row { grid-template-columns: 1fr; grid-template-areas: "id" "title" "status" "meta" "rail" "detail"; padding: 12px 16px; }
+  .detail { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></symbol>
+  <symbol id="i-tasks" viewBox="0 0 24 24"><path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2.5"/><circle cx="6" cy="19" r="2.5"/><circle cx="18" cy="8" r="2.5"/><path d="M6 7.5v9M18 10.5c0 4-12 2-12 6"/></symbol>
+  <symbol id="i-hand" viewBox="0 0 24 24"><path d="M8 13V5a1.5 1.5 0 0 1 3 0v6M11 11V4a1.5 1.5 0 0 1 3 0v7M14 11V5.5a1.5 1.5 0 0 1 3 0V13"/><path d="M17 13v2a6 6 0 0 1-6 6h-1a6 6 0 0 1-5-2.7L3 14a1.5 1.5 0 0 1 2.5-1.6L8 15"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><circle cx="8" cy="14" r="4"/><path d="M11 11l9-9M16 6l3 3M13 9l2 2"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3l10 18H2z"/><path d="M12 10v5M12 18v.5"/></symbol>
+  <symbol id="i-ban" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M6 6l12 12"/></symbol>
+  <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h12l-2 4 2 4H5"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M4 12l5 5L20 6"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol>
+  <symbol id="i-compass" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M15 9l-2 5-5 2 2-5z"/></symbol>
+  <symbol id="i-plan" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 10h16M9 10v9"/></symbol>
+  <symbol id="i-cal" viewBox="0 0 24 24"><path d="M4 6h16v14H4zM4 10h16M8 3v4M16 3v4"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 24 24"><path d="M9 9h10v11H9zM5 15V4h10"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6zM14 3v4h4"/></symbol>
+</svg>
+<div class="wrap">
+  <header class="masthead">
+    <h1>Research projects</h1>
+    <div class="root" id="root"></div>
+    <div class="tally" id="tally"></div>
+  </header>
+  <div class="notice" id="notice" role="status" hidden></div>
+
+  <div class="board">
+    <aside class="rail" aria-label="Filters">
+      <fieldset class="status"><legend>Status</legend><div class="chips" id="status-chips"></div></fieldset>
+      <fieldset><legend>Moved since</legend>
+        <input type="date" id="from" aria-label="From date">
+        <div class="radios">
+          <label><input type="radio" name="field" value="updated" checked> updated</label>
+          <label><input type="radio" name="field" value="created"> created</label>
+        </div>
+      </fieldset>
+      <fieldset><legend>Repository</legend><select id="repo"><option value="">All repositories</option></select></fieldset>
+      <fieldset><legend>Search</legend><input type="search" id="q" placeholder="id, title or path"></fieldset>
+      <fieldset><label class="toggle"><input type="checkbox" id="attn-only"> Needs you only</label></fieldset>
+      <button class="clear" id="clear">Clear filters</button>
+      <div class="srail-legend">Rail: aligning, planning, executing, review, done.<br>Hollow amber stop: blocked.</div>
+    </aside>
+
+    <main class="register" id="register"></main>
+  </div>
+</div>
+<div class="toast" id="toast" role="status"></div>
+
+<script>
+let DATA = null;
+const RAIL = ["ALIGNING", "PLANNING", "EXECUTING", "REVIEW", "DONE"];
+const ORDER = ["EXECUTING", "BLOCKED", "REVIEW", "PLANNING", "ALIGNING", "DONE", "CANCELLED", "UNREADABLE"];
+const TERMINAL = new Set(["DONE", "CANCELLED"]);
+const POLL_MS = 3000;
+const state = { statuses: new Set(), from: "", field: "updated", repo: "", q: "", attnOnly: false, open: new Set(), focus: null };
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+// Workspace files are data, not code: only a web address becomes a link.
+const safeUrl = u => /^https?:\/\//i.test(String(u || "")) ? String(u) : "";
+const link = (u, text) => safeUrl(u) ? `<a href="${esc(safeUrl(u))}" target="_blank" rel="noopener">${text}</a>` : esc(text);
+// A command the reader pastes into a shell: quote every part that is not plainly safe.
+const shq = s => /^[\w@%+=:,.\/-]+$/.test(s) ? s : "'" + String(s).replace(/'/g, "'\\''") + "'";
+const ic = name => `<svg class="ic" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function rel(iso) {
+  if (!iso) return "";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 3600) return Math.max(1, Math.round(s / 60)) + " min ago";
+  if (s < 86400) return Math.round(s / 3600) + " h ago";
+  if (s < 86400 * 14) return Math.round(s / 86400) + " d ago";
+  return Math.round(s / 86400 / 7) + " wk ago";
+}
+function exact(iso) { if (!iso) return ""; const d = new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
+function dayKey(p) { return (p[state.field] || p.updated || p.id).slice(0, 10); }
+function dayLabel(key) { const d = new Date(key + "T00:00:00"); const y = d.getFullYear() === new Date().getFullYear() ? "" : " " + d.getFullYear(); return `<b>${d.getDate()} ${MONTHS[d.getMonth()]}${y}</b>${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]}`; }
+
+function railHtml(p) {
+  if (p.status === "UNREADABLE") return `<div class="srail unreadable" title="project.json unreadable"><i></i><s></s><i></i><s></s><i></i><s></s><i></i><s></s><i></i></div>`;
+  let idx = RAIL.indexOf(p.status);
+  const blocked = p.status === "BLOCKED", cancelled = p.status === "CANCELLED";
+  if (blocked) idx = p.task_total ? 2 : 0;
+  if (cancelled) idx = -1;
+  let h = `<div class="srail ${cancelled ? "cancelled" : ""}" style="--rc: var(--c-${esc(p.status.toLowerCase())})" title="${esc(p.status)}">`;
+  RAIL.forEach((s, i) => {
+    const on = i <= idx, cur = i === idx;
+    h += `<i class="${on ? "on" : ""} ${cur ? "cur" : ""} ${cur && blocked ? "hollow" : ""}"></i>`;
+    if (i < RAIL.length - 1) h += `<s class="${i < idx ? "on" : ""}"></s>`;
+  });
+  return h + "</div>";
+}
+function cause(p) {
+  if (p.status === "BLOCKED") return "blocked";
+  if (p.pending_authorization) return "authorization";
+  if (p.review === "pending") return "review";
+  if (p.session === "waiting") return "waiting";
+  if (p.session === "blocked") return "blocked";
+  return "";
+}
+const STATUS_ICON = { ALIGNING: "compass", PLANNING: "plan", EXECUTING: "play", REVIEW: "eye", BLOCKED: "alert", DONE: "check", CANCELLED: "ban", UNREADABLE: "alert" };
+const CAUSE_ICON = { waiting: "hand", blocked: "alert", authorization: "key", review: "eye" };
+function statusHtml(p) { return `<span class="s-${esc(p.status)}">${ic(STATUS_ICON[p.status] || "alert")}${esc(p.status.toLowerCase())}</span>`; }
+
+function rowHtml(p) {
+  const open = state.open.has(p.id);
+  const prog = p.task_total ? `${p.task_done} of ${p.task_total} tasks` : (p.unreadable ? "" : "no tasks yet");
+  const c = cause(p);
+  const waits = c && !TERMINAL.has(p.status) ? `<span class="ses">${ic(CAUSE_ICON[c] || "hand")}${esc(c)}</span>` : "";
+  return `<article class="row ${open ? "open" : ""}" data-id="${esc(p.id)}">
+    <div class="id">${esc(p.id)}</div>
+    <div class="title"><button class="rowbtn" aria-expanded="${open}">${esc(p.title)}</button></div>
+    <div class="status">${statusHtml(p)}</div>
+    <div class="railbox">${railHtml(p)}</div>
+    <div class="meta">
+      <span title="${esc(p.updated)}">${ic("clock")}${esc(rel(p.updated))}</span>
+      ${p.repo ? `<span class="repo">${ic("folder")}${esc(p.repo)}</span>` : ""}
+      ${prog ? `<span>${ic("tasks")}${esc(prog)}</span>` : ""}
+      ${waits}
+    </div>
+    <div class="detail">${open ? detailHtml(p) : ""}</div>
+  </article>`;
+}
+
+function sessionHtml(s, i) {
+  const live = s.running === "busy" ? `<span class="s-EXECUTING">${ic("play")}running now</span>` : s.running ? `<span class="s-PLANNING">${ic("play")}open</span>` : "";
+  const tag = s.exact ? "recorded" : i === 0 ? "latest" : "";
+  const facts = [s.last ? `active ${rel(s.last)}` : "", s.mentions ? `named ${s.mentions} times` : "", s.cwd ? `in ${s.cwd.split("/").pop()}` : ""].filter(Boolean).join(", ");
+  const cmd = `${s.cwd ? `cd ${shq(s.cwd)} && ` : ""}claude --resume ${shq(s.id)}`;
+  return `<li><div><b>${esc(s.id.slice(0, 8))}</b> ${live} ${tag ? `<span class="mute">${tag}</span>` : ""} <span class="mute">${esc(facts)}</span></div>
+    ${s.prompt ? `<div class="mute prompt">"${esc(s.prompt)}"</div>` : ""}
+    <button data-copy="${esc(cmd)}">${ic("copy")}Resume command</button></li>`;
+}
+
+function detailHtml(p) {
+  if (p.unreadable) return `<section><p class="mute">project.json could not be read. Path: ${esc(p.path)}</p></section>`;
+  const tasks = p.tasks.length ? `<table><tr><th>Task</th><th>Name</th><th>Status</th><th>Effect</th><th>Evidence</th></tr>${p.tasks.map(t => `<tr><td>${esc(t.id)}</td><td>${esc(t.name)}</td><td class="st ${esc(t.status)}">${esc(t.status.toLowerCase())}</td><td>${esc(t.effect || "")}</td><td>${t.evidence || ""}</td></tr>`).join("")}</table>` : `<p class="mute">No tasks planned yet.</p>`;
+  const files = ["spec.md", "architecture.md", "handoff.md", "evidence.md"].map(f => `<button data-copy="${esc(p.path + "/" + f)}">${ic("file")}${f}</button>`).join("");
+  const wts = (p.worktrees || []).map(w => `<li>${esc(w.branch)} <span class="mute">(${esc(w.status)})</span><br><span class="mute">${esc(w.path)}</span>${w.mr ? `<br>${link(w.mr, w.mr)}` : ""}</li>`).join("");
+  const active = (p.worktrees || []).filter(w => w.status === "active");
+  const wt = active[0];
+  const facts = [
+    `${ic("cal")}Moved <b>${esc(exact(p.updated))}</b>, created ${esc(exact(p.created))}`,
+    p.running && p.running.length ? `<span class="s-EXECUTING">${ic("play")}</span>Running <b>${esc(p.running.join(", "))}</b>` : "",
+    p.review_required ? `${ic("eye")}Review <b>${esc(p.review)}</b>` : "",
+    p.block_reasons && p.block_reasons[0] ? `<span class="s-BLOCKED">${ic("alert")}</span>Blocked: ${esc(p.block_reasons[0])}` : "",
+    p.cancellation_reason ? `${ic("ban")}Cancelled: ${esc(p.cancellation_reason)}` : "",
+    wt && safeUrl(wt.mr) ? `${ic("branch")}${link(wt.mr, "Merge request")} on ${esc(wt.branch)}` : "",
+  ].filter(Boolean);
+  return `
+    <section><h3>Now</h3><ul class="facts">${facts.map(f => `<li>${f}</li>`).join("")}</ul>
+      <h3>Objective</h3><p>${esc(p.objective) || '<span class="mute">Not written yet.</span>'}</p>
+      ${p.in_scope ? `<h3>In scope</h3><div class="inscope">${esc(p.in_scope)}</div>` : ""}</section>
+    <section>
+      ${p.has_handoff ? `
+        ${p.do_not ? `<h3>Do not</h3><p class="donot">${esc(p.do_not)}</p>` : ""}
+        <h3>Next</h3><p>${esc(p.next) || '<span class="mute">Not written.</span>'}</p>
+        ${p.questions ? `<h3>Open questions</h3><p>${esc(p.questions)}</p>` : ""}` : `<h3>Handoff</h3><p class="mute">No continuation note for this project.</p>`}
+    </section>
+    <section><h3>Tasks</h3>${tasks}</section>
+    <section>
+      <h3>Recent decisions</h3>${p.decisions.length ? `<ul>${p.decisions.map(d => `<li>${esc(d)}</li>`).join("")}</ul>` : `<p class="mute">None recorded.</p>`}
+      ${wts ? `<h3>Worktrees</h3><ul>${wts}</ul>` : ""}
+      <h3>Claude sessions</h3>${(p.sessions || []).length ? `<ul class="sessions">${p.sessions.map(sessionHtml).join("")}</ul>` : `<p class="mute">No Claude session found for this project.</p>`}
+      <h3>Copy</h3><div class="copies">
+        <button data-copy="${esc(p.path)}">${ic("copy")}Project path</button>
+        <button data-copy="${esc(`Use the project skill to resume ${p.path}.`)}">${ic("copy")}Resume prompt</button>
+        ${active.map(w => `<button data-copy="${esc(w.path)}">${ic("copy")}Worktree path</button>${safeUrl(w.mr) ? `<button data-copy="${esc(safeUrl(w.mr))}">${ic("copy")}Merge request link</button>` : ""}`).join("")}
+      </div>
+      <h3>Files</h3><div class="copies">${files}</div>
+    </section>`;
+}
+
+function matches(p) {
+  if (state.statuses.size && !state.statuses.has(p.status)) return false;
+  if (state.from && (p[state.field] || "") < state.from) return false;
+  if (state.repo && p.repo !== state.repo) return false;
+  if (state.attnOnly && !p.needs_you) return false;
+  if (state.q) { const q = state.q.toLowerCase(); if (![p.id, p.title, p.working_directory].some(v => (v || "").toLowerCase().includes(q))) return false; }
+  return true;
+}
+
+function groupHtml(list) {
+  const groups = new Map();
+  list.forEach(p => { const k = dayKey(p); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(p); });
+  return [...groups.keys()].sort().reverse().map(k => `<div class="day"><div class="date">${dayLabel(k)}</div><div class="rows">${groups.get(k).map(rowHtml).join("")}</div></div>`).join("");
+}
+
+function render() {
+  const register = document.getElementById("register");
+  if (!DATA) { register.innerHTML = `<div class="none">Loading projects.</div>`; return; }
+  const all = DATA.projects;
+  document.getElementById("root").textContent = DATA.root;
+  const inflight = all.filter(p => !TERMINAL.has(p.status));
+  const attn = all.filter(p => p.needs_you);
+  const latest = all.map(p => p.updated || "").sort().pop();
+  document.getElementById("tally").innerHTML = all.length ? `<b>${all.length}</b> projects, <b>${inflight.length}</b> in flight, <b>${attn.length}</b> need you. Last movement ${esc(rel(latest))}.` : "";
+
+  const shown = all.filter(matches).sort((a, b) => (b[state.field] || "").localeCompare(a[state.field] || ""));
+  register.innerHTML = shown.length ? groupHtml(shown) : `<div class="none">${all.length ? "No project matches these filters." : `No projects under ${esc(DATA.root)}.`}</div>`;
+
+  const counts = {}; all.forEach(p => counts[p.status] = (counts[p.status] || 0) + 1);
+  document.getElementById("status-chips").innerHTML = ORDER.filter(s => counts[s]).map(s => `<button class="chip" data-status="${s}" aria-pressed="${state.statuses.has(s)}"><span class="dot s-${s}"></span>${s.toLowerCase()}<span class="n">${counts[s]}</span></button>`).join("");
+  const repos = [...new Set(all.map(p => p.repo).filter(Boolean))].sort();
+  const select = document.getElementById("repo");
+  if (select.dataset.key !== repos.join("\n")) {
+    select.innerHTML = `<option value="">All repositories</option>` + repos.map(r => `<option>${esc(r)}</option>`).join("");
+    select.dataset.key = repos.join("\n");
+    select.value = state.repo;
+    state.repo = select.value;
+  }
+  if (state.focus) {
+    const target = [...document.querySelectorAll(".row")].find(r => r.dataset.id === state.focus);
+    target?.querySelector(".rowbtn")?.focus({ preventScroll: true });
+    state.focus = null;
+  }
+}
+
+function setStatus(kind, detail) {
+  const notice = document.getElementById("notice");
+  notice.textContent = kind === "offline" ? `Server not reachable. Restart research-dashboard. Showing data from ${exact(DATA.generated)}.`
+    : kind === "error" ? `Could not load projects: ${detail}. Retrying.` : "";
+  notice.hidden = !notice.textContent;
+}
+async function getJson(path) {
+  const response = await fetch(path, { cache: "no-store" });
+  if (!response.ok) throw new Error(`${path} answered ${response.status}`);
+  return response.json();
+}
+async function load() { DATA = await getJson("/api/projects"); render(); }
+async function tick() {
+  try {
+    const version = await getJson("/api/version");
+    if (!DATA || version.fingerprint !== DATA.fingerprint) await load();
+    setStatus("live");
+  } catch (error) {
+    setStatus(DATA ? "offline" : "error", error.message);
+  }
+  setTimeout(tick, POLL_MS);
+}
+
+function toast(message) { const t = document.getElementById("toast"); t.textContent = message; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1400); }
+function toggleRow(id) {
+  const opening = !state.open.has(id);
+  opening ? state.open.add(id) : state.open.delete(id);
+  state.focus = id;
+  render();
+  // Sessions change without any project file changing: look again when a row opens.
+  if (opening) load().catch(() => {});
+}
+
+document.addEventListener("click", e => {
+  const chip = e.target.closest(".chip"); if (chip) { const s = chip.dataset.status; state.statuses.has(s) ? state.statuses.delete(s) : state.statuses.add(s); return render(); }
+  const copy = e.target.closest("[data-copy]");
+  if (copy) { navigator.clipboard.writeText(copy.dataset.copy).then(() => toast("Copied"), () => toast("Copy failed")); return; }
+  if (e.target.closest(".detail") || e.target.closest("a")) return;
+  const row = e.target.closest(".row");
+  if (row) toggleRow(row.dataset.id);
+});
+document.getElementById("from").addEventListener("input", e => { state.from = e.target.value; render(); });
+document.querySelectorAll("input[name=field]").forEach(r => r.addEventListener("change", e => { state.field = e.target.value; render(); }));
+document.getElementById("repo").addEventListener("change", e => { state.repo = e.target.value; render(); });
+document.getElementById("q").addEventListener("input", e => { state.q = e.target.value.trim(); render(); });
+document.getElementById("attn-only").addEventListener("change", e => { state.attnOnly = e.target.checked; render(); });
+document.getElementById("clear").addEventListener("click", () => {
+  Object.assign(state, { from: "", repo: "", q: "", attnOnly: false });
+  state.statuses.clear();
+  for (const id of ["from", "repo", "q"]) document.getElementById(id).value = "";
+  document.getElementById("attn-only").checked = false;
+  render();
+});
+if (location.hash) state.open.add(decodeURIComponent(location.hash.slice(1)));
+render();
+tick();
+// Relative times ("5 min ago") age on their own.
+setInterval(() => { if (DATA) render(); }, 60000);
+</script>
+</body>
+</html>

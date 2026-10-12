@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Claude Code PATH entry point for the host-neutral dashboard launcher.
+#
+# Claude Code puts <plugin-root>/bin on PATH. Codex does not, so the implementation lives beside
+# the skill and this wrapper delegates to it. Both routes therefore execute the same launcher.
+set -euo pipefail
+
+source=${BASH_SOURCE[0]}
+while [[ -L $source ]]; do
+  directory=$(cd -P "$(dirname "$source")" && pwd)
+  source=$(readlink "$source")
+  [[ $source != /* ]] && source=$directory/$source
+done
+here=$(cd -P "$(dirname "$source")" && pwd)
+launcher=$here/../skills/project/scripts/research-dashboard
+
+if [[ ! -x $launcher ]]; then
+  echo "error: $launcher is missing or not executable; this wrapper must stay beside the plugin's skills directory" >&2
+  exit 1
+fi
+
+exec "$launcher" "$@"
