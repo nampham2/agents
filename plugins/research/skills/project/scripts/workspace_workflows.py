@@ -76,8 +76,8 @@ FIELDS = {
     "assess": {"topic", "disposition", "reason", "application"},
     "worktree": {
         "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
-        "host", "url", "number", "exempt", "files", "base", "alpha", "reason", "version", "merge_state", "method",
-        "evidence",
+        "host", "url", "number", "exempt", "files", "base", "base_moved", "alpha", "reason", "version", "merge_state",
+        "method", "evidence",
     },
 }
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
