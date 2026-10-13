@@ -44,6 +44,31 @@ def _positive_integer(value: object, field: str) -> int:
     return value
 
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in version.split("."))
+
+
+def _base_move(line: dict[str, Any], base: str, request: dict[str, Any], label: str) -> dict[str, Any] | None:
+    """The recorded base move when `base` leaves the line, or None when it stays.
+
+    A base moves only when the main branch released past it; the agent asks the user first and says so
+    with `base_moved: true` and a `reason`. The number of the alpha line still only goes up.
+    """
+    moved = request.get("base_moved", False)
+    if not isinstance(moved, bool):
+        raise WorkspaceError("base_moved must be true or false")
+    if base == line["base"]:
+        if moved:
+            raise WorkspaceError(f"base_moved needs a base different from the recorded {base}")
+        return None
+    if not moved:
+        raise WorkspaceError(f"{label} {line['base']} for the whole project unless base_moved is true; found {base}")
+    if _version_tuple(base) <= _version_tuple(line["base"]):
+        raise WorkspaceError(f"a moved base must be greater than {line['base']}; found {base}")
+    reason = string_input(request.get("reason"), "reason")
+    return {"from": line["base"], "to": base, "reason": reason, "recorded_at": now_iso()}
+
+
 def _read_version_file(root: Path, relative: str) -> str:
     candidate = Path(relative)
     if candidate.is_absolute() or ".." in candidate.parts:
@@ -127,8 +152,7 @@ def _alpha(entry: dict[str, Any], request: dict[str, Any], root: Path, confirmat
     base = string_input(request.get("base"), "base")
     if not PLAIN_VERSION.match(base):
         raise WorkspaceError("base must be a plain X.Y.Z version")
-    if line is not None and base != line["base"]:
-        raise WorkspaceError(f"the base stays {line['base']} for the whole project; found {base}")
+    move = None if line is None else _base_move(line, base, request, "the base stays")
     alpha = _positive_integer(request.get("alpha"), "alpha")
     if line is not None and alpha <= line["alpha"]:
         raise WorkspaceError(f"the alpha number only goes up: recorded {line['alpha']}, found {alpha}")
@@ -141,7 +165,12 @@ def _alpha(entry: dict[str, Any], request: dict[str, Any], root: Path, confirmat
             raise WorkspaceError(f"version file {item['path']} does not contain {expected}")
     history = copy.deepcopy(line["history"]) if line is not None else []
     history.append({"alpha": alpha, "recorded_at": now_iso(), "reason": reason})
-    entry["version_line"] = {"files": files, "base": base, "alpha": alpha, "history": history, "release": None}
+    moves = copy.deepcopy(line.get("base_moves", [])) if line is not None else []
+    if move is not None:
+        moves.append(move)
+    entry["version_line"] = {
+        "files": files, "base": base, "alpha": alpha, "history": history, "release": None, "base_moves": moves,
+    }
 
 
 def _release(entry: dict[str, Any], request: dict[str, Any], root: Path) -> None:
@@ -149,8 +178,9 @@ def _release(entry: dict[str, Any], request: dict[str, Any], root: Path) -> None
     if line is None:
         raise WorkspaceError("no version_line is recorded; record the alpha line first")
     version = string_input(request.get("version"), "version")
-    if version != line["base"]:
-        raise WorkspaceError(f"the release version must equal the base {line['base']}; found {version}")
+    if not PLAIN_VERSION.match(version):
+        raise WorkspaceError("the release version must be a plain X.Y.Z version")
+    move = _base_move(line, version, request, "the release version must equal the base")
     leftover = re.compile(re.escape(version) + r"(?:a\d+|-alpha\.\d+)")
     for item in line["files"]:
         text = _read_version_file(root, item["path"])
@@ -158,6 +188,9 @@ def _release(entry: dict[str, Any], request: dict[str, Any], root: Path) -> None
             raise WorkspaceError(f"version file {item['path']} still carries an alpha version of {version}")
         if not _contains(text, version):
             raise WorkspaceError(f"version file {item['path']} does not contain {version}")
+    if move is not None:
+        line["base"] = version
+        line["base_moves"] = [*line.get("base_moves", []), move]
     line["release"] = {"version": version, "recorded_at": now_iso()}
 
 
@@ -212,12 +245,15 @@ def _object_errors(value: object, label: str, fields: set[str]) -> list[str]:
 
 def _line_errors(line: object, label: str) -> list[str]:
     fields = {"files", "base", "alpha", "history", "release"}
+    if isinstance(line, dict) and "base_moves" in line:
+        fields.add("base_moves")  # lines recorded before base moves existed carry no list
     problems = _object_errors(line, label, fields)
     if problems or not isinstance(line, dict):
         return problems
     base, alpha, history, release = line["base"], line["alpha"], line["history"], line["release"]
     if not isinstance(base, str) or not PLAIN_VERSION.match(base):
         problems.append(f"{label}: base must be a plain X.Y.Z version")
+    problems += _move_errors(line.get("base_moves", []), base, label)
     if isinstance(alpha, bool) or not isinstance(alpha, int) or alpha < 1:
         problems.append(f"{label}: alpha must be a whole number of at least 1")
     files = line["files"]
@@ -249,6 +285,23 @@ def _line_errors(line: object, label: str) -> list[str]:
     ):
         problems.append(f"{label}: release needs version equal to base and a recorded_at timestamp")
     return problems
+
+
+def _move_errors(moves: object, base: object, label: str) -> list[str]:
+    """Shape errors of `base_moves`: ordered plain versions, each move explained, ending at the base."""
+    if not isinstance(moves, list):
+        return [f"{label}: base_moves must be a list"]
+    for index, item in enumerate(moves, start=1):
+        if (
+            not isinstance(item, dict) or item.keys() != {"from", "to", "reason", "recorded_at"}
+            or not all(isinstance(item[key], str) and PLAIN_VERSION.match(item[key]) for key in ("from", "to"))
+            or _version_tuple(item["from"]) >= _version_tuple(item["to"])
+            or not _non_empty_string(item["reason"]) or not _is_timestamp(item["recorded_at"])
+        ):
+            return [f"{label}: base_moves item {index} needs from < to as plain versions, a reason and recorded_at"]
+    if moves and moves[-1]["to"] != base:
+        return [f"{label}: the last base move must end at the current base"]
+    return []
 
 
 def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:

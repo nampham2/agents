@@ -193,6 +193,26 @@ class TestAlphaLine:
         write_versions(linked, "0.25.0", 2)
         refuse(recorded, linked, "base stays 0.24.0", "alpha", base="0.25.0", alpha=2, reason="new base")
 
+    def test_the_base_moves_only_when_said_so_and_only_up(self, recorded: Path, linked: Path) -> None:
+        alpha(recorded, linked, 1)
+        write_versions(linked, "0.24.0", 2)
+        refuse(recorded, linked, "must be true or false", "alpha", base="0.24.0", alpha=2, reason="r", base_moved="yes")
+        refuse(recorded, linked, "needs a base different", "alpha", base="0.24.0", alpha=2, reason="r", base_moved=True)
+        write_versions(linked, "0.23.9", 2)
+        refuse(recorded, linked, "greater than 0.24.0", "alpha", base="0.23.9", alpha=2, reason="r", base_moved=True)
+        write_versions(linked, "0.25.0", 1)
+        refuse(recorded, linked, "only goes up", "alpha", base="0.25.0", alpha=1, reason="r", base_moved=True)
+        write_versions(linked, "0.25.0", 2)
+        op(recorded, linked, "alpha", base="0.25.0", alpha=2, reason="main released 0.24.0", base_moved=True)
+        line = entry_of(recorded)["version_line"]
+        assert (line["base"], line["alpha"], [item["alpha"] for item in line["history"]]) == ("0.25.0", 2, [1, 2])
+        assert [(m["from"], m["to"], m["reason"]) for m in line["base_moves"]] == [
+            ("0.24.0", "0.25.0", "main released 0.24.0")
+        ]
+        write_versions(linked, "0.25.0", 3)
+        op(recorded, linked, "alpha", base="0.25.0", alpha=3, reason="alpha 3")
+        assert len(entry_of(recorded)["version_line"]["base_moves"]) == 1
+
     def test_the_files_are_fixed_and_a_repeat_may_omit_them(self, recorded: Path, linked: Path) -> None:
         alpha(recorded, linked, 1)
         write_versions(linked, "0.24.0", 2)
@@ -276,10 +296,26 @@ class TestRelease:
         op(recorded, linked, "release", version="0.24.0")
         assert entry_of(recorded)["version_line"]["release"]["version"] == "0.24.0"
 
+    def test_a_release_may_move_the_base_when_said_so(self, recorded: Path, linked: Path) -> None:
+        alpha(recorded, linked, 1)
+        write_versions(linked, "0.25.1", None)
+        refuse(recorded, linked, "must equal the base 0.24.0", "release", version="0.25.1")
+        refuse(recorded, linked, "reason", "release", version="0.25.1", base_moved=True)
+        op(recorded, linked, "release", version="0.25.1", base_moved=True, reason="main released 0.25.0")
+        line = entry_of(recorded)["version_line"]
+        assert (line["base"], line["release"]["version"], line["alpha"]) == ("0.25.1", "0.25.1", 1)
+        assert [(m["from"], m["to"]) for m in line["base_moves"]] == [("0.24.0", "0.25.1")]
+        assert delivery_errors(entry_of(recorded), "worktree #1") == []
+        write_versions(linked, "0.25.1", 2)
+        op(recorded, linked, "alpha", base="0.25.1", alpha=2, reason="alpha 2")
+        line = entry_of(recorded)["version_line"]
+        assert line["release"] is None and len(line["base_moves"]) == 1
+
     def test_refusals(self, recorded: Path, linked: Path) -> None:
         refuse(recorded, linked, "no version_line", "release", version="0.24.0")
         alpha(recorded, linked, 1)
         refuse(recorded, linked, "must equal the base", "release", version="0.24.1")
+        refuse(recorded, linked, "plain X.Y.Z", "release", version="0.24.0a1")
         refuse(recorded, linked, "still carries an alpha", "release", version="0.24.0")
         (linked / "pyproject.toml").write_text('version = "0.23.9"\n', encoding="utf-8")
         (linked / "plugin.json").write_text('{"version": "0.24.0"}', encoding="utf-8")
@@ -371,6 +407,7 @@ LINE = {
         {"alpha": 2, "recorded_at": "2026-01-01T11:00:00+00:00", "reason": "second"},
     ],
 }
+MOVE = {"from": "0.23.0", "to": "0.24.0", "reason": "main released 0.23.0", "recorded_at": "2026-01-01T10:30:00+00:00"}
 PR = {"host": "github", "url": URL, "number": 7, "recorded_at": "2026-01-01T10:00:00+00:00"}
 MERGE = {
     "state": "merged",
@@ -392,6 +429,8 @@ class TestShape:
         assert self.errors(pull_request=PR, version_line={**LINE, "release": release}, merge=MERGE) == []
         exempt = {"source": "user", "response": "no remote"}
         assert self.errors(pr_exemption={"reason": "no_remote", **exempt}, version_exemption=exempt) == []
+        assert self.errors(version_line={**LINE, "base_moves": []}) == []
+        assert self.errors(version_line={**LINE, "base_moves": [MOVE]}) == []
 
     @pytest.mark.parametrize(
         ("field", "value", "fragment"),
@@ -423,6 +462,11 @@ class TestShape:
                 "release needs version equal to base",
             ),
             ("version_line", {**LINE, "release": "x"}, "release needs version equal to base"),
+            ("version_line", {**LINE, "base_moves": "x"}, "base_moves must be a list"),
+            ("version_line", {**LINE, "base_moves": [{**MOVE, "reason": ""}]}, "base_moves item 1 needs"),
+            ("version_line", {**LINE, "base_moves": [{**MOVE, "from": "0.24.0"}]}, "base_moves item 1 needs"),
+            ("version_line", {**LINE, "base_moves": [{**MOVE, "to": "0.24"}]}, "base_moves item 1 needs"),
+            ("version_line", {**LINE, "base_moves": [{**MOVE, "to": "0.23.5"}]}, "last base move must end"),
             ("merge", "x", "must be an object"),
             ("merge", {**MERGE, "state": "later"}, "needs state merged or declined"),
             ("merge", {**MERGE, "response": ""}, "needs state merged or declined"),
