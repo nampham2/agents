@@ -40,7 +40,9 @@ agreement. Starting a task from `PLANNING`, `BLOCKED` or `REVIEW` moves the proj
 preserving review state and normal guards. Reopen invalidated delivery acceptance before closure.
 
 Project status and task definitions live in `project.json`; `tasks/<id>.md` holds optional findings
-and worker-recovery notes. `artifacts/` holds durable supporting files and requested deliverables.
+and worker-recovery notes. `friction.md` holds what the skill or the tool got in the way of, and
+`invocations.jsonl` every project-scoped command the tool ran; `research:retro` reads both.
+`artifacts/` holds durable supporting files and requested deliverables.
 `reviews/review_NN.md` records explicit delivery checkpoints, not the initial architecture review.
 These directories appear only when used. Design changes update `architecture.md`; implementation
 findings and verification do not need copying there. See

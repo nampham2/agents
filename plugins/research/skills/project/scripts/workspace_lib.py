@@ -336,6 +336,44 @@ def is_delivery_gated(state: dict[str, Any]) -> bool:
     return _created_on_or_after(state, DELIVERY_GATES_FROM)
 
 
+# Projects created on or after this instant close only with a `## Retro` section in the reflection:
+# what the skill or the tool got in the way of, references loaded and not needed, one concrete change
+# to the plugin or `none`. Shape only, as the 200-character rule is. The release task sets the instant
+# of the version that ships the gate (0.27.0); the placeholder keeps it off until then. Older projects
+# get a warning. Read at call time so tests can move it.
+RETRO_SECTION_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
+RETRO_SECTION_FROM = "2099-01-01T00:00:00+00:00"
+RETRO_SECTION_HEADING = "Retro"
+RETRO_SECTION_MIN_CHARS = 120
+
+
+def is_retro_gated(state: dict[str, Any]) -> bool:
+    """Whether `state` was created on or after `RETRO_SECTION_FROM`; unjudgeable means no."""
+    return _created_on_or_after(state, RETRO_SECTION_FROM)
+
+
+def retro_section_findings(reflection: str) -> "list[str]":
+    """The shape findings on a reflection's retro section: none, or one line saying what is missing."""
+    content = _section_content(reflection, RETRO_SECTION_HEADING)
+    if content is None:
+        return [
+            f"reflection has no '## {RETRO_SECTION_HEADING}' section (retro gate): what got in the way, references "
+            "loaded and not needed, one concrete change to the plugin or none"
+        ]
+    if len(content) < RETRO_SECTION_MIN_CHARS:
+        return [
+            f"reflection section '## {RETRO_SECTION_HEADING}' holds {len(content)} characters; the retro gate needs "
+            f"at least {RETRO_SECTION_MIN_CHARS}"
+        ]
+    return []
+
+
+def _add_retro_section_findings(state: dict[str, Any], reflection: str, report: "ValidationReport") -> None:
+    """Close-time findings on the retro section: errors after the cutoff, warnings before it."""
+    findings = retro_section_findings(reflection)
+    (report.errors if is_retro_gated(state) else report.warnings).extend(findings)
+
+
 def is_style_checked(state: dict[str, Any]) -> bool:
     """Whether `state` was created on or after `STYLE_CHECKED_FROM`; unjudgeable means no."""
     return _created_on_or_after(state, STYLE_CHECKED_FROM)
@@ -1980,7 +2018,7 @@ def validate_v3_state(
                 elif not content:
                     report.errors.append(f"spec.md section '## {section}' must not be empty")
             _read_nonempty(project_dir / "evidence.md", "evidence.md", report)
-            _read_nonempty(project_dir / "reflection.md", "reflection.md", report)
+            _add_retro_section_findings(state, _read_nonempty(project_dir / "reflection.md", "reflection.md", report), report)
             for cycle in range(1, review_cycle + 1):
                 _read_nonempty(
                     project_dir / "reviews" / f"review_{cycle:02d}.md", f"reviews/review_{cycle:02d}.md", report
@@ -2296,7 +2334,7 @@ def validate_v4_state(
                 elif not content:
                     report.errors.append(f"spec.md section '## {section}' must not be empty")
             _read_nonempty(project_dir / "evidence.md", "evidence.md", report)
-            _read_nonempty(project_dir / "reflection.md", "reflection.md", report)
+            _add_retro_section_findings(state, _read_nonempty(project_dir / "reflection.md", "reflection.md", report), report)
             for cycle in range(1, review_cycle + 1):
                 _read_nonempty(
                     project_dir / "reviews" / f"review_{cycle:02d}.md", f"reviews/review_{cycle:02d}.md", report

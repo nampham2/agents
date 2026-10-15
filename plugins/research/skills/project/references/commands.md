@@ -1,8 +1,7 @@
 # Routine commands
 
 Use [named automation](automation.md) for composed work: `workflow <project-dir> <action> -` takes
-typed JSON on stdin and follows that reference's schemas and recovery contracts. `init --json`
-supplies initial tokens; `update --dry-run` previews a patch.
+typed JSON on stdin. `init --json` supplies initial tokens; `update --dry-run` previews a patch.
 
 ## Retrieve
 
@@ -14,8 +13,7 @@ T01 --task-only` returns task/dependencies; `--worker` changes its role, grantin
 heading; `--outline` returns headings and the SHA-256 token. Default reads exclude Decision history;
 select it explicitly. `read <project-dir> evidence --task T01` selects task entries; `--step report`
 selects report-check evidence; omit both for all. `read <project-dir> architecture` or `handoff`
-reads that document. Reads cap at 4,000 characters with `total_chars`, `truncated`, `next_offset`;
-continue with `--offset <next_offset>`.
+reads that document. Reads cap at 4,000 characters; continue with `--offset <next_offset>`.
 
 `list-projects <root> --query "<text>" [--status EXECUTING]` searches identity/title/target
 (10 matches; page with `--limit`, `--offset`).
@@ -37,8 +35,8 @@ research-project update <project-dir> - --expected-revision 0 --json
 ```
 
 New tasks require `id`, `name`, `success_criteria`, `verification`, and explicit `effect.kind`.
-The tool defaults status to `TODO`, lists to empty, and block/skip reasons to null. Non-`none`
-effects need a description. Destructive/external effects default to pending authorization.
+Non-`none` effects need a description. Destructive/external effects default to pending
+authorization.
 Roots: `target` for repository outputs, `workspace` for project files, `workspace_root` for shared
 records, `external` for remote outputs.
 
@@ -51,7 +49,7 @@ update.
 
 ## Documents and records
 
-Reuse tokens from edits, validated context or document/outline reads. Initial `--sections-json -`
+Reuse tokens from edits, context or outline reads. Initial `--sections-json -`
 maps the seven headings to bodies; later batches replace non-overlapping sections.
 Reflection, architecture and handoff use whole-document `--body-file -`:
 
@@ -61,16 +59,18 @@ research-project edit <project-dir> reflection --body-file - --expected-sha256 m
 research-project edit <project-dir> architecture --body-file - --expected-sha256 <token-or-missing>
 ```
 
-`init --briefing` optionally seeds the grill.
-
 Append prose:
 
 ```sh
 research-project append <project-dir> decision --body-file -
 research-project append <project-dir> finding --task T01 --body-file -
+research-project append <project-dir> friction --kind gate-refusal --pointer <ref> --body-file -
 ```
 
-`--entry-id` makes retries idempotent; different content conflicts.
+Append friction when an instruction, reference or gate got in the way; kinds:
+`unclear-instruction`, `missing-information`, `gate-refusal`, `wasted-command`,
+`reference-not-useful`, `user-correction`, `tool-defect`. `--entry-id` makes retries idempotent;
+different content conflicts.
 
 ## Evidence and effects
 
