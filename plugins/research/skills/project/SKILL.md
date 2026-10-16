@@ -33,7 +33,7 @@ For a restart, checkpoint, supply a resume prompt, and stop; the user opens the 
 
 Use `research-project` and `research-validate` from `PATH` when both exist (Claude Code); otherwise
 use `scripts/research-project` and `scripts/research-validate` beside the exact loaded `SKILL.md`
-(Codex). Keep that pair. Never search caches, infer the plugin root from cwd, depend on
+(Codex). Never search caches, infer the plugin root from cwd, depend on
 `CLAUDE_PLUGIN_ROOT`, or invoke implementation modules directly.
 
 Use the supplied workspace, otherwise `$RESEARCH_WORKSPACE`, otherwise `find-roots`. State a unique
@@ -92,15 +92,14 @@ agreement on resume; reopen affected choices for missing records or material cha
 ## Plan tasks
 
 After agreement, enter `PLANNING` and derive milestones from `architecture.md` with success
-criteria, verification, effects, dependencies and rooted outputs. Only plan publication, pushes, or
+criteria, verification, effects, `depends_on` and rooted outputs. Only plan publication, pushes, or
 commits when requested. Send a compact patch through stdin:
 
 ```sh
 research-project update <project-dir> - --expected-revision <revision> --json
 ```
 
-The tool applies task defaults, derives `current_tasks`, and preserves commit guards. Reconcile
-revision conflicts.
+The tool applies task defaults and derives `current_tasks`. Reconcile revision conflicts.
 
 ## Execute and verify
 
@@ -132,7 +131,8 @@ Commands run in the target: use absolute paths and an explicit shell for pipelin
 with `read ... evidence --entry <record-id>`; never rewrite them as passes. Show a new check failing
 on bad input first. Finish with passing record IDs only when success criteria are met, not merely on
 zero exit. `--start-next T02` atomically starts a planned successor and returns its assignment.
-Prose uses `append ... finding --task T01`, not evidence. Before review or test deploy, follow
+Prose uses `append ... finding --task T01`, not evidence; tool friction uses `append ... friction`.
+Before review or test deploy, follow
 [pull-requests.md](references/pull-requests.md).
 
 ## Review and close

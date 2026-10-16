@@ -24,6 +24,7 @@ its handle when available and its outcome when observed. Native workers follow
 | Consequential decisions and confirmations | Dated `append ... decision` entries, with source, scope and superseded decision. |
 | Design, alternatives and agreement | `architecture.md`, with review ID and truthful draft/agreed status. |
 | Findings, partial work and worker recovery | `append ... finding --task <id>` into `tasks/<id>.md`. |
+| Friction with the skill or the tool | `append ... friction --kind <kind> --pointer <ref>` into `friction.md`. |
 | Acceptance checks | `record-evidence`, retaining actual output and failures. |
 | Task status, authorization and receipts | Guarded `project.json` operations. |
 | Repository worktrees and their closure decisions | `workflow ... worktree` entries in `project.json`. |
@@ -38,11 +39,11 @@ Never invent task IDs. Preserve history through superseding entries, not erasure
 Create directories with their first useful file. Task notes are optional; definitions stay in
 `project.json`. `artifacts/` holds durable supporting material and requested deliverables;
 repository outputs belong in the target. Send state patches through stdin; keep scratch work in
-temporary storage. Generate reports and graphs only when needed.
+temporary storage.
 
 `execution/` is legacy storage; preserve it and consult [legacy-executor.md](legacy-executor.md)
-only for old ownership/storage. Follow existing references on resume instead of renaming files.
-Requested cleanup must preserve cited outputs, evidence, receipts and recovery records.
+only for old ownership/storage. Requested cleanup must preserve cited outputs, evidence, receipts
+and recovery records.
 
 ### Delivery-review checkpoints
 

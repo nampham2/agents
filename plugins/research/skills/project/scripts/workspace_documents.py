@@ -26,6 +26,17 @@ from workspace_session import _headings, _load_state
 # Documents replaced whole under the content-token guard, as opposed to `spec`, which is edited by
 # section, and `notes`, which are append-only.
 WHOLE_DOCUMENTS = ("reflection", "architecture", "handoff")
+FRICTION_FILENAME = "friction.md"
+# What the tool or the skill cost the agent, in a fixed vocabulary so a retro can count it across
+# projects. A finding is about the work; a friction entry is about the tool.
+FRICTION_KINDS = (
+    "unclear-instruction", "missing-information", "gate-refusal", "wasted-command", "reference-not-useful",
+    "user-correction", "tool-defect",
+)
+FRICTION_POINTER_CHARS = 200
+FRICTION_HEADER = "# Friction\n"
+FRICTION_FIELD_PATTERN = re.compile(r"^(?P<name>Kind|Pointer): (?P<value>.*)$")
+ENTRY_HEADING_PATTERN = re.compile(r"^### (?P<at>\S+) — (?P<id>[a-z0-9][a-z0-9-]{0,63})$", re.MULTILINE)
 
 ENTRY_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 ENTRY_MARKER_PATTERN = re.compile(r"^<!-- research-entry: (?P<id>[a-z0-9][a-z0-9-]{0,63}) -->$", re.MULTILINE)
@@ -42,6 +53,8 @@ def _managed_path(project_dir: Path, document: str, task_id: str | None = None) 
         path = project_dir / "architecture.md"
     elif document == "handoff":
         path = project_dir / "handoff.md"
+    elif document == "friction":
+        path = project_dir / FRICTION_FILENAME
     elif document == "notes":
         if task_id is None or not ENTRY_ID_PATTERN.fullmatch(task_id.lower()):
             raise WorkspaceError("notes require a safe task ID")
@@ -50,7 +63,7 @@ def _managed_path(project_dir: Path, document: str, task_id: str | None = None) 
             raise WorkspaceError(f"unknown task: {task_id}")
         path = project_dir / "tasks" / f"{task_id}.md"
     else:
-        raise WorkspaceError("document must be spec, reflection, architecture, handoff, or notes")
+        raise WorkspaceError("document must be spec, reflection, architecture, handoff, friction, or notes")
     try:
         path.resolve(strict=False).relative_to(project_dir)
     except (OSError, ValueError) as error:
@@ -229,19 +242,27 @@ def append_record(
     task_id: str | None = None,
     entry_id: str | None = None,
     lock_timeout: float = 5.0,
+    friction_kind: str | None = None,
+    pointer: str | None = None,
 ) -> dict[str, Any]:
-    """Append an idempotent decision or task finding under the project lock."""
+    """Append an idempotent decision, task finding or friction entry under the project lock."""
     body = body.strip()
     if not body:
         raise WorkspaceError("record body must not be empty")
+    if kind == "friction":
+        body = _friction_body(body, friction_kind, pointer)
+    elif friction_kind is not None or pointer is not None:
+        raise WorkspaceError("--kind and --pointer belong to a friction entry")
     if entry_id is None:
         entry_id = f"entry-{uuid.uuid4().hex}"
     if ENTRY_ID_PATTERN.fullmatch(entry_id) is None:
         raise WorkspaceError("entry ID must contain only lowercase letters, digits, and hyphens")
     project_dir = project_dir.resolve()
-    document = "spec" if kind == "decision" else "notes" if kind == "finding" else ""
+    document = {"decision": "spec", "finding": "notes", "friction": "friction"}.get(kind, "")
     if not document:
-        raise WorkspaceError("record kind must be decision or finding")
+        raise WorkspaceError("record kind must be decision, finding or friction")
+    if kind == "friction" and task_id is not None:
+        raise WorkspaceError("a friction entry belongs to the project, not to a task")
     path = _managed_path(project_dir, document, task_id)
     marker = f"<!-- research-entry: {entry_id} -->"
     body_digest = document_sha256(body)
@@ -251,7 +272,8 @@ def append_record(
             state = _load_state(project_dir)
             if state.get("execution", {}).get("coordinator_run") or state.get("execution", {}).get("attempts"):
                 raise WorkspaceError("project execution is active; resolve executor ownership before appending records")
-            current = read_text(path, preserve_newlines=True) if path.exists() else f"# Task {task_id} notes\n"
+            fresh = FRICTION_HEADER if kind == "friction" else f"# Task {task_id} notes\n"
+            current = read_text(path, preserve_newlines=True) if path.exists() else fresh
             existing_ids = [match.group("id") for match in ENTRY_MARKER_PATTERN.finditer(current)]
             if entry_id in existing_ids:
                 start = current.index(marker)
@@ -282,6 +304,45 @@ def append_record(
         "operation": f"{kind}.append", "entry_id": entry_id, "path": str(path), "anchor": entry_id,
         "document_sha256": document_sha256(replacement), "existing": False,
     }
+
+
+def _friction_body(body: str, friction_kind: str | None, pointer: str | None) -> str:
+    """The stored body of a friction entry: the two fixed lines, then the agent's sentences."""
+    if friction_kind not in FRICTION_KINDS:
+        raise WorkspaceError(f"friction kind must be one of: {', '.join(FRICTION_KINDS)}")
+    pointer = (pointer or "").strip()
+    if not pointer or "\n" in pointer or len(pointer) > FRICTION_POINTER_CHARS:
+        raise WorkspaceError(
+            f"a friction entry needs --pointer: one line of at most {FRICTION_POINTER_CHARS} characters naming the "
+            "reference, command or record"
+        )
+    return f"Kind: {friction_kind}\nPointer: {pointer}\n\n{body}"
+
+
+def friction_entries(text: str) -> list[dict[str, str]]:
+    """Every friction entry in document order: id, at, kind, pointer, body.
+
+    A hand-written entry without the two lines is kept with empty kind and pointer rather than
+    dropped: the retro counts it as friction of unknown kind, which is still friction.
+    """
+    entries: list[dict[str, str]] = []
+    markers = list(ENTRY_MARKER_PATTERN.finditer(text))
+    for index, marker in enumerate(markers):
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(text)
+        chunk = text[marker.end():end]
+        heading = ENTRY_HEADING_PATTERN.search(chunk)
+        entry = {"id": marker.group("id"), "at": heading.group("at") if heading else "", "kind": "", "pointer": ""}
+        rest = chunk[heading.end():] if heading else chunk
+        lines = rest.strip("\n").split("\n")
+        while lines:
+            field = FRICTION_FIELD_PATTERN.match(lines[0])
+            if field is None:
+                break
+            entry[field.group("name").lower()] = field.group("value").strip()
+            lines.pop(0)
+        entry["body"] = "\n".join(lines).strip()
+        entries.append(entry)
+    return entries
 
 
 def stage_lesson(project_dir: Path, title: str, body: str, *, lock_timeout: float = 5.0) -> dict[str, Any]:

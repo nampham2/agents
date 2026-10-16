@@ -40,11 +40,13 @@ from workspace_lib import (
     check_state_candidate,
     confirmation_marker,
     document_sha256,
+    is_retro_gated,
     memory_staging_warnings,
     now_iso,
     proposal_digest,
     proposal_marker,
     reason_reference_warnings,
+    retro_section_findings,
     stale_confirmations,
     validate_project,
 )
@@ -188,7 +190,9 @@ def readiness(project: Path) -> dict[str, Any]:
             group = next(
                 (
                     key
-                    for key in ("worktree", "receipt", "review", "reflection", "memory", "index", "output", "task")
+                    for key in (
+                        "worktree", "receipt", "review", "retro", "reflection", "memory", "index", "output", "task",
+                    )
                     if key in finding.lower()
                 ),
                 "project",
@@ -520,6 +524,12 @@ def _build(
                 f"the reflection must be a post-mortem of at least {REFLECTION_MIN_CHARS} characters with a "
                 "Markdown heading (for example '# Reflection'); nothing was committed"
             )
+        # The retro section is what the next retro reads first. Refused after the cutoff; before it the
+        # finding comes back as a warning so an old project still closes.
+        retro_findings = retro_section_findings(reflection)
+        if retro_findings and is_retro_gated(state):
+            raise WorkspaceError("; ".join(retro_findings) + "; nothing was committed")
+        result["retro_warnings"] = retro_findings
         documents["reflection"] = reflection + "\n"
         result["memory_staging_warnings"] = memory_staging_warnings(project)
         patch = {"status": "DONE"}

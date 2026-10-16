@@ -7,6 +7,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from workspace_invocations import Invocation
 from workspace_lib import launcher_version_warning, validate_project
 
 
@@ -44,23 +45,31 @@ def main() -> int:
     if skew:
         print(f"WARNING: {skew}", file=sys.stderr)
 
-    report = validate_project(
-        args.project_directory,
-        close=args.close,
-        check_index=args.check_index,
-        check_report=args.report,
-        report_format=args.report_format,
-        report_profile=args.report_profile,
-        allow_legacy_close=args.allow_legacy_close,
-    )
+    # Logged like `research-project` calls, so a retro sees validation runs and what they found.
+    invocation = Invocation("research-validate", args, command="validate", action="close" if args.close else "")
+    try:
+        report = validate_project(
+            args.project_directory,
+            close=args.close,
+            check_index=args.check_index,
+            check_report=args.report,
+            report_format=args.report_format,
+            report_profile=args.report_profile,
+            allow_legacy_close=args.allow_legacy_close,
+        )
+    except Exception as error:
+        invocation.record(1, error)
+        raise
     for warning in report.warnings:
         print(f"WARNING: {warning}", file=sys.stderr)
     if report.errors:
         for error in report.errors:
             print(f"ERROR: {error}", file=sys.stderr)
+        invocation.record(1)
         return 1
 
     print(f"Workspace valid: {args.project_directory.expanduser().resolve()}")
+    invocation.record(0)
     return 0
 
 

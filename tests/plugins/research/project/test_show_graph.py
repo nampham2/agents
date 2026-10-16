@@ -444,11 +444,14 @@ class SubcommandTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
 
     def test_the_subcommand_writes_nothing_to_the_project(self) -> None:
-        # It is read-only, and the step that runs it leaves no trace in the workspace by design.
+        # It is read-only, and the step that runs it leaves no trace in the project's records by design.
+        # The invocation log is the one file every project-scoped call appends to; it is not a record.
         directory = self._project(_state(_task("T01")))
         before = {path.name: path.read_bytes() for path in sorted(directory.iterdir())}
         self._run("show-graph", directory)
         after = {path.name: path.read_bytes() for path in sorted(directory.iterdir())}
+        self.assertEqual(["invocations.jsonl"], sorted(set(after) - set(before)))
+        after.pop("invocations.jsonl")
         self.assertEqual(before, after)
 
     def test_the_dispatch_prints_in_process_exactly_what_the_launcher_prints(self) -> None:

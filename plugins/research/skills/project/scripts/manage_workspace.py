@@ -11,8 +11,16 @@ from pathlib import Path
 from typing import Any
 
 from memory_search import creation_gate, rank_topics, search_postmortems
-from workspace_documents import WHOLE_DOCUMENTS, append_record, document_snapshot, edit_document, stage_lesson
+from workspace_documents import (
+    FRICTION_KINDS,
+    WHOLE_DOCUMENTS,
+    append_record,
+    document_snapshot,
+    edit_document,
+    stage_lesson,
+)
 from workspace_evidence import evidence_entries
+from workspace_invocations import Invocation
 from workspace_journal import OperationError
 from workspace_lib import (
     CLOSURE_STEPS,
@@ -50,6 +58,7 @@ from workspace_lib import (
     verification_order_warnings,
 )
 from workspace_operations import CloseOperationError, close_project, task_operation
+from workspace_retro import record_run, record_schema, retro_batch
 from workspace_session import (
     _load_state,
     list_projects,
@@ -110,7 +119,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     read = subparsers.add_parser("read", help="Read a bounded specification section or evidence excerpt")
     read.add_argument("project_directory", type=Path)
-    read.add_argument("document", choices=("spec", "evidence", *WHOLE_DOCUMENTS, "notes"))
+    read.add_argument("document", choices=("spec", "evidence", *WHOLE_DOCUMENTS, "friction", "notes"))
     read.add_argument("--section", help="exact specification heading; default excludes decision history")
     read_owner = read.add_mutually_exclusive_group()
     read_owner.add_argument("--task")
@@ -153,10 +162,15 @@ def _build_parser() -> argparse.ArgumentParser:
     edit.add_argument("--expected-sha256", required=True)
     edit.add_argument("--lock-timeout", type=float, default=5.0)
 
-    append = subparsers.add_parser("append", help="Append a decision or task finding idempotently")
+    append = subparsers.add_parser("append", help="Append a decision, task finding or friction entry idempotently")
     append.add_argument("project_directory", type=Path)
-    append.add_argument("kind", choices=("decision", "finding"))
+    append.add_argument("kind", choices=("decision", "finding", "friction"))
     append.add_argument("--task")
+    append.add_argument(
+        "--kind", dest="friction_kind", choices=FRICTION_KINDS,
+        help="friction only: what got in the way, in the fixed vocabulary",
+    )
+    append.add_argument("--pointer", help="friction only: the reference, command or record concerned")
     append_body = append.add_mutually_exclusive_group(required=True)
     append_body.add_argument("--body")
     append_body.add_argument("--body-file", type=Path)
@@ -445,6 +459,26 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     retire.add_argument("--lock-timeout", type=float, default=5.0)
 
+    retro = subparsers.add_parser("retro", help="Select the closed projects since the last retro; keep the ledger")
+    retro_actions = retro.add_subparsers(dest="retro_action", required=True)
+    batch = retro_actions.add_parser("batch", help="the projects of the next run, their records folded into signals")
+    batch.add_argument(
+        "workspace_root", nargs="?", type=Path, help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}"
+    )
+    batch.add_argument("--since", help="ISO date or instant; replaces the cursor of the last run")
+    batch.add_argument("--project", action="append", dest="projects", help="an explicit project id; repeatable")
+    batch.add_argument("--no-transcripts", action="store_true", help="skip the Claude Code transcript tallies")
+    batch.add_argument("--claude-dir", type=Path, default=Path("~/.claude"), help="where Claude Code keeps transcripts")
+    batch.add_argument("--limit", type=int, default=20)
+    batch.add_argument("--offset", type=int, default=0)
+    record_run_parser = retro_actions.add_parser("record", help="write one run to retro/<id>.md and refresh RETRO.md")
+    record_run_parser.add_argument(
+        "workspace_root", nargs="?", type=Path, help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}"
+    )
+    record_run_parser.add_argument("input_json", nargs="?", type=Path, help="JSON input file, or '-' for stdin")
+    record_run_parser.add_argument("--schema", action="store_true", help="print the allowed keys and exit")
+    record_run_parser.add_argument("--lock-timeout", type=float, default=5.0)
+
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
     migrate.add_argument("project_directory", type=Path)
     migrate.add_argument("--apply", action="store_true", help="Apply the migration; default is a read-only preview")
@@ -484,6 +518,456 @@ def _split_at_separator(raw: list[str]) -> tuple[list[str], list[str]]:
     return raw[:separator], raw[separator + 1 :]
 
 
+def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv: list[str]) -> int:
+    """Run one parsed command and return its exit code; workspace errors propagate to `main`."""
+    if args.command == "init":
+        workspace_root = resolve_workspace_root(args.workspace_root)
+        project_dir = allocate_project(
+            workspace_root,
+            title=args.title,
+            working_directory=args.working_directory,
+            lock_timeout=args.lock_timeout,
+            create_root=args.create_root,
+            briefing=args.briefing,
+        )
+        # Warned at init as well as at validation, because this is the moment someone chooses
+        # where the record of the work will live. Checked after allocation, since --create-root
+        # means the directory to check may not have existed a moment ago.
+        warnings = vcs_warnings(workspace_root)
+        for warning in warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        if args.json:
+            initial = validated_project_context(project_dir)
+            print(json.dumps({"project_directory": str(project_dir), "revision": initial["revision"],
+                "roots": initial["roots"], "documents": initial["documents"], "warnings": warnings}, indent=2))
+        else:
+            print(project_dir)
+        return 0
+
+    if args.command == "workflow":
+        if args.schema:
+            print(json.dumps(input_schema(args.action), indent=2))
+            return 0
+        if args.input_json is None:
+            raise WorkspaceError("workflow needs an input file, or '-' for stdin; or --schema to print its keys")
+        result = workflow(args.project_directory, args.action, _read_json_object(args.input_json))
+        print(json.dumps(result, indent=2))
+        return 1 if result.get("valid") is False or result.get("passed") is False else 0
+
+    if args.command == "context":
+        if args.validate:
+            if args.task is not None or args.worker or args.task_only:
+                raise WorkspaceError("context --validate cannot be combined with task projections")
+            result = validated_project_context(args.project_directory, limit=args.limit)
+            print(json.dumps(result, indent=2))
+            return 0 if result["validation"]["valid"] else 1
+        print(json.dumps(project_context(
+            args.project_directory, limit=args.limit, task_id=args.task,
+            worker=args.worker, task_only=args.task_only,
+        ), indent=2))
+        return 0
+
+    if args.command == "read":
+        if args.document == "evidence" and (args.entries or args.entry is not None):
+            print(json.dumps(evidence_entries(
+                args.project_directory, task_id=args.task, step=args.step, record_id=args.entry,
+                offset=args.offset, limit=args.limit, include_text=args.entry is not None,
+            ), indent=2))
+            return 0
+        if args.document == "friction" and (args.task is not None or args.step is not None):
+            raise WorkspaceError("friction is one document for the project; it takes no --task or --step")
+        if args.document in (*WHOLE_DOCUMENTS, "friction", "notes") or args.outline:
+            if args.section is not None or args.step is not None:
+                raise WorkspaceError("whole-document and outline reads do not accept --section or --step")
+            print(json.dumps(document_snapshot(
+                args.project_directory, args.document, task_id=args.task, outline=args.outline,
+                offset=args.offset, max_chars=args.max_chars,
+            ), indent=2))
+            return 0
+        print(json.dumps(read_project_text(
+            args.project_directory, args.document, section=args.section, task_id=args.task, step=args.step,
+            offset=args.offset, max_chars=args.max_chars,
+        ), indent=2))
+        return 0
+
+    if args.command == "list-projects":
+        print(json.dumps(list_projects(
+            resolve_workspace_root(args.workspace_root), query=args.query, status=args.status,
+            limit=args.limit, offset=args.offset, older_than_days=args.older_than_days,
+        ), indent=2))
+        return 0
+
+    if args.command == "update":
+        if args.dry_run:
+            result = preview(args.project_directory, _read_json_object(args.patch_json), args.expected_revision)
+            print(json.dumps(result, indent=2))
+            return 0 if result["valid"] else 1
+        before_tasks = _load_state(args.project_directory)["tasks"]
+        if str(args.patch_json) == "-":
+            patch = _read_json_object(args.patch_json)
+            state = update_project_data(
+                args.project_directory, patch,
+                expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
+            )
+        else:
+            state = update_project(
+                args.project_directory, args.patch_json,
+                expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
+            )
+        warnings = verification_order_warnings(state["tasks"]) + reason_reference_warnings(
+            before_tasks, state["tasks"], args.project_directory.resolve().parent
+        )
+        if args.json:
+            print(json.dumps({
+                "operation": "project.update", "project_directory": str(args.project_directory.resolve()),
+                "committed": True, "revision": state["revision"], "status": state["status"],
+                "current_tasks": state["current_tasks"], "warnings": warnings,
+            }, indent=2))
+            return 0
+        for warning in warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        print(f"Committed revision {state['revision']}: {args.project_directory.resolve()}")
+        return 0
+
+    if args.command == "edit":
+        if args.sections_json is not None:
+            if args.section is not None or args.body is not None or args.body_file is not None:
+                raise WorkspaceError("--sections-json cannot be combined with --section or body options")
+            raw_sections = _read_json_object(args.sections_json)
+            if not all(isinstance(key, str) and isinstance(value, str) for key, value in raw_sections.items()):
+                raise WorkspaceError("sections JSON must map heading strings to body strings")
+            sections = {str(key): str(value) for key, value in raw_sections.items()}
+            body = None
+        else:
+            if args.document == "spec" and args.section is None:
+                raise WorkspaceError("spec edit requires --section or --sections-json")
+            if args.document in WHOLE_DOCUMENTS and args.section is not None:
+                raise WorkspaceError(f"{args.document} edit does not accept --section")
+            if args.body is None and args.body_file is None:
+                raise WorkspaceError("edit requires --body or --body-file")
+            body = args.body if args.body is not None else _read_body(args.body_file)
+            sections = {args.section: body} if args.section is not None else None
+        print(json.dumps(edit_document(
+            args.project_directory, args.document, expected_sha256=args.expected_sha256,
+            body=body if args.document in WHOLE_DOCUMENTS else None, sections=sections,
+            lock_timeout=args.lock_timeout,
+        ), indent=2))
+        return 0
+
+    if args.command == "append":
+        if args.kind == "finding" and args.task is None:
+            raise WorkspaceError("finding append requires --task")
+        if args.kind == "decision" and args.task is not None:
+            raise WorkspaceError("decision append does not accept --task")
+        body = args.body if args.body is not None else _read_body(args.body_file)
+        print(json.dumps(append_record(
+            args.project_directory, args.kind, body, task_id=args.task, entry_id=args.entry_id,
+            lock_timeout=args.lock_timeout, friction_kind=args.friction_kind, pointer=args.pointer,
+        ), indent=2))
+        return 0
+
+    if args.command == "task":
+        print(json.dumps(task_operation(
+            args.project_directory, args.action, args.task_id, expected_revision=args.expected_revision,
+            reason=args.reason, evidence_record_ids=args.evidence_records, start_next=args.start_next,
+            lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
+            observation_record_ids=args.observation_records,
+        ), indent=2))
+        return 0
+
+    if args.command == "close":
+        reflection = args.reflection
+        if args.reflection_file is not None:
+            reflection = _read_body(args.reflection_file)
+        result = close_project(
+            args.project_directory, expected_revision=args.expected_revision, reflection=reflection,
+            expected_reflection_sha256=args.expected_reflection_sha256, lock_timeout=args.lock_timeout,
+        )
+        print(json.dumps(result, indent=2))
+        return 0 if result["validation"]["valid"] else 1
+
+    if args.command == "commit":
+        if args.dry_run:
+            report = check_candidate(
+                args.project_directory,
+                args.candidate_json,
+                expected_revision=args.expected_revision,
+            )
+            for warning in report.warnings:
+                print(f"WARNING: {warning}", file=sys.stderr)
+            if report.errors:
+                print("Dry run: the commit would fail:", file=sys.stderr)
+                for error in report.errors:
+                    print(f"- {error}", file=sys.stderr)
+                return 1
+            print(f"Dry run: the candidate would commit cleanly; {args.project_directory.resolve()} is unchanged")
+            return 0
+        if args.expected_revision is None:
+            raise WorkspaceError("commit requires --expected-revision; pass --dry-run to check without committing")
+        state = commit_candidate(
+            args.project_directory,
+            args.candidate_json,
+            expected_revision=args.expected_revision,
+            lock_timeout=args.lock_timeout,
+        )
+        print(f"Committed revision {state['revision']}: {args.project_directory.resolve()}")
+        return 0
+
+    if args.command == "rebuild-index":
+        workspace_root = resolve_workspace_root(args.workspace_root)
+        # An index for a workspace that does not exist is never what the caller wanted, and
+        # building one would leave a stray root behind exactly as a mistyped init does.
+        if not workspace_root.is_dir():
+            raise WorkspaceError(f"workspace root does not exist: {workspace_root}")
+        print(rebuild_index(workspace_root, lock_timeout=args.lock_timeout))
+        # A malformed topic file is skipped by generation rather than raised, so that a bad
+        # memory file can never block the commit this command ends. Skipping silently would
+        # leave a lesson invisible with nothing said, so the skip is reported here.
+        for problem in load_memory_topics(workspace_root)[1]:
+            print(f"WARNING: memory topic skipped: {problem}", file=sys.stderr)
+        return 0
+
+    if args.command == "record-evidence":
+        if not command_argv:
+            print(
+                "ERROR: record-evidence needs the command after '--', for example: "
+                "record-evidence <project-directory> --task T01 -- uv run pytest",
+                file=sys.stderr,
+            )
+            return 1
+        owner = args.task or args.step
+        result = record_evidence_result(
+            args.project_directory,
+            args.task,
+            command_argv,
+            step=args.step,
+            tail_lines=args.tail_lines,
+            timeout=args.timeout,
+            cwd=args.cwd,
+            dry_run=args.dry_run,
+        )
+        exit_code = result.exit_code
+        if args.json:
+            print(json.dumps(result.as_dict(), indent=2))
+            return 0 if exit_code == 0 else 1
+        for warning in result.warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        if result.dry_run:
+            print(
+                f"Dry run: would run {shlex.join(command_argv)} in {result.working_directory}; "
+                "nothing was run or recorded"
+            )
+            return 0
+        evidence_path = args.project_directory.resolve() / "evidence.md"
+        if result.hint:
+            print(f"HINT: {result.hint}", file=sys.stderr)
+        if exit_code == 0:
+            print(f"Recorded a passing result for {owner} in {evidence_path}")
+            return 0
+        # The failure is written down, but it is never written down as a pass: a caller that
+        # marks the task done from here has to do so against a non-zero exit it can see.
+        print(
+            f"Recorded exit code {exit_code} for {owner} in {evidence_path}; not recording it as a pass",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.command == "record-observation":
+        observed = args.body if args.body is not None else _read_body(args.body_file)
+        outcome = record_observation(
+            args.project_directory, args.task, observed, step=args.step, source=args.source,
+            result=args.result, tail_lines=args.tail_lines,
+        )
+        if args.json:
+            print(json.dumps(outcome.as_dict(), indent=2))
+            return 0 if outcome.passed else 1
+        where = args.project_directory.resolve() / "evidence.md"
+        if outcome.passed:
+            print(f"Recorded a passing agent-attested observation for {outcome.owner_id} in {where}")
+            return 0
+        print(
+            f"Recorded a FAILED observation for {outcome.owner_id} in {where}; not recording it as a pass",
+            file=sys.stderr,
+        )
+        return 1
+
+    if args.command == "show-graph":
+        print(render_task_graph(project_task_graph(args.project_directory)))
+        return 0
+
+    if args.command == "find-roots":
+        found = find_workspace_roots(args.search_paths or None, max_depth=args.max_depth)
+        for root in found:
+            print(root)
+        if not found:
+            where = ", ".join(str(path) for path in args.search_paths) or "$HOME"
+            print(
+                f"ERROR: no workspace root found under {where}; ask the user for the path "
+                "rather than creating or assuming one",
+                file=sys.stderr,
+            )
+            return 1
+        if len(found) > 1:
+            print(
+                f"ERROR: {len(found)} workspace roots found; that is a defect to resolve, "
+                "not a choice to make silently. Ask the user which one is current.",
+                file=sys.stderr,
+            )
+            return 1
+        return 0
+
+    if args.command == "search-memory":
+        if args.offset < 0 or not 1 <= args.limit <= 20:
+            raise WorkspaceError("limit must be between 1 and 20; offset must be nonnegative")
+        workspace_root = resolve_workspace_root(args.workspace_root)
+        hits = rank_topics(workspace_root, args.query, include_retired=args.include_retired)
+        end = args.offset + args.limit
+        # The query is not echoed: a title-plus-objective query can be longer than the hits.
+        result: dict[str, Any] = {
+            "matches": [hit.as_json(workspace_root, verbose=args.verbose) for hit in hits[args.offset:end]],
+            "total": len(hits),
+            "offset": args.offset,
+            "next_offset": end if end < len(hits) else None,
+        }
+        if args.include_postmortems:
+            postmortems = search_postmortems(workspace_root, args.query)
+            result["postmortems"] = [
+                {"path": str(path.relative_to(workspace_root)), "line": number,
+                 "excerpt": line[:160], "truncated": len(line) > 160}
+                for path, number, line in postmortems[args.offset:end]
+            ]
+            result["postmortem_total"] = len(postmortems)
+        print(json.dumps(result, indent=1))
+        if not hits and not result.get("postmortems"):
+            # Not an error. A query with no hits is the answer to "is there a lesson about this",
+            # and exiting non-zero would make an honest "nothing recorded" look like a failure.
+            print(f"No memory matches {args.query!r} under {workspace_root}", file=sys.stderr)
+        return 0
+
+    if args.command == "promote-memory":
+        workspace_root = resolve_workspace_root(args.workspace_root)
+        body = args.body if args.body is not None else _read_body(args.body_file)
+        topic_path = workspace_root / "memory" / f"{args.slug}.md"
+        existed = topic_path.is_file()
+        entry_id = args.entry_id or promotion_entry_id(body)
+        duplicate = existed and memory_entry_marker(entry_id, body) in topic_path.read_text(encoding="utf-8")
+        creation_gate(workspace_root, args.slug, f"{args.description}\n{args.scope}\n{body}", create=args.create)
+        path = amend_memory_topic(
+            workspace_root,
+            args.slug,
+            body=body,
+            description=args.description,
+            kind=args.kind,
+            scope=args.scope,
+            sources=args.sources,
+            updated=args.updated,
+            keywords=args.keywords,
+            lock_timeout=args.lock_timeout,
+            entry_id=entry_id,
+        )
+        if duplicate:
+            print(
+                f"NOTE: entry {entry_id} is already recorded in {args.slug}; nothing was appended and its "
+                "sources are unchanged",
+                file=sys.stderr,
+            )
+        # Regenerated after the memory lock is released, never inside it: the rebuild takes the
+        # index lock, and these mkdir-based locks are not reentrant across each other's holders.
+        rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+        headroom = index_headroom(workspace_root)
+        topic_warnings = read_memory_topic(workspace_root, args.slug)["warnings"]
+        for warning in [*headroom.pop("warnings"), *topic_warnings]:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        print(json.dumps({
+            "path": str(path), "created": not existed, "duplicate": duplicate, "entry_id": entry_id, **headroom
+        }, indent=2))
+        return 0
+
+    if args.command == "stage":
+        body = args.body if args.body is not None else _read_body(args.body_file)
+        print(json.dumps(
+            stage_lesson(args.project_directory, args.title, body, lock_timeout=args.lock_timeout), indent=2
+        ))
+        return 0
+
+    if args.command == "retire-memory":
+        workspace_root = resolve_workspace_root(args.workspace_root)
+        outcome = retire_memory_topic(
+            workspace_root,
+            args.slug,
+            superseded_by=args.superseded_by,
+            reactivate=args.reactivate,
+            updated=args.updated,
+            lock_timeout=args.lock_timeout,
+        )
+        rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+        print(json.dumps(outcome, indent=2))
+        return 0
+
+    if args.command == "read-memory":
+        workspace_root = resolve_workspace_root(args.workspace_root)
+        print(json.dumps(read_memory_topic(workspace_root, args.slug, full=args.full), indent=2))
+        return 0
+
+    if args.command == "compact-memory":
+        workspace_root = resolve_workspace_root(args.workspace_root)
+        rule = args.rule if args.rule is not None else _read_body(args.rule_file)
+        outcome = compact_memory_topic(
+            workspace_root,
+            args.slug,
+            rule=rule,
+            expected_sha256=args.expected_sha256,
+            keywords=args.keywords,
+            updated=args.updated,
+            lock_timeout=args.lock_timeout,
+        )
+        rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
+        for warning in outcome["warnings"]:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        print(json.dumps(outcome, indent=2))
+        return 0
+
+    if args.command == "retro":
+        if args.retro_action == "record" and args.schema:
+            print(json.dumps(record_schema(), indent=2))
+            return 0
+        root = resolve_workspace_root(args.workspace_root)
+        if args.retro_action == "batch":
+            print(json.dumps(retro_batch(
+                root, since=args.since, projects=args.projects, limit=args.limit, offset=args.offset,
+                transcripts=not args.no_transcripts, claude_dir=args.claude_dir.expanduser(),
+            ), indent=2))
+            return 0
+        if args.input_json is None:
+            raise WorkspaceError("retro record needs an input file, or '-' for stdin; or --schema to print its keys")
+        print(json.dumps(record_run(
+            root, _read_json_object(args.input_json), lock_timeout=args.lock_timeout
+        ), indent=2))
+        return 0
+
+    if args.command == "migrate":
+        if args.apply:
+            print(apply_migration(args.project_directory, lock_timeout=args.lock_timeout))
+            return 0
+        candidate = migration_candidate(args.project_directory.resolve())
+        report = validate_v3_state(
+            candidate,
+            args.project_directory.resolve(),
+            close=candidate.get("status") == "DONE",
+            check_files=True,
+        )
+        print(json.dumps(candidate, indent=2, ensure_ascii=False))
+        if report.errors:
+            print("\nMigration preview requires reconciliation:", file=sys.stderr)
+            for error in report.errors:
+                print(f"ERROR: {error}", file=sys.stderr)
+            return 1
+        return 0
+
+    parser.error(f"unknown command: {args.command}")  # pragma: no cover
+    return 2  # pragma: no cover
+
+
 def main() -> int:
     parser = _build_parser()
     options, command_argv = _split_at_separator(list(sys.argv[1:]))
@@ -491,441 +975,25 @@ def main() -> int:
     skew = launcher_version_warning()
     if skew:
         print(f"WARNING: {skew}", file=sys.stderr)
+    # The line is written last, after the command printed its result: a retro reads refusals from it,
+    # and a log that could fail a command would be read by nobody.
+    invocation = Invocation("research-project", args)
     try:
-        if args.command == "init":
-            workspace_root = resolve_workspace_root(args.workspace_root)
-            project_dir = allocate_project(
-                workspace_root,
-                title=args.title,
-                working_directory=args.working_directory,
-                lock_timeout=args.lock_timeout,
-                create_root=args.create_root,
-                briefing=args.briefing,
-            )
-            # Warned at init as well as at validation, because this is the moment someone chooses
-            # where the record of the work will live. Checked after allocation, since --create-root
-            # means the directory to check may not have existed a moment ago.
-            warnings = vcs_warnings(workspace_root)
-            for warning in warnings:
-                print(f"WARNING: {warning}", file=sys.stderr)
-            if args.json:
-                initial = validated_project_context(project_dir)
-                print(json.dumps({"project_directory": str(project_dir), "revision": initial["revision"],
-                    "roots": initial["roots"], "documents": initial["documents"], "warnings": warnings}, indent=2))
-            else:
-                print(project_dir)
-            return 0
-
-        if args.command == "workflow":
-            if args.schema:
-                print(json.dumps(input_schema(args.action), indent=2))
-                return 0
-            if args.input_json is None:
-                raise WorkspaceError("workflow needs an input file, or '-' for stdin; or --schema to print its keys")
-            result = workflow(args.project_directory, args.action, _read_json_object(args.input_json))
-            print(json.dumps(result, indent=2))
-            return 1 if result.get("valid") is False or result.get("passed") is False else 0
-
-        if args.command == "context":
-            if args.validate:
-                if args.task is not None or args.worker or args.task_only:
-                    raise WorkspaceError("context --validate cannot be combined with task projections")
-                result = validated_project_context(args.project_directory, limit=args.limit)
-                print(json.dumps(result, indent=2))
-                return 0 if result["validation"]["valid"] else 1
-            print(json.dumps(project_context(
-                args.project_directory, limit=args.limit, task_id=args.task,
-                worker=args.worker, task_only=args.task_only,
-            ), indent=2))
-            return 0
-
-        if args.command == "read":
-            if args.document == "evidence" and (args.entries or args.entry is not None):
-                print(json.dumps(evidence_entries(
-                    args.project_directory, task_id=args.task, step=args.step, record_id=args.entry,
-                    offset=args.offset, limit=args.limit, include_text=args.entry is not None,
-                ), indent=2))
-                return 0
-            if args.document in (*WHOLE_DOCUMENTS, "notes") or args.outline:
-                if args.section is not None or args.step is not None:
-                    raise WorkspaceError("whole-document and outline reads do not accept --section or --step")
-                print(json.dumps(document_snapshot(
-                    args.project_directory, args.document, task_id=args.task, outline=args.outline,
-                    offset=args.offset, max_chars=args.max_chars,
-                ), indent=2))
-                return 0
-            print(json.dumps(read_project_text(
-                args.project_directory, args.document, section=args.section, task_id=args.task, step=args.step,
-                offset=args.offset, max_chars=args.max_chars,
-            ), indent=2))
-            return 0
-
-        if args.command == "list-projects":
-            print(json.dumps(list_projects(
-                resolve_workspace_root(args.workspace_root), query=args.query, status=args.status,
-                limit=args.limit, offset=args.offset, older_than_days=args.older_than_days,
-            ), indent=2))
-            return 0
-
-        if args.command == "update":
-            if args.dry_run:
-                result = preview(args.project_directory, _read_json_object(args.patch_json), args.expected_revision)
-                print(json.dumps(result, indent=2))
-                return 0 if result["valid"] else 1
-            before_tasks = _load_state(args.project_directory)["tasks"]
-            if str(args.patch_json) == "-":
-                patch = _read_json_object(args.patch_json)
-                state = update_project_data(
-                    args.project_directory, patch,
-                    expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
-                )
-            else:
-                state = update_project(
-                    args.project_directory, args.patch_json,
-                    expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
-                )
-            warnings = verification_order_warnings(state["tasks"]) + reason_reference_warnings(
-                before_tasks, state["tasks"], args.project_directory.resolve().parent
-            )
-            if args.json:
-                print(json.dumps({
-                    "operation": "project.update", "project_directory": str(args.project_directory.resolve()),
-                    "committed": True, "revision": state["revision"], "status": state["status"],
-                    "current_tasks": state["current_tasks"], "warnings": warnings,
-                }, indent=2))
-                return 0
-            for warning in warnings:
-                print(f"WARNING: {warning}", file=sys.stderr)
-            print(f"Committed revision {state['revision']}: {args.project_directory.resolve()}")
-            return 0
-
-        if args.command == "edit":
-            if args.sections_json is not None:
-                if args.section is not None or args.body is not None or args.body_file is not None:
-                    raise WorkspaceError("--sections-json cannot be combined with --section or body options")
-                raw_sections = _read_json_object(args.sections_json)
-                if not all(isinstance(key, str) and isinstance(value, str) for key, value in raw_sections.items()):
-                    raise WorkspaceError("sections JSON must map heading strings to body strings")
-                sections = {str(key): str(value) for key, value in raw_sections.items()}
-                body = None
-            else:
-                if args.document == "spec" and args.section is None:
-                    raise WorkspaceError("spec edit requires --section or --sections-json")
-                if args.document in WHOLE_DOCUMENTS and args.section is not None:
-                    raise WorkspaceError(f"{args.document} edit does not accept --section")
-                if args.body is None and args.body_file is None:
-                    raise WorkspaceError("edit requires --body or --body-file")
-                body = args.body if args.body is not None else _read_body(args.body_file)
-                sections = {args.section: body} if args.section is not None else None
-            print(json.dumps(edit_document(
-                args.project_directory, args.document, expected_sha256=args.expected_sha256,
-                body=body if args.document in WHOLE_DOCUMENTS else None, sections=sections,
-                lock_timeout=args.lock_timeout,
-            ), indent=2))
-            return 0
-
-        if args.command == "append":
-            if args.kind == "finding" and args.task is None:
-                raise WorkspaceError("finding append requires --task")
-            if args.kind == "decision" and args.task is not None:
-                raise WorkspaceError("decision append does not accept --task")
-            body = args.body if args.body is not None else _read_body(args.body_file)
-            print(json.dumps(append_record(
-                args.project_directory, args.kind, body, task_id=args.task, entry_id=args.entry_id,
-                lock_timeout=args.lock_timeout,
-            ), indent=2))
-            return 0
-
-        if args.command == "task":
-            print(json.dumps(task_operation(
-                args.project_directory, args.action, args.task_id, expected_revision=args.expected_revision,
-                reason=args.reason, evidence_record_ids=args.evidence_records, start_next=args.start_next,
-                lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
-                observation_record_ids=args.observation_records,
-            ), indent=2))
-            return 0
-
-        if args.command == "close":
-            reflection = args.reflection
-            if args.reflection_file is not None:
-                reflection = _read_body(args.reflection_file)
-            result = close_project(
-                args.project_directory, expected_revision=args.expected_revision, reflection=reflection,
-                expected_reflection_sha256=args.expected_reflection_sha256, lock_timeout=args.lock_timeout,
-            )
-            print(json.dumps(result, indent=2))
-            return 0 if result["validation"]["valid"] else 1
-
-        if args.command == "commit":
-            if args.dry_run:
-                report = check_candidate(
-                    args.project_directory,
-                    args.candidate_json,
-                    expected_revision=args.expected_revision,
-                )
-                for warning in report.warnings:
-                    print(f"WARNING: {warning}", file=sys.stderr)
-                if report.errors:
-                    print("Dry run: the commit would fail:", file=sys.stderr)
-                    for error in report.errors:
-                        print(f"- {error}", file=sys.stderr)
-                    return 1
-                print(f"Dry run: the candidate would commit cleanly; {args.project_directory.resolve()} is unchanged")
-                return 0
-            if args.expected_revision is None:
-                raise WorkspaceError("commit requires --expected-revision; pass --dry-run to check without committing")
-            state = commit_candidate(
-                args.project_directory,
-                args.candidate_json,
-                expected_revision=args.expected_revision,
-                lock_timeout=args.lock_timeout,
-            )
-            print(f"Committed revision {state['revision']}: {args.project_directory.resolve()}")
-            return 0
-
-        if args.command == "rebuild-index":
-            workspace_root = resolve_workspace_root(args.workspace_root)
-            # An index for a workspace that does not exist is never what the caller wanted, and
-            # building one would leave a stray root behind exactly as a mistyped init does.
-            if not workspace_root.is_dir():
-                raise WorkspaceError(f"workspace root does not exist: {workspace_root}")
-            print(rebuild_index(workspace_root, lock_timeout=args.lock_timeout))
-            # A malformed topic file is skipped by generation rather than raised, so that a bad
-            # memory file can never block the commit this command ends. Skipping silently would
-            # leave a lesson invisible with nothing said, so the skip is reported here.
-            for problem in load_memory_topics(workspace_root)[1]:
-                print(f"WARNING: memory topic skipped: {problem}", file=sys.stderr)
-            return 0
-
-        if args.command == "record-evidence":
-            if not command_argv:
-                print(
-                    "ERROR: record-evidence needs the command after '--', for example: "
-                    "record-evidence <project-directory> --task T01 -- uv run pytest",
-                    file=sys.stderr,
-                )
-                return 1
-            owner = args.task or args.step
-            result = record_evidence_result(
-                args.project_directory,
-                args.task,
-                command_argv,
-                step=args.step,
-                tail_lines=args.tail_lines,
-                timeout=args.timeout,
-                cwd=args.cwd,
-                dry_run=args.dry_run,
-            )
-            exit_code = result.exit_code
-            if args.json:
-                print(json.dumps(result.as_dict(), indent=2))
-                return 0 if exit_code == 0 else 1
-            for warning in result.warnings:
-                print(f"WARNING: {warning}", file=sys.stderr)
-            if result.dry_run:
-                print(
-                    f"Dry run: would run {shlex.join(command_argv)} in {result.working_directory}; "
-                    "nothing was run or recorded"
-                )
-                return 0
-            evidence_path = args.project_directory.resolve() / "evidence.md"
-            if result.hint:
-                print(f"HINT: {result.hint}", file=sys.stderr)
-            if exit_code == 0:
-                print(f"Recorded a passing result for {owner} in {evidence_path}")
-                return 0
-            # The failure is written down, but it is never written down as a pass: a caller that
-            # marks the task done from here has to do so against a non-zero exit it can see.
-            print(
-                f"Recorded exit code {exit_code} for {owner} in {evidence_path}; not recording it as a pass",
-                file=sys.stderr,
-            )
-            return 1
-
-        if args.command == "record-observation":
-            observed = args.body if args.body is not None else _read_body(args.body_file)
-            outcome = record_observation(
-                args.project_directory, args.task, observed, step=args.step, source=args.source,
-                result=args.result, tail_lines=args.tail_lines,
-            )
-            if args.json:
-                print(json.dumps(outcome.as_dict(), indent=2))
-                return 0 if outcome.passed else 1
-            where = args.project_directory.resolve() / "evidence.md"
-            if outcome.passed:
-                print(f"Recorded a passing agent-attested observation for {outcome.owner_id} in {where}")
-                return 0
-            print(
-                f"Recorded a FAILED observation for {outcome.owner_id} in {where}; not recording it as a pass",
-                file=sys.stderr,
-            )
-            return 1
-
-        if args.command == "show-graph":
-            print(render_task_graph(project_task_graph(args.project_directory)))
-            return 0
-
-        if args.command == "find-roots":
-            found = find_workspace_roots(args.search_paths or None, max_depth=args.max_depth)
-            for root in found:
-                print(root)
-            if not found:
-                where = ", ".join(str(path) for path in args.search_paths) or "$HOME"
-                print(
-                    f"ERROR: no workspace root found under {where}; ask the user for the path "
-                    "rather than creating or assuming one",
-                    file=sys.stderr,
-                )
-                return 1
-            if len(found) > 1:
-                print(
-                    f"ERROR: {len(found)} workspace roots found; that is a defect to resolve, "
-                    "not a choice to make silently. Ask the user which one is current.",
-                    file=sys.stderr,
-                )
-                return 1
-            return 0
-
-        if args.command == "search-memory":
-            if args.offset < 0 or not 1 <= args.limit <= 20:
-                raise WorkspaceError("limit must be between 1 and 20; offset must be nonnegative")
-            workspace_root = resolve_workspace_root(args.workspace_root)
-            hits = rank_topics(workspace_root, args.query, include_retired=args.include_retired)
-            end = args.offset + args.limit
-            # The query is not echoed: a title-plus-objective query can be longer than the hits.
-            result: dict[str, Any] = {
-                "matches": [hit.as_json(workspace_root, verbose=args.verbose) for hit in hits[args.offset:end]],
-                "total": len(hits),
-                "offset": args.offset,
-                "next_offset": end if end < len(hits) else None,
-            }
-            if args.include_postmortems:
-                postmortems = search_postmortems(workspace_root, args.query)
-                result["postmortems"] = [
-                    {"path": str(path.relative_to(workspace_root)), "line": number,
-                     "excerpt": line[:160], "truncated": len(line) > 160}
-                    for path, number, line in postmortems[args.offset:end]
-                ]
-                result["postmortem_total"] = len(postmortems)
-            print(json.dumps(result, indent=1))
-            if not hits and not result.get("postmortems"):
-                # Not an error. A query with no hits is the answer to "is there a lesson about this",
-                # and exiting non-zero would make an honest "nothing recorded" look like a failure.
-                print(f"No memory matches {args.query!r} under {workspace_root}", file=sys.stderr)
-            return 0
-
-        if args.command == "promote-memory":
-            workspace_root = resolve_workspace_root(args.workspace_root)
-            body = args.body if args.body is not None else _read_body(args.body_file)
-            topic_path = workspace_root / "memory" / f"{args.slug}.md"
-            existed = topic_path.is_file()
-            entry_id = args.entry_id or promotion_entry_id(body)
-            duplicate = existed and memory_entry_marker(entry_id, body) in topic_path.read_text(encoding="utf-8")
-            creation_gate(workspace_root, args.slug, f"{args.description}\n{args.scope}\n{body}", create=args.create)
-            path = amend_memory_topic(
-                workspace_root,
-                args.slug,
-                body=body,
-                description=args.description,
-                kind=args.kind,
-                scope=args.scope,
-                sources=args.sources,
-                updated=args.updated,
-                keywords=args.keywords,
-                lock_timeout=args.lock_timeout,
-                entry_id=entry_id,
-            )
-            if duplicate:
-                print(
-                    f"NOTE: entry {entry_id} is already recorded in {args.slug}; nothing was appended and its "
-                    "sources are unchanged",
-                    file=sys.stderr,
-                )
-            # Regenerated after the memory lock is released, never inside it: the rebuild takes the
-            # index lock, and these mkdir-based locks are not reentrant across each other's holders.
-            rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
-            headroom = index_headroom(workspace_root)
-            topic_warnings = read_memory_topic(workspace_root, args.slug)["warnings"]
-            for warning in [*headroom.pop("warnings"), *topic_warnings]:
-                print(f"WARNING: {warning}", file=sys.stderr)
-            print(json.dumps({
-                "path": str(path), "created": not existed, "duplicate": duplicate, "entry_id": entry_id, **headroom
-            }, indent=2))
-            return 0
-
-        if args.command == "stage":
-            body = args.body if args.body is not None else _read_body(args.body_file)
-            print(json.dumps(
-                stage_lesson(args.project_directory, args.title, body, lock_timeout=args.lock_timeout), indent=2
-            ))
-            return 0
-
-        if args.command == "retire-memory":
-            workspace_root = resolve_workspace_root(args.workspace_root)
-            outcome = retire_memory_topic(
-                workspace_root,
-                args.slug,
-                superseded_by=args.superseded_by,
-                reactivate=args.reactivate,
-                updated=args.updated,
-                lock_timeout=args.lock_timeout,
-            )
-            rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
-            print(json.dumps(outcome, indent=2))
-            return 0
-
-        if args.command == "read-memory":
-            workspace_root = resolve_workspace_root(args.workspace_root)
-            print(json.dumps(read_memory_topic(workspace_root, args.slug, full=args.full), indent=2))
-            return 0
-
-        if args.command == "compact-memory":
-            workspace_root = resolve_workspace_root(args.workspace_root)
-            rule = args.rule if args.rule is not None else _read_body(args.rule_file)
-            outcome = compact_memory_topic(
-                workspace_root,
-                args.slug,
-                rule=rule,
-                expected_sha256=args.expected_sha256,
-                keywords=args.keywords,
-                updated=args.updated,
-                lock_timeout=args.lock_timeout,
-            )
-            rebuild_index(workspace_root, lock_timeout=args.lock_timeout)
-            for warning in outcome["warnings"]:
-                print(f"WARNING: {warning}", file=sys.stderr)
-            print(json.dumps(outcome, indent=2))
-            return 0
-
-        if args.command == "migrate":
-            if args.apply:
-                print(apply_migration(args.project_directory, lock_timeout=args.lock_timeout))
-                return 0
-            candidate = migration_candidate(args.project_directory.resolve())
-            report = validate_v3_state(
-                candidate,
-                args.project_directory.resolve(),
-                close=candidate.get("status") == "DONE",
-                check_files=True,
-            )
-            print(json.dumps(candidate, indent=2, ensure_ascii=False))
-            if report.errors:
-                print("\nMigration preview requires reconciliation:", file=sys.stderr)
-                for error in report.errors:
-                    print(f"ERROR: {error}", file=sys.stderr)
-                return 1
-            return 0
-
+        code = _run(parser, args, command_argv)
     except (CloseOperationError, OperationError) as error:
         print(json.dumps(error.result, indent=2))
         print(f"ERROR: {error}", file=sys.stderr)
+        invocation.record(1, error)
         return 1
     except WorkspaceError as error:
         print(f"ERROR: {error}", file=sys.stderr)
+        invocation.record(1, error)
         return 1
-
-    parser.error(f"unknown command: {args.command}")  # pragma: no cover
-    return 2  # pragma: no cover
+    except Exception as error:
+        invocation.record(1, error)
+        raise
+    invocation.record(code)
+    return code
 
 
 if __name__ == "__main__":  # pragma: no cover

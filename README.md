@@ -16,8 +16,8 @@ claude plugin marketplace add nampham2/agents
 claude plugin install research@agents
 ```
 
-Confirm with `claude plugin list`. The plugin installs two user-facing skills, `research:project`
-and `research:dashboard`.
+Confirm with `claude plugin list`. The plugin installs three user-facing skills, `research:project`,
+`research:dashboard` and `research:retro`.
 
 ### Codex
 
@@ -62,6 +62,31 @@ claude plugin install research@agents
 Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
+
+### 0.27.0 retro skill and the records it needs
+
+`research:retro` reads the records of the projects closed since the previous retro, proposes changes
+to the plugin itself by severity with evidence pointers, and records the user's accept, reject or
+defer per candidate in a ledger under the workspace root. Three records make a project retro-ready.
+
+- **Invocation log.** `research-project` and `research-validate` append one JSON line per
+  project-scoped call to `<project>/invocations.jsonl`: command, action, exit, error class
+  (`conflict`, `operation`, `refused`, `nonzero`, `crash`), message, duration, plugin version. The
+  line is written after the command, a write failure is swallowed, and only a directory that holds
+  `project.json` is written to.
+- **Friction entries.** `research-project append <project> friction --kind <kind> --pointer <ref>`
+  records what got in the agent's way, in seven kinds, into `<project>/friction.md`. `read <project>
+  friction` returns them.
+- **Retro section.** `finalize` requires a `## Retro` section of at least 120 characters in the
+  reflection for a project created on or after the release instant, and warns for an older one.
+  `readiness` and `research-validate --close` report the same finding under `retro`.
+- **Commands.** `research-project retro batch <root> [--since <date>] [--project <id>]` returns the
+  closed projects after the last run's cursor, each folded into one bounded row (layers, invocation
+  failures, friction by kind, retro section, failed evidence, optional Claude Code transcript
+  tallies), plus the rejected and deferred candidates of earlier runs. `research-project retro
+  record <root> -` writes `retro/<id>.md` and `RETRO.md`; it is the ledger's only writer.
+- **Instruction cost.** The project skill gained the friction command and the retro section rule at
+  net zero words; the budgets in `test_lifecycle_payloads.py` did not move.
 
 ### 0.25.0 local dashboard
 

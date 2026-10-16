@@ -28,7 +28,8 @@ GIT_ENV = {
 REFLECTION = (
     "# Reflection\n\nOutcome: the work was verified end to end and every success criterion was met.\n\n"
     "Limitations: none known. Lessons: nothing new beyond what the evidence and the decisions already record, "
-    "and no work is left open for a later session.\n"
+    "and no work is left open for a later session.\n\n## Retro\n\nNothing got in the way: every command the "
+    "skill named ran as its reference said. No reference was loaded without need. Plugin change: none.\n"
 )
 
 

@@ -26,7 +26,7 @@ input with the same ID conflicts. Metadata operations never replay commands or e
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |
 | `receipt` | `task`, actual `receipt`: `kind`, `value`, `destination`, `timestamp`; `value` is an HTTP(S) URL or an id prefixed `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:` or `commit:`; exact duplicates are not appended. |
 | `review` | `reviewer`, `version`, `scope`, `findings`, actual `status`; optional `evidence` references and `required`. Allocates the next delivery cycle/file, preserving history. Use `pending` to reopen acceptance. |
-| `finalize` | `reflection` (at least 200 characters with a heading), `continuation`; validates and commits DONE, then saves the final handoff; returns staged-lesson warnings. |
+| `finalize` | `reflection` (200+ characters, a heading, and a `## Retro` section: what got in the way with pointers, references loaded but not needed, one plugin change or `none`; refused without it after the cutoff), `continuation`; validates and commits DONE, then saves the final handoff; returns staged-lesson and retro warnings. |
 | `maintenance` | `reason`, optional `tasks`, `continuation`; reopens DONE as PLANNING. |
 | `cancel` | `reason`, explicit `tasks` dispositions, `continuation`; commits CANCELLED without deleting work or claiming workers stopped. |
 | `assess` | `topic`, `disposition` (`apply`, `reject`, `defer`), `reason`, `application`; saves the lesson assessment with its actual topic token. |
@@ -48,8 +48,6 @@ Requirements confirmation does not approve architecture; only `alignment` record
 reply. Architecture confirmation needs its review identifier in the saved proposal and never
 authorizes effects or accepts delivery review. A later substantive edit makes a confirmation stale
 (`edit` and `round` return `stale_confirmations`); the gate refuses until it is confirmed again.
-Scripts validate record shape and tokens; agents remain responsible for truthful quoted consent.
 
-Reports are opt-in: supply conclusions and limitations; missing sections stay marked unwritten.
-Citation findings cover file/anchor integrity, not claim support. Use the report reference for HTML
-or presentation requests.
+Reports are opt-in; missing sections stay marked unwritten. Citation findings cover file/anchor
+integrity, not claim support.
