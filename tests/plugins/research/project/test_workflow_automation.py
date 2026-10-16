@@ -192,7 +192,8 @@ def test_context_crlf_tokens_allow_guarded_edits_and_close(project: Path, launch
     )
     result = subprocess.run(
         [str(launcher), "close", str(project), "--expected-revision", str(context["revision"]),
-         "--reflection", "# Reflection\n\nVerified and complete.",
+         "--reflection", "# Reflection\n\nVerified and complete.\n\n## Retro\n\nNothing got in the way of this "
+         "run. No reference was loaded without need. Plugin change: none. The close gate reads this section.",
          "--expected-reflection-sha256", context["documents"]["reflection"]["sha256"]],
         text=True, capture_output=True, check=True,
     )
@@ -235,7 +236,9 @@ def test_complete_lifecycle_uses_structured_evidence_and_one_finish_transition(p
     second = record_evidence_result(project, "T02", [sys.executable, "-c", "pass"])
     task_operation(project, "finish", "T02", expected_revision=3, evidence_record_ids=[second.record_id])
     closed = close_project(
-        project, expected_revision=4, reflection="# Reflection\n\nOutcome complete. No known limitations.\n",
+        project, expected_revision=4,
+        reflection="# Reflection\n\nOutcome complete. No known limitations.\n\n## Retro\n\nNothing got in the way "
+        "of this run. No reference was loaded without need. Plugin change: none. The gate reads this section.\n",
         expected_reflection_sha256="missing",
     )
     assert closed["status"] == "DONE"

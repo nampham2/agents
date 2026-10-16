@@ -45,9 +45,11 @@ class FindingsTests(unittest.TestCase):
         # A `### Retro` under another section is not the section.
         self.assertEqual(1, len(retro_section_findings("# R\n\n## Outcome\n\n### Retro\n\n" + "x " * 100)))
 
-    def test_the_shipped_cutoff_is_the_placeholder_until_the_release(self) -> None:
-        # The release task replaces it; until then the gate is off for every real project.
-        self.assertEqual(RETRO_SECTION_PLACEHOLDER, RETRO_SECTION_FROM)
+    def test_the_release_set_the_cutoff(self) -> None:
+        # The placeholder kept the gate off during development; the release commit replaced it with
+        # the release instant, so every project created from 0.27.0 on closes with a retro section.
+        self.assertNotEqual(RETRO_SECTION_PLACEHOLDER, RETRO_SECTION_FROM)
+        self.assertRegex(RETRO_SECTION_FROM, r"^2026-10-\d{2}T\d{2}:\d{2}:\d{2}\+00:00$")
 
 
 class _Fixture(unittest.TestCase):

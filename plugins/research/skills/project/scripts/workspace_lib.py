@@ -342,7 +342,7 @@ def is_delivery_gated(state: dict[str, Any]) -> bool:
 # of the version that ships the gate (0.27.0); the placeholder keeps it off until then. Older projects
 # get a warning. Read at call time so tests can move it.
 RETRO_SECTION_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
-RETRO_SECTION_FROM = "2099-01-01T00:00:00+00:00"
+RETRO_SECTION_FROM = "2026-10-15T17:25:51+00:00"
 RETRO_SECTION_HEADING = "Retro"
 RETRO_SECTION_MIN_CHARS = 120
 
