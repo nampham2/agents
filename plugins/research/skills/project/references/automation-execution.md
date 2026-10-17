@@ -15,15 +15,17 @@ Record actual host observations. Resume surfaces the latest unresolved observati
 neither an intent record nor missing handle proves no worker exists. Use the host to observe/stop.
 
 `verify` takes `id`, a nonempty `checks` array, optional boolean `continue_on_failure` (default
-false), and optional selected `fingerprints` references. It needs no document token or state
-revision; it does not change task status. Each check requires exactly one `task` or closure `step`
-(currently `report`), an explicit nonempty `argv` array and optional positive `timeout` seconds
-(default 300, maximum 3,600). Never translate arbitrary free-text `verification` into execution.
+false), optional check-shaped `control`, and optional selected `fingerprints` references. It needs
+no document token or state revision; it does not change task status. Each check requires exactly
+one `task` or closure `step` (currently `report`), an explicit nonempty `argv` array and optional
+positive `timeout` seconds (default 300, maximum 3,600). Never translate arbitrary free-text
+`verification` into execution.
 
 ```json
 {"id":"parser-checks-1","continue_on_failure":false,"checks":[
   {"task":"T01","argv":["python3","-m","unittest","discover"],"timeout":120}
-],"fingerprints":[{"root":"target","path":"src/parser.py"}]}
+],"control":{"task":"T01","argv":["python3","-c","raise SystemExit(1)"]},
+ "fingerprints":[{"root":"target","path":"src/parser.py"}]}
 ```
 
 Checks run without a shell in the target, using the evidence runner. Keep secrets out of argv and
@@ -33,6 +35,15 @@ failures may continue the batch. A timeout does not prove descendant processes s
 Same-ID retries repair saved evidence without rerunning attempted commands; unknown outcomes stop
 for inspection. Select a new ID for a genuinely new, authorized verification run. Zero exit alone
 does not satisfy task acceptance.
+
+The `control` is a check declared to fail on the current content; it runs last, after the short
+circuit, and validates in the same pre-pass, so a malformed batch records nothing. The response
+always carries `controls_fired` as `n/m`: the control fired only on a recorded non-zero exit, so
+timeout, launch error and rejection report `0/1` and fail the batch alongside any failing check.
+Without a control the batch reports `0/0` and passes when every check records zero. A control that
+records zero watched the checks pass and proves nothing, so the batch fails. Give each acceptance
+batch a control the current content really fails; `finalize` warns, without refusing, when a
+project has verify batches but no control was ever observed failing.
 
 ## Staged lessons and recovery
 
