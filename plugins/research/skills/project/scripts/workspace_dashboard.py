@@ -1,8 +1,8 @@
 """Read-only model behind the research dashboard.
 
 `build_model` turns one workspace root into the JSON the page shows. `fingerprint` says whether
-anything the page shows has changed. `SessionIndex` finds the Claude Code sessions that worked on a
-project. Nothing here writes to the workspace or to `~/.claude`.
+anything the page shows has changed. `SessionIndex` finds Claude Code sessions and `PiSessionIndex`
+finds Pi sessions. Nothing here writes to the workspace, `~/.claude` or `~/.pi`.
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ import errno
 import hashlib
 import json
 import re
+import shlex
 import sys
 import threading
 import webbrowser
@@ -341,6 +342,7 @@ class SessionIndex:
                         "exact": False,
                         "running": running.get(transcript.stem, ""),
                         "prompt": prompts.get(transcript.stem, ""),
+                        "host": "claude",
                     }
                 )
         for sessions in found.values():
@@ -354,15 +356,149 @@ class SessionIndex:
         return {"running": self._running().get(session, ""), "prompt": self._prompts().get(session, "")}
 
 
-def attach_sessions(projects: list[dict[str, Any]], index: SessionIndex) -> list[dict[str, Any]]:
+def _pi_header(data: bytes) -> dict[str, Any] | None:
+    """Read the session header from the first JSONL line, or None when it is unusable."""
+    try:
+        header = json.loads(data.splitlines()[0])
+    except (IndexError, ValueError):
+        return None
+    if not isinstance(header, dict) or header.get("type") != "session":
+        return None
+    identity = header.get("id")
+    if not isinstance(identity, str) or not identity:
+        return None
+    if not isinstance(header.get("cwd"), str):
+        header["cwd"] = ""
+    return header
+
+
+def _user_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = [
+            block.get("text")
+            for block in content
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+        ]
+        return " ".join(parts).strip()
+    return ""
+
+
+def _pi_prompt(data: bytes) -> str:
+    """The last user message in a Pi session, trimmed for a row label."""
+    prompt = ""
+    for line in data.splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "message":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        text = _user_text(message.get("content"))
+        if text:
+            prompt = text[:PROMPT_CHARS]
+    return prompt
+
+
+class PiSessionIndex:
+    """Find the Pi sessions that worked on a project, from their JSONL transcripts.
+
+    Pi files each session as `<pi dir>/sessions/--<cwd>--/<timestamp>_<id>.jsonl`. The header
+    names the session and its working directory. The layout is not a documented interface: every
+    failure to read it yields fewer sessions, never an error.
+    """
+
+    def __init__(self, pi_dir: Path) -> None:
+        self.pi_dir = pi_dir
+        self._seen: dict[Path, tuple[int, int, dict[str, Any]]] = {}
+
+    def _scan(self, transcript: Path) -> dict[str, Any] | None:
+        try:
+            info = transcript.stat()
+            cached = self._seen.get(transcript)
+            if cached and cached[:2] == (info.st_mtime_ns, info.st_size):
+                return cached[2]
+            data = transcript.read_bytes()
+        except OSError:
+            return None
+        header = _pi_header(data)
+        if header is None:
+            return None
+        mentions: dict[str, int] = {}
+        for found in MENTION.findall(data):
+            name = found.decode()
+            mentions[name] = mentions.get(name, 0) + 1
+        entry = {
+            "header": header,
+            "mentions": mentions,
+            "commanded": {found.decode() for found in WRITE_COMMAND.findall(data)},
+            "prompt": _pi_prompt(data),
+            "last": info.st_mtime,
+        }
+        self._seen[transcript] = (info.st_mtime_ns, info.st_size, entry)
+        return entry
+
+    def find(self) -> dict[str, list[dict[str, Any]]]:
+        """Map project id to its Pi sessions, the one that moved last first."""
+        found: dict[str, list[dict[str, Any]]] = {}
+        for transcript in sorted((self.pi_dir / "sessions").glob("*/*.jsonl")):
+            entry = self._scan(transcript)
+            if not entry or not entry["mentions"]:
+                continue
+            busiest = max(entry["mentions"].values())
+            for name, count in entry["mentions"].items():
+                if count < MIN_MENTIONS or (name not in entry["commanded"] and count < MENTION_SHARE * busiest):
+                    continue
+                found.setdefault(name, []).append(
+                    {
+                        "id": entry["header"]["id"],
+                        "cwd": entry["header"]["cwd"],
+                        "last": datetime.fromtimestamp(entry["last"]).astimezone().isoformat(timespec="seconds"),
+                        "mentions": count,
+                        "commanded": name in entry["commanded"],
+                        "exact": False,
+                        "running": "",
+                        "prompt": entry["prompt"],
+                        "host": "pi",
+                    }
+                )
+        for sessions in found.values():
+            sessions.sort(key=lambda session: session["last"], reverse=True)
+            del sessions[SESSION_LIMIT:]
+        return found
+
+
+def _resume(session: dict[str, Any]) -> str:
+    """The command that resumes one session in its own working directory."""
+    cwd = _text(session.get("cwd"))
+    prefix = f"cd {shlex.quote(cwd)} && " if cwd else ""
+    command = "pi --session" if session.get("host") == "pi" else "claude --resume"
+    return f"{prefix}{command} {shlex.quote(_text(session.get('id')))}"
+
+
+def attach_sessions(
+    projects: list[dict[str, Any]], index: SessionIndex, pi_index: PiSessionIndex | None = None
+) -> list[dict[str, Any]]:
     """Copy the projects with their sessions: the recorded one first and exact, then the search."""
     found = index.find()
+    pi_found = pi_index.find() if pi_index is not None else {}
     result = []
     for project in projects:
         sessions = [dict(session) for session in found.get(project["id"], [])]
+        sessions += [dict(session) for session in pi_found.get(project["id"], [])]
         recorded = project.get("recorded_session")
         if recorded and recorded.get("id"):
-            sessions = [session for session in sessions if session["id"] != recorded["id"]]
+            host = _text(recorded.get("host")) or "claude"
+            sessions = [
+                session
+                for session in sessions
+                if not (session.get("host") == host and session["id"] == recorded["id"])
+            ]
+            labels = index.labels(recorded["id"]) if host == "claude" else {"running": "", "prompt": ""}
             sessions.insert(
                 0,
                 {
@@ -372,10 +508,14 @@ def attach_sessions(projects: list[dict[str, Any]], index: SessionIndex) -> list
                     "mentions": 0,
                     "commanded": True,
                     "exact": True,
-                    **index.labels(recorded["id"]),
+                    "host": host,
+                    **labels,
                 },
             )
-        result.append({**project, "sessions": sessions})
+        sessions.sort(key=lambda session: (bool(session.get("exact")), session.get("last") or ""), reverse=True)
+        for session in sessions:
+            session["resume"] = _resume(session)
+        result.append({**project, "sessions": sessions[:SESSION_LIMIT]})
     return result
 
 
@@ -386,10 +526,11 @@ class Dashboard:
     so it must not decide whether the page reloads.
     """
 
-    def __init__(self, root: Path, claude_dir: Path, page: Path = PAGE) -> None:
+    def __init__(self, root: Path, claude_dir: Path, page: Path = PAGE, *, pi_dir: Path | None = None) -> None:
         self.root = root
         self.page = page
         self._index = SessionIndex(claude_dir)
+        self._pi_index = PiSessionIndex(pi_dir) if pi_dir is not None else None
         self._lock = threading.Lock()
         self._seen = ""
         self._projects: list[dict[str, Any]] = []
@@ -403,7 +544,7 @@ class Dashboard:
             if current != self._seen:
                 self._projects = build_model(self.root)["projects"]
                 self._seen = current
-            projects = attach_sessions(self._projects, self._index)
+            projects = attach_sessions(self._projects, self._index, self._pi_index)
         return {"root": str(self.root), "generated": now_iso(), "fingerprint": current, "projects": projects}
 
 
@@ -505,6 +646,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--port", type=_port, default=DEFAULT_PORT, help="default 8765; 0 takes any free port")
     parser.add_argument("--no-browser", action="store_true", help="print the URL and do not open it")
     parser.add_argument("--claude-dir", default="~/.claude", help="where Claude Code keeps its sessions")
+    parser.add_argument("--pi-dir", default="~/.pi/agent", help="where Pi keeps its sessions")
     return parser
 
 
@@ -516,7 +658,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(error, file=sys.stderr)
         return 2
     try:
-        server = make_server(Dashboard(root, Path(args.claude_dir).expanduser()), args.port)
+        server = make_server(
+            Dashboard(
+                root,
+                Path(args.claude_dir).expanduser(),
+                pi_dir=Path(args.pi_dir).expanduser(),
+            ),
+            args.port,
+        )
     except OSError as error:
         if error.errno == errno.EADDRINUSE:
             print(f"Port {args.port} in use. Use --port 0 for a free port.", file=sys.stderr)

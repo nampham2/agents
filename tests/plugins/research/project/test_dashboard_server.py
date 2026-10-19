@@ -299,6 +299,11 @@ def test_the_claude_directory_is_passed_through(fake_server: dict[str, Any], wor
     assert fake_server["dashboard"]._index.claude_dir == tmp_path / "elsewhere"
 
 
+def test_the_pi_directory_is_passed_through(fake_server: dict[str, Any], workspace: Path, tmp_path: Path) -> None:
+    dash.main([str(workspace), "--no-browser", "--pi-dir", str(tmp_path / "elsewhere")])
+    assert fake_server["dashboard"]._pi_index.pi_dir == tmp_path / "elsewhere"
+
+
 def test_the_root_comes_from_the_environment(
     fake_server: dict[str, Any], workspace: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
