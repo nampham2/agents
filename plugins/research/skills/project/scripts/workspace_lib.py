@@ -3871,32 +3871,41 @@ def _refuse_shell_operators(command: Sequence[str]) -> None:
 
 def _misrooted_command_arguments(
     command: Sequence[str], project_dir: Path, working_directory: Path
-) -> list[tuple[str, Path]]:
-    """Arguments that name a real file under the project directory and nothing under the target.
+) -> list[tuple[str, str, Path, Path, bool, bool]]:
+    """Sites that resolve on the workspace side and not under the target.
 
-    `record-evidence` runs the command in `working_directory`, which is the target repository, not
-    the project directory. A relative path to something inside the project — a script in
-    `artifacts/`, the project's own `spec.md` — therefore resolves to nothing, and the command fails
-    for a reason that looks like the command's fault. It is the most repeated mistake in this
-    workspace's history, and it survived being written down, so it is detected here instead.
+    A site is every argv element and every token of every inline shell script: the mistake has been
+    written both ways, and a script token is invisible to a rule that only walks argv. For a
+    candidate `p` the three resolutions are the project directory (`W`), its parent — the workspace
+    root (`R`) — and the effective working directory (`T`). The refusal fires only when a workspace
+    side exists and `T` does not: one that resolves under the target is what the caller asked for,
+    and one that resolves under neither is the command's own problem to report.
 
-    Only an argument that resolves under the project directory *and* not under the target is
-    reported: one that resolves under the target is what the caller asked for, and one that resolves
-    under neither is the command's own problem to report.
+    Each hit carries both concrete resolutions — the workspace side that fired and the target side
+    that did not — plus whether each exists, so the shared message can print them truthfully for
+    either rule. Probing raises for arguments that are not paths — prose, very long strings — so a
+    failed probe means "not a path I can reason about" and the site is left to the command.
     """
-    misrooted: list[tuple[str, Path]] = []
-    for argument in command:
+    sites: list[tuple[str, str]] = [(argument, "argv") for argument in command]
+    for script in _inline_shell_scripts(command):
+        sites.extend((token, "inline shell script") for token in _shell_tokens(script))
+    misrooted: list[tuple[str, str, Path, Path, bool, bool]] = []
+    for argument, origin in sites:
         if not argument or argument.startswith("-") or Path(argument).is_absolute():
             continue
         if ".." in Path(argument).parts:
             continue
-        in_project = project_dir / argument
         try:
-            # An argument is far more often prose than a path — a `-c` program, a commit message, a
-            # regex. Probing those raises rather than returning False, so a failed probe means "not
-            # a path I can reason about" and the argument is left to the command.
-            if in_project.exists() and not (working_directory / argument).exists():
-                misrooted.append((argument, in_project))
+            in_target = working_directory / argument
+            if in_target.exists():
+                continue
+            in_project = project_dir / argument
+            if in_project.exists():
+                misrooted.append((argument, origin, in_project, in_target, True, False))
+                continue
+            in_root = project_dir.parent / argument
+            if in_root.exists():
+                misrooted.append((argument, origin, in_root, in_target, True, False))
         except (OSError, ValueError):
             continue
     return misrooted
@@ -3909,38 +3918,122 @@ def _misrooted_command_arguments(
 WORKSPACE_AWARE_TOOLS = frozenset({"research-project", "research-validate"})
 
 
-def _relative_workspace_arguments(command: Sequence[str], project_dir: Path) -> "list[str]":
-    """Relative path arguments given to a workspace-aware tool; `--option=value` is checked by value."""
-    if Path(command[0]).name not in WORKSPACE_AWARE_TOOLS:
-        return []
-    found: "list[str]" = []
-    for argument in command[1:]:
-        value = argument.split("=", 1)[1] if argument.startswith("--") and "=" in argument else argument
-        if not value or value.startswith("-") or Path(value).is_absolute():
-            continue
-        if value in (".", "..") or value.startswith(("./", "../")):
-            found.append(argument)
-            continue
-        try:
-            if (project_dir / value).exists():
-                found.append(argument)
-        except (OSError, ValueError):
-            continue
-    return found
+def _relative_workspace_arguments(
+    command: Sequence[str], project_dir: Path, working_directory: Path
+) -> "tuple[str, list[tuple[str, str, Path, Path, bool, bool]]]":
+    """Relative directory arguments given to a workspace-aware tool, from argv and from scripts.
+
+    The tool is named by argv[0]'s basename or by a token of an inline shell script — the recorded
+    incident is `$(research-validate .)` inside `bash -c` — and every non-flag argument of the tool
+    is refused when it is a bare or parent-relative directory, or resolves under the project
+    directory or the workspace root, even when it also resolves in the target: a relative directory
+    handed to these tools always means the workspace, not the repository. `--option=value` is
+    checked by value. Returns the tool's name for the message header and each hit with both
+    resolutions.
+    """
+    sites: "list[tuple[str, list[str], str]]" = []
+    if Path(command[0]).name in WORKSPACE_AWARE_TOOLS:
+        sites.append((Path(command[0]).name, list(command[1:]), "argv"))
+    for script in _inline_shell_scripts(command):
+        tokens = _shell_tokens(script)
+        for index, token in enumerate(tokens):
+            if Path(token).name in WORKSPACE_AWARE_TOOLS:
+                sites.append((Path(token).name, tokens[index + 1 :], "inline shell script"))
+    if not sites:
+        return "", []
+    found: "list[tuple[str, str, Path, Path, bool, bool]]" = []
+    for _tool, arguments, origin in sites:
+        for argument in arguments:
+            value = argument.split("=", 1)[1] if argument.startswith("--") and "=" in argument else argument
+            if not value or value.startswith("-") or Path(value).is_absolute():
+                continue
+            try:
+                in_project = project_dir / value
+                in_root = project_dir.parent / value
+                in_target = working_directory / value
+                project_ok = in_project.exists()
+                root_ok = in_root.exists()
+                target_ok = in_target.exists()
+            except (OSError, ValueError):
+                continue
+            directory = value in (".", "..") or value.startswith(("./", "../"))
+            if not directory and not (project_ok or root_ok):
+                continue
+            workspace_side = in_project if project_ok or not root_ok else in_root
+            found.append((argument, origin, workspace_side, in_target, project_ok or root_ok, target_ok))
+    return sites[0][0], found
 
 
 SHELL_INTERPRETERS = frozenset({"bash", "sh", "zsh", "dash"})
 _UNGUARDED_PIPE = re.compile(r"(?<!\|)\|(?!\|)")
+# Shell punctuation that glues a command to its shell: a naive shlex.split never sees the recorded
+# incident, because `out=$(research-validate . 2>&1)` tokenizes to `['out=$(research-validate', '.',
+# '2>&1);']` — the tool name stays stuck to `$(` and the argument's separator stays stuck to the
+# digits. Cutting at these characters first surfaces both, and quoting still groups what a caller
+# quoted.
+_SHELL_SEPARATORS = re.compile(r"[$`()|&;<> \t\r\n]+")
+
+
+def _shell_tokens(script: str) -> "list[str]":
+    """Path and command sites of an inline script, with separators cut before tokenizing."""
+    cut = _SHELL_SEPARATORS.sub(" ", script)
+    try:
+        return [token for token in shlex.split(cut) if token]
+    except ValueError:
+        # An unbalanced quote is common in the shape that needs scanning most; the whitespace
+        # fallback still surfaces the tool and its argument, which is all the rules need.
+        return [token for token in cut.split() if token]
+
+
+def _inline_shell_scripts(command: Sequence[str]) -> "list[str]":
+    """Every `shell -c '<script>'` site in argv, at any position rather than only argv[0]."""
+    scripts: "list[str]" = []
+    for index, argument in enumerate(command[:-1]):
+        if Path(argument).name not in SHELL_INTERPRETERS:
+            continue
+        for position in range(index + 1, len(command) - 1):
+            flag = command[position]
+            if flag.startswith("-") and not flag.startswith("--") and "c" in flag[1:]:
+                scripts.append(command[position + 1])
+                break
+    return scripts
 
 
 def _inline_shell_script(command: Sequence[str]) -> "str | None":
-    """The script of `bash -c '<script>'` (also -lc, -ec), or None when the command is not that shape."""
-    if Path(command[0]).name not in SHELL_INTERPRETERS:
-        return None
-    for position, argument in enumerate(command[1:-1], start=1):
-        if argument.startswith("-") and not argument.startswith("--") and "c" in argument[1:]:
-            return command[position + 1]
-    return None
+    """The first script of `bash -c '<script>'` (also -lc, -ec), or None when argv has no such shape."""
+    scripts = _inline_shell_scripts(command)
+    return scripts[0] if scripts else None
+
+
+def _refusal_message(
+    header: str,
+    entries: "list[tuple[str, str, Path, Path, bool, bool]]",
+    working_directory: str,
+    footer: str,
+) -> str:
+    """One message shape for both rules: the argument, both resolutions as concrete paths, the cwd.
+
+    Neither rule may drift into describing a path in prose where the other prints it, so the lines
+    are built once here. The workspace and target lines state what is true for this entry — a
+    resolution that exists says so, one that does not says that instead — because the tool rule
+    fires on shape even when both sides resolve, while the misrooted rule fires only when the
+    target side is missing.
+    """
+    lines = [header, f"  cwd the command would use: {working_directory}"]
+    for argument, origin, workspace_side, target_side, workspace_ok, target_ok in entries:
+        lines.append(f"  argument {argument!r} ({origin}):")
+        lines.append(
+            f"    resolves in the project workspace: {workspace_side}"
+            if workspace_ok
+            else f"    does not resolve in the project workspace: {workspace_side}"
+        )
+        lines.append(
+            f"    does not resolve in the target:    {target_side}"
+            if not target_ok
+            else f"    resolves in the target:            {target_side}"
+        )
+    lines.append(footer)
+    return "\n".join(lines)
 
 
 def _command_warnings(command: Sequence[str]) -> "list[str]":
@@ -4096,23 +4189,27 @@ def record_evidence_result(
 
     misrooted = _misrooted_command_arguments(command, project_dir, Path(working_directory))
     if misrooted:
-        details = "\n".join(
-            f"  {argument!r} does not exist in the working directory, but does exist at {resolved}"
-            for argument, resolved in misrooted
-        )
         raise WorkspaceError(
-            "record-evidence runs the command in the project's working directory, not in the "
-            f"project directory:\n  working directory: {working_directory}\n{details}\n"
-            "Pass an absolute path for anything inside the project directory."
+            _refusal_message(
+                "record-evidence runs the command in the project's working directory, not in the "
+                "project workspace:",
+                misrooted,
+                working_directory,
+                "Pass an absolute path for anything inside the project directory or the workspace root.",
+            )
         )
 
-    relative = _relative_workspace_arguments(command, project_dir)
+    tool, relative = _relative_workspace_arguments(command, project_dir, Path(working_directory))
     if relative:
-        shown = ", ".join(repr(argument) for argument in relative)
+        shown = ", ".join(repr(entry[0]) for entry in relative)
         raise WorkspaceError(
-            f"{Path(command[0]).name} runs in the project's working directory ({working_directory}), "
-            f"so the relative argument {shown} would not name the project or workspace.\n"
-            f"Pass the absolute project directory instead: {project_dir}"
+            _refusal_message(
+                f"{tool} runs in the project's working directory ({working_directory}), "
+                f"so the relative argument {shown} would not name the project or workspace.",
+                relative,
+                working_directory,
+                f"Pass the absolute project directory instead: {project_dir}",
+            )
         )
 
     if dry_run:

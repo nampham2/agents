@@ -63,6 +63,25 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.28.1 refuse relative paths that resolve only in the project workspace
+
+Every command-bearing `research-project` route — direct `record-evidence`, workflow check and
+control batches, and the closure `--step` action — resolves relative path arguments against the
+target working directory, and refuses an argument that fails to resolve there while resolving in
+the project workspace. The refusal happens before any process starts, prints the cwd the command
+would use plus the path it found on both sides, and records no evidence.
+
+- **Both workspace roots.** A path under the project directory and a path under the workspace root
+  each count as a workspace-only resolution, and one message lists every refused site.
+- **Inline shell scripts.** Tokens inside `bash -c` and other inline scripts face the same rule at
+  any position, including command substitution such as `$(research-validate .)`; an unbalanced
+  quote falls back to whitespace splitting instead of skipping the script.
+- **Workspace-aware tools.** `research-project` and `research-validate` named as a command refuse
+  a relative argument that would not name the project or workspace, even when it also resolves in
+  the target, and the message suggests the absolute project directory instead.
+- **Paths that resolve in the target run.** Target-relative arguments, names present in both
+  roots, and path-shaped prose that resolves nowhere are unchanged.
+
 ### 0.27.0 retro skill and the records it needs
 
 `research:retro` reads the records of the projects closed since the previous retro, proposes changes
