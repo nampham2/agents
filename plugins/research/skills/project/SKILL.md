@@ -8,7 +8,7 @@ description: >
 
 # Project
 
-Invoke with `/research:project [problem statement]`.
+Invoke with `/research:project [problem statement]`; in Pi, `/skill:project`.
 
 Reuse saved context and retrieve selectively, preserving constraints and evidence.
 
@@ -31,10 +31,9 @@ For a restart, checkpoint, supply a resume prompt, and stop; the user opens the 
 
 ## Resolve once
 
-Use `research-project` and `research-validate` from `PATH` when both exist (Claude Code); otherwise
-use `scripts/research-project` and `scripts/research-validate` beside the exact loaded `SKILL.md`
-(Codex). Never search caches, infer the plugin root from cwd, depend on
-`CLAUDE_PLUGIN_ROOT`, or invoke implementation modules directly.
+Use the launchers beside this `SKILL.md`. Pi and Codex omit `bin` from `PATH`; use `PATH` only for a
+Claude plugin. Never search caches, infer the plugin root from cwd, depend on `CLAUDE_PLUGIN_ROOT`,
+or call modules directly.
 
 Use the supplied workspace, otherwise `$RESEARCH_WORKSPACE`, otherwise `find-roots`. State a unique
 established root; ask if none or several exist. New roots need the user's location and

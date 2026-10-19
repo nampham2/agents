@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 MANIFESTS = (
     "plugins/research/.claude-plugin/plugin.json",
     "plugins/research/.codex-plugin/plugin.json",
+    "package.json",
 )
 
 # A project that edits the plugin works on one alpha line: the release version with an alpha number
@@ -89,6 +90,7 @@ class PluginVersionTests(unittest.TestCase):
         self.assertLess(marketplace_install, local_development)
         self.assertIn("claude plugin marketplace add nampham2/agents", readme)
         self.assertIn("codex plugin marketplace add nampham2/agents --ref main", readme)
+        self.assertIn("pi install git:github.com/nampham2/agents", readme)
         self.assertNotIn("/plugins install https://github.com/nampham2/agents", readme)
 
 
