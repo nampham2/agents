@@ -63,6 +63,26 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.28.2 finalize stages the reflection's lessons
+
+`workflow finalize` now appends the reflection's own lesson sections to the project's
+`memory-staging.md` in the same commit that writes the reflection. Every level-two reflection
+heading whose title names a lesson — one of `did not work`, `went wrong`, `got wrong`, `failure`,
+`cost time`, `lesson`, `differently`, `wrong` — is staged whole and verbatim. The close returns the
+titles it staged and the titles it skipped, and the triage-at-close warning is computed from the
+appended content, so the next session decides promote, reflection or discard instead of leaving
+those lessons in the reflection only.
+
+- **One entry per heading.** `append_staged_section()` is the shared builder and `stage_lesson`
+  now sits on it, so both paths refuse a title carrying a newline, a leading `#` or more than 120
+  characters, and a body carrying a heading or nothing at all.
+- **Skip, never raise.** A staged title with the same body is reported as `already staged`, a
+  title with a different body as `title conflict`, and an illegal body is skipped with its reason.
+  A reflection with no matched heading leaves the file byte-identical.
+- **Token and replay.** The close requires the current `memory-staging` token, publishes it from
+  `context --validate`, and writes the reflection and staging in one commit; replaying the same
+  operation ID appends once.
+
 ### 0.28.1 refuse relative paths that resolve only in the project workspace
 
 Every command-bearing `research-project` route — direct `record-evidence`, workflow check and
