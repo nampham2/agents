@@ -197,7 +197,13 @@ close:
 1. **During the work**, append the observation to `<project>/memory-staging.md`. Free-form,
    append-only, unbudgeted, unvalidated apart from the one warning below. Staging is cheap on
    purpose.
-2. **At close**, drain it. For each staged observation, decide: promote it into a new or existing
+2. **At close**, `workflow finalize` appends the reflection's own lesson sections — each level-two
+   heading whose title names a lesson, body verbatim — to that same file in the commit that writes
+   the reflection, so a post-mortem read once cannot leave its lessons reflection-only. The result
+   carries `reflected_lessons`: the titles staged, and the titles skipped with the reason — already
+   staged, a title conflict, or a body triage could not take (a heading inside it, or none at all).
+   Nothing matched, nothing is written and the file stays byte-identical.
+3. **Then drain it.** For each staged observation, decide: promote it into a new or existing
    topic file with `research-project promote-memory <slug> --body … --source <project-id>`, fold it
    into this project's post-mortem, or discard it. Then empty the staging file. `promote-memory`
    amends rather than replaces — merging `sources`, bumping `updated`, and appending a dated
@@ -205,12 +211,15 @@ close:
    needs `--create`; without it the tool refuses and lists the nearest existing topics. The measured
    failure was not bad topics but too many: one drain created three, breached the index budget, and
    spent its closing time merging by hand, so creation pauses once and the caller answers.
-3. **Regenerate** `MEMORY.md` — which any `research-project commit` already does, because index
+4. **Regenerate** `MEMORY.md` — which any `research-project commit` already does, because index
    regeneration is on the commit path.
 
 A non-empty `memory-staging.md` at close is a **warning**, not an error: unfinished triage is a
 fact worth surfacing, but it is not a reason to refuse to close a project whose actual deliverables
-are done.
+are done. The warning is computed from the content step 2 plans to commit, so it covers what the
+close staged in that same commit and names those titles; triage is then the next session's first
+decision rather than a file nobody reopens. Reflection-derived entries are the ones to promote or
+discard: folding them into the post-mortem would duplicate the text that produced them.
 
 Promote a staged observation only when it is durable, sourced, and would change what a future
 session does. An observation that fails any of those three belongs in the post-mortem or in the

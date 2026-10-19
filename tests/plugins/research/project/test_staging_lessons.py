@@ -39,6 +39,16 @@ def stage_lesson(*arguments: Any, **keywords: Any) -> dict[str, Any]:
     return workspace_documents.stage_lesson(*arguments, **keywords)
 
 
+def select(reflection: str) -> list[tuple[str, str]]:
+    """Resolved when called, so a build without the rule fails each test instead of the import."""
+    return workspace_documents.reflection_lesson_sections(reflection)
+
+
+def append_section(content: str, title: str, body: str) -> str:
+    """Resolved when called, so a build without the builder fails each test instead of the import."""
+    return workspace_documents.append_staged_section(content, title, body)
+
+
 def staging(project: Path) -> str:
     return (project / "memory-staging.md").read_text(encoding="utf-8")
 
@@ -111,6 +121,67 @@ class TestStageLesson:
         with patch.object(lib.os, "replace", side_effect=OSError("disk full")):
             with pytest.raises(WorkspaceError, match="cannot write"):
                 stage_lesson(project, "Cannot", "write")
+
+
+class TestSelectionRule:
+    """Which reflection headings finalize turns into staged lessons, and which it leaves alone."""
+
+    def test_a_lesson_title_is_taken_with_its_whole_section_in_document_order(self) -> None:
+        reflection = (
+            "# Reflection\n\n## Outcome\n\nfine\n\n## What went wrong\n\nfirst body\n\n"
+            "## Lessons\n\nsecond body\n"
+        )
+        assert select(reflection) == [("What went wrong", "first body"), ("Lessons", "second body")]
+
+    def test_titles_that_name_no_lesson_stay_in_the_reflection(self) -> None:
+        reflection = (
+            "# Reflection\n\n## Outcome\n\nkept\n\n## What worked\n\nkept\n\n"
+            "## Decisions for next time\n\nkept\n\n## Retro\n\nkept\n"
+        )
+        assert select(reflection) == []
+
+    def test_the_rule_ignores_case_and_takes_only_level_two_titles(self) -> None:
+        reflection = (
+            "# Reflection\n\n## WHAT DID NOT WORK\n\ntop\n\n## Outcome\n\n### nested\n\nbody\n\n"
+            "# Lessons\n\none\n"
+        )
+        assert select(reflection) == [("WHAT DID NOT WORK", "top")]
+
+    def test_a_deeper_heading_below_a_matched_title_stays_in_its_body(self) -> None:
+        assert select("# R\n\n## What cost time\n\ntop\n\n### Detail\n\nmore\n") == [
+            ("What cost time", "top\n\n### Detail\n\nmore")
+        ]
+
+
+class TestAppendStagedSection:
+    """The pure builder both the stage command and finalize append through."""
+
+    def test_the_placeholder_is_replaced_and_the_scaffold_heading_survives(self) -> None:
+        text = append_section(lib.MEMORY_STAGING_SKELETON, "Retry safely", "Conditions: x. Lesson: y.")
+        assert MEMORY_STAGING_PLACEHOLDER not in text
+        assert text.startswith("# Staged lessons")
+        assert text.endswith("## Retry safely\n\nConditions: x. Lesson: y.\n")
+
+    def test_a_second_section_is_appended_after_the_first(self) -> None:
+        first = append_section(lib.MEMORY_STAGING_SKELETON, "First", "one")
+        assert append_section(first, "Second", "two").endswith("## First\n\none\n\n## Second\n\ntwo\n")
+
+    def test_empty_content_is_the_missing_file_and_starts_from_the_scaffold(self) -> None:
+        text = append_section("", "Only", "body")
+        assert text.startswith("# Staged lessons") and text.endswith("## Only\n\nbody\n")
+
+    def test_a_body_with_any_heading_is_refused(self) -> None:
+        with pytest.raises(WorkspaceError, match="may not contain headings"):
+            append_section(lib.MEMORY_STAGING_SKELETON, "Retry", "text\n\n### Deeper\n\nmore")
+
+    def test_an_empty_body_is_refused(self) -> None:
+        with pytest.raises(WorkspaceError, match="non-empty body"):
+            append_section(lib.MEMORY_STAGING_SKELETON, "Retry", "   ")
+
+    @pytest.mark.parametrize("title", ["", "two\nlines", "# Top", "x" * 121])
+    def test_a_title_triage_could_not_select_is_refused(self, title: str) -> None:
+        with pytest.raises(WorkspaceError, match="title must be one"):
+            append_section(lib.MEMORY_STAGING_SKELETON, title, "body")
 
 
 class TestTriageDrain:

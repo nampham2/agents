@@ -20,7 +20,7 @@ from workspace_context import (
     worktree_registered,
 )
 from workspace_delivery import DELIVERY_OPERATIONS, delivery_operation
-from workspace_documents import _replace_sections, _section_span
+from workspace_documents import _replace_sections, _section_span, append_staged_section, reflection_lesson_sections
 from workspace_journal import (
     READ_INPUTS,
     document_path,
@@ -531,7 +531,28 @@ def _build(
             raise WorkspaceError("; ".join(retro_findings) + "; nothing was committed")
         result["retro_warnings"] = retro_findings
         documents["reflection"] = reflection + "\n"
-        result["memory_staging_warnings"] = memory_staging_warnings(project)
+        # Stage what the reflection taught while this operation still holds the project lock, so a
+        # concurrent `stage` cannot be lost by the merge and the close warning can describe content
+        # it has not committed yet. Nothing staged means nothing to write.
+        planned = read("memory-staging")
+        staged: list[str] = []
+        skipped: list[dict[str, str]] = []
+        for title, body in reflection_lesson_sections(reflection):
+            if any(name == title for _, name, _ in _headings(planned)):
+                level, _, body_start, end = _section_span(planned, title)
+                same = level == 2 and planned[body_start:end].strip() == body
+                skipped.append({"title": title, "reason": "already staged" if same else "title conflict"})
+                continue
+            try:
+                planned = append_staged_section(planned, title, body)
+            except WorkspaceError as error:
+                skipped.append({"title": title, "reason": str(error)})
+                continue
+            staged.append(title)
+        if staged:
+            documents["memory-staging"] = planned
+        result["reflected_lessons"] = {"staged": staged, "skipped": skipped}
+        result["memory_staging_warnings"] = memory_staging_warnings(project, content=planned)
         patch = {"status": "DONE"}
         result["_after_commit"] = ["handoff"]
     elif action in ("maintenance", "cancel"):

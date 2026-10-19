@@ -26,7 +26,7 @@ input with the same ID conflicts. Metadata operations never replay commands or e
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |
 | `receipt` | `task`, actual `receipt`: `kind`, `value`, `destination`, `timestamp`; `value` is an HTTP(S) URL or an id prefixed `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:` or `commit:`; exact duplicates are not appended. |
 | `review` | `reviewer`, `version`, `scope`, `findings`, actual `status`; optional `evidence` references and `required`. Allocates the next delivery cycle/file, preserving history. Use `pending` to reopen acceptance. |
-| `finalize` | `reflection` (200+ characters, a heading, and a `## Retro` section: what got in the way with pointers, references loaded but not needed, one plugin change or `none`; refused without it after the cutoff), `continuation`; validates and commits DONE, then saves the final handoff; returns staged-lesson and retro warnings. |
+| `finalize` | `reflection` (200+ characters, a heading, `## Retro`: what got in the way with pointers, unused references, one plugin change or `none`; refused without it after the cutoff), `continuation`; `tokens` include `memory-staging`, appended at close; validates and commits DONE, saves the final handoff; returns `reflected_lessons` (`staged`, `skipped`) and retro warnings. |
 | `maintenance` | `reason`, optional `tasks`, `continuation`; reopens DONE as PLANNING. |
 | `cancel` | `reason`, explicit `tasks` dispositions, `continuation`; commits CANCELLED without deleting work or claiming workers stopped. |
 | `assess` | `topic`, `disposition` (`apply`, `reject`, `defer`), `reason`, `application`; saves the lesson assessment with its actual topic token. |
