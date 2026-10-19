@@ -420,8 +420,10 @@ class MisrootedPathTests(_ProjectFixture):
 
         message = str(caught.exception)
         self.assertIn("artifacts/check.sh", message)
+        self.assertIn("'artifacts/check.sh' (argv)", message)
         self.assertIn(str(artifacts / "check.sh"), message)
         self.assertIn(str(self.target), message)
+        self.assertIn("cwd the command would use:", message)
         after = self.evidence.read_text(encoding="utf-8") if self.evidence.exists() else ""
         self.assertEqual(after, before, "a refused command must not be recorded")
 
@@ -469,6 +471,64 @@ class MisrootedPathTests(_ProjectFixture):
         )
 
         self.assertEqual(code, 0)
+
+
+class WorkspaceRootPathTests(_ProjectFixture):
+    """The third root: a path that resolves under the workspace root but not under the target.
+
+    c2 widens the misroot rule from the project directory alone to its parent as well, because the
+    workspace root holds `memory/` and the launchers — the same mistake as a project-relative path,
+    one level up. Both resolutions and the cwd are printed, and nothing is recorded.
+    """
+
+    def _at_root(self, relative: str) -> Path:
+        path = self.project_dir.parent / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("workspace copy\n", encoding="utf-8")
+        return path
+
+    def test_a_workspace_root_relative_path_is_refused_with_both_resolutions(self) -> None:
+        topic = self._at_root("memory/topic.md")
+        before = self.evidence.read_text(encoding="utf-8") if self.evidence.exists() else ""
+
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence(self.project_dir, "T01", [sys.executable, "-c", "pass", "memory/topic.md"])
+
+        message = str(caught.exception)
+        self.assertIn("'memory/topic.md' (argv)", message)
+        self.assertIn(str(topic), message)
+        self.assertIn(str(self.target / "memory" / "topic.md"), message)
+        self.assertIn("cwd the command would use:", message)
+        after = self.evidence.read_text(encoding="utf-8") if self.evidence.exists() else ""
+        self.assertEqual(after, before, "a refused command must not be recorded")
+
+    def test_a_workspace_root_path_present_in_the_target_still_runs(self) -> None:
+        self._at_root("shared.py")
+        (self.target / "shared.py").write_text("print('target copy')\n", encoding="utf-8")
+
+        code = record_evidence(self.project_dir, "T01", [sys.executable, "shared.py"])
+
+        self.assertEqual(code, 0)
+        text = self.evidence.read_text(encoding="utf-8")
+        self.assertIn("target copy", text)
+        self.assertNotIn("workspace copy", text)
+
+    def test_every_refused_site_appears_in_one_message(self) -> None:
+        (self.project_dir / "a.md").write_text("a\n", encoding="utf-8")
+        self._at_root("b.md")
+        before = self.evidence.read_text(encoding="utf-8") if self.evidence.exists() else ""
+
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence(self.project_dir, "T01", [sys.executable, "-c", "pass", "a.md", "b.md"])
+
+        message = str(caught.exception)
+        self.assertIn("argument 'a.md' (argv)", message)
+        self.assertIn("argument 'b.md' (argv)", message)
+        self.assertIn(str(self.project_dir / "a.md"), message)
+        self.assertIn(str(self.project_dir.parent / "b.md"), message)
+        self.assertEqual(message.count("cwd the command would use:"), 1)
+        after = self.evidence.read_text(encoding="utf-8") if self.evidence.exists() else ""
+        self.assertEqual(after, before, "a refused command must not be recorded")
 
 
 class ShellOperatorTests(_ProjectFixture):
@@ -673,6 +733,20 @@ class WorkspaceAwareToolTests(_ProjectFixture):
         (self.target / "spec.md").write_text("# target spec\n", encoding="utf-8")
         self.assertIn("'spec.md'", self._refused(["research-validate", "spec.md"]))
 
+    def test_a_workspace_root_argument_is_refused_even_when_the_target_has_it(self) -> None:
+        # Also present in both places: only the tool rule can see the workspace-root spelling.
+        index = self.project_dir.parent / "INDEX.md"
+        index.write_text("#\n", encoding="utf-8")
+        (self.target / "INDEX.md").write_text("#\n", encoding="utf-8")
+        message = self._refused(["research-validate", "INDEX.md"])
+        self.assertIn(str(index), message)
+        self.assertIn("resolves in the target", message)
+
+    def test_a_shape_that_resolves_nowhere_says_so_on_both_sides(self) -> None:
+        message = self._refused(["research-validate", "./nope"])
+        self.assertIn("does not resolve in the project workspace", message)
+        self.assertIn("does not resolve in the target", message)
+
     def test_the_same_spelling_is_accepted_for_any_other_tool(self) -> None:
         (self.target / "x.py").write_text("pass\n", encoding="utf-8")
         for command in (
@@ -708,6 +782,103 @@ class WorkspaceAwareToolTests(_ProjectFixture):
         text = self.evidence.read_text(encoding="utf-8")
         self.assertIn(str(self.project_dir.resolve()), text)
         self.assertIn(str(self.workspace_root.resolve()), text)
+
+
+class ShellScriptSiteTests(_ProjectFixture):
+    """An inline shell script is a second argv surface, and the recorded incident is the wrapper.
+
+    ev-e70dfb… named `out=$(research-validate . 2>&1)` and `docker exec x bash -c …` as the shapes
+    that actually happen. Both are covered by scanning every token of every script the shell helpers
+    find — at any argv position, with separators cut before tokenizing so `out=$(` cannot hide the
+    tool from a naive split. The refusal still prints both resolutions and the cwd, and records
+    nothing.
+    """
+
+    def _refused(self, command: list[str]) -> str:
+        before = self.evidence.read_text(encoding="utf-8") if self.evidence.exists() else ""
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence(self.project_dir, "T01", command)
+        after = self.evidence.read_text(encoding="utf-8") if self.evidence.exists() else ""
+        self.assertEqual(after, before, "a refused command must not be recorded")
+        return str(caught.exception)
+
+    def test_a_project_relative_path_inside_an_inline_script_is_refused(self) -> None:
+        for shell in ("bash", "sh"):
+            with self.subTest(shell=shell):
+                message = self._refused([shell, "-c", "cat spec.md"])
+                self.assertIn("argument 'spec.md' (inline shell script)", message)
+                self.assertIn(str(self.project_dir / "spec.md"), message)
+                self.assertIn(str(self.target / "spec.md"), message)
+                self.assertIn("cwd the command would use:", message)
+
+    def test_a_workspace_root_path_inside_an_inline_script_is_refused(self) -> None:
+        topic = self.project_dir.parent / "memory" / "topic.md"
+        topic.parent.mkdir(exist_ok=True)
+        topic.write_text("note\n", encoding="utf-8")
+
+        message = self._refused(["bash", "-c", "cat memory/topic.md"])
+
+        self.assertIn("argument 'memory/topic.md' (inline shell script)", message)
+        self.assertIn(str(topic), message)
+        self.assertIn(str(self.target / "memory" / "topic.md"), message)
+
+    def test_a_tool_and_a_dot_inside_command_substitution_are_refused(self) -> None:
+        message = self._refused(["bash", "-c", "out=$(research-validate . 2>&1)"])
+        self.assertIn("would not name the project or workspace", message)
+        self.assertIn("'.'", message)
+        self.assertIn("(inline shell script)", message)
+        self.assertIn(str(self.project_dir), message)
+        self.assertIn(str(self.target), message)
+
+    def test_a_shell_wrapper_outside_argv_zero_is_scanned_before_the_command_runs(self) -> None:
+        message = self._refused(["docker", "exec", "x", "bash", "-c", "research-validate ."])
+        self.assertIn("would not name the project or workspace", message)
+        self.assertIn("(inline shell script)", message)
+
+    def test_an_unbalanced_quote_still_surfaces_the_tool_and_its_argument(self) -> None:
+        # The naive split raises here; the whitespace fallback must still name the tool and the dot.
+        message = self._refused(["bash", "-c", "research-validate . 'x"])
+        self.assertIn("would not name the project or workspace", message)
+        self.assertIn("'.'", message)
+
+    def test_a_heredoc_body_naming_a_workspace_file_is_refused(self) -> None:
+        message = self._refused(["bash", "-c", "cat <<EOF\nspec.md\nEOF"])
+        self.assertIn("argument 'spec.md' (inline shell script)", message)
+
+    def test_a_wrapper_shares_one_script_site_between_the_warnings_and_the_refusal(self) -> None:
+        result = record_evidence_result(
+            self.project_dir, "T01", ["docker", "exec", "x", "bash", "-c", "echo a | cat"], dry_run=True
+        )
+        found = [warning for warning in result.warnings if "task T01" not in warning]
+        self.assertEqual(len(found), 1)
+        self.assertIn("pipefail", found[0])
+        self.assertIn("would not name the project or workspace", self._refused(
+            ["docker", "exec", "x", "bash", "-c", "research-validate ."]
+        ))
+
+    def test_a_target_relative_path_inside_a_script_still_runs(self) -> None:
+        (self.target / "notes.txt").write_text("hello from target\n", encoding="utf-8")
+
+        code = record_evidence(self.project_dir, "T01", ["bash", "-c", "cat notes.txt"])
+
+        self.assertEqual(code, 0)
+        self.assertIn("hello from target", self.evidence.read_text(encoding="utf-8"))
+
+    def test_an_ordinary_command_with_a_dot_inside_a_script_is_left_alone(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", ["bash", "-c", "echo ."])
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn(result.record_id, self.evidence.read_text(encoding="utf-8"))
+
+    def test_a_non_shell_dash_c_program_is_not_a_script_site(self) -> None:
+        code = record_evidence(self.project_dir, "T01", [sys.executable, "-c", "print('spec.md')"])
+        self.assertEqual(code, 0)
+
+    def test_a_shell_without_an_inline_script_has_no_script_sites(self) -> None:
+        (self.target / "check.sh").write_text("exit 0\n", encoding="utf-8")
+
+        code = record_evidence(self.project_dir, "T01", ["bash", "check.sh"])
+
+        self.assertEqual(code, 0)
 
 
 class LaunchHintTests(_ProjectFixture):
@@ -806,6 +977,20 @@ class CwdAndDryRunTests(_ProjectFixture):
     def test_a_dry_run_still_refuses_what_a_real_run_would_refuse(self) -> None:
         with self.assertRaises(WorkspaceError):
             record_evidence_result(self.project_dir, "T01", ["research-validate", "."], dry_run=True)
+
+    def test_a_dry_run_refuses_a_workspace_only_path_before_it_reports_anything(self) -> None:
+        (self.project_dir / "only-in-project.md").write_text("x\n", encoding="utf-8")
+
+        with patch.object(workspace_lib.subprocess, "run", side_effect=AssertionError("must not run")):
+            with self.assertRaises(WorkspaceError) as caught:
+                record_evidence_result(
+                    self.project_dir, "T01", [sys.executable, "-c", "pass", "only-in-project.md"], dry_run=True
+                )
+
+        message = str(caught.exception)
+        self.assertIn("resolves in the project workspace", message)
+        self.assertIn("does not resolve in the target", message)
+        self.assertIn("cwd the command would use:", message)
 
     def test_the_cli_reports_a_dry_run_in_both_output_modes(self) -> None:
         stdout, stderr = io.StringIO(), io.StringIO()

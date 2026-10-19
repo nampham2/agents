@@ -90,7 +90,7 @@ READ_INPUTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
         frozenset({"document"}),
     ),
     "verify": (
-        frozenset({"id", "checks", "continue_on_failure", "fingerprints"}),
+        frozenset({"id", "checks", "control", "continue_on_failure", "fingerprints"}),
         frozenset({"id", "checks"}),
     ),
     "triage": (

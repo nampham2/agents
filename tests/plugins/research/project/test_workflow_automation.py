@@ -29,6 +29,7 @@ from workspace_lib import (
 )
 from workspace_operations import CloseOperationError, close_project, task_operation
 from workspace_session import update_project_data, validated_project_context
+from workspace_workflows import workflow
 
 from tests.conftest import MANAGER, REPO_ROOT, backdate_project
 
@@ -1242,3 +1243,25 @@ def test_plan_warnings_reach_preview_committed_update_and_task_skip_and_block(pr
     code, stdout, _ = invoke(["update", str(project), "-", "--expected-revision", "5", "--dry-run"],
                              stdin=json.dumps(preview_patch))
     assert any("2099-01-01-007" in warning for warning in json.loads(stdout)["warnings"])
+
+
+def test_a_refused_check_is_stored_as_that_attempt_error(project: Path) -> None:
+    """c2 reaches the batch route as the attempt's error: both resolutions, the cwd, no exit code."""
+    plan(project)
+    before = (project / "evidence.md").read_bytes()
+    result = workflow(
+        project,
+        "verify",
+        {
+            "id": "misrooted",
+            "checks": [{"task": "T01", "argv": [sys.executable, "-c", "pass", "spec.md"]}],
+        },
+    )
+    attempt = result["attempts"][0]
+    assert attempt["status"] == "rejected"
+    assert "cwd the command would use" in attempt["error"]
+    assert str(project / "spec.md") in attempt["error"]
+    assert "does not resolve in the target" in attempt["error"]
+    assert "result" not in attempt
+    assert result["passed"] is False
+    assert (project / "evidence.md").read_bytes() == before

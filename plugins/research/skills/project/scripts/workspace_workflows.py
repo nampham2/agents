@@ -553,6 +553,11 @@ def _build(
             documents["memory-staging"] = planned
         result["reflected_lessons"] = {"staged": staged, "skipped": skipped}
         result["memory_staging_warnings"] = memory_staging_warnings(project, content=planned)
+        # A verify batch without an observed-firing control never proved its checks can fail, so
+        # finalize surfaces that gap as a warning - same non-blocking shape as the staging warning.
+        from workspace_checks import control_warnings
+
+        result["control_warnings"] = control_warnings(project)
         patch = {"status": "DONE"}
         result["_after_commit"] = ["handoff"]
     elif action in ("maintenance", "cancel"):
