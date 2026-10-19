@@ -160,6 +160,11 @@ def task_operation(
             successor.update(status="RUNNING", block_reason=None, skip_reason=None)
             if stamps and "started_at" not in successor:
                 successor["started_at"] = now_iso()
+            # Starting a task is what moves a project into EXECUTING, whether it is the command's
+            # subject or its successor. A direct `TODO -> DONE` finish leaves the project alone,
+            # so without this the successor would be RUNNING inside a PLANNING project.
+            if state["status"] in ("PLANNING", "BLOCKED", "REVIEW"):
+                state["status"] = "EXECUTING"
             changed.append(start_next)
 
         def guard(current: dict[str, Any]) -> None:
@@ -240,9 +245,12 @@ def _backfill_finish(
     note: str | None,
     observation_record_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Record a task whose work preceded `task start`, without relaxing `TODO -> DONE`.
+    """Record a task whose work preceded `task start`, keeping the reason on record.
 
-    Two commits, so every guard an ordinary start and finish enforces still applies to each: the
+    A plain `task finish` moves `TODO` to `DONE` when no task is `RUNNING`, but it records no
+    reason for the missing start. This path writes that reason before the terminal commit, so it
+    stays the audited route. Two commits, so every guard an ordinary start and finish enforces
+    still applies to each: the
     dependencies, the authorization, the evidence ownership and the `current_tasks` rule. The order
     is chosen so that no state is misleading. Everything that can be refused cheaply is refused
     first, the note is saved while the task is merely RUNNING, and only then is it finished. If the
