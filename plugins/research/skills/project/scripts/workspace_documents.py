@@ -345,6 +345,58 @@ def friction_entries(text: str) -> list[dict[str, str]]:
     return entries
 
 
+# Words a level-two reflection title must carry to be staged at close. Measured against the 20
+# closed reflections on 2026-10-16: 20 of 82 headings across 13 projects, longest title 82
+# characters, and no matched body containing a heading. `Outcome` and `What worked` carry none of
+# them, so a close does not open with sections nobody wrote down as a lesson.
+LESSON_TITLE_TOKENS = (
+    "did not work",
+    "went wrong",
+    "got wrong",
+    "failure",
+    "cost time",
+    "lesson",
+    "differently",
+    "wrong",
+)
+
+
+def reflection_lesson_sections(reflection: str) -> list[tuple[str, str]]:
+    """The reflection's level-two sections whose title names a lesson, in document order.
+
+    Candidate c3 asks finalize to hand these to staging so the triage gate decides what leaves the
+    project. The rule is a vocabulary match rather than an exact title list: `Lessons` and `The
+    failure mode that recurred four times` are lessons without repeating the words c3 quoted.
+    """
+    headings = _headings(reflection)
+    sections: list[tuple[str, str]] = []
+    for index, (level, title, offset) in enumerate(headings):
+        if level != 2 or not any(token in title.lower() for token in LESSON_TITLE_TOKENS):
+            continue
+        end = next((position for depth, _, position in headings[index + 1 :] if depth <= level), len(reflection))
+        sections.append((title.strip(), reflection[_line_end(reflection, offset) : end].strip()))
+    return sections
+
+
+def append_staged_section(content: str, title: str, body: str) -> str:
+    """Return `content` with one staged lesson section appended, in the shape `workflow triage` selects.
+
+    Triage selects an independent level-two section by its exact title, so the title and the body
+    are held to that shape here. Empty content is a staging file that does not exist yet, and the
+    scaffold is what its first section lands in.
+    """
+    title = title.strip()
+    body = body.strip()
+    if not title or "\n" in title or title.startswith("#") or len(title) > 120:
+        raise WorkspaceError("a lesson title must be one non-empty line of at most 120 characters, without a leading #")
+    if not body:
+        raise WorkspaceError("a staged lesson needs a non-empty body")
+    if _headings(body):
+        raise WorkspaceError("a staged lesson may not contain headings: triage selects a section by its title alone")
+    kept = (content or MEMORY_STAGING_SKELETON).replace(MEMORY_STAGING_PLACEHOLDER + "\n", "", 1).rstrip("\r\n")
+    return f"{kept}\n\n## {title}\n\n{body}\n"
+
+
 def stage_lesson(project_dir: Path, title: str, body: str, *, lock_timeout: float = 5.0) -> dict[str, Any]:
     """Add one candidate lesson to `memory-staging.md` as a section `workflow triage` can select.
 
@@ -355,12 +407,6 @@ def stage_lesson(project_dir: Path, title: str, body: str, *, lock_timeout: floa
     """
     title = title.strip()
     body = body.strip()
-    if not title or "\n" in title or title.startswith("#") or len(title) > 120:
-        raise WorkspaceError("a lesson title must be one non-empty line of at most 120 characters, without a leading #")
-    if not body:
-        raise WorkspaceError("a staged lesson needs a non-empty body")
-    if _headings(body):
-        raise WorkspaceError("a staged lesson may not contain headings: triage selects a section by its title alone")
     project_dir = project_dir.resolve()
     path = project_dir / MEMORY_STAGING_FILENAME
     try:
@@ -379,8 +425,7 @@ def stage_lesson(project_dir: Path, title: str, body: str, *, lock_timeout: floa
                 raise WorkspaceConflict(
                     f"a staged lesson titled {title!r} already exists with different text; choose another title"
                 )
-            kept = current.replace(MEMORY_STAGING_PLACEHOLDER + "\n", "", 1).rstrip("\r\n")
-            replacement = f"{kept}\n\n## {title}\n\n{body}\n"
+            replacement = append_staged_section(current, title, body)
             atomic_write_text(path, replacement)
     except OSError as error:
         raise WorkspaceError(f"cannot write {path}: {error}") from error

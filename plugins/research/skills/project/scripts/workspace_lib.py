@@ -3439,15 +3439,18 @@ def retire_memory_topic(
     return {"path": str(path), "status": topic.status, "superseded_by": topic.superseded_by}
 
 
-def memory_staging_warnings(project_dir: Path) -> "list[str]":
+def memory_staging_warnings(project_dir: Path, *, content: "str | None" = None) -> "list[str]":
     """Warn when a project closes with candidate lessons still staged and untriaged.
 
     A warning and never an error. "Triaged" is not mechanically checkable, and refusing to close a
     project whose actual deliverables are all done because a note is still sitting in a scratch file
     would punish exactly the discipline this file exists to encourage.
+
+    `content` is text a caller plans to write rather than text already on disk, so a close can name
+    the lessons it staged in the same result. Unset, this reads the file as it stands.
     """
     path = project_dir / MEMORY_STAGING_FILENAME
-    if not staged_lesson_lines(project_dir):
+    if not staged_lesson_lines(project_dir, content=content):
         return []
     return [
         f"{path} still holds staged lessons at close; promote each one into "
@@ -3460,15 +3463,20 @@ def memory_staging_warnings(project_dir: Path) -> "list[str]":
 TRIAGE_RECORD_PREFIX = "<!-- Resolved lesson records:"
 
 
-def staged_lesson_lines(project_dir: Path) -> "list[str]":
-    """The lines of `memory-staging.md` that are lessons: not scaffolding, headings or triage records."""
-    path = project_dir / MEMORY_STAGING_FILENAME
-    if not path.is_file():
-        return []
-    try:
-        content = read_text(path)
-    except WorkspaceError:
-        return []
+def staged_lesson_lines(project_dir: Path, *, content: "str | None" = None) -> "list[str]":
+    """The lines of `memory-staging.md` that are lessons: not scaffolding, headings or triage records.
+
+    `content` overrides the read for a caller holding text it plans to write. A missing or
+    unreadable file holds no lessons either way.
+    """
+    if content is None:
+        path = project_dir / MEMORY_STAGING_FILENAME
+        if not path.is_file():
+            return []
+        try:
+            content = read_text(path)
+        except WorkspaceError:
+            return []
     # Only a line the skeleton did not put there is a staged lesson. The skeleton explains in prose
     # how to drain the file, so subtracting just the placeholder would make every freshly initialized
     # project warn at close about the very instructions telling it there is nothing to drain.
