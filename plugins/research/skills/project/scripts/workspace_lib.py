@@ -68,7 +68,8 @@ PROJECT_TRANSITIONS = {
 }
 
 TASK_TRANSITIONS = {
-    "TODO": {"TODO", "RUNNING", "BLOCKED", "SKIPPED"},
+    # `TODO -> DONE` is legal only while no task is RUNNING; `check_state_transition` enforces that.
+    "TODO": {"TODO", "RUNNING", "DONE", "BLOCKED", "SKIPPED"},
     "RUNNING": {"RUNNING", "TODO", "DONE", "BLOCKED", "SKIPPED"},
     "BLOCKED": {"BLOCKED", "TODO", "RUNNING", "SKIPPED"},
     "DONE": {"DONE"},
@@ -4906,6 +4907,21 @@ def _task_index(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {task["id"]: task for task in tasks if isinstance(task, dict) and _non_empty_string(task.get("id"))}
 
 
+def _running_tasks_before(previous: dict[str, Any]) -> tuple[bool, list[str]]:
+    """Whether a task was RUNNING before this commit, and the usable ids among those tasks.
+
+    `check_state_transition` runs before validation, so it tolerates arbitrary JSON: a task list
+    that is not a list holds no running task, and a running task whose id is unusable still gates
+    the direct `TODO -> DONE` move even though the message cannot name it.
+    """
+    tasks = previous.get("tasks")
+    if not isinstance(tasks, list):
+        return False, []
+    running = [task for task in tasks if isinstance(task, dict) and task.get("status") == "RUNNING"]
+    ids = sorted(task["id"] for task in running if _non_empty_string(task.get("id")))
+    return bool(running), ids
+
+
 def check_state_transition(previous: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     previous_status = previous.get("status")
@@ -4921,13 +4937,17 @@ def check_state_transition(previous: dict[str, Any], candidate: dict[str, Any]) 
     removed = sorted(task_id for task_id in previous_tasks if task_id not in candidate_tasks)
     if removed:
         errors.append(f"tasks cannot be removed: {', '.join(removed)}")
+    running_before, running_ids = _running_tasks_before(previous)
     for task_id, old_task in previous_tasks.items():
         new_task = candidate_tasks.get(task_id)
         if new_task is None:
             continue
         old_status = old_task.get("status")
         new_status = new_task.get("status")
-        if (
+        if old_status == "TODO" and new_status == "DONE" and running_before:
+            named = f"; running: {', '.join(running_ids)}" if running_ids else ""
+            errors.append(f"task {task_id}: direct TODO -> DONE needs no task RUNNING before the commit{named}")
+        elif (
             isinstance(old_status, str)
             and old_status in TASK_TRANSITIONS
             and not _enum_string(new_status, TASK_TRANSITIONS[old_status])

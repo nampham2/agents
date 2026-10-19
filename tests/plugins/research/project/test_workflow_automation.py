@@ -1022,6 +1022,60 @@ def _evidence(project: Path, task_id: str) -> str:
     return record_evidence_result(project, task_id, [sys.executable, "-c", "pass"]).record_id
 
 
+def test_a_todo_task_finishes_directly_when_nothing_is_running(project: Path) -> None:
+    plan(project)
+    result = task_operation(
+        project, "finish", "T01", expected_revision=1, evidence_record_ids=[_evidence(project, "T01")],
+    )
+    assert result["changed_tasks"] == [{"id": "T01", "status": "DONE"}]
+    finished = next(item for item in _state(project)["tasks"] if item["id"] == "T01")
+    assert finished["status"] == "DONE"
+    assert _state(project)["current_tasks"] == []
+    # A direct finish never started the task, so it records no start of its own.
+    assert "started_at" not in finished
+
+
+def test_a_direct_finish_is_refused_while_another_task_is_running(project: Path) -> None:
+    plan(project)
+    task_operation(project, "start", "T01", expected_revision=1)
+    with pytest.raises(
+        WorkspaceError,
+        match="direct TODO -> DONE needs no task RUNNING before the commit; running: T01",
+    ):
+        task_operation(
+            project, "finish", "T02", expected_revision=2, evidence_record_ids=[_evidence(project, "T02")],
+        )
+    assert _status(project, "T02") == "TODO"
+
+
+def test_a_direct_finish_can_start_the_next_task(project: Path) -> None:
+    plan(project)
+    result = task_operation(
+        project, "finish", "T01", expected_revision=1,
+        evidence_record_ids=[_evidence(project, "T01")], start_next="T02",
+    )
+    assert result["changed_tasks"] == [{"id": "T01", "status": "DONE"}, {"id": "T02", "status": "RUNNING"}]
+    assert _state(project)["current_tasks"] == ["T02"]
+    # The successor is RUNNING, so the project left PLANNING exactly as `task start` would take it.
+    assert _state(project)["status"] == "EXECUTING"
+
+
+def test_a_direct_finish_still_needs_its_dependencies_done(project: Path) -> None:
+    plan(project)
+    with pytest.raises(WorkspaceError, match="unsatisfied dependency"):
+        task_operation(
+            project, "finish", "T02", expected_revision=1, evidence_record_ids=[_evidence(project, "T02")],
+        )
+    assert _status(project, "T02") == "TODO"
+
+
+def test_a_direct_update_still_needs_evidence(project: Path) -> None:
+    plan(project)
+    with pytest.raises(WorkspaceError, match="DONE task requires evidence"):
+        update_project_data(project, {"tasks": [{"id": "T01", "status": "DONE"}]}, expected_revision=1)
+    assert _status(project, "T01") == "TODO"
+
+
 def test_backfill_is_a_start_and_a_finish_with_the_reason_on_record(project: Path) -> None:
     plan(project)
     record = _evidence(project, "T01")

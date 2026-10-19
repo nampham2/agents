@@ -1408,6 +1408,39 @@ class CheckStateTransitionTests(unittest.TestCase):
         cand = {"status": "CANCELLED", "tasks": []}
         self.assertTrue(any("invalid project transition" in e for e in check_state_transition(prev, cand)))
 
+    def test_direct_todo_to_done_is_allowed_when_nothing_runs(self) -> None:
+        prev = {"status": "EXECUTING", "tasks": [self._task("T01")]}
+        cand = {"status": "EXECUTING", "tasks": [self._task("T01", "DONE")]}
+        self.assertEqual([], check_state_transition(prev, cand))
+
+    def test_direct_todo_to_done_is_refused_while_a_task_runs(self) -> None:
+        prev = {"status": "EXECUTING", "tasks": [self._task("T01"), self._task("T02", "RUNNING")]}
+        cand = {"status": "EXECUTING", "tasks": [self._task("T01", "DONE"), self._task("T02", "RUNNING")]}
+        self.assertEqual(
+            ["task T01: direct TODO -> DONE needs no task RUNNING before the commit; running: T02"],
+            check_state_transition(prev, cand),
+        )
+
+    def test_a_running_task_without_a_usable_id_still_gates_the_direct_move(self) -> None:
+        prev = {"status": "EXECUTING", "tasks": [self._task("T01"), {"id": [], "status": "RUNNING"}]}
+        cand = {"status": "EXECUTING", "tasks": [self._task("T01", "DONE")]}
+        self.assertEqual(
+            ["task T01: direct TODO -> DONE needs no task RUNNING before the commit"],
+            check_state_transition(prev, cand),
+        )
+
+    def test_a_malformed_previous_holds_no_running_task(self) -> None:
+        for tasks in ("not a list", 7, None, {"id": "T01"}):
+            with self.subTest(tasks=tasks):
+                prev = {"status": "EXECUTING", "tasks": tasks}
+                cand = {"status": "EXECUTING", "tasks": [self._task("T01", "DONE")]}
+                self.assertEqual([], check_state_transition(prev, cand))
+
+    def test_a_non_object_task_does_not_gate_the_direct_move(self) -> None:
+        prev = {"status": "EXECUTING", "tasks": [self._task("T01"), "RUNNING"]}
+        cand = {"status": "EXECUTING", "tasks": [self._task("T01", "DONE")]}
+        self.assertEqual([], check_state_transition(prev, cand))
+
 
 # ===========================================================================
 # commit_candidate error paths

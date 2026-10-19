@@ -277,6 +277,16 @@ class MalformedCandidateTests(unittest.TestCase):
         candidate: dict[str, Any] = {"status": "EXECUTING", "tasks": [{"id": [], "status": "TODO"}]}
         self.assertEqual([], check_state_transition(previous, candidate))
 
+    def test_a_malformed_previous_never_gates_the_direct_move(self) -> None:
+        candidate: dict[str, Any] = {"status": "EXECUTING", "tasks": [{"id": "T01", "status": "DONE"}]}
+        for previous in (
+            {"status": "EXECUTING", "tasks": "RUNNING"},
+            {"status": "EXECUTING", "tasks": [{"id": [], "status": "DONE"}]},
+            {"status": "EXECUTING", "tasks": ["RUNNING", 7, None]},
+        ):
+            with self.subTest(previous=previous):
+                self.assertEqual([], check_state_transition(previous, candidate))
+
     def test_unusable_task_ids_are_left_to_validation(self) -> None:
         previous: dict[str, Any] = {"status": "EXECUTING", "tasks": []}
         for task_id in ([], {}, None, 7, "", "   ", True):
