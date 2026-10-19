@@ -1,6 +1,6 @@
 # agents
 
-Cross-host research plugins for Claude Code and Codex.
+Cross-host research plugins for Claude Code, Codex and Pi.
 
 ## Install through a marketplace
 
@@ -29,6 +29,20 @@ codex plugin add research@agents
 ```
 
 Confirm with `codex plugin list`.
+
+### Pi
+
+Install the repository as a Pi package:
+
+```bash
+pi install git:github.com/nampham2/agents
+# Or from a clone:
+pi install /path/to/agents
+```
+
+Confirm with `pi list`. Pi exposes the three skills as `/skill:project`,
+`/skill:dashboard` and `/skill:retro`. Pi does not add the plugin `bin` directory to `PATH`;
+each skill runs the launcher beside its own `SKILL.md`.
 
 ## Development from a clone
 
@@ -291,7 +305,7 @@ This version preserves the ownership guard but cannot perform legacy executor re
 
 ### Versioning and updates
 
-`pyproject.toml` owns the release version. `uv.lock` and the Claude Code and Codex plugin
+`pyproject.toml` owns the release version. `uv.lock` and the Claude Code, Codex and Pi plugin
 manifests must use exactly the same SemVer; CI enforces this contract.
 
 Claude Code caches installed plugins by version. After publishing a version bump:

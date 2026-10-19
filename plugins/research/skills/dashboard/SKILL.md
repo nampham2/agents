@@ -9,14 +9,14 @@ description: >
 
 # Dashboard
 
-Invoke with `/research:dashboard [workspace root]`.
+Invoke with `/research:dashboard [workspace root]`; in Pi, `/skill:dashboard`.
 
-The dashboard only reads. It never writes to the workspace or to `~/.claude`.
+The dashboard only reads. It never writes to the workspace, `~/.claude` or `~/.pi`.
 
 ## Start it
 
-1. Use `research-dashboard` from `PATH` when it exists (Claude Code). Otherwise use
-   `../project/scripts/research-dashboard` beside this `SKILL.md` (Codex). Keep that launcher.
+1. Use `../project/scripts/research-dashboard` beside this `SKILL.md`. Use `research-dashboard` from
+   `PATH` only for a Claude plugin. Keep that launcher.
 2. Use the workspace root the user gave. Without one, pass no root: the launcher reads
    `$RESEARCH_WORKSPACE`, else it finds the one established root.
 3. Start it in the background: `research-dashboard [ROOT] --no-browser --port 0`. The first

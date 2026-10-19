@@ -465,6 +465,220 @@ def test_an_undecodable_working_directory_is_replaced_not_fatal(tmp_path: Path) 
     assert dash.SessionIndex(tmp_path).find()[ID][0]["cwd"] == "/git/�"
 
 
+# --- pi sessions ---------------------------------------------------------------------------------
+
+
+def pi_session(
+    root: Path,
+    identity: str,
+    session: str,
+    mentions: int,
+    *,
+    when: int | None = None,
+    cwd: object = "/git/agents",
+    prompt: object = "the prompt",
+    command: str = "",
+) -> Path:
+    directory = root / "sessions" / "--git-agents--"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"2026-10-19T10-00-00-000Z_{session}.jsonl"
+    lines = [
+        json.dumps(
+            {
+                "type": "session",
+                "version": 3,
+                "id": session,
+                "timestamp": "2026-10-19T10:00:00.000Z",
+                "cwd": cwd,
+            }
+        )
+    ]
+    if prompt is not None:
+        lines.append(
+            json.dumps(
+                {
+                    "type": "message",
+                    "id": "a",
+                    "parentId": None,
+                    "timestamp": "2026-10-19T10:00:01.000Z",
+                    "message": {"role": "user", "content": prompt, "timestamp": 1},
+                }
+            )
+        )
+    lines.extend(
+        json.dumps(
+            {
+                "type": "message",
+                "id": f"m{number}",
+                "parentId": "a",
+                "timestamp": "2026-10-19T10:00:02.000Z",
+                "message": {
+                    "role": "toolResult",
+                    "toolCallId": "call",
+                    "toolName": "bash",
+                    "content": [{"type": "text", "text": f"/root/workspace/{identity}\n"}],
+                    "timestamp": 2,
+                },
+            }
+        )
+        for number in range(mentions)
+    )
+    if command:
+        lines.append(command)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    if when is not None:
+        os.utime(path, (when, when))
+    return path
+
+
+def test_pi_sessions_are_found_with_host_and_prompt(tmp_path: Path) -> None:
+    pi_session(tmp_path, ID, "p1", 4)
+    found = dash.PiSessionIndex(tmp_path).find()[ID]
+    observed = [
+        (item["id"], item["cwd"], item["host"], item["prompt"], item["mentions"], item["exact"])
+        for item in found
+    ]
+    assert observed == [("p1", "/git/agents", "pi", "the prompt", 4, False)]
+
+
+def test_a_pi_session_that_ran_a_write_command_qualifies(tmp_path: Path) -> None:
+    pi_session(tmp_path, ID, "p1", 2, command=command(ID))
+    found = dash.PiSessionIndex(tmp_path).find()[ID]
+    assert [(item["commanded"], item["mentions"]) for item in found] == [(True, 3)]
+
+
+def test_a_pi_listing_is_not_work(tmp_path: Path) -> None:
+    path = pi_session(tmp_path, ID, "p1", 24)
+    path.write_text(
+        path.read_text() + "".join(f"/root/workspace/{OTHER}\n" for _ in range(100)),
+        encoding="utf-8",
+    )
+    assert ID not in dash.PiSessionIndex(tmp_path).find()
+
+
+def test_pi_sessions_sort_by_time_and_are_capped(tmp_path: Path) -> None:
+    for number, when in enumerate([1_000, 4_000, 2_000, 5_000, 3_000]):
+        pi_session(tmp_path, ID, f"p{number}", 5 + number, when=when)
+    assert [item["id"] for item in dash.PiSessionIndex(tmp_path).find()[ID]] == ["p3", "p1", "p4"]
+
+
+def test_pi_session_without_a_usable_header_is_skipped(tmp_path: Path) -> None:
+    directory = tmp_path / "sessions" / "--git--"
+    directory.mkdir(parents=True)
+    (directory / "empty.jsonl").write_bytes(b"")
+    (directory / "bad.jsonl").write_text("not json\n", encoding="utf-8")
+    (directory / "list.jsonl").write_text("[]\n", encoding="utf-8")
+    (directory / "message.jsonl").write_text(json.dumps({"type": "message"}) + "\n", encoding="utf-8")
+    (directory / "no-id.jsonl").write_text(json.dumps({"type": "session", "cwd": "/git"}) + "\n", encoding="utf-8")
+    (directory / "non-text-id.jsonl").write_text(
+        json.dumps({"type": "session", "id": 1, "cwd": "/git"}) + "\n", encoding="utf-8"
+    )
+    (directory / "quiet.jsonl").write_text(
+        json.dumps({"type": "session", "id": "quiet", "cwd": "/git"}) + "\n", encoding="utf-8"
+    )
+    assert dash.PiSessionIndex(tmp_path).find() == {}
+
+
+def test_a_pi_header_without_a_text_cwd_keeps_the_row(tmp_path: Path) -> None:
+    pi_session(tmp_path, ID, "p1", 4, cwd=5)
+    assert dash.PiSessionIndex(tmp_path).find()[ID][0]["cwd"] == ""
+
+
+def test_a_pi_directory_where_a_transcript_should_be_is_skipped(tmp_path: Path) -> None:
+    (tmp_path / "sessions" / "--git--" / "bad.jsonl").mkdir(parents=True)
+    assert dash.PiSessionIndex(tmp_path).find() == {}
+
+
+def test_a_missing_pi_directory_yields_no_sessions(tmp_path: Path) -> None:
+    assert dash.PiSessionIndex(tmp_path / "nowhere").find() == {}
+
+
+def test_a_pi_transcript_is_read_again_only_when_it_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = pi_session(tmp_path, ID, "p1", 4, when=1_000)
+    index = dash.PiSessionIndex(tmp_path)
+    reads: list[Path] = []
+    original = Path.read_bytes
+
+    def counting(self: Path) -> bytes:
+        reads.append(self)
+        return original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", counting)
+    index.find()
+    index.find()
+    assert reads == [path]
+    path.write_text(path.read_text() + "extra\n", encoding="utf-8")
+    index.find()
+    assert reads == [path, path]
+
+
+def test_the_last_pi_user_message_labels_the_session(tmp_path: Path) -> None:
+    path = pi_session(tmp_path, ID, "p1", 4, prompt=None)
+    additions = [
+        {"type": "message", "message": {"role": "user", "content": [{"type": "text", "text": "first"}]}},
+        {"type": "message", "message": {"role": "user", "content": [
+            {"type": "text", "text": "second"}, {"type": "text", "text": "part"}
+        ]}},
+    ]
+    path.write_text(
+        path.read_text() + "not json\n" + "[]\n" + "".join(json.dumps(item) + "\n" for item in additions),
+        encoding="utf-8",
+    )
+    assert dash.PiSessionIndex(tmp_path).find()[ID][0]["prompt"] == "second part"
+
+
+def test_a_pi_session_without_user_text_has_no_prompt(tmp_path: Path) -> None:
+    path = pi_session(tmp_path, ID, "p1", 4, prompt=None)
+    additions = [
+        {"type": "message", "message": {"role": "assistant", "content": "ignored"}},
+        {"type": "message", "message": "not an object"},
+        {"type": "message", "message": {"role": "user", "content": 5}},
+        {"type": "message", "message": {"role": "user", "content": [{"type": "image"}]}},
+        {"type": "message", "message": {"role": "user", "content": "   "}},
+    ]
+    path.write_text(
+        path.read_text() + "".join(json.dumps(item) + "\n" for item in additions), encoding="utf-8"
+    )
+    assert dash.PiSessionIndex(tmp_path).find()[ID][0]["prompt"] == ""
+
+
+def test_a_pi_session_with_too_few_mentions_is_skipped(tmp_path: Path) -> None:
+    pi_session(tmp_path, ID, "p1", 2)
+    assert dash.PiSessionIndex(tmp_path).find() == {}
+
+
+def test_claude_and_pi_sessions_merge_with_resume_commands(tmp_path: Path) -> None:
+    claude = tmp_path / "claude"
+    pi = tmp_path / "pi"
+    transcript(claude, "-git", "c1", mentions(ID, 5), when=2_000)
+    pi_session(pi, ID, "p1", 5, when=1_000)
+    sessions = dash.attach_sessions([row(ID)], dash.SessionIndex(claude), dash.PiSessionIndex(pi))[0]["sessions"]
+    assert [(item["host"], item["id"]) for item in sessions] == [("claude", "c1"), ("pi", "p1")]
+    assert [item["resume"] for item in sessions] == [
+        "cd /git/agents && claude --resume c1",
+        "cd /git/agents && pi --session p1",
+    ]
+
+
+def test_a_recorded_pi_session_uses_the_pi_resume_command(tmp_path: Path) -> None:
+    projects = [row(ID, recorded_session={"host": "pi", "id": "p1", "cwd": "/git/agents"})]
+    sessions = dash.attach_sessions(projects, dash.SessionIndex(tmp_path / "claude"))[0]["sessions"]
+    assert [(item["host"], item["exact"], item["resume"]) for item in sessions] == [
+        ("pi", True, "cd /git/agents && pi --session p1")
+    ]
+
+
+def test_a_recorded_pi_session_is_listed_once(tmp_path: Path) -> None:
+    pi_session(tmp_path, ID, "p1", 5)
+    projects = [row(ID, recorded_session={"host": "pi", "id": "p1", "cwd": "/git/agents"})]
+    sessions = dash.attach_sessions(
+        projects, dash.SessionIndex(tmp_path / "claude"), dash.PiSessionIndex(tmp_path)
+    )[0]["sessions"]
+    assert [(item["host"], item["id"], item["exact"]) for item in sessions] == [("pi", "p1", True)]
+
+
 # --- sessions on the projects --------------------------------------------------------------------
 
 

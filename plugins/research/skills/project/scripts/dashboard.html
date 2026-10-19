@@ -287,8 +287,9 @@ function sessionHtml(s, i) {
   const live = s.running === "busy" ? `<span class="s-EXECUTING">${ic("play")}running now</span>` : s.running ? `<span class="s-PLANNING">${ic("play")}open</span>` : "";
   const tag = s.exact ? "recorded" : i === 0 ? "latest" : "";
   const facts = [s.last ? `active ${rel(s.last)}` : "", s.mentions ? `named ${s.mentions} times` : "", s.cwd ? `in ${s.cwd.split("/").pop()}` : ""].filter(Boolean).join(", ");
-  const cmd = `${s.cwd ? `cd ${shq(s.cwd)} && ` : ""}claude --resume ${shq(s.id)}`;
-  return `<li><div><b>${esc(s.id.slice(0, 8))}</b> ${live} ${tag ? `<span class="mute">${tag}</span>` : ""} <span class="mute">${esc(facts)}</span></div>
+  const host = s.host === "pi" ? "Pi" : s.host === "claude" ? "Claude" : "";
+  const cmd = s.resume || `${s.cwd ? `cd ${shq(s.cwd)} && ` : ""}claude --resume ${shq(s.id)}`;
+  return `<li><div><b>${esc(s.id.slice(0, 8))}</b> ${live} ${tag ? `<span class="mute">${tag}</span>` : ""} ${host ? `<span class="mute">${esc(host)}</span>` : ""} <span class="mute">${esc(facts)}</span></div>
     ${s.prompt ? `<div class="mute prompt">"${esc(s.prompt)}"</div>` : ""}
     <button data-copy="${esc(cmd)}">${ic("copy")}Resume command</button></li>`;
 }
@@ -322,7 +323,7 @@ function detailHtml(p) {
     <section>
       <h3>Recent decisions</h3>${p.decisions.length ? `<ul>${p.decisions.map(d => `<li>${esc(d)}</li>`).join("")}</ul>` : `<p class="mute">None recorded.</p>`}
       ${wts ? `<h3>Worktrees</h3><ul>${wts}</ul>` : ""}
-      <h3>Claude sessions</h3>${(p.sessions || []).length ? `<ul class="sessions">${p.sessions.map(sessionHtml).join("")}</ul>` : `<p class="mute">No Claude session found for this project.</p>`}
+      <h3>Agent sessions</h3>${(p.sessions || []).length ? `<ul class="sessions">${p.sessions.map(sessionHtml).join("")}</ul>` : `<p class="mute">No agent session found for this project.</p>`}
       <h3>Copy</h3><div class="copies">
         <button data-copy="${esc(p.path)}">${ic("copy")}Project path</button>
         <button data-copy="${esc(`Use the project skill to resume ${p.path}.`)}">${ic("copy")}Resume prompt</button>

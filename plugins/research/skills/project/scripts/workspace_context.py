@@ -336,21 +336,24 @@ def checkpoint_data(project: Path) -> dict[str, Any] | None:
         object_input(session, SESSION_FIELDS, SESSION_FIELDS, where="checkpoint session")
         if not all(isinstance(session[field], str) and session[field] for field in SESSION_FIELDS):
             raise WorkspaceError("invalid checkpoint session")
+        if session["host"] not in ("claude", "pi"):
+            raise WorkspaceError("invalid checkpoint session host")
     return value
 
 
 def session_observation() -> dict[str, str] | None:
     """Name the agent session that writes this checkpoint, when the host says which one it is.
 
-    Claude Code sets `CLAUDE_CODE_SESSION_ID` in the session shell. Its transcript is filed under
-    the directory Claude was started in, and `claude --resume` finds the session through that
-    directory, so the working directory is recorded beside the id. No time: the checkpoint's own
-    `recorded` dates the save, and a per-call stamp would make every checkpoint look changed.
+    Pi sets `PI_SESSION_ID` in every shell tool call. Claude Code sets `CLAUDE_CODE_SESSION_ID`.
+    Pi wins when both are set, because a Pi session can inherit a Claude variable from its parent
+    shell. No time: the checkpoint's own `recorded` dates the save, and a per-call stamp would make
+    every checkpoint look changed.
     """
-    identity = os.environ.get("CLAUDE_CODE_SESSION_ID", "").strip()
-    if not identity:
-        return None
-    return {"host": "claude", "id": identity, "cwd": os.getcwd()}
+    for variable, host in (("PI_SESSION_ID", "pi"), ("CLAUDE_CODE_SESSION_ID", "claude")):
+        identity = os.environ.get(variable, "").strip()
+        if identity:
+            return {"host": host, "id": identity, "cwd": os.getcwd()}
+    return None
 
 
 def render_checkpoint(
