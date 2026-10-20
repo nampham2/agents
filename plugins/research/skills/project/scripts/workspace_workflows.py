@@ -223,7 +223,9 @@ def _confirmation(value: object) -> dict[str, str]:
     return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 
-def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _worktree(
+    state: dict[str, Any], request: dict[str, Any], workspace_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Record or close a repository worktree from what Git reports, never from what was claimed.
 
     `record` stores a worktree the agent created after the user confirmed it (or the linked
@@ -297,8 +299,10 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
             patch["working_directory"] = path
         return patch, {"worktree": entry, "observed": seen}
     if operation in DELIVERY_OPERATIONS:
-        entry = delivery_operation(worktrees, path, operation, request, confirmation)
-        return {"worktrees": worktrees}, {"worktree": entry}
+        entry, notes = delivery_operation(
+            worktrees, path, operation, request, confirmation, workspace_root=workspace_root, project=state["project"],
+        )
+        return {"worktrees": worktrees}, {"worktree": entry, **({"notes": notes} if notes else {})}
     if operation != "close":
         raise WorkspaceError("worktree operation must be record, close, pull_request, alpha, release or merge")
     decision = request.get("decision")
@@ -587,7 +591,7 @@ def _build(
         decision(body)
         result["topic"] = {"name": request["topic"], "sha256": topic["sha256"]}
     elif action == "worktree":
-        patch, result = _worktree(state, request)
+        patch, result = _worktree(state, request, project.parent)
         if "superseded" in result:
             before, after = result["superseded"], result["worktree"]["closure"]
             decision(

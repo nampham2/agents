@@ -258,10 +258,23 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
   equals the host of the `origin` remote. `pr_exemption` (`reason` `no_remote`, `source`,
   `response`) replaces it for a repository with no remote.
 - `version_line`: `files` (`path`, `style` `pep440` or `semver`), `base` (plain `X.Y.Z`), `alpha`,
-  `history` (`alpha`, `recorded_at`, `reason`) and `release` (null or `version`, `recorded_at`).
-  `alpha` only increases and `base` never changes. Each file holds `X.Y.ZaN` (`pep440`) or
-  `X.Y.Z-alpha.N` (`semver`). `release` equals `base` and no file keeps an alpha spelling.
+  `history` (`alpha`, `base`, `recorded_at`, `reason`), `release` (null or `version`, `recorded_at`)
+  and `base_moves` (`from`, `to`, `reason`, `recorded_at`). While the base stays, `alpha` rises.
+  When the base moves, through an `alpha` record or a `release` record with `base_moved`, the
+  number restarts at 1; the validator checks that each change of base in `history` restarts at 1
+  and has a `base_moves` entry. A history item without `base` was recorded before items carried
+  one: such an item only has to rise. Each file holds `X.Y.ZaN` (`pep440`) or `X.Y.Z-alpha.N`
+  (`semver`). `release` equals `base` and no file keeps an alpha spelling.
   `version_exemption` (`source`, `response`) replaces the line for a repository with no version.
+- Occupied base: when a base first appears or moves, the tool reads local Git refs and the
+  workspace and refuses a base that is at or below the newest version released on main (version
+  files at `origin/HEAD`, `origin/main` or `origin/master`, and version tags), or that another
+  source holds: a live project's unmerged `version_line` for the same repository, another
+  `origin/*` branch, another local worktree or local branch. It excludes this project's own
+  record, branch and worktree, reads `0.30.0a3` and `0.30.0-alpha.3` as `0.30.0`, names each
+  occupier and suggests the patch above the highest version seen. With no `origin` it skips the
+  main and remote sources and says so in `notes`; `notes` also reports origin refs last fetched
+  over a day ago. An `origin` with no default branch ref refuses, because main cannot be read.
 - `merge`: `state` (`merged` or `declined`), `method` (`squash`, `merge`, `rebase`; null if
   declined), `evidence`, `source`, `response`, `recorded_at`. `merged` needs the release when a
   `version_line` exists. A merged record is final. `close` with `remove` needs a merged record when

@@ -199,6 +199,7 @@ CONDITIONAL = {
     "report-html": "only when an HTML report is requested",
     "session-handoff": "only for handoff or interruption recovery",
     "task-workers": "only when delegating to workers",
+    "versioning": "only when proposing a base, recording an alpha line, moving a base or recording a release",
     "workspace-schema": "only for schema, migration or validation-error repairs",
     "worktrees": "only for a repository target",
     "writing-rules-extra": "only when a style finding names a preferred word or the rule set changes",

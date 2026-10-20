@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from workspace_context import _git
 from workspace_journal import list_input, object_input, string_input
 from workspace_lib import WorkspaceError, _is_timestamp, _non_empty_string, is_delivery_gated, now_iso
+from workspace_occupancy import check_base
 
 DELIVERY_OPERATIONS = {"pull_request", "alpha", "release", "merge"}
 DELIVERY_FIELDS = {"pull_request", "pr_exemption", "version_line", "version_exemption", "merge"}
@@ -51,8 +52,9 @@ def _version_tuple(version: str) -> tuple[int, ...]:
 def _base_move(line: dict[str, Any], base: str, request: dict[str, Any], label: str) -> dict[str, Any] | None:
     """The recorded base move when `base` leaves the line, or None when it stays.
 
-    A base moves only when the main branch released past it; the agent asks the user first and says so
-    with `base_moved: true` and a `reason`. The number of the alpha line still only goes up.
+    A base moves only when the main branch released past it or another source occupies it; the agent
+    asks the user first and says so with `base_moved: true` and a `reason`. An alpha record on a moved
+    base restarts the alpha number at 1; the occupancy check refuses a moved base that is also taken.
     """
     moved = request.get("base_moved", False)
     if not isinstance(moved, bool):
@@ -138,12 +140,16 @@ def _files(request: dict[str, Any], line: dict[str, Any] | None) -> list[dict[st
     return files
 
 
-def _alpha(entry: dict[str, Any], request: dict[str, Any], root: Path, confirmation: dict[str, str]) -> None:
+def _alpha(
+    entry: dict[str, Any], request: dict[str, Any], root: Path, confirmation: dict[str, str],
+    workspace_root: Path, project: str,
+) -> list[str]:
+    """Record an alpha line or a version exemption; returns notes about the sources the check could not read."""
     if request.get("exempt") is True:
         if "version_line" in entry or "version_exemption" in entry:
             raise WorkspaceError("the worktree already has a version_line or a version_exemption")
         entry["version_exemption"] = dict(confirmation)
-        return
+        return []
     if "version_exemption" in entry:
         raise WorkspaceError("the worktree has a version_exemption; no alpha line applies")
     if entry.get("merge", {}).get("state") == "merged":
@@ -154,26 +160,40 @@ def _alpha(entry: dict[str, Any], request: dict[str, Any], root: Path, confirmat
         raise WorkspaceError("base must be a plain X.Y.Z version")
     move = None if line is None else _base_move(line, base, request, "the base stays")
     alpha = _positive_integer(request.get("alpha"), "alpha")
-    if line is not None and alpha <= line["alpha"]:
-        raise WorkspaceError(f"the alpha number only goes up: recorded {line['alpha']}, found {alpha}")
+    if line is not None:
+        # The base differs from the last record's when this record moves it, and also when a release moved
+        # it earlier: either way the alpha line starts again at 1.
+        previous_base = line["history"][-1].get("base", line["base"])
+        if base != previous_base and alpha != 1:
+            raise WorkspaceError(f"a moved base restarts the alpha number at 1: found {alpha}")
+        if base == previous_base and alpha <= line["alpha"]:
+            raise WorkspaceError(
+                f"the alpha number only goes up while the base stays: recorded {line['alpha']}, found {alpha}"
+            )
     reason = string_input(request.get("reason"), "reason")
     files = _files(request, line)
+    notes: list[str] = []
+    if line is None or move is not None:
+        notes = check_base(root, entry, files, base, workspace_root=workspace_root, project=project)
     for item in files:
         text = _read_version_file(root, item["path"])
         expected = spelling(base, alpha, item["style"])
         if not _contains(text, expected):
             raise WorkspaceError(f"version file {item['path']} does not contain {expected}")
     history = copy.deepcopy(line["history"]) if line is not None else []
-    history.append({"alpha": alpha, "recorded_at": now_iso(), "reason": reason})
+    history.append({"alpha": alpha, "base": base, "recorded_at": now_iso(), "reason": reason})
     moves = copy.deepcopy(line.get("base_moves", [])) if line is not None else []
     if move is not None:
         moves.append(move)
     entry["version_line"] = {
         "files": files, "base": base, "alpha": alpha, "history": history, "release": None, "base_moves": moves,
     }
+    return notes
 
 
-def _release(entry: dict[str, Any], request: dict[str, Any], root: Path) -> None:
+def _release(
+    entry: dict[str, Any], request: dict[str, Any], root: Path, workspace_root: Path, project: str,
+) -> list[str]:
     line = entry.get("version_line")
     if line is None:
         raise WorkspaceError("no version_line is recorded; record the alpha line first")
@@ -181,6 +201,9 @@ def _release(entry: dict[str, Any], request: dict[str, Any], root: Path) -> None
     if not PLAIN_VERSION.match(version):
         raise WorkspaceError("the release version must be a plain X.Y.Z version")
     move = _base_move(line, version, request, "the release version must equal the base")
+    notes: list[str] = []
+    if move is not None:
+        notes = check_base(root, entry, line["files"], version, workspace_root=workspace_root, project=project)
     leftover = re.compile(re.escape(version) + r"(?:a\d+|-alpha\.\d+)")
     for item in line["files"]:
         text = _read_version_file(root, item["path"])
@@ -192,6 +215,7 @@ def _release(entry: dict[str, Any], request: dict[str, Any], root: Path) -> None
         line["base"] = version
         line["base_moves"] = [*line.get("base_moves", []), move]
     line["release"] = {"version": version, "recorded_at": now_iso()}
+    return notes
 
 
 def _merge(entry: dict[str, Any], request: dict[str, Any], confirmation: dict[str, str]) -> None:
@@ -217,22 +241,28 @@ def _merge(entry: dict[str, Any], request: dict[str, Any], confirmation: dict[st
 
 
 def delivery_operation(
-    worktrees: list[dict[str, Any]], path: str, operation: str, request: dict[str, Any], confirmation: dict[str, str]
-) -> dict[str, Any]:
-    """Apply one delivery operation to the active entry at `path`; returns the changed entry."""
+    worktrees: list[dict[str, Any]], path: str, operation: str, request: dict[str, Any], confirmation: dict[str, str],
+    *, workspace_root: Path, project: str,
+) -> tuple[dict[str, Any], list[str]]:
+    """Apply one delivery operation to the active entry at `path`; returns the entry and any notes.
+
+    `workspace_root` and `project` let the occupancy check read the other projects' records and skip
+    this project's own.
+    """
     entry = next((item for item in worktrees if item["path"] == path), None)
     if entry is None or entry["status"] != "active" or entry["kind"] == "none":
         raise WorkspaceError(f"no active repository worktree is recorded at {path}")
     root = Path(path)
+    notes: list[str] = []
     if operation == "pull_request":
         _pull_request(entry, request, root, confirmation)
     elif operation == "alpha":
-        _alpha(entry, request, root, confirmation)
+        notes = _alpha(entry, request, root, confirmation, workspace_root, project)
     elif operation == "release":
-        _release(entry, request, root)
+        notes = _release(entry, request, root, workspace_root, project)
     else:
         _merge(entry, request, confirmation)
-    return entry
+    return entry, notes
 
 
 def _object_errors(value: object, label: str, fields: set[str]) -> list[str]:
@@ -262,28 +292,64 @@ def _line_errors(line: object, label: str) -> list[str]:
         and item["style"] in STYLES for item in files
     ):
         problems.append(f"{label}: files must list objects with a path and a style of pep440 or semver")
-    numbers: list[int] = []
-    if not isinstance(history, list) or not history:
-        problems.append(f"{label}: history must be a non-empty list")
-    else:
-        for index, item in enumerate(history, start=1):
-            if (
-                not isinstance(item, dict) or item.keys() != {"alpha", "recorded_at", "reason"}
-                or isinstance(item["alpha"], bool) or not isinstance(item["alpha"], int)
-                or not _is_timestamp(item["recorded_at"]) or not _non_empty_string(item["reason"])
-            ):
-                problems.append(f"{label}: history item {index} needs a whole alpha, recorded_at and reason")
-            else:
-                numbers.append(item["alpha"])
-        # Python 3.9: no itertools.pairwise and no zip(strict=), so compare neighbours by index.
-        increasing = all(numbers[i] < numbers[i + 1] for i in range(len(numbers) - 1))
-        if len(numbers) == len(history) and (not increasing or numbers[-1] != alpha):
-            problems.append(f"{label}: history must increase and end at the current alpha")
+    problems += _history_errors(history, line, label)
     if release is not None and (
         _object_errors(release, f"{label}.release", {"version", "recorded_at"})
         or release["version"] != base or not _is_timestamp(release["recorded_at"])
     ):
         problems.append(f"{label}: release needs version equal to base and a recorded_at timestamp")
+    return problems
+
+
+def _history_errors(history: object, line: dict[str, Any], label: str) -> list[str]:
+    """Shape and order errors of the alpha history.
+
+    An item records `alpha` and, since the alpha number restarts when the base moves, the `base` it was
+    recorded on. Items without a `base` belong to a line recorded before that: they only have to rise.
+    Inside one base the number rises; where the base changes it is 1 and a `base_moves` entry ends there.
+    """
+    if not isinstance(history, list) or not history:
+        return [f"{label}: history must be a non-empty list"]
+    legacy = {"alpha", "recorded_at", "reason"}
+    problems: list[str] = []
+    items: list[dict[str, Any]] = []
+    for index, item in enumerate(history, start=1):
+        if (
+            not isinstance(item, dict) or item.keys() not in (legacy, legacy | {"base"})
+            or isinstance(item["alpha"], bool) or not isinstance(item["alpha"], int)
+            or ("base" in item and not (isinstance(item["base"], str) and PLAIN_VERSION.match(item["base"])))
+            or not _is_timestamp(item["recorded_at"]) or not _non_empty_string(item["reason"])
+        ):
+            problems.append(f"{label}: history item {index} needs a whole alpha, recorded_at and reason")
+        else:
+            items.append(item)
+    if len(items) != len(history):
+        return problems
+    moved_to = {move["to"] for move in line.get("base_moves", []) if isinstance(move, dict) and "to" in move}
+    for position in range(1, len(items)):
+        before, after = items[position - 1], items[position]
+        where = f"{label}: history item {position + 1}"
+        if "base" in before and "base" not in after:
+            problems.append(f"{where} lacks the base that the items before it record")
+        elif "base" in after and (
+            ("base" in before and before["base"] != after["base"])
+            or ("base" not in before and after["alpha"] <= before["alpha"])
+        ):
+            # A base move: the number restarts at 1 and a base_moves entry ends at the new base.
+            if after["alpha"] != 1 or after["base"] not in moved_to:
+                problems.append(
+                    f"{where} moves the base to {after['base']}; a move restarts at alpha 1 and needs a "
+                    "matching base_moves entry"
+                )
+        elif after["alpha"] <= before["alpha"]:
+            problems.append(f"{label}: history must increase while the base stays")
+    last = items[-1]
+    moves = line.get("base_moves", [])
+    # A release may move the base without a new history item: then the last move ends at the line's base.
+    last_move = moves[-1] if moves and isinstance(moves[-1], dict) else {}
+    released_move = bool(line.get("release")) and last_move.get("to") == line["base"]
+    if last["alpha"] != line["alpha"] or ("base" in last and last["base"] != line["base"] and not released_move):
+        problems.append(f"{label}: history must end at the current alpha and base")
     return problems
 
 

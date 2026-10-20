@@ -21,7 +21,8 @@ Do this once, when all the work is done.
 1. Sweep the threads.
 2. Commit the plain release version `X.Y.Z` into each recorded version file and push. Record
    `"operation":"release"` with `version`. If the base release moved on the main branch, ask the
-   user, then add `"base_moved":true` and a `reason`.
+   user, then add `"base_moved":true` and a `reason`. The tool refuses a moved base that is
+   occupied.
 3. Ask the user to merge each MR and name the method: `squash`, `merge` or `rebase`.
 4. After a yes, merge on the host. Record `"operation":"merge"` with `"merge_state":"merged"`,
    `method`, `evidence` (the merge commit or URL) and the user's words.

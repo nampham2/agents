@@ -62,12 +62,14 @@ placement. Keep these surfaces aligned:
   `uv.lock` and the Claude and Codex plugin manifests, after the alpha spellings normalize. Committed manifests use SemVer, without a
   Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:
   `uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py`.
-- A project branch works on one alpha line: the release version with an alpha number that only goes
-  up. Python files spell it `0.24.0a3` and plugin manifests spell it `0.24.0-alpha.3`. Never lower
-  the number during a project, and bump it before each test deploy or plugin refresh. The base
-  version moves only when `main` released past it, recorded with `base_moved` and a reason. An
-  alpha version never merges to `main`: commit the plain release version before the merge. CI
-  fails a PR to `main` that carries an alpha version, through `REQUIRE_RELEASE_VERSION=1`.
+- A project branch works on one alpha line per base: the release version with an alpha number that
+  rises while the base stays and restarts at 1 when the base moves. Python files spell it
+  `0.24.0a3` and plugin manifests spell it `0.24.0-alpha.3`. Bump it before each test deploy or
+  plugin refresh. The base moves when `main` released past it or another source occupies it
+  (another live project, `origin/*` branch, local worktree or local branch), recorded with
+  `base_moved` and a reason; the tool refuses an occupied base and names each occupier. An alpha
+  version never merges to `main`: commit the plain release version before the merge. CI fails a PR
+  to `main` that carries an alpha version, through `REQUIRE_RELEASE_VERSION=1`.
 - Installed plugins are copied into host-managed caches. A release change needs a canonical version
   bump and a host update/reinstall; editing the working tree does not modify an installed copy.
 
