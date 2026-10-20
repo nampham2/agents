@@ -1026,7 +1026,7 @@ DESIGN_DOCUMENT = "artifacts/architecture.md"
 PLANNING_GATE_STATUSES = frozenset({"PLANNING", "EXECUTING", "REVIEW"})
 # A project created on or after this instant that keeps its agreement in a root `architecture.md`
 # is told to rename it. Set to the release instant of the version that ships the split (0.30.0).
-PLANNING_SPLIT_FROM = "2026-10-21T00:00:00+00:00"
+PLANNING_SPLIT_FROM = "2026-10-20T20:49:02+00:00"
 # The one line the document must carry: `Status: draft` or `Status: agreed`, in any Markdown dress
 # (`**Status:** agreed`, `- status — draft`). The separator excludes line breaks, so the word and its
 # value must share a line. The first occurrence wins, so keep it near the top.

@@ -86,6 +86,42 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.30.0 duplicate guard, optional alpha, stop reasons, planning and design documents
+
+Six changes to the `project` skill, shipped together on one branch.
+
+- **Duplicate guard.** `init` scores the new title against the live projects, with a higher bar
+  when the working directory differs, and creates nothing on a likely match. It prints the
+  candidates; `init --acknowledge-duplicates <ids>` proceeds once the user has answered, and the
+  ids go into the specification history. `find-similar` runs the same score, and
+  `list-projects --query` matches words, not substrings.
+- **Alpha reset and occupied bases.** When the base moves, the alpha number restarts at 1. The
+  tool refuses a base that main released (`origin/main` or a version tag), another live project
+  holds, or another `origin/*` branch, local worktree or local branch carries, and it names each
+  occupier. The check reads local refs, so run `git fetch --prune` first.
+- **Optional alpha.** A project records an alpha line only for a test or experiment build. A
+  repository project closes with a `release` record, whose base passes the occupancy check, or an
+  exemption with a reason. An exemption and a release record exclude each other.
+- **Stop reasons.** `task finish`, `task skip`, `task block` and `resume` return `continue` or one
+  of six `stop_reason` values (`references/stopping.md`). A checkpoint with session `waiting`,
+  `blocked` or `ready for handoff` must name one; `working` carries none.
+- **Planning and design documents.** The agreement is `planning.md` (`planning` document id,
+  `kind=planning` markers, `Agreed planning` link). The technical design is
+  `artifacts/architecture.md`, written by the first task of a project that writes code and never
+  gated. For a project created after the release instant, validation warns when a code project's
+  design is missing, lacks a section its profiles require, or has no status row for a `DONE` code
+  task. A project begun before the split keeps a root `architecture.md`, which the tools read as
+  the planning document; the old `architecture` kind, token name, marker and checkpoint key still
+  work, and a legacy project that names the design id is told to use `planning`.
+  `references/architecture-review.md` is now `planning-review.md`; `design-document.md` is new.
+- **Python 3.11.** The launchers need Python 3.11 or later and pick the newest on `PATH`, then
+  `uv`. The `python-floor` CI job replaces the 3.9 job.
+
+Compatibility: a 0.29.0 launcher cannot read a project that records `planning.md`, a
+`stop_reason`, an `alpha` of `null` (a release-only line) or a reset alpha history. Refresh the
+plugin before opening such a project from another host. Older projects open unchanged, and the
+replay of validation over 119 workspace projects found no new error.
+
 ### 0.28.2 finalize stages the reflection's lessons
 
 `workflow finalize` now appends the reflection's own lesson sections to the project's
