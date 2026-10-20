@@ -20,7 +20,13 @@ from workspace_context import (
     worktree_registered,
 )
 from workspace_delivery import DELIVERY_OPERATIONS, delivery_operation
-from workspace_documents import _replace_sections, _section_span, append_staged_section, reflection_lesson_sections
+from workspace_documents import (
+    LEGACY_PLANNING_HINT,
+    _replace_sections,
+    _section_span,
+    append_staged_section,
+    reflection_lesson_sections,
+)
 from workspace_journal import (
     READ_INPUTS,
     document_path,
@@ -34,15 +40,17 @@ from workspace_journal import (
     string_input,
 )
 from workspace_lib import (
-    ARCHITECTURE_STATUS_PATTERN,
+    PLANNING_STATUS_PATTERN,
     PROJECT_TRANSITIONS,
     WorkspaceError,
     check_state_candidate,
     confirmation_marker,
     document_sha256,
+    is_legacy_planning_layout,
     is_retro_gated,
     memory_staging_warnings,
     now_iso,
+    planning_path,
     proposal_digest,
     proposal_marker,
     reason_reference_warnings,
@@ -60,10 +68,10 @@ COMMON = {"id", "expected_revision", "tokens"}
 WRITE_REQUIRED = {"id", "expected_revision"}
 FIELDS = {
     "checkpoint": {"continuation"},
-    "round": {"sections", "decisions", "architecture", "continuation"},
+    "round": {"sections", "decisions", "planning", "architecture", "continuation"},
     "confirm": {
-        "kind", "proposal_sha256", "requirements_sha256", "architecture_sha256", "review_id", "response", "source",
-        "scope", "continuation",
+        "kind", "proposal_sha256", "requirements_sha256", "planning_sha256", "architecture_sha256", "review_id",
+        "response", "source", "scope", "continuation",
     },
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
@@ -223,7 +231,9 @@ def _confirmation(value: object) -> dict[str, str]:
     return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 
-def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _worktree(
+    state: dict[str, Any], request: dict[str, Any], workspace_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """Record or close a repository worktree from what Git reports, never from what was claimed.
 
     `record` stores a worktree the agent created after the user confirmed it (or the linked
@@ -297,8 +307,10 @@ def _worktree(state: dict[str, Any], request: dict[str, Any]) -> tuple[dict[str,
             patch["working_directory"] = path
         return patch, {"worktree": entry, "observed": seen}
     if operation in DELIVERY_OPERATIONS:
-        entry = delivery_operation(worktrees, path, operation, request, confirmation)
-        return {"worktrees": worktrees}, {"worktree": entry}
+        entry, notes = delivery_operation(
+            worktrees, path, operation, request, confirmation, workspace_root=workspace_root, project=state["project"],
+        )
+        return {"worktrees": worktrees}, {"worktree": entry, **({"notes": notes} if notes else {})}
     if operation != "close":
         raise WorkspaceError("worktree operation must be record, close, pull_request, alpha, release or merge")
     decision = request.get("decision")
@@ -369,41 +381,52 @@ def _build(
             ):
                 raise WorkspaceError("sections must map headings to text")
             documents["spec"] = _replace_sections(read("spec"), request["sections"])
+        if "planning" in request:
+            documents["planning"] = string_input(request["planning"], "planning").strip() + "\n"
         if "architecture" in request:
+            if is_legacy_planning_layout(project):
+                raise WorkspaceError(LEGACY_PLANNING_HINT)
             documents["architecture"] = string_input(request["architecture"], "architecture").strip() + "\n"
         for item in list_input(request.get("decisions", []), field="decisions"):
             object_input(item, {"id", "body"}, {"id", "body"})
             documents["spec"] = _entry(read("spec"), item["id"], item["body"], decision=True)
-        stale = stale_confirmations(read("spec"), read("architecture"))
+        stale = stale_confirmations(read("spec"), read("planning"))
         if stale:
             result["stale_confirmations"] = stale
     elif action == "confirm":
         kind = string_input(request.get("kind"), "kind")
-        if kind not in ("requirements", "architecture", "alignment"):
-            raise WorkspaceError("confirmation kind must be requirements, architecture or alignment")
+        # `architecture` is the name this kind had before the planning document was split from the
+        # design; it still means the planning document, and so does `architecture_sha256`.
+        if kind == "architecture":
+            kind = "planning"
+        if kind not in ("requirements", "planning", "alignment"):
+            raise WorkspaceError("confirmation kind must be requirements, planning or alignment")
         # `alignment` is one reply covering both documents, for a proposal small enough to be read and
         # agreed in one message. It records exactly what two separate confirmations would: each kind's
         # own marker, content digest and effect, against that document's current token.
         if kind == "alignment":
             if "proposal_sha256" in request:
-                raise WorkspaceError("alignment takes requirements_sha256 and architecture_sha256, not proposal_sha256")
+                raise WorkspaceError("alignment takes requirements_sha256 and planning_sha256, not proposal_sha256")
+            if "planning_sha256" in request and "architecture_sha256" in request:
+                raise WorkspaceError("give planning_sha256 or its old name architecture_sha256, not both")
+            planning_field = "architecture_sha256" if "architecture_sha256" in request else "planning_sha256"
             tokens = {
                 "requirements": string_input(request.get("requirements_sha256"), "requirements_sha256"),
-                "architecture": string_input(request.get("architecture_sha256"), "architecture_sha256"),
+                "planning": string_input(request.get(planning_field), planning_field),
             }
         else:
-            if "requirements_sha256" in request or "architecture_sha256" in request:
-                raise WorkspaceError("only kind alignment takes requirements_sha256 and architecture_sha256")
+            if "requirements_sha256" in request or "planning_sha256" in request or "architecture_sha256" in request:
+                raise WorkspaceError("only kind alignment takes requirements_sha256 and planning_sha256")
             tokens = {kind: string_input(request.get("proposal_sha256"))}
         for confirmed in tokens:
-            current = snapshot(document_path(project, "spec" if confirmed == "requirements" else "architecture"))[1]
+            current = snapshot(document_path(project, "spec" if confirmed == "requirements" else "planning"))[1]
             if current != tokens[confirmed]:
                 raise WorkspaceError("proposal token changed; confirmation must cover the current proposal")
         for field in ("review_id", "response", "source", "scope"):
             string_input(request.get(field), field)
         review_id = str(request["review_id"])
         for confirmed, token in tokens.items():
-            name = "spec" if confirmed == "requirements" else "architecture"
+            name = "spec" if confirmed == "requirements" else "planning"
             body = (
                 confirmation_marker(confirmed, review_id, token)
                 + "\n"
@@ -419,22 +442,20 @@ def _build(
                 )
             )
             decision(body, f"{request['id'][:50]}-{confirmed}" if kind == "alignment" else None)
-            if confirmed == "architecture":
-                architecture = read("architecture")
-                match = ARCHITECTURE_STATUS_PATTERN.search(architecture)
-                if match is None or review_id not in architecture:
-                    raise WorkspaceError("architecture must declare its status and reviewed identifier")
-                documents["architecture"] = (
-                    architecture[: match.start("status")] + "agreed" + architecture[match.end("status") :]
-                )
-                documents["architecture"] += f"\nConfirmation ({now_iso()}):\n\n{body}\n"
+            if confirmed == "planning":
+                planning = read("planning")
+                match = PLANNING_STATUS_PATTERN.search(planning)
+                if match is None or review_id not in planning:
+                    raise WorkspaceError("the planning document must declare its status and reviewed identifier")
+                documents["planning"] = planning[: match.start("status")] + "agreed" + planning[match.end("status") :]
+                documents["planning"] += f"\nConfirmation ({now_iso()}):\n\n{body}\n"
                 heading = "Constraints and important assumptions"
                 _, _, begin, finish = _section_span(read("spec"), heading)
                 documents["spec"] = _replace_sections(
                     read("spec"),
                     {
                         heading: read("spec")[begin:finish].rstrip()
-                        + f"\n\nAgreed architecture: [revision {review_id}](architecture.md)."
+                        + f"\n\nAgreed planning: [revision {review_id}]({planning_path(project).name})."
                     },
                 )
     elif action == "correct":
@@ -587,7 +608,7 @@ def _build(
         decision(body)
         result["topic"] = {"name": request["topic"], "sha256": topic["sha256"]}
     elif action == "worktree":
-        patch, result = _worktree(state, request)
+        patch, result = _worktree(state, request, project.parent)
         if "superseded" in result:
             before, after = result["superseded"], result["worktree"]["closure"]
             decision(

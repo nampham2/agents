@@ -1,6 +1,6 @@
 # Writing rules for project records
 
-Write the specification, architecture, task fields, handoff and notes with these 45 rules.
+Write the specification, planning, task fields, handoff and notes with these 45 rules.
 They are the project's own rules, inspired by ASD-STE100. Thirteen come from the public list of
 STE rules and are marked (D). The other 32 are marked (I). Do not claim that a record follows STE.
 
@@ -81,7 +81,7 @@ Each term has one meaning in a record.
 
 - **project**: one folder in the workspace with its records.
 - **record**: a file or field in a project that holds a fact.
-- **living record**: a record that agents keep current, such as `architecture.md`.
+- **living record**: a record that agents keep current, such as `planning.md`.
 - **finding**: a note about something that you saw, saved in a task note.
 - **evidence**: the saved output of a command, kept in `evidence.md`.
 - **gate**: a rule in the tool that refuses a step.

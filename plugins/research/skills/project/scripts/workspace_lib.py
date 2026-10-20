@@ -383,13 +383,13 @@ def is_style_checked(state: dict[str, Any]) -> bool:
 def style_warnings(project_dir: Path, state: dict[str, Any]) -> list[str]:
     """Advisory style findings for the living records: form only, never an error.
 
-    Reads the current specification (not the append-only decision history), architecture.md,
+    Reads the current specification (not the append-only decision history), the planning document,
     handoff.md and the task fields. A missing or unreadable file is skipped: the checks that own
     those files already report them.
     """
     warnings: list[str] = []
-    for name in ("spec.md", "architecture.md", "handoff.md"):
-        path = project_dir / name
+    for name in ("spec.md", PLANNING_FILENAME, "handoff.md"):
+        path = planning_path(project_dir) if name == PLANNING_FILENAME else project_dir / name
         if not path.is_file():
             continue
         try:
@@ -400,7 +400,7 @@ def style_warnings(project_dir: Path, state: dict[str, Any]) -> list[str]:
             text = section_only(text, "Current specification")
         # Numbered items are steps only in the handoff; elsewhere they list requirements or findings.
         step_limit = LIMIT_STEP if name == "handoff.md" else LIMIT_TEXT
-        warning = format_warning(name, document_findings(text, step_limit=step_limit))
+        warning = format_warning(path.name, document_findings(text, step_limit=step_limit))
         if warning:
             warnings.append(warning)
     task_warning = format_warning("task fields", task_field_findings(state.get("tasks")))
@@ -410,10 +410,12 @@ def style_warnings(project_dir: Path, state: dict[str, Any]) -> list[str]:
 
 
 # What `workflow confirm` leaves behind so a later check can tell that the tool's confirmation path
-# ran for a given proposal, rather than that someone typed "kind: architecture" into a decision.
-# It proves the code path, not consent: the response text is still the agent's.
+# ran for a given proposal, rather than that someone typed "kind: planning" into a decision.
+# It proves the code path, not consent: the response text is still the agent's. Markers written
+# before the planning document was split from the design read `kind=architecture`; they still
+# parse, and count as `planning`.
 CONFIRMATION_MARKER = re.compile(
-    r"<!-- research-confirmation: kind=(?P<kind>requirements|architecture) "
+    r"<!-- research-confirmation: kind=(?P<kind>requirements|planning|architecture) "
     r"review_id=(?P<review_id>\S+) proposal_sha256=(?P<sha>[0-9a-f]{64}) -->"
 )
 
@@ -422,11 +424,15 @@ def confirmation_marker(kind: str, review_id: str, proposal_sha256: str) -> str:
     return f"<!-- research-confirmation: kind={kind} review_id={review_id} proposal_sha256={proposal_sha256} -->"
 
 
+def _marker_kind(kind: str) -> str:
+    return "planning" if kind == "architecture" else kind
+
+
 def recorded_confirmations(spec_markdown: str) -> "dict[str, list[tuple[str, str]]]":
     """Confirmations the tool recorded in `spec.md`, by kind, as (review_id, proposal_sha256) pairs."""
-    found: "dict[str, list[tuple[str, str]]]" = {"requirements": [], "architecture": []}
+    found: "dict[str, list[tuple[str, str]]]" = {"requirements": [], "planning": []}
     for match in CONFIRMATION_MARKER.finditer(spec_markdown):
-        found[match.group("kind")].append((match.group("review_id"), match.group("sha")))
+        found[_marker_kind(match.group("kind"))].append((match.group("review_id"), match.group("sha")))
     return found
 
 
@@ -435,10 +441,13 @@ def recorded_confirmations(spec_markdown: str) -> "dict[str, list[tuple[str, str
 # changes with every write, including the ones `workflow confirm` itself makes, which is why the
 # gate used to look only for a review identifier somewhere in the document.
 PROPOSAL_MARKER = re.compile(
-    r"<!-- research-proposal: kind=(?P<kind>requirements|architecture) "
+    r"<!-- research-proposal: kind=(?P<kind>requirements|planning|architecture) "
     r"review_id=(?P<review_id>\S+) content_sha256=(?P<sha>[0-9a-f]{64}) -->"
 )
-AGREED_ARCHITECTURE_LINE = re.compile(r"^Agreed architecture: \[revision [^\]]*\]\(architecture\.md\)\.[ \t]*$", re.MULTILINE)
+# `Agreed planning` is the current line; `Agreed architecture` and its link are the form older projects hold.
+AGREED_PLANNING_LINE = re.compile(
+    r"^Agreed (?:planning|architecture): \[revision [^\]]*\]\((?:planning|architecture)\.md\)\.[ \t]*$", re.MULTILINE
+)
 CONFIRMATION_BLOCK = re.compile(r"^Confirmation \([^)\n]*\):[ \t]*$", re.MULTILINE)
 
 
@@ -448,9 +457,9 @@ def proposal_marker(kind: str, review_id: str, content_sha256: str) -> str:
 
 def recorded_proposals(spec_markdown: str) -> "dict[str, list[tuple[str, str]]]":
     """Content digests the tool recorded in `spec.md`, by kind, as (review_id, content_sha256), oldest first."""
-    found: "dict[str, list[tuple[str, str]]]" = {"requirements": [], "architecture": []}
+    found: "dict[str, list[tuple[str, str]]]" = {"requirements": [], "planning": []}
     for match in PROPOSAL_MARKER.finditer(spec_markdown):
-        found[match.group("kind")].append((match.group("review_id"), match.group("sha")))
+        found[_marker_kind(match.group("kind"))].append((match.group("review_id"), match.group("sha")))
     return found
 
 
@@ -458,15 +467,15 @@ def proposal_digest(kind: str, text: str) -> str:
     """SHA-256 of the substantive content of a proposal, ignoring what the tool itself writes around it.
 
     Requirements are `## Current specification` alone: the decision history is append-only and must
-    not unconfirm anything, and the `Agreed architecture` link is added by the architecture
-    confirmation. An architecture is the document with its status word read as `draft` and without
+    not unconfirm anything, and the `Agreed planning` link is added by the planning
+    confirmation. A planning document is the document with its status word read as `draft` and without
     the `Confirmation (...)` block appended on agreement. Blank lines and trailing whitespace carry
     no content, so a reflow is not a change; any other edit is.
     """
     if kind == "requirements":
-        body = AGREED_ARCHITECTURE_LINE.sub("", _section_content(text, "Current specification") or "")
+        body = AGREED_PLANNING_LINE.sub("", _section_content(text, "Current specification") or "")
     else:
-        match = ARCHITECTURE_STATUS_PATTERN.search(text)
+        match = PLANNING_STATUS_PATTERN.search(text)
         body = text if match is None else text[: match.start("status")] + "draft" + text[match.end("status") :]
         block = CONFIRMATION_BLOCK.search(body)
         if block is not None:
@@ -475,13 +484,13 @@ def proposal_digest(kind: str, text: str) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
-def stale_confirmations(spec_markdown: str, architecture_markdown: str) -> "list[str]":
+def stale_confirmations(spec_markdown: str, planning_markdown: str) -> "list[str]":
     """Confirmed proposals whose current content is no longer what the latest confirmation covered."""
     stale: "list[str]" = []
     proposals = recorded_proposals(spec_markdown)
     for kind, text, name in (
         ("requirements", spec_markdown, "specification"),
-        ("architecture", architecture_markdown, ARCHITECTURE_FILENAME),
+        ("planning", planning_markdown, "planning document"),
     ):
         if proposals[kind] and proposals[kind][-1][1] != proposal_digest(kind, text):
             stale.append(
@@ -1002,23 +1011,45 @@ def briefing_section_warnings(briefing_markdown: str) -> "list[str]":
     return warnings
 
 
-# The architecture review gate. `architecture.md` is the skill-level record of the design the user
-# agreed to before task planning. Like `briefing.md` it postdates existing projects, so the check
-# warns and never errors. Unlike the briefing, absence matters: a project in `PLANNING`, `EXECUTING`
-# or `REVIEW` has by definition passed the gate, and a gate whose record can be silently missing is
-# not a gate. `BLOCKED` is reachable straight from `ALIGNING`, where a draft is the expected state, so
-# it is not checked; `DONE` and `CANCELLED` stay quiet so history remains valid and reopenable.
-ARCHITECTURE_FILENAME = "architecture.md"
-ARCHITECTURE_GATE_STATUSES = frozenset({"PLANNING", "EXECUTING", "REVIEW"})
+# The planning review gate. `planning.md` is the skill-level record of what the user agreed to before
+# task planning: what, why, how much, in what order. Like `briefing.md` it postdates existing
+# projects, so the check warns and never errors. Unlike the briefing, absence matters: a project in
+# `PLANNING`, `EXECUTING` or `REVIEW` has by definition passed the gate, and a gate whose record can
+# be silently missing is not a gate. `BLOCKED` is reachable straight from `ALIGNING`, where a draft is
+# the expected state, so it is not checked; `DONE` and `CANCELLED` stay quiet so history remains valid
+# and reopenable. Projects begun before the split keep this document as a root `architecture.md`; it
+# is read as the planning document until a `planning.md` exists. The living design is a different
+# document, `artifacts/architecture.md`, and is never gated.
+PLANNING_FILENAME = "planning.md"
+LEGACY_PLANNING_FILENAME = "architecture.md"
+DESIGN_DOCUMENT = "artifacts/architecture.md"
+PLANNING_GATE_STATUSES = frozenset({"PLANNING", "EXECUTING", "REVIEW"})
+# A project created on or after this instant that keeps its agreement in a root `architecture.md`
+# is told to rename it. Set to the release instant of the version that ships the split (0.30.0).
+PLANNING_SPLIT_FROM = "2026-10-20T20:49:02+00:00"
 # The one line the document must carry: `Status: draft` or `Status: agreed`, in any Markdown dress
 # (`**Status:** agreed`, `- status — draft`). The separator excludes line breaks, so the word and its
 # value must share a line. The first occurrence wins, so keep it near the top.
-ARCHITECTURE_STATUS_PATTERN = re.compile(r"\bstatus\b[^\w\r\n]*(?P<status>draft|agreed)\b", re.IGNORECASE)
+PLANNING_STATUS_PATTERN = re.compile(r"\bstatus\b[^\w\r\n]*(?P<status>draft|agreed)\b", re.IGNORECASE)
 
 
-def architecture_status(architecture_markdown: str) -> "str | None":
+def planning_path(project_dir: Path) -> Path:
+    """The planning document: `planning.md`, else a legacy root `architecture.md`, else `planning.md`."""
+    current = project_dir / PLANNING_FILENAME
+    if current.is_file():
+        return current
+    legacy = project_dir / LEGACY_PLANNING_FILENAME
+    return legacy if legacy.is_file() else current
+
+
+def is_legacy_planning_layout(project_dir: Path) -> bool:
+    """Whether the agreement still lives in a root `architecture.md` with no `planning.md`."""
+    return not (project_dir / PLANNING_FILENAME).is_file() and (project_dir / LEGACY_PLANNING_FILENAME).is_file()
+
+
+def planning_status(planning_markdown: str) -> "str | None":
     """The review status the document declares, `draft` or `agreed`, or None when it declares none."""
-    match = ARCHITECTURE_STATUS_PATTERN.search(architecture_markdown)
+    match = PLANNING_STATUS_PATTERN.search(planning_markdown)
     return match.group("status").lower() if match else None
 
 
@@ -1071,32 +1102,30 @@ def alignment_gate_errors(project_dir: Path, previous: dict[str, Any], candidate
             "the specification is incomplete (" + "; ".join(sections) + "); fill the seven sections with "
             "'workflow round' or 'edit spec --sections-json'"
         )
-    architecture_path = project_dir / ARCHITECTURE_FILENAME
-    architecture_text = read_text(architecture_path) if architecture_path.is_file() else ""
-    status = architecture_status(architecture_text) if architecture_text else None
+    planning_file = planning_path(project_dir)
+    planning_text = read_text(planning_file) if planning_file.is_file() else ""
+    status = planning_status(planning_text) if planning_text else None
     if status != "agreed":
-        state_word = "missing" if not architecture_text else ("has no status line" if status is None else "is a draft")
-        missing.append(f"{ARCHITECTURE_FILENAME} {state_word}; it must be agreed through 'workflow confirm' (kind architecture)")
+        state_word = "missing" if not planning_text else ("has no status line" if status is None else "is a draft")
+        missing.append(f"{planning_file.name} {state_word}; it must be agreed through 'workflow confirm' (kind planning)")
     recorded = recorded_confirmations(spec_text)
     proposals = recorded_proposals(spec_text)
     requirements_digest = proposal_digest("requirements", spec_text)
-    architecture_digest = proposal_digest("architecture", architecture_text)
+    planning_digest = proposal_digest("planning", planning_text)
     if not recorded["requirements"]:
         missing.append("no requirements confirmation was recorded; record the user's answer with 'workflow confirm' (kind requirements)")
     elif not any(sha == requirements_digest for _, sha in proposals["requirements"]):
         missing.append(
             _stale_confirmation_message("the specification", "requirements", bool(proposals["requirements"]))
         )
-    reviewed = [review_id for review_id, _ in recorded["architecture"] if review_id in architecture_text]
+    reviewed = [review_id for review_id, _ in recorded["planning"] if review_id in planning_text]
     if not reviewed:
         missing.append(
-            "no architecture confirmation naming a review identifier present in architecture.md was recorded; "
-            "record the user's answer with 'workflow confirm' (kind architecture)"
+            f"no planning confirmation naming a review identifier present in {planning_file.name} was recorded; "
+            "record the user's answer with 'workflow confirm' (kind planning)"
         )
-    elif not any(sha == architecture_digest and review_id in architecture_text for review_id, sha in proposals["architecture"]):
-        missing.append(
-            _stale_confirmation_message(ARCHITECTURE_FILENAME, "architecture", bool(proposals["architecture"]))
-        )
+    elif not any(sha == planning_digest and review_id in planning_text for review_id, sha in proposals["planning"]):
+        missing.append(_stale_confirmation_message(planning_file.name, "planning", bool(proposals["planning"])))
     if not missing:
         return []
     return [
@@ -1182,21 +1211,128 @@ def reason_reference_warnings(before: object, after: object, workspace_root: Pat
     return found
 
 
-def architecture_warnings(project_dir: Path, status: object) -> "list[str]":
-    """Warn when a project past the alignment gate has no agreed `architecture.md` to show for it."""
+def planning_warnings(project_dir: Path, status: object, state: "dict[str, Any] | None" = None) -> "list[str]":
+    """Warn when a project past the alignment gate has no agreed planning document to show for it.
+
+    Two layout findings come with it, both for projects that carry the split's two files: a root
+    `architecture.md` next to `planning.md` is stale, because `planning.md` wins; and a project created
+    after `PLANNING_SPLIT_FROM` that keeps only the root file should rename it.
+    """
     # `status` is arbitrary JSON here; an unhashable value must produce no finding, not a crash.
-    if not isinstance(status, str) or status not in ARCHITECTURE_GATE_STATUSES:
+    if not isinstance(status, str) or status not in PLANNING_GATE_STATUSES:
         return []
-    path = project_dir / ARCHITECTURE_FILENAME
+    path = planning_path(project_dir)
     # `is_file`, not `exists`: a directory of that name must read as missing, not as a decode failure.
     if not path.is_file():
-        return [f"{ARCHITECTURE_FILENAME} is missing; a {status} project needs an agreed architecture document"]
-    review = architecture_status(read_text(path))
+        return [f"{PLANNING_FILENAME} is missing; a {status} project needs an agreed planning document"]
+    found: "list[str]" = []
+    if path.name == PLANNING_FILENAME and (project_dir / LEGACY_PLANNING_FILENAME).is_file():
+        found.append(
+            f"{PLANNING_FILENAME} and a root {LEGACY_PLANNING_FILENAME} both exist; {PLANNING_FILENAME} is used. "
+            f"Remove the stale root file, or move a design document to {DESIGN_DOCUMENT}"
+        )
+    if path.name == LEGACY_PLANNING_FILENAME and state is not None and _created_on_or_after(state, PLANNING_SPLIT_FROM):
+        found.append(f"rename the root {LEGACY_PLANNING_FILENAME} to {PLANNING_FILENAME}; the design document is {DESIGN_DOCUMENT}")
+    review = planning_status(read_text(path))
     if review is None:
-        return [f"{ARCHITECTURE_FILENAME} has no recognisable 'Status: draft' or 'Status: agreed' line"]
-    if review == "draft":
-        return [f"{ARCHITECTURE_FILENAME} is still a draft; task planning requires an agreed revision"]
-    return []
+        found.append(f"{path.name} has no recognisable 'Status: draft' or 'Status: agreed' line")
+    elif review == "draft":
+        found.append(f"{path.name} is still a draft; task planning requires an agreed revision")
+    return found
+
+
+# The design document, `artifacts/architecture.md`, is written by the first task of a project that
+# writes code and kept current by every code task after it. It is never gated, so these are warnings
+# for a project created on or after `PLANNING_SPLIT_FROM` and nothing else: a docs-only plan, a
+# closed project and an older project are quiet. A code task is a `local_write` task with a `target`
+# output that is not prose; the test is a heuristic that only drives warnings.
+PROSE_SUFFIXES = (".md", ".rst", ".txt")
+# Sections every design carries; a profile named on its `Profiles:` line adds the others.
+DESIGN_CORE_SECTIONS = (
+    "Purpose and quality attributes", "Context and containers", "Modules and code layout", "Key flows",
+    "Failure modes and recovery", "Evaluation plan", "Decisions", "Implementation status",
+)
+DESIGN_PROFILE_SECTIONS = {
+    "algorithmic": ("Algorithms",),
+    "concurrent-distributed": ("Concurrency and distribution",),
+    "service": ("Security, privacy and limits", "Operations and rollout"),
+}
+DESIGN_STATUS_SECTION = "Implementation status"
+DESIGN_PROFILES_LINE = re.compile(r"^\W*profiles?\W*:(?P<names>.*)$", re.IGNORECASE | re.MULTILINE)
+DESIGN_HEADING = re.compile(r"^(?P<marks>#{1,6})[ \t]+(?P<title>.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
+
+
+def is_code_task(task: object) -> bool:
+    """Whether `task` writes files that are not prose into the target (arbitrary JSON is never one)."""
+    if not isinstance(task, dict):
+        return False
+    effect = task.get("effect")
+    outputs = task.get("outputs")
+    if not isinstance(effect, dict) or effect.get("kind") != "local_write" or not isinstance(outputs, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("root") == "target"
+        and isinstance(item.get("path"), str)
+        and not item["path"].lower().endswith(PROSE_SUFFIXES)
+        for item in outputs
+    )
+
+
+def _design_section_text(text: str, title: str) -> "str | None":
+    """The body under the first heading that names `title`, up to the next heading of its level or above."""
+    headings = list(DESIGN_HEADING.finditer(text))
+    for index, heading in enumerate(headings):
+        if title.lower() in heading.group("title").lower():
+            level = len(heading.group("marks"))
+            end = next((later.start() for later in headings[index + 1 :] if len(later.group("marks")) <= level), len(text))
+            return text[heading.end() : end]
+    return None
+
+
+def design_document_warnings(project_dir: Path, status: object, state: "dict[str, Any]") -> "list[str]":
+    """Warn when a code project has no current design document: missing, short of a section, or a row behind."""
+    if not isinstance(status, str) or status not in PLANNING_GATE_STATUSES:
+        return []
+    if not _created_on_or_after(state, PLANNING_SPLIT_FROM):
+        return []
+    tasks = state.get("tasks")
+    code_tasks = [task for task in tasks if is_code_task(task) and task.get("status") != "SKIPPED"] if isinstance(tasks, list) else []
+    if not code_tasks:
+        return []
+    path = project_dir / DESIGN_DOCUMENT
+    if not path.is_file():
+        return [
+            f"{DESIGN_DOCUMENT} is missing; a project with code tasks starts with a design task that writes it "
+            "(references/design-document.md)"
+        ]
+    text = read_text(path)
+    found: "list[str]" = []
+    profiles = {
+        name.strip().lower()
+        for line in DESIGN_PROFILES_LINE.finditer(text)
+        for name in re.split(r"[,\s]+", line.group("names"))
+        if name.strip()
+    }
+    required = list(DESIGN_CORE_SECTIONS)
+    for profile in sorted(profiles & DESIGN_PROFILE_SECTIONS.keys()):
+        required.extend(DESIGN_PROFILE_SECTIONS[profile])
+    absent = [title for title in required if _design_section_text(text, title) is None]
+    if absent:
+        found.append(f"{DESIGN_DOCUMENT} lacks section(s): " + "; ".join(absent) + " (write 'Not applicable: <reason>' under one that does not apply)")
+    rows = _design_section_text(text, DESIGN_STATUS_SECTION)
+    if rows is not None:
+        table = [line for line in rows.splitlines() if line.lstrip().startswith("|")]
+        behind = [
+            task["id"]
+            for task in code_tasks
+            if task.get("status") == "DONE"
+            and isinstance(task.get("id"), str)
+            and not any(re.search(rf"\b{re.escape(task['id'])}\b", line) for line in table)
+        ]
+        if behind:
+            found.append(f"{DESIGN_DOCUMENT} has no '{DESIGN_STATUS_SECTION}' row for DONE code task(s): " + ", ".join(behind))
+    return found
 
 
 # Where the closing report lives, and the sections it carries. Two authored files rather than one
@@ -1990,7 +2126,8 @@ def validate_v3_state(
         briefing_path = project_dir / "briefing.md"
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
-        report.warnings.extend(architecture_warnings(project_dir, status))
+        report.warnings.extend(planning_warnings(project_dir, status, state))
+        report.warnings.extend(design_document_warnings(project_dir, status, state))
         report.warnings.extend(verification_order_warnings(state.get("tasks")))
 
     # The closing report is checked at close and for a project already past it, and at no other
@@ -2305,7 +2442,8 @@ def validate_v4_state(
         briefing_path = project_dir / "briefing.md"
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
-        report.warnings.extend(architecture_warnings(project_dir, status))
+        report.warnings.extend(planning_warnings(project_dir, status, state))
+        report.warnings.extend(design_document_warnings(project_dir, status, state))
         report.warnings.extend(verification_order_warnings(state.get("tasks")))
 
     # Unlike the specification-section warnings, style does not depend on a record being complete,
@@ -5169,6 +5307,7 @@ def allocate_project(
     lock_timeout: float = 5.0,
     create_root: bool = False,
     briefing: bool = False,
+    acknowledged_duplicates: "list[str] | None" = None,
 ) -> Path:
     workspace_root = workspace_root.expanduser()
     if not _non_empty_string(title):
@@ -5225,10 +5364,15 @@ def allocate_project(
         # project.json is the commit point: write the skeleton first so an interrupted init leaves
         # an inert directory that detect_schema does not recognise and render_index skips, rather
         # than a project that reports schema v4 while missing the files v4 requires.
+        history = "- Project initialized; requirements pending alignment.\n"
+        if acknowledged_duplicates:
+            history += (
+                "- The user acknowledged these live projects as possible duplicates at init: "
+                + ", ".join(acknowledged_duplicates) + ".\n"
+            )
         atomic_write_text(
             project_dir / "spec.md",
-            f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n"
-            "## Decision history\n\n- Project initialized; requirements pending alignment.\n",
+            f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n## Decision history\n\n{history}",
         )
         if briefing:
             atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))

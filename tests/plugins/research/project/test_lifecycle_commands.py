@@ -68,20 +68,20 @@ def test_round_confirmation_checkpoint_and_bundle(project: Path) -> None:
         project,
         sections=sections,
         decisions=[{"id": "decision-one", "body": "Actual user answer"}],
-        architecture="# A1\n\n**Status:** draft\n\n## Modules\n\nOne parser.\n",
+        planning="# A1\n\n**Status:** draft\n\n## Modules\n\nOne parser.\n",
         continuation={"next": "Request confirmation", "questions": "Approve A1?"},
     )
     result = workflow(project, "round", payload)
     assert workflow(project, "round", payload) == result
     assert result["committed"] is False
-    assert set(result["tokens"]) == {"spec", "architecture", "handoff"}
+    assert set(result["tokens"]) == {"spec", "planning", "handoff"}
     assert result["tokens"]["handoff"] in result["resume_prompt"]
     assert "Next: Request confirmation" in result["resume_prompt"]
     assert workflow(project, "read", {"document": "spec", "entry": "decision-one"})["text"].endswith(
         "Actual user answer\n"
     )
-    assert "One parser" in workflow(project, "read", {"document": "architecture", "section": "Modules"})["text"]
-    for kind, name in (("requirements", "spec"), ("architecture", "architecture")):
+    assert "One parser" in workflow(project, "read", {"document": "planning", "section": "Modules"})["text"]
+    for kind, name in (("requirements", "spec"), ("planning", "planning")):
         workflow(
             project,
             "confirm",
@@ -97,8 +97,8 @@ def test_round_confirmation_checkpoint_and_bundle(project: Path) -> None:
                 continuation={"next": "Plan tasks", "questions": ""},
             ),
         )
-    assert lib.architecture_status((project / "architecture.md").read_text()) == "agreed"
-    assert "architecture.md" in (project / "spec.md").read_text()
+    assert lib.planning_status((project / "planning.md").read_text()) == "agreed"
+    assert "planning.md" in (project / "spec.md").read_text()
     bundle = workflow(
         project, "resume", {"max_chars": 50, "selections": [{"document": "handoff"}, {"document": "spec"}]}
     )
@@ -106,10 +106,10 @@ def test_round_confirmation_checkpoint_and_bundle(project: Path) -> None:
     assert len(bundle["omitted"]) == 1
     assert bundle["memory_health"]["status"] == "no_matches"
     assert not bundle["freshness"]["revision_changed"]
-    token = result["tokens"]["architecture"]
-    assert "unchanged" not in workflow(project, "read", {"document": "architecture", "if_sha256": token})
-    token = journal.snapshot(project / "architecture.md")[1]
-    assert workflow(project, "read", {"document": "architecture", "if_sha256": token})["unchanged"]
+    token = result["tokens"]["planning"]
+    assert "unchanged" not in workflow(project, "read", {"document": "planning", "if_sha256": token})
+    token = journal.snapshot(project / "planning.md")[1]
+    assert workflow(project, "read", {"document": "planning", "if_sha256": token})["unchanged"]
     before = (project / "handoff.md").read_bytes()
     workflow(project, "checkpoint", request(project, "noop", continuation={}))
     assert (project / "handoff.md").read_bytes() == before
@@ -171,7 +171,7 @@ def test_corrections_reconciliation_reviews_and_finalization(project: Path) -> N
             project,
             "final",
             reflection=REFLECTION,
-            continuation={"next": "No further work", "session": "ready for handoff"},
+            continuation={"next": "No further work", "session": "ready for handoff", "stop_reason": "closed"},
         ),
     )
     assert final["committed"] and _load_state(project)["status"] == "DONE"
@@ -469,6 +469,10 @@ def test_cross_host_commands(tmp_path: Path, host: str, schema: int, runtime: st
     if runtime == "system":
         if not Path("/usr/bin/python3").exists():
             pytest.skip("system Python unavailable")
+        # Stock macOS python3 is 3.9, below the launchers' floor; they refuse it (test_launcher_python.py).
+        floor_probe = "import sys; raise SystemExit(sys.version_info < (3, 11))"
+        if subprocess.run(["/usr/bin/python3", "-c", floor_probe], check=False).returncode != 0:
+            pytest.skip("system Python is below the launchers' floor")
         environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
     initialized = subprocess.run(
         [
@@ -741,7 +745,7 @@ def test_additional_record_guards_and_citations(project: Path) -> None:
     notes.write_text("<!-- research-worker { -->\n")
     with pytest.raises(lib.WorkspaceError, match="worker event"):
         workflow(project, "resume", {})
-    (project / "architecture.md").write_text("# A1\n\nNo status")
+    (project / "planning.md").write_text("# A1\n\nNo status")
     with pytest.raises(lib.WorkspaceError, match="declare its status"):
         workflow(
             project,
@@ -749,12 +753,12 @@ def test_additional_record_guards_and_citations(project: Path) -> None:
             request(
                 project,
                 "confirm",
-                kind="architecture",
+                kind="planning",
                 review_id="A1",
                 source="User",
                 scope="A1",
                 response="Approved",
-                proposal_sha256=journal.snapshot(project / "architecture.md")[1],
+                proposal_sha256=journal.snapshot(project / "planning.md")[1],
             ),
         )
     lib.amend_memory_topic(project.parent, "example", body="Rule", description="Example", kind="method", scope="Tests")
@@ -941,7 +945,7 @@ def test_bounded_fingerprints_and_closed_inputs(project: Path) -> None:
 @pytest.mark.parametrize("history", [0, 200])
 def test_bundled_resume_call_and_payload_budget(project: Path, history: int) -> None:
     planned(project)
-    (project / "architecture.md").write_text("# A1\n\nStatus: agreed\n\n## Interfaces\n\nInput is JSON.\n")
+    (project / "planning.md").write_text("# A1\n\nStatus: agreed\n\n## Interfaces\n\nInput is JSON.\n")
     spec = project / "spec.md"
     spec.write_text(spec.read_text() + "\nHistorical decision, no current authority.\n" * history)
     workflow(project, "checkpoint", request(project, continuation={"next": "Verify T01", "ownership": "No workers"}))
@@ -954,7 +958,7 @@ def test_bundled_resume_call_and_payload_budget(project: Path, history: int) -> 
     before_commands = [
         ["context", str(project), "--validate"],
         ["read", str(project), "handoff"],
-        ["read", str(project), "architecture"],
+        ["read", str(project), "planning"],
         ["context", str(project), "--task", "T01", "--task-only"],
         ["read", str(project), "evidence", "--entry", record],
     ]
@@ -964,7 +968,7 @@ def test_bundled_resume_call_and_payload_budget(project: Path, history: int) -> 
         "selections": [
             {"document": "handoff"},
             {"document": "spec", "section": "Current specification"},
-            {"document": "architecture"},
+            {"document": "planning"},
             {"document": "evidence", "entry": record},
         ],
     }

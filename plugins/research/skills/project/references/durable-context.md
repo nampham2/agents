@@ -22,7 +22,8 @@ its handle when available and its outcome when observed. Native workers follow
 | --- | --- |
 | Current requirements and constraints | Canonical sections of `spec.md`. |
 | Consequential decisions and confirmations | Dated `append ... decision` entries, with source, scope and superseded decision. |
-| Design, alternatives and agreement | `architecture.md`, with review ID and truthful draft/agreed status. |
+| Plan, alternatives and agreement | `planning.md`, with review ID and truthful draft/agreed status. |
+| Technical design | `artifacts/architecture.md`. |
 | Findings, partial work and worker recovery | `append ... finding --task <id>` into `tasks/<id>.md`. |
 | Friction with the skill or the tool | `append ... friction --kind <kind> --pointer <ref>` into `friction.md`. |
 | Acceptance checks | `record-evidence`, retaining actual output and failures. |
@@ -50,8 +51,8 @@ and recovery records.
 Use delivery review only when the user, acceptance criteria or repository workflow require it, via
 [`workflow review`](automation-records.md) with reviewer, scope/version, findings, outcome and
 evidence; it allocates `reviews/review_NN.md` and aligns review state. File existence or passing
-tests do not establish acceptance; preserve earlier cycles. Requirements/design agreement stays in
-spec/architecture; fixes use task notes and correction tasks for terminal work, and acceptance a
+tests do not establish acceptance; preserve earlier cycles. Requirements/planning agreement stays in
+spec/planning; fixes use task notes and correction tasks for terminal work, and acceptance a
 correction invalidates reopens as `pending`.
 
 ## Maintain the continuation note while working

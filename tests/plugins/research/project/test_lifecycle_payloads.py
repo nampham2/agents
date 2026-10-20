@@ -144,7 +144,7 @@ def test_default_instruction_payload_budget() -> None:
 
 SKILL_DIR = REPO_ROOT / "plugins/research/skills/project"
 CORE = ("SKILL", "commands")
-ALIGNMENT = ("durable-context", "writing-rules", "grill", "architecture-review", "memory-operations", "automation",
+ALIGNMENT = ("durable-context", "writing-rules", "grill", "planning-review", "memory-operations", "automation",
              "automation-records", "handoff-writing")
 RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operations", "automation",
           "automation-context", "automation-records", "handoff-writing")
@@ -165,7 +165,7 @@ SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
     "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5200 + RULES),
     "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7800 + RULES),
     "material-change-after-resume": (
-        (*CORE, *RESUME, "execution-changes", "grill", "architecture-review"), 9000 + RULES),
+        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 9000 + RULES),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
                  "automation-records", "handoff-writing", "worktrees", "pull-requests"), 5016 + RULES),
 }
@@ -183,14 +183,15 @@ ORIGINAL_ALIGNMENT_WORDS = 7813
 # A link to anything not in the scenario and not listed here is routing drift: either the scenario
 # is missing a required read or this table is missing a classification.
 CONDITIONAL = {
-    "architecture-review": "only when a change reopens alignment",
     "automation-context": "only for context reads such as resume, packet and readiness",
     "automation-execution": "only for worker events, verify batches and lesson triage",
+    "design-document": "only when writing or updating the design task's artifacts/architecture.md",
     "execution-changes": "only when execution invalidates assignments, inputs or agreement",
     "grill": "only when a change reopens requirements",
     "handoff-verifiers": "only when a handoff gives the successor a verifier",
     "legacy-executor": "only for old executor ownership or storage",
     "maintenance": "only when reopening a closed project",
+    "planning-review": "only when a change reopens alignment",
     "memory-architecture": "only for memory format, migration or validation repairs",
     "memory-promotion": "only when closing with a promotion, compaction or retirement",
     "pull-requests": "only before a review ask or test deploy in a repository, and at repository closure",
@@ -198,7 +199,9 @@ CONDITIONAL = {
     "report-execution": "only when an execution report is requested",
     "report-html": "only when an HTML report is requested",
     "session-handoff": "only for handoff or interruption recovery",
+    "stopping": "only when deciding whether the work may stop after a task",
     "task-workers": "only when delegating to workers",
+    "versioning": "only when proposing a base, recording an alpha line, moving a base or recording a release",
     "workspace-schema": "only for schema, migration or validation-error repairs",
     "worktrees": "only for a repository target",
     "writing-rules-extra": "only when a style finding names a preferred word or the rule set changes",

@@ -68,6 +68,7 @@ from workspace_session import (
     update_project_data,
     validated_project_context,
 )
+from workspace_similar import check_new_project, find_similar
 from workspace_workflows import FIELDS, READ_ACTIONS, input_schema, preview, workflow
 
 
@@ -91,6 +92,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     initialize.add_argument("--lock-timeout", type=float, default=5.0)
     initialize.add_argument("--briefing", action="store_true", help="also scaffold an optional discovery briefing")
+    initialize.add_argument(
+        "--acknowledge-duplicates",
+        nargs="+",
+        default=[],
+        metavar="PROJECT",
+        help="live projects that look like this title, after the user chose to start a new project anyway",
+    )
     initialize.add_argument(
         "--json", action="store_true", help="return path, revision, roots, document tokens and warnings"
     )
@@ -142,6 +150,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     listing.add_argument("--limit", type=int, default=10)
     listing.add_argument("--offset", type=int, default=0)
+
+    similar = subparsers.add_parser(
+        "find-similar", help="List live and finished projects whose title looks like a new title"
+    )
+    similar.add_argument("workspace_root", nargs="?", type=Path)
+    similar.add_argument("--title", required=True)
+    similar.add_argument("--working-directory", required=True, type=Path)
 
     update = subparsers.add_parser("update", help="Merge a small JSON patch through the guarded commit path")
     update.add_argument("project_directory", type=Path)
@@ -522,6 +537,11 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
     """Run one parsed command and return its exit code; workspace errors propagate to `main`."""
     if args.command == "init":
         workspace_root = resolve_workspace_root(args.workspace_root)
+        # Before the directory exists: a refused init leaves nothing behind, and only the user's answer
+        # lets a live look-alike pass.
+        similar_warnings = check_new_project(
+            workspace_root, args.title, args.working_directory, args.acknowledge_duplicates
+        )
         project_dir = allocate_project(
             workspace_root,
             title=args.title,
@@ -529,11 +549,12 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
             lock_timeout=args.lock_timeout,
             create_root=args.create_root,
             briefing=args.briefing,
+            acknowledged_duplicates=args.acknowledge_duplicates,
         )
         # Warned at init as well as at validation, because this is the moment someone chooses
         # where the record of the work will live. Checked after allocation, since --create-root
         # means the directory to check may not have existed a moment ago.
-        warnings = vcs_warnings(workspace_root)
+        warnings = [*similar_warnings, *vcs_warnings(workspace_root)]
         for warning in warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
         if args.json:
@@ -587,6 +608,12 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         print(json.dumps(read_project_text(
             args.project_directory, args.document, section=args.section, task_id=args.task, step=args.step,
             offset=args.offset, max_chars=args.max_chars,
+        ), indent=2))
+        return 0
+
+    if args.command == "find-similar":
+        print(json.dumps(find_similar(
+            resolve_workspace_root(args.workspace_root), args.title, args.working_directory,
         ), indent=2))
         return 0
 

@@ -62,20 +62,30 @@ placement. Keep these surfaces aligned:
   `uv.lock` and the Claude and Codex plugin manifests, after the alpha spellings normalize. Committed manifests use SemVer, without a
   Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:
   `uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py`.
-- A project branch works on one alpha line: the release version with an alpha number that only goes
-  up. Python files spell it `0.24.0a3` and plugin manifests spell it `0.24.0-alpha.3`. Never lower
-  the number during a project, and bump it before each test deploy or plugin refresh. The base
-  version moves only when `main` released past it, recorded with `base_moved` and a reason. An
-  alpha version never merges to `main`: commit the plain release version before the merge. CI
-  fails a PR to `main` that carries an alpha version, through `REQUIRE_RELEASE_VERSION=1`.
+- A project branch records an alpha line only when it needs a test or experiment build; a project
+  that never tests a build needs none, but closes with a release record or a user-granted
+  exemption. An alpha line is one per base: the release version with an alpha number that rises
+  while the base stays and restarts at 1 when the base moves. Python files spell it
+  `0.24.0a3` and plugin manifests spell it `0.24.0-alpha.3`. Bump it before each test deploy or
+  plugin refresh. The base moves when `main` released past it or another source occupies it
+  (another live project, `origin/*` branch, local worktree or local branch), recorded with
+  `base_moved` and a reason; the tool refuses an occupied base and names each occupier. An alpha
+  version never merges to `main`: commit the plain release version before the merge. CI fails a PR
+  to `main` that carries an alpha version, through `REQUIRE_RELEASE_VERSION=1`.
 - Installed plugins are copied into host-managed caches. A release change needs a canonical version
   bump and a host update/reinstall; editing the working tree does not modify an installed copy.
 
 ## Python and tests
 
-- The dev toolchain requires Python 3.11+. Shipped plugin scripts must also run on Python 3.9
-  because wrappers execute `python3` and stock macOS provides 3.9.6. Keep them stdlib-only and put
-  3.10+ typing imports behind `if TYPE_CHECKING:`.
+- The dev toolchain and the shipped plugin scripts both require Python 3.11+. The three launchers
+  (`research-project`, `research-validate`, `research-dashboard`) source
+  `skills/project/scripts/python_select.sh`, which holds the floor and picks the newest qualifying
+  `python3.14` down to `python3.11`, then `python3`, then `uv run --python '>=3.11'`, else exits with
+  both fixes. Stock macOS `python3` (3.9.6) is below the floor. Keep the scripts stdlib-only: they
+  need an interpreter, not a venv. Code written before the floor moved keeps its 3.9 workarounds
+  (`from __future__` imports, `TYPE_CHECKING` guards); new code may use 3.11 syntax.
+  `test_launcher_python.py` checks the launchers and that the floor matches `requires-python`; the
+  `python-floor` CI job runs them on 3.11 from `uv`.
 - Tests import skill scripts as top-level modules. Keep `tests/conftest.py` and
   `[tool.ty.environment].extra-paths` in `pyproject.toml` synchronized.
 - Project state is `dict[str, Any]`, not `dict[str, object]`. Type all public functions.

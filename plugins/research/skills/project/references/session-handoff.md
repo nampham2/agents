@@ -6,11 +6,9 @@ Read [handoff-writing.md](handoff-writing.md) before preparing the note or a com
 
 ## When to hand off
 
-Requirements confirmation, architecture agreement, planning, execution milestones and delivery
-review are checkpoint opportunities. Continue authorized work in the same session by default.
-Restart on user request, or when accumulated context makes reliable continuation difficult.
-Use available host telemetry and observed loss of relevant context; do not invent token thresholds.
-A phase change, tool count or compaction alone is not a restart trigger.
+Requirements confirmation, planning agreement, task planning, execution milestones and delivery
+review are checkpoints, not stops: continue as [stopping.md](stopping.md) says. Restart on user
+request or `context-pressure`.
 
 Maintain records under [durable-context.md](durable-context.md). Reserve context to checkpoint.
 Fresh sessions can reduce peak context but also repeat instruction and project reads; restart only
@@ -81,7 +79,7 @@ partial files. An unreadable note can break validated context: retain it, use or
 separate validation, and repair it before depending on it. Ask only for unrecoverable facts.
 
 Complete pending [change reconciliation](execution-changes.md) before affected execution; new
-architecture agreement alone does not update assignments or acceptance evidence. Missing/draft
+planning agreement alone does not update assignments or acceptance evidence. Missing/draft
 agreement returns to the affected alignment step; interrupted interviews continue open questions.
 
 Resolve native/legacy ownership before conflicting writes. A new conversation does not terminate

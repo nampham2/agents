@@ -19,7 +19,7 @@ from workspace_lib import (
     task_stamps_enabled,
     validate_project,
 )
-from workspace_session import _load_state
+from workspace_session import _load_state, next_move
 
 
 class CloseOperationError(WorkspaceError):
@@ -79,7 +79,7 @@ def _result(
 
 
 def _refuse_without_delivery_records(state: dict[str, Any], task: dict[str, Any]) -> None:
-    """A task that writes to the target needs its merge request and alpha line first (gated projects)."""
+    """A task that writes to the target needs its merge request first (gated projects)."""
     if not any(output["root"] == "target" for output in task["outputs"]):
         return
     from workspace_delivery import start_findings
@@ -195,6 +195,8 @@ def task_operation(
     if action == "finish" and observation_record_ids:
         result["observations"] = list(observation_record_ids)
         result["attested"] = not evidence_record_ids
+    if action in ("finish", "block", "skip"):
+        result.update(next_move(committed))
     if action in ("block", "skip"):
         result["warnings"] = reason_reference_warnings(before_tasks, committed["tasks"], project_dir.parent)
     if action == "finish" and _had_failed_attempt(project_dir, task_id) and not staged_lesson_lines(project_dir):

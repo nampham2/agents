@@ -29,6 +29,7 @@ from workspace_lib import (
     is_canonical_project_id,
     load_json,
     now_iso,
+    planning_path,
     read_text,
     resolve_workspace_root,
 )
@@ -209,6 +210,7 @@ def build_project(project_dir: Path) -> dict[str, Any]:
             "in_scope": _section(spec, "In scope"),
             "decisions": _decisions(spec),
             "worktrees": _worktrees(state),
+            "planning_file": planning_path(project_dir).name,
             "cancellation_reason": _text(state.get("cancellation_reason")),
             "block_reasons": [task["block_reason"] for task in tasks if task["block_reason"]],
             "pending_authorization": pending_authorization,

@@ -19,6 +19,7 @@ from workspace_lib import (
     check_state_candidate,
     document_sha256,
     load_json,
+    planning_path,
     read_text,
 )
 from workspace_session import _load_state, prepare_update
@@ -27,7 +28,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 DOCUMENT = re.compile(
-    r"^(spec|architecture|reflection|handoff|memory-staging|tasks/[A-Za-z0-9_-]+|reviews/review_[0-9]+|artifacts/report)$"
+    r"^(spec|planning|architecture|reflection|handoff|memory-staging|tasks/[A-Za-z0-9_-]+|reviews/review_[0-9]+|artifacts/report)$"
 )
 IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -129,7 +130,10 @@ def document_path(project: Path, name: str) -> Path:
     """Resolve only managed prose documents, never state or evidence logs."""
     if not isinstance(name, str) or not DOCUMENT.fullmatch(name):
         raise WorkspaceError(f"unsupported managed document: {name}")
-    return contained(project, name + ".md")
+    if name == "planning":
+        return contained(project, planning_path(project).name)
+    # The design document keeps the id it always had, but lives under artifacts/.
+    return contained(project, ("artifacts/" + name if name == "architecture" else name) + ".md")
 
 
 def snapshot(path: Path) -> tuple[str, str]:

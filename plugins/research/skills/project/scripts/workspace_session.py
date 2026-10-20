@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -12,10 +13,12 @@ from typing import Any
 from memory_search import memory_candidates, objective_text
 from workspace_lib import (
     CLOSURE_STEPS,
+    DESIGN_DOCUMENT,
     WorkspaceError,
     commit_state,
     document_sha256,
     load_json,
+    planning_path,
     read_text,
     validate_project,
     validate_v3_state,
@@ -97,15 +100,8 @@ def project_context(
             if task_only:
                 result["role"] = "coordinator"
             return result
-    done = {task["id"] for task in tasks if task["status"] == "DONE"}
     active = [task for task in tasks if task["status"] not in ("DONE", "SKIPPED")]
-    ready = [
-        task["id"]
-        for task in active
-        if task["status"] == "TODO"
-        and set(task["depends_on"]) <= done
-        and task["authorization"]["status"] in ("not_required", "explicit")
-    ]
+    ready = ready_task_ids(tasks)
     # Running and blocked work comes first; TODO ordering remains the plan's ordering.
     active.sort(key=lambda task: {"RUNNING": 0, "BLOCKED": 1, "TODO": 2}[task["status"]])
     summaries = [
@@ -180,8 +176,11 @@ def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str,
     if after["revision"] != result["revision"]:
         raise WorkspaceError("project changed while context was validated; reload context")
     documents: dict[str, Any] = {}
-    for name in ("spec", "evidence", "reflection", "architecture", "handoff", "memory-staging"):
-        path = project_dir / f"{name}.md"
+    for name in ("spec", "evidence", "reflection", "planning", "architecture", "handoff", "memory-staging"):
+        if name == "planning":
+            path = planning_path(project_dir)
+        else:
+            path = project_dir / (DESIGN_DOCUMENT if name == "architecture" else f"{name}.md")
         if path.exists():
             content = read_text(path, preserve_newlines=True)
             documents[name] = {
@@ -298,6 +297,86 @@ def _older_than(stamp: str | None, days: int) -> bool:
     return datetime.now(timezone.utc) - moment > timedelta(days=days)
 
 
+def _matches_query(query: str, values: Iterable[str]) -> bool:
+    """True when every whitespace-separated word of the query occurs somewhere in the row.
+
+    One literal substring of the whole query never matched a multi-word objective. A query that was a
+    substring of the row text still matches, because each of its words does.
+    """
+    haystack = " ".join(values).casefold()
+    return all(word in haystack for word in query.casefold().split())
+
+
+# The only reasons the coordinator may stop and wait after a task. A checkpoint that records a waiting,
+# blocked or ready-for-handoff session names one of them; see references/stopping.md.
+STOP_REASONS = ("user-decision", "authorization", "blocked", "context-pressure", "closure-step", "closed")
+
+
+def ready_task_ids(tasks: list[dict[str, Any]]) -> list[str]:
+    """Tasks that can start now: `TODO`, every dependency `DONE`, and no authorization still pending."""
+    done = {task["id"] for task in tasks if task["status"] == "DONE"}
+    return [
+        task["id"]
+        for task in tasks
+        if task["status"] == "TODO"
+        and set(task["depends_on"]) <= done
+        and task["authorization"]["status"] in ("not_required", "explicit")
+    ]
+
+
+def next_move(state: dict[str, Any]) -> dict[str, Any]:
+    """What the coordinator does next, or the one listed reason it may stop.
+
+    Derived from the records and advisory: it grants no authority. `continue` is a task id, `plan` or
+    `finalize`; `stop_reason` is one of `STOP_REASONS`. Exactly one of the two is set.
+    """
+    tasks = state["tasks"]
+    status = state["status"]
+    if status in ("DONE", "CANCELLED"):
+        return {"continue": None, "stop_reason": "closed", "move_detail": f"the project is {status}"}
+    if status == "ALIGNING":
+        return {
+            "continue": None, "stop_reason": "user-decision",
+            "move_detail": "requirements and design need the user's agreement before planning",
+        }
+    running = [task["id"] for task in tasks if task["status"] == "RUNNING"]
+    if running:
+        return {"continue": running[0], "stop_reason": None, "move_detail": f"{running[0]} is running; keep working it"}
+    unfinished = [task for task in tasks if task["status"] not in ("DONE", "SKIPPED")]
+    if not tasks:
+        return {"continue": "plan", "stop_reason": None, "move_detail": "derive tasks from the agreed design"}
+    if not unfinished:
+        from workspace_delivery import closure_findings
+
+        waiting = closure_findings(state) + [
+            f"worktree {item['path']} needs the user's keep or remove decision"
+            for item in state.get("worktrees", [])
+            if item["kind"] != "none" and item["status"] == "active"
+        ]
+        review = state["review"]
+        if review["required"] and review["status"] != "accepted":
+            waiting.append("a required delivery review is not accepted")
+        if waiting:
+            return {"continue": None, "stop_reason": "closure-step", "move_detail": "; ".join(waiting)}
+        return {"continue": "finalize", "stop_reason": None, "move_detail": "every task is finished: close it"}
+    ready = ready_task_ids(tasks)
+    if ready:
+        return {"continue": ready[0], "stop_reason": None, "move_detail": f"{ready[0]} is ready: start it"}
+    done = {task["id"] for task in tasks if task["status"] == "DONE"}
+    unauthorized = [
+        task["id"] for task in unfinished if task["status"] == "TODO" and set(task["depends_on"]) <= done
+    ]
+    if unauthorized:
+        return {
+            "continue": None, "stop_reason": "authorization",
+            "move_detail": f"{', '.join(unauthorized)} needs the user's authorization for its effect",
+        }
+    return {
+        "continue": None, "stop_reason": "blocked",
+        "move_detail": "no task is ready: " + ", ".join(f"{task['id']} {task['status']}" for task in unfinished),
+    }
+
+
 def list_projects(
     workspace_root: Path, *, query: str = "", status: str | None = None, limit: int = 10, offset: int = 0,
     older_than_days: int | None = None,
@@ -336,7 +415,7 @@ def list_projects(
             row["path"] = str(directory)
             if row["status"] not in ("INVALID", "LEGACY") and (
                 (status is not None and row["status"] != status)
-                or query.casefold() not in " ".join(row.values()).casefold()
+                or not _matches_query(query, row.values())
                 or (older_than_days is not None and not _older_than(times.get("updated"), older_than_days))
             ):
                 continue

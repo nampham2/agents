@@ -129,15 +129,15 @@ it no longer controls automatic dispatch. Schema-v3 task objects remain unchange
 Project statuses are `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, `BLOCKED`, `DONE`, and
 `CANCELLED`.
 
-At the skill level, `ALIGNING` includes mandatory requirements grill and iterative architecture
-review. Requirements, design, edge cases, and effort are revisited until agent and user agree;
-record the agreement and finalize the required workspace `architecture.md` before task planning.
+At the skill level, `ALIGNING` includes mandatory requirements grill and iterative planning
+review. Requirements, plan, edge cases, and effort are revisited until agent and user agree;
+record the agreement and finalize the required workspace `planning.md` before task planning.
 This uses specification and decision records, not a new JSON state or the delivery `review` field.
 Validation warns, and never errors, when a `PLANNING`, `EXECUTING`, or `REVIEW` project has no
-`architecture.md`, none with a recognisable `Status: draft` or `Status: agreed` line, or one still a
+`planning.md`, none with a recognisable `Status: draft` or `Status: agreed` line, or one still a
 draft. `BLOCKED` is reachable from `ALIGNING` and is not checked; `DONE` and `CANCELLED` stay quiet
 so history remains valid. The CLI cannot verify conversational agreement. See
-[architecture-review.md](architecture-review.md) for the document contract and resume behavior.
+[planning-review.md](planning-review.md) for the document contract and resume behavior.
 
 Allowed transitions are:
 
@@ -167,9 +167,9 @@ State coherence rules:
 A project created on or after `GATES_ENFORCED_FROM` (the release date of the release that shipped
 the gate; the constant lives in `workspace_lib.py`) may not move from `ALIGNING` or `BLOCKED` to
 `PLANNING` or `EXECUTING` until three facts are on record: the seven `### Current specification`
-sections are filled, `architecture.md` declares `Status: agreed`, and `workflow confirm` recorded
-both a requirements and an architecture confirmation whose review identifier appears in
-`architecture.md`. The refusal names each missing fact and the command that records it. Projects
+sections are filled, `planning.md` declares `Status: agreed`, and `workflow confirm` recorded
+both a requirements and a planning confirmation whose review identifier appears in
+`planning.md`. The refusal names each missing fact and the command that records it. Projects
 created before the cutoff keep the warnings they always had, so no existing project changes shape
 and no older launcher is locked out by the gate itself. Only that transition is gated: a reopen
 (`DONE` to `PLANNING`) and a design revision reopened as a draft while executing go through.
@@ -258,10 +258,26 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
   equals the host of the `origin` remote. `pr_exemption` (`reason` `no_remote`, `source`,
   `response`) replaces it for a repository with no remote.
 - `version_line`: `files` (`path`, `style` `pep440` or `semver`), `base` (plain `X.Y.Z`), `alpha`,
-  `history` (`alpha`, `recorded_at`, `reason`) and `release` (null or `version`, `recorded_at`).
-  `alpha` only increases and `base` never changes. Each file holds `X.Y.ZaN` (`pep440`) or
-  `X.Y.Z-alpha.N` (`semver`). `release` equals `base` and no file keeps an alpha spelling.
-  `version_exemption` (`source`, `response`) replaces the line for a repository with no version.
+  `history` (`alpha`, `base`, `recorded_at`, `reason`), `release` (null or `version`, `recorded_at`)
+  and `base_moves` (`from`, `to`, `reason`, `recorded_at`). A release on a worktree with no alpha
+  record starts a release-only line: `alpha` is null, `history` is empty and `release` is set.
+  While the base stays, `alpha` rises.
+  When the base moves, through an `alpha` record or a `release` record with `base_moved`, the
+  number restarts at 1; the validator checks that each change of base in `history` restarts at 1
+  and has a `base_moves` entry. A history item without `base` was recorded before items carried
+  one: such an item only has to rise. Each file holds `X.Y.ZaN` (`pep440`) or `X.Y.Z-alpha.N`
+  (`semver`). `release` equals `base` and no file keeps an alpha spelling.
+  `version_exemption` (`reason`, `source`, `response`; records before 0.30.0 have no `reason`)
+  replaces the line for a repository with no version or a change that needs none.
+- Occupied base: when a base first appears or moves, the tool reads local Git refs and the
+  workspace and refuses a base that is at or below the newest version released on main (version
+  files at `origin/HEAD`, `origin/main` or `origin/master`, and version tags), or that another
+  source holds: a live project's unmerged `version_line` for the same repository, another
+  `origin/*` branch, another local worktree or local branch. It excludes this project's own
+  record, branch and worktree, reads `0.30.0a3` and `0.30.0-alpha.3` as `0.30.0`, names each
+  occupier and suggests the patch above the highest version seen. With no `origin` it skips the
+  main and remote sources and says so in `notes`; `notes` also reports origin refs last fetched
+  over a day ago. An `origin` with no default branch ref refuses, because main cannot be read.
 - `merge`: `state` (`merged` or `declined`), `method` (`squash`, `merge`, `rebase`; null if
   declined), `evidence`, `source`, `response`, `recorded_at`. `merged` needs the release when a
   `version_line` exists. A merged record is final. `close` with `remove` needs a merged record when
@@ -269,8 +285,8 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
 
 `DELIVERY_GATES_FROM` in `workspace_lib.py` turns on two gates for projects created at or after it.
 `task start` refuses a task with `target` outputs while the active target worktree lacks an MR or
-exemption and an alpha line or exemption. `finalize`, `close` and an update to DONE refuse a
-worktree with no MR or exemption, no merge decision for its MR, or no version line or exemption.
+exemption; an alpha line is optional. `finalize`, `close` and an update to DONE refuse a worktree
+with no MR or exemption, no merge decision for its MR, or no release record or version exemption.
 
 ## Effects and authorization
 
@@ -361,11 +377,24 @@ The briefing is append-only in spirit: when the grill interview contradicts a fa
 correction is recorded as a dated decision in `spec.md` rather than by rewriting the briefing. Grill
 reads it and does not write it.
 
-`architecture.md` records the design the user agreed to before task planning. It is read whole with
-`read <project-dir> architecture` and replaced whole with `edit <project-dir> architecture` under
+`planning.md` records the plan the user agreed to before task planning. It is read whole with
+`read <project-dir> planning` and replaced whole with `edit <project-dir> planning` under
 the same content-token guard as `reflection.md`; resume context lists its token beside the other
 documents. Its status line (`Status: draft` or `Status: agreed`) is what validation reads. Like the
 briefing it warns and never errors, and it is not in the list of files required non-empty at close.
+
+Legacy note: a project begun before the split keeps this document as a root `architecture.md`. The
+tools read it as the planning document when no `planning.md` exists; `planning.md` wins when both
+do, with a warning, and a project created after `PLANNING_SPLIT_FROM` that keeps only the root file
+is told to rename it. Older markers read `kind=architecture` and still count as planning.
+
+`artifacts/architecture.md` is the living design of a project that writes code, written by its
+first task and never gated ([design-document.md](design-document.md)). Read it with
+`read <project-dir> architecture`; replace it whole with `edit <project-dir> architecture`. In a
+legacy layout those two refuse and point to `planning`. For a project created after
+`PLANNING_SPLIT_FROM`, with a `PLANNING`, `EXECUTING` or `REVIEW` status and a code task, validation
+warns when it is missing, lacks a section its `Profiles:` line requires, or lacks an
+`Implementation status` row for a `DONE` code task. It is not required at close.
 
 `handoff.md` is a live continuation note for ongoing work and coordinator replacement. Read
 and replace it with `read ... handoff` and guarded `edit ... handoff`; validated context exposes its
@@ -394,8 +423,8 @@ deliverables, and authorization state.
 
 Current requirements are maintained in place; decision history is append-only. A decision written by
 `workflow confirm` opens with a marker the alignment gate looks for, in the form `<!--
-research-confirmation: kind=architecture review_id=A1 proposal_sha256=<64 hex> -->`; the same line
-is appended to `architecture.md` with the confirmation. A hand-typed `kind: architecture` is not
+research-confirmation: kind=planning review_id=A1 proposal_sha256=<64 hex> -->`; the same line
+is appended to `planning.md` with the confirmation. A hand-typed `kind: planning` is not
 one.
 
 `evidence.md` records concise milestone evidence. Entries for commands are written by
@@ -659,8 +688,8 @@ A v4 or compatible v3 project may be `DONE` only when:
 - every authorization-required completed task has scoped explicit authorization;
 - every completed external task has a durable receipt;
 - `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty (`briefing.md`,
-  `architecture.md` and the two report files under `artifacts/` are deliberately not required, and
-  warn at most);
+  `planning.md`, `artifacts/architecture.md` and the two report files under `artifacts/` are
+  deliberately not required, and warn at most);
 - required specification sections and numbered review files exist;
 - canonical state, local files, and the generated `INDEX.md`, `MEMORY.md`, and `POSTMORTEMS.md`
   agree.

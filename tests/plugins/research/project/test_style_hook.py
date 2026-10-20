@@ -42,24 +42,24 @@ def state_of(project: Path) -> dict[str, Any]:
     return json.loads((project / "project.json").read_text(encoding="utf-8"))  # type: ignore[no-any-return]
 
 
-def test_a_long_sentence_in_the_architecture_gets_one_advisory_warning(project: Path) -> None:
+def test_a_long_sentence_in_the_planning_document_gets_one_advisory_warning(project: Path) -> None:
     assert state_of(project)["status"] == "ALIGNING"  # the check does not wait for PLANNING
     errors_before = lib.validate_project(project).errors
-    (project / "architecture.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
+    (project / "planning.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
     assert style(project) == [
-        "architecture.md (form only, never an error): L3 [length] sentence of 31 words (limit 25)"
+        "planning.md (form only, never an error): L3 [length] sentence of 31 words (limit 25)"
     ]
     assert lib.validate_project(project).errors == errors_before  # advisory: validity does not change
 
 
 def test_clean_records_get_no_style_warning(project: Path) -> None:
-    (project / "architecture.md").write_text("# A\n\n" + SHORT + "\n", encoding="utf-8")
+    (project / "planning.md").write_text("# A\n\n" + SHORT + "\n", encoding="utf-8")
     (project / "handoff.md").write_text("# H\n\n" + SHORT + "\n", encoding="utf-8")
     assert style(project) == []
 
 
 def test_a_project_from_before_the_cutoff_is_not_checked(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    (project / "architecture.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
+    (project / "planning.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
     assert style(project)
     monkeypatch.setattr(lib, "STYLE_CHECKED_FROM", FUTURE, raising=False)
     assert style(project) == []
@@ -76,7 +76,7 @@ def test_only_the_current_specification_is_read_and_lines_are_file_lines(project
 
 def test_numbered_items_use_the_step_limit_only_in_the_handoff(project: Path) -> None:
     item = "1. " + " ".join(["word"] * 22) + ".\n"  # 22 words: over 20, under 25
-    (project / "architecture.md").write_text("# A\n\n" + item, encoding="utf-8")
+    (project / "planning.md").write_text("# A\n\n" + item, encoding="utf-8")
     (project / "spec.md").write_text("# T\n\n## Current specification\n\n### Scope\n\n" + item, encoding="utf-8")
     assert style(project) == []
     (project / "handoff.md").write_text("# H\n\n" + item, encoding="utf-8")
@@ -107,13 +107,13 @@ def test_task_fields_of_the_wrong_type_raise_nothing(project: Path) -> None:
 
 
 def test_unreadable_files_are_skipped_without_error(project: Path) -> None:
-    (project / "architecture.md").write_bytes(b"\xff\xfe not utf-8 \x80")
+    (project / "planning.md").write_bytes(b"\xff\xfe not utf-8 \x80")
     (project / "handoff.md").write_text("# H\n\n" + LONG + "\n", encoding="utf-8")
     assert [warning.split(" ")[0] for warning in style(project)] == ["handoff.md"]
 
 
 def test_schema_3_has_no_style_check(project: Path) -> None:
-    (project / "architecture.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
+    (project / "planning.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
     report = lib.validate_v3_state(state_of(project), project)
     assert [warning for warning in report.warnings if "form only" in warning] == []
 
@@ -146,13 +146,13 @@ def validator(request: pytest.FixtureRequest) -> Path:
 
 def test_both_launchers_print_the_same_warning(project: Path, validator: Path) -> None:
     """A launcher subprocess reads the production cutoff, so the project is made new on disk."""
-    (project / "architecture.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
+    (project / "planning.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
     backdate_project(project, created=FUTURE)
     result = subprocess.run([str(validator), str(project)], text=True, capture_output=True)
     lines = [line for line in result.stderr.splitlines() if "form only" in line]
     assert result.returncode == 0, result.stderr
     assert lines == [
-        "WARNING: architecture.md (form only, never an error): L3 [length] sentence of 31 words (limit 25)"
+        "WARNING: planning.md (form only, never an error): L3 [length] sentence of 31 words (limit 25)"
     ]
 
 
@@ -168,9 +168,17 @@ def manager(request: pytest.FixtureRequest) -> Path:
 
 
 def test_context_validate_carries_the_same_warning_through_both_launchers(project: Path, manager: Path) -> None:
-    (project / "architecture.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
+    (project / "planning.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
     backdate_project(project, created=FUTURE)
     result = subprocess.run([str(manager), "context", str(project), "--validate"], text=True, capture_output=True)
     assert result.returncode == 0, result.stderr
     warnings = [w for w in json.loads(result.stdout)["validation"]["warnings"] if "form only" in w]
-    assert warnings == ["architecture.md (form only, never an error): L3 [length] sentence of 31 words (limit 25)"]
+    assert warnings == ["planning.md (form only, never an error): L3 [length] sentence of 31 words (limit 25)"]
+
+
+def test_a_legacy_root_architecture_md_is_checked_under_its_own_name(project: Path) -> None:
+    (project / "architecture.md").write_text("# A\n\n" + LONG + "\n", encoding="utf-8")
+    report = lib.validate_project(project)
+    assert [warning for warning in report.warnings if "form only" in warning] == [
+        "architecture.md (form only, never an error): L3 [length] sentence of 31 words (limit 25)"
+    ]

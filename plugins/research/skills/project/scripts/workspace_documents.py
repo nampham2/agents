@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from workspace_lib import (
+    DESIGN_DOCUMENT,
     MEMORY_STAGING_FILENAME,
     MEMORY_STAGING_PLACEHOLDER,
     MEMORY_STAGING_SKELETON,
@@ -17,7 +18,9 @@ from workspace_lib import (
     WorkspaceError,
     atomic_write_text,
     document_sha256,
+    is_legacy_planning_layout,
     now_iso,
+    planning_path,
     read_text,
     stale_confirmations,
 )
@@ -25,7 +28,13 @@ from workspace_session import _headings, _load_state
 
 # Documents replaced whole under the content-token guard, as opposed to `spec`, which is edited by
 # section, and `notes`, which are append-only.
-WHOLE_DOCUMENTS = ("reflection", "architecture", "handoff")
+WHOLE_DOCUMENTS = ("reflection", "planning", "architecture", "handoff")
+# What a project that still keeps its agreement in a root `architecture.md` is told when it names the
+# design document: the old habit would otherwise write into, or read as missing, the wrong file.
+LEGACY_PLANNING_HINT = (
+    "this project keeps its agreement in a root architecture.md, which is the planning document; "
+    "use the document id planning. The design document is " + DESIGN_DOCUMENT
+)
 FRICTION_FILENAME = "friction.md"
 # What the tool or the skill cost the agent, in a fixed vocabulary so a retro can count it across
 # projects. A finding is about the work; a friction entry is about the tool.
@@ -49,8 +58,10 @@ def _managed_path(project_dir: Path, document: str, task_id: str | None = None) 
         path = project_dir / "spec.md"
     elif document == "reflection":
         path = project_dir / "reflection.md"
+    elif document == "planning":
+        path = planning_path(project_dir)
     elif document == "architecture":
-        path = project_dir / "architecture.md"
+        path = project_dir / DESIGN_DOCUMENT
     elif document == "handoff":
         path = project_dir / "handoff.md"
     elif document == "friction":
@@ -63,7 +74,7 @@ def _managed_path(project_dir: Path, document: str, task_id: str | None = None) 
             raise WorkspaceError(f"unknown task: {task_id}")
         path = project_dir / "tasks" / f"{task_id}.md"
     else:
-        raise WorkspaceError("document must be spec, reflection, architecture, handoff, friction, or notes")
+        raise WorkspaceError("document must be spec, reflection, planning, architecture, handoff, friction, or notes")
     try:
         path.resolve(strict=False).relative_to(project_dir)
     except (OSError, ValueError) as error:
@@ -87,10 +98,13 @@ def document_snapshot(
     state = _load_state(project_dir)
     path = _managed_path(project_dir, document, task_id)
     if not path.exists():
-        return {
+        missing = {
             "path": str(path), "revision": state["revision"], "exists": False, "document_sha256": "missing",
             "text": "", "total_chars": 0, "offset": 0, "next_offset": None, "truncated": False,
         }
+        if document == "architecture" and is_legacy_planning_layout(project_dir):
+            missing["hint"] = LEGACY_PLANNING_HINT
+        return missing
     text = read_text(path, preserve_newlines=True)
     if outline:
         rows = [{"level": level, "title": title} for level, title, _ in _headings(text)]
@@ -193,8 +207,10 @@ def edit_document(
     if document in WHOLE_DOCUMENTS and body is None:
         raise WorkspaceError(f"{document} edits require a body")
     if document not in ("spec", *WHOLE_DOCUMENTS):
-        raise WorkspaceError("editable document must be spec, reflection, architecture, or handoff")
+        raise WorkspaceError("editable document must be spec, reflection, planning, architecture, or handoff")
     project_dir = project_dir.resolve()
+    if document == "architecture" and is_legacy_planning_layout(project_dir):
+        raise WorkspaceError(LEGACY_PLANNING_HINT)
     path = _managed_path(project_dir, document)
     try:
         with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
@@ -220,15 +236,15 @@ def edit_document(
         "operation": "document.edit", "document": document, "path": str(path), "revision": state["revision"],
         "previous_sha256": actual, "document_sha256": document_sha256(replacement),
     }
-    if document in ("spec", "architecture"):
-        spec_path, architecture_path = project_dir / "spec.md", project_dir / "architecture.md"
+    if document in ("spec", "planning"):
+        spec_path, planning_file = project_dir / "spec.md", planning_path(project_dir)
         spec_text = replacement if document == "spec" else (read_text(spec_path) if spec_path.is_file() else "")
-        architecture_text = (
+        planning_text = (
             replacement
-            if document == "architecture"
-            else (read_text(architecture_path) if architecture_path.is_file() else "")
+            if document == "planning"
+            else (read_text(planning_file) if planning_file.is_file() else "")
         )
-        stale = stale_confirmations(spec_text, architecture_text)
+        stale = stale_confirmations(spec_text, planning_text)
         if stale:
             result["stale_confirmations"] = stale
     return result

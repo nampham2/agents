@@ -2,15 +2,13 @@
 name: project
 description: >
   Start, resume, review, or close a persistent project workspace for complex or multi-session
-  work. Requires a requirements interview and architecture agreement before task planning. Use
+  work. Requires a requirements interview and planning agreement before task planning. Use
   when explicitly requested; ordinary one-turn changes and reviews do not need this workflow.
 ---
 
 # Project
 
 Invoke with `/research:project [problem statement]`; in Pi, `/skill:project`.
-
-Reuse saved context and retrieve selectively, preserving constraints and evidence.
 
 ## Durable context
 
@@ -24,10 +22,13 @@ Prefer its named commands over agent-authored bookkeeping; supply judgments and 
 
 ## Session boundaries
 
-Phase boundaries are checkpoints; continue authorized work in the same session. Restart on user
-request or when context pressure impairs reliable continuation. Read
-[session-handoff.md](references/session-handoff.md) only for handoff or interruption recovery.
-For a restart, checkpoint, supply a resume prompt, and stop; the user opens the replacement session.
+Continue authorized work after each task: start the `continue` task that `task finish` and
+`resume` return. Stop only for a `stop_reason` ([stopping.md](references/stopping.md)):
+`user-decision`, `authorization`, `blocked`, `context-pressure`, `closure-step` or `closed`; name
+it in the checkpoint. Never end a turn by asking whether to continue. Restart on user request or
+`context-pressure`: checkpoint, supply a resume prompt, and stop; the user opens the replacement
+session. Read [session-handoff.md](references/session-handoff.md) only for handoff or interruption
+recovery.
 
 ## Resolve once
 
@@ -42,15 +43,16 @@ Keep secrets out of records. Only the coordinator writes canonical state and sha
 
 ## Start or resume
 
-Find an existing project with paged `list-projects <root> --query "<objective>"`; a supplied path
-needs no discovery. Check objective and ownership, then run:
+Find an existing project with
+`find-similar <root> --title "<objective>" --working-directory <target>`; a supplied path needs no
+discovery. Check objective and ownership, then run:
 
 ```sh
 research-project workflow <project-dir> resume -
 ```
 
 Send `{}` or explicit source/task selections. Resolve validation errors and contradictions;
-follow truncation with targeted reads. `context --validate` remains a compact metadata-only option.
+follow truncation with targeted reads.
 
 Create a project with:
 
@@ -58,16 +60,17 @@ Create a project with:
 research-project init <root> --title "<title>" --working-directory <target> --json
 ```
 
-Report version-control warnings; never initialize or commit repositories implicitly.
+`init` refuses a likely duplicate; ask the user. Report version-control warnings; never initialize
+or commit repositories implicitly.
 Read [commands.md](references/commands.md) before the first record update, including alignment.
 
-## Align requirements and architecture
+## Align requirements and planning
 
-Review relevant [lessons](references/memory-operations.md) before requirements/design agreement.
+Review relevant [lessons](references/memory-operations.md) before requirements/planning agreement.
 Reassess after direction changes; resolve staged lessons at closure.
 
 Every project requires [grill](references/grill.md), then
-[architecture review](references/architecture-review.md); read and follow both before planning.
+[planning review](references/planning-review.md); read and follow both before planning.
 Clear requirements need confirmation, even with zero question rounds. Write these sections under
 `## Current specification`, in order:
 
@@ -81,17 +84,17 @@ Clear requirements need confirmation, even with zero question rounds. Write thes
 ### Destructive and external actions
 ```
 
-Save related spec sections, decisions, design drafts and continuation with `workflow ... round`.
-Use `workflow ... confirm` for actual agreement against the proposal token. Single findings can
-use `append ... finding`; avoid transcripts and duplicate task narratives.
+Save spec sections, decisions, drafts and continuation with `workflow ... round`.
+Use `workflow ... confirm` for actual agreement against the proposal token.
 
-Record explicit requirements/design agreement and `Status: agreed` before planning; reuse current
+Record explicit requirements/planning agreement and `Status: agreed` before planning; reuse current
 agreement on resume; reopen affected choices for missing records or material changes.
 
 ## Plan tasks
 
-After agreement, enter `PLANNING` and derive milestones from `architecture.md` with success
-criteria, verification, effects, `depends_on` and rooted outputs. Only plan publication, pushes, or
+After agreement, enter `PLANNING`; derive milestones from `planning.md` with success
+criteria, verification, effects, `depends_on` and rooted outputs. A code project's first task is the
+design task ([design-document.md](references/design-document.md)). Only plan publication, pushes, or
 commits when requested. Send a compact patch through stdin:
 
 ```sh
@@ -109,10 +112,10 @@ For invalidated assignments, inputs or agreement, follow
 tasks for terminal work without copying old acceptance or consent.
 
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
-and roots; it resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`. Start before writing;
+and roots. Start before writing;
 `finish --backfill --note` records earlier work. Supply applicable constraints. Dependencies must
 be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
-existing authorization counts. A repository target needs a recorded worktree, MR and alpha line
+existing authorization counts. A repository target needs a recorded worktree and MR
 before its first write: follow [worktrees.md](references/worktrees.md) when the assignment warns.
 
 Resolve worker ownership before takeover. If `execution_active` is true, read

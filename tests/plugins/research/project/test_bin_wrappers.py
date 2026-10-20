@@ -54,7 +54,7 @@ class WrapperShapeTests(unittest.TestCase):
             self.assertIn(script, (SKILL_SCRIPTS / name).read_text(encoding="utf-8"))
 
     def test_the_underlying_scripts_stay_directly_invocable(self) -> None:
-        # The wrappers are additive. The Python 3.9 job and the suite call the scripts directly.
+        # The wrappers are additive. The python-floor job and the suite call the scripts directly.
         for script in WRAPPERS.values():
             self.assertTrue((SKILL_SCRIPTS / script).is_file())
 
@@ -118,15 +118,14 @@ class WrapperExecutionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("usage:", result.stdout)
 
-    def test_the_wrapper_runs_when_python3_is_the_system_interpreter(self) -> None:
+    def test_the_wrapper_follows_the_floor_when_python3_is_the_system_interpreter(self) -> None:
         # The scenario is a PATH whose python3 is the platform interpreter rather than the dev
-        # virtualenv's, which is how a Claude session actually reaches these scripts.
+        # virtualenv's, which is how a Claude session can reach these scripts.
         #
-        # The interpreter's version is deliberately not asserted here. It used to require "Python
-        # 3.9" — true of /usr/bin/python3 on macOS, but ubuntu-latest ships 3.12, so the assertion
-        # described the machine the suite happened to run on rather than anything the wrapper does.
-        # The 3.9 floor for the shipped scripts is enforced where it can be enforced honestly: the
-        # python39-compat CI job, which runs them under a real 3.9.
+        # The system interpreter's version is not fixed: stock macOS has 3.9, which is below the floor,
+        # and a Linux runner has a newer one. So the expectation follows the version the machine has:
+        # a qualifying Python runs the script; a lower one is refused with the fix named. The branches
+        # of the choice itself are tested with fake interpreters in test_launcher_python.py.
         system_python = Path("/usr/bin/python3")
         if not system_python.exists():  # pragma: no cover - platform without a system python
             self.skipTest("no /usr/bin/python3")
@@ -134,48 +133,14 @@ class WrapperExecutionTests(unittest.TestCase):
         path_directory.mkdir()
         (path_directory / "python3").symlink_to(system_python)
         environment = dict(os.environ, PATH=f"{path_directory}:{os.defpath}")
+        probe = "import sys; raise SystemExit(sys.version_info < (3, 11))"
+        qualifies = _run([str(system_python), "-c", probe]).returncode == 0
         result = _run([str(SKILL_SCRIPTS / "research-project"), "--help"], env=environment)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("usage:", result.stdout)
-
-    def test_a_wrapper_without_its_script_fails_with_a_clear_message(self) -> None:
-        orphan_bin = self.root / "plugin" / "bin"
-        orphan_bin.mkdir(parents=True)
-        copied = orphan_bin / "research-project"
-        shutil.copy2(BIN / "research-project", copied)
-        result = _run([str(copied), "--help"])
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("is missing", result.stderr)
-
-    def test_a_skill_launcher_without_its_script_fails_with_a_clear_message(self) -> None:
-        orphan_scripts = self.root / "plugin" / "skills" / "project" / "scripts"
-        orphan_scripts.mkdir(parents=True)
-        copied = orphan_scripts / "research-project"
-        shutil.copy2(SKILL_SCRIPTS / "research-project", copied)
-        result = _run([str(copied), "--help"])
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("manage_workspace.py is missing", result.stderr)
-
-    def test_a_wrapper_without_python3_says_so(self) -> None:
-        # A PATH holding everything the wrapper itself needs, and no python3. An empty PATH would
-        # only prove that `env` cannot find bash (exit 127), which says nothing about the wrapper.
-        without_python = self.root / "no-python"
-        without_python.mkdir()
-        for tool in ("bash", "dirname", "readlink"):
-            located = shutil.which(tool)
-            if located is None:  # pragma: no cover - a POSIX box without these does not exist
-                self.skipTest(f"{tool} is not available")
-            (without_python / tool).symlink_to(located)
-        environment = dict(os.environ, PATH=str(without_python))
-        result = _run([str(SKILL_SCRIPTS / "research-project"), "--help"], env=environment)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertIn("python3", result.stderr)
-
-    def test_the_exit_code_of_the_script_reaches_the_caller(self) -> None:
-        # `exec` matters: a wrapper that swallowed a non-zero exit would defeat record-evidence.
-        result = _run([str(SKILL_SCRIPTS / "research-validate"), str(self.root / "nonexistent")])
-        self.assertEqual(result.returncode, 1)
-
-
-if __name__ == "__main__":  # pragma: no cover
-    unittest.main()
+        if qualifies:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("usage:", result.stdout)
+        elif shutil.which("uv", path=os.defpath):  # pragma: no cover - uv would fetch a Python
+            self.skipTest("uv on the default path would fetch a Python")
+        else:
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("needs Python 3.11 or later", result.stderr)

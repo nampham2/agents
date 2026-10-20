@@ -23,14 +23,22 @@ from workspace_journal import (
     string_input,
 )
 from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso
-from workspace_session import _headings, _load_state, project_context, validated_project_context
+from workspace_session import (
+    STOP_REASONS,
+    _headings,
+    _load_state,
+    next_move,
+    project_context,
+    validated_project_context,
+)
 
 CHECKPOINT = re.compile(r"\A<!-- research-checkpoint-v1\n(.*?)\n-->\n", re.DOTALL)
 CONTINUATION_FIELDS = {
     "next", "questions", "pointers", "partial", "ownership", "effects", "lessons", "do_not", "session",
+    "stop_reason",
 }
 # `key.title()` would print "Do_Not"; the one field whose heading is not its name.
-CONTINUATION_HEADINGS = {"do_not": "Do not"}
+CONTINUATION_HEADINGS = {"do_not": "Do not", "stop_reason": "Stop reason"}
 SESSION_FIELDS = {"host", "id", "cwd"}
 
 
@@ -326,7 +334,8 @@ def checkpoint_data(project: Path) -> dict[str, Any] | None:
         or not isinstance(value["git"], dict)
     ):
         raise WorkspaceError("unsupported checkpoint metadata")
-    object_input(value["sources"], {"spec", "architecture"})
+    # `architecture` is the key checkpoints held before the planning document was split from the design.
+    object_input(value["sources"], {"spec", "planning", "architecture"})
     object_input(value["continuation"], CONTINUATION_FIELDS)
     if not all(isinstance(item, str) for item in [*value["sources"].values(), *value["continuation"].values()]):
         raise WorkspaceError("invalid checkpoint fields")
@@ -386,10 +395,20 @@ def render_checkpoint(
                     )
             continuation[key] = value
     string_input(continuation.get("next"))
-    if continuation.get("session", "working") not in ("working", "waiting", "blocked", "ready for handoff"):
+    session_label = continuation.get("session", "working")
+    if session_label not in ("working", "waiting", "blocked", "ready for handoff"):
         raise WorkspaceError("invalid session label")
+    if session_label == "working":
+        if changes.get("stop_reason"):
+            raise WorkspaceError("a working session carries no stop_reason; stop_reason names why work stops")
+        continuation.pop("stop_reason", None)
+    elif continuation.get("stop_reason") not in STOP_REASONS:
+        raise WorkspaceError(
+            f"session {session_label!r} needs a stop_reason, one of: {', '.join(STOP_REASONS)}. Continue the "
+            "next ready task instead of stopping when none of them applies"
+        )
     sources = {}
-    for name in ("spec", "architecture"):
+    for name in ("spec", "planning"):
         sources[name] = (
             document_sha256(documents[name])
             if documents and name in documents
@@ -460,7 +479,8 @@ def checkpoint_freshness(project: Path) -> dict[str, Any]:
     state = _load_state(project)
     sources = {}
     for name, old in previous["sources"].items():
-        actual = snapshot(document_path(project, name))[1]
+        # A checkpoint's `architecture` source was the agreement, which is now the planning document.
+        actual = snapshot(document_path(project, "planning" if name == "architecture" else name))[1]
         sources[name] = "missing" if actual == "missing" else "unchanged" if actual == old else "changed"
     git = git_observation(Path(state["working_directory"]))
     freshness: dict[str, Any] = {
@@ -516,6 +536,7 @@ def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
         if do_not:
             context["do_not"] = do_not
         context["worktree"] = worktree_status(_load_state(project))
+        context.update(next_move(_load_state(project)))
         context["memory_health"] = memory_health(project.parent, context["title"])
         if "task" in request:
             context["assignment"] = project_context(

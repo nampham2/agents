@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +61,17 @@ def refuse(project: Path, linked: Path, fragment: str, operation: str, **fields:
     assert load_state(project) == before
 
 
+def fetched(repository: Path) -> None:
+    """Give `origin` what a fetched clone has: remote-tracking refs for the default branch. No network."""
+    git(repository, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
+
+
+def exempt(project: Path, linked: Path) -> dict[str, Any]:
+    """The user's exemption from a version record, with the reason the tool now requires."""
+    return op(project, linked, "alpha", exempt=True, reason="docs-only project; no version change")
+
+
 def entry_of(project: Path) -> dict[str, Any]:
     return load_state(project)["worktrees"][0]
 
@@ -76,6 +89,7 @@ def linked(repository: Path) -> Path:
 @pytest.fixture
 def recorded(tmp_path: Path, repository: Path, linked: Path) -> Path:
     git(repository, "remote", "add", "origin", "https://github.com/o/r.git")
+    fetched(repository)
     project = make_project(tmp_path, repository)
     record(project, linked)
     return project
@@ -200,18 +214,25 @@ class TestAlphaLine:
         refuse(recorded, linked, "needs a base different", "alpha", base="0.24.0", alpha=2, reason="r", base_moved=True)
         write_versions(linked, "0.23.9", 2)
         refuse(recorded, linked, "greater than 0.24.0", "alpha", base="0.23.9", alpha=2, reason="r", base_moved=True)
-        write_versions(linked, "0.25.0", 1)
-        refuse(recorded, linked, "only goes up", "alpha", base="0.25.0", alpha=1, reason="r", base_moved=True)
+        # A moved base restarts the alpha number at 1: any other number is refused.
         write_versions(linked, "0.25.0", 2)
-        op(recorded, linked, "alpha", base="0.25.0", alpha=2, reason="main released 0.24.0", base_moved=True)
+        refuse(recorded, linked, "restarts the alpha number at 1", "alpha", base="0.25.0", alpha=2, reason="r",
+               base_moved=True)
+        write_versions(linked, "0.25.0", 1)
+        op(recorded, linked, "alpha", base="0.25.0", alpha=1, reason="main released 0.24.0", base_moved=True)
         line = entry_of(recorded)["version_line"]
-        assert (line["base"], line["alpha"], [item["alpha"] for item in line["history"]]) == ("0.25.0", 2, [1, 2])
+        assert (line["base"], line["alpha"]) == ("0.25.0", 1)
+        assert [(item["base"], item["alpha"]) for item in line["history"]] == [("0.24.0", 1), ("0.25.0", 1)]
         assert [(m["from"], m["to"], m["reason"]) for m in line["base_moves"]] == [
             ("0.24.0", "0.25.0", "main released 0.24.0")
         ]
-        write_versions(linked, "0.25.0", 3)
-        op(recorded, linked, "alpha", base="0.25.0", alpha=3, reason="alpha 3")
+        assert delivery_errors(entry_of(recorded), "worktree #1") == []
+        # While the base stays, the number goes up and a repeat is refused.
+        refuse(recorded, linked, "only goes up while the base stays", "alpha", base="0.25.0", alpha=1, reason="r")
+        write_versions(linked, "0.25.0", 2)
+        op(recorded, linked, "alpha", base="0.25.0", alpha=2, reason="alpha 2")
         assert len(entry_of(recorded)["version_line"]["base_moves"]) == 1
+        assert delivery_errors(entry_of(recorded), "worktree #1") == []
 
     def test_the_files_are_fixed_and_a_repeat_may_omit_them(self, recorded: Path, linked: Path) -> None:
         alpha(recorded, linked, 1)
@@ -257,14 +278,19 @@ class TestAlphaLine:
         refuse(recorded, linked, "does not contain 0.24.0a1", "alpha", base="0.24.0", alpha=1, reason="r", files=FILES)
 
     def test_an_exemption_excludes_the_line(self, recorded: Path, linked: Path) -> None:
-        op(recorded, linked, "alpha", exempt=True)
+        exempt(recorded, linked)
         assert entry_of(recorded)["version_exemption"]["response"] == "approve"
+        assert entry_of(recorded)["version_exemption"]["reason"] == "docs-only project; no version change"
         refuse(recorded, linked, "no alpha line applies", "alpha", base="0.24.0", alpha=1, reason="r", files=FILES)
-        refuse(recorded, linked, "already has", "alpha", exempt=True)
+        refuse(recorded, linked, "already has", "alpha", exempt=True, reason="again")
+
+    def test_an_exemption_needs_a_reason(self, recorded: Path, linked: Path) -> None:
+        refuse(recorded, linked, "reason must be non-empty text", "alpha", exempt=True)
+        assert "version_exemption" not in entry_of(recorded)
 
     def test_an_exemption_after_a_line_is_refused(self, recorded: Path, linked: Path) -> None:
         alpha(recorded, linked, 1)
-        refuse(recorded, linked, "already has", "alpha", exempt=True)
+        refuse(recorded, linked, "already has", "alpha", exempt=True, reason="r")
 
     def test_a_bump_after_the_release_clears_it_and_keeps_the_history(self, recorded: Path, linked: Path) -> None:
         alpha(recorded, linked, 1)
@@ -306,13 +332,17 @@ class TestRelease:
         assert (line["base"], line["release"]["version"], line["alpha"]) == ("0.25.1", "0.25.1", 1)
         assert [(m["from"], m["to"]) for m in line["base_moves"]] == [("0.24.0", "0.25.1")]
         assert delivery_errors(entry_of(recorded), "worktree #1") == []
+        # The release moved the base, so the next alpha on it restarts at 1 as well.
         write_versions(linked, "0.25.1", 2)
-        op(recorded, linked, "alpha", base="0.25.1", alpha=2, reason="alpha 2")
+        refuse(recorded, linked, "restarts the alpha number at 1", "alpha", base="0.25.1", alpha=2, reason="alpha 2")
+        write_versions(linked, "0.25.1", 1)
+        op(recorded, linked, "alpha", base="0.25.1", alpha=1, reason="alpha 1 on the new base")
         line = entry_of(recorded)["version_line"]
         assert line["release"] is None and len(line["base_moves"]) == 1
+        assert delivery_errors(entry_of(recorded), "worktree #1") == []
 
     def test_refusals(self, recorded: Path, linked: Path) -> None:
-        refuse(recorded, linked, "no version_line", "release", version="0.24.0")
+        refuse(recorded, linked, "files are required for the first alpha or release", "release", version="0.24.0")
         alpha(recorded, linked, 1)
         refuse(recorded, linked, "must equal the base", "release", version="0.24.1")
         refuse(recorded, linked, "plain X.Y.Z", "release", version="0.24.0a1")
@@ -338,7 +368,7 @@ class TestMerge:
             "method": None,
             "evidence": None,
         }
-        op(recorded, linked, "alpha", exempt=True)
+        exempt(recorded, linked)
         op(recorded, linked, "merge", merge_state="merged", method="rebase", evidence="https://github.com/o/r/pull/7")
         assert entry_of(recorded)["merge"]["method"] == "rebase"
 
@@ -419,6 +449,247 @@ MERGE = {
 }
 
 
+def item(alpha: int, base: str | None = None, at: str = "10:00") -> dict[str, Any]:
+    record: dict[str, Any] = {"alpha": alpha, "recorded_at": f"2026-01-01T{at}:00+00:00", "reason": f"alpha {alpha}"}
+    if base is not None:
+        record["base"] = base
+    return record
+
+
+def move(source: str, target: str) -> dict[str, str]:
+    return {"from": source, "to": target, "reason": "moved", "recorded_at": "2026-01-01T10:30:00+00:00"}
+
+
+class TestHistoryRules:
+    """The history of an alpha line: rising inside one base, restarting at 1 where the base moves."""
+
+    def errors(self, line: dict[str, Any]) -> list[str]:
+        return delivery_errors({**entry(), "version_line": {**LINE, **line}}, "worktree #1")
+
+    def test_a_history_with_a_base_reset_is_valid(self) -> None:
+        history = [item(1, "0.24.0", "10:00"), item(2, "0.24.0", "11:00"), item(1, "0.25.0", "12:00")]
+        line = {"base": "0.25.0", "alpha": 1, "history": history, "base_moves": [move("0.24.0", "0.25.0")]}
+        assert self.errors(line) == []
+
+    def test_a_legacy_history_that_carried_its_number_across_a_move_still_validates(self) -> None:
+        # Recorded before items carried a base: alpha 8 after a move, as project 2026-10-19-002 did.
+        history = [item(1, at="10:00"), item(5, at="11:00"), item(8, at="12:00")]
+        line = {"base": "0.25.0", "alpha": 8, "history": history, "base_moves": [move("0.24.0", "0.25.0")]}
+        assert self.errors(line) == []
+
+    def test_a_legacy_history_must_still_rise(self) -> None:
+        line = {"alpha": 1, "history": [item(2, at="10:00"), item(1, at="11:00")]}
+        assert any("must increase while the base stays" in problem for problem in self.errors(line))
+
+    def test_a_legacy_line_may_continue_on_the_same_base_or_restart_on_a_moved_one(self) -> None:
+        history = [item(1, at="10:00"), item(2, at="11:00"), item(3, "0.24.0", "12:00")]
+        assert self.errors({"alpha": 3, "history": history}) == []
+        history = [item(1, at="10:00"), item(2, at="11:00"), item(1, "0.25.0", "12:00")]
+        line = {"base": "0.25.0", "alpha": 1, "history": history, "base_moves": [move("0.24.0", "0.25.0")]}
+        assert self.errors(line) == []
+
+    def test_a_base_change_must_restart_at_one(self) -> None:
+        history = [item(1, "0.24.0", "10:00"), item(3, "0.25.0", "11:00")]
+        line = {"base": "0.25.0", "alpha": 3, "history": history, "base_moves": [move("0.24.0", "0.25.0")]}
+        assert any("restarts at alpha 1" in problem for problem in self.errors(line))
+
+    def test_a_base_change_needs_its_base_move(self) -> None:
+        history = [item(1, "0.24.0", "10:00"), item(1, "0.25.0", "11:00")]
+        problems = self.errors({"base": "0.25.0", "alpha": 1, "history": history})
+        assert any("needs a matching base_moves entry" in problem for problem in problems)
+
+    def test_the_number_must_rise_while_the_base_stays(self) -> None:
+        history = [item(2, "0.24.0", "10:00"), item(2, "0.24.0", "11:00")]
+        problems = self.errors({"alpha": 2, "history": history})
+        assert any("must increase while the base stays" in problem for problem in problems)
+
+    def test_a_base_cannot_be_lost_once_recorded(self) -> None:
+        history = [item(1, "0.24.0", "10:00"), item(2, at="11:00")]
+        assert any("lacks the base" in problem for problem in self.errors({"alpha": 2, "history": history}))
+
+    def test_the_history_must_end_at_the_current_alpha_and_base(self) -> None:
+        for history in ([item(1, "0.24.0")], [item(2, "0.23.0")]):
+            problems = self.errors({"history": history, "alpha": 2})
+            assert any("must end at the current alpha and base" in problem for problem in problems)
+
+    def test_a_release_may_move_the_base_without_a_new_item(self) -> None:
+        release = {"version": "0.25.1", "recorded_at": "2026-01-02T10:00:00+00:00"}
+        line = {
+            "base": "0.25.1", "alpha": 1, "release": release, "history": [item(1, "0.24.0")],
+            "base_moves": [move("0.24.0", "0.25.1")],
+        }
+        assert self.errors(line) == []
+
+    def test_a_malformed_base_on_an_item_is_reported(self) -> None:
+        line = {"history": [item(1, "not-a-version"), item(2, "0.24.0")]}
+        assert any("history item 1 needs" in problem for problem in self.errors(line))
+
+
+class TestReleaseWithoutAlpha:
+    """An alpha line is optional: a release alone starts the line, and closure wants a release or an exemption."""
+
+    def release(self, project: Path, linked: Path, version: str = "0.24.0", **fields: Any) -> dict[str, Any]:
+        write_versions(linked, version, None)
+        return op(project, linked, "release", version=version, files=FILES, **fields)
+
+    def test_a_release_with_no_alpha_line_starts_a_release_only_line(self, recorded: Path, linked: Path) -> None:
+        self.release(recorded, linked)
+        line = entry_of(recorded)["version_line"]
+        assert (line["base"], line["alpha"], line["history"], line["base_moves"]) == ("0.24.0", None, [], [])
+        assert line["release"]["version"] == "0.24.0" and line["files"] == FILES
+        assert delivery_errors(entry_of(recorded), "worktree #1") == []
+
+    def test_a_release_only_line_may_be_merged(self, recorded: Path, linked: Path) -> None:
+        self.release(recorded, linked)
+        op(recorded, linked, "pull_request", host="github", url=URL, number=7)
+        op(recorded, linked, "merge", merge_state="merged", method="squash", evidence="https://github.com/o/r/pull/7")
+        assert entry_of(recorded)["merge"]["state"] == "merged"
+
+    def test_an_alpha_may_follow_a_release_only_line_and_clears_the_release(self, recorded: Path, linked: Path) -> None:
+        self.release(recorded, linked)
+        write_versions(linked, "0.24.0", 1)
+        op(recorded, linked, "alpha", base="0.24.0", alpha=1, reason="a test build after all")
+        line = entry_of(recorded)["version_line"]
+        assert (line["alpha"], line["release"], [item["alpha"] for item in line["history"]]) == (1, None, [1])
+        assert delivery_errors(entry_of(recorded), "worktree #1") == []
+
+    def test_a_release_only_line_refuses_a_moved_base_with_the_wrong_number(self, recorded: Path, linked: Path) -> None:
+        self.release(recorded, linked)
+        write_versions(linked, "0.25.0", 2)
+        refuse(recorded, linked, "restarts the alpha number at 1", "alpha", base="0.25.0", alpha=2, reason="r",
+               base_moved=True)
+
+    @pytest.mark.parametrize(
+        ("fields", "fragment"),
+        [
+            ({"files": None}, "files are required for the first alpha or release"),
+            ({"version": "0.24.0a1"}, "plain X.Y.Z"),
+            ({"version": "0.99.0"}, "does not contain 0.99.0"),
+        ],
+    )
+    def test_refusals_without_a_line(self, recorded: Path, linked: Path, fields: dict[str, Any], fragment: str) -> None:
+        write_versions(linked, "0.24.0", None)
+        request: dict[str, Any] = {"version": "0.24.0", "files": FILES, **fields}
+        request = {key: value for key, value in request.items() if value is not None}
+        refuse(recorded, linked, fragment, "release", **request)
+        assert "version_line" not in entry_of(recorded)
+
+    def test_a_version_file_that_still_carries_an_alpha_is_refused(self, recorded: Path, linked: Path) -> None:
+        write_versions(linked, "0.24.0", 3)
+        refuse(recorded, linked, "still carries an alpha", "release", version="0.24.0", files=FILES)
+
+    def test_an_exemption_and_a_release_exclude_each_other(self, recorded: Path, linked: Path) -> None:
+        exempt(recorded, linked)
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "no release record applies", "release", version="0.24.0", files=FILES)
+
+    def test_a_release_checks_that_the_base_is_still_free(self, recorded: Path, linked: Path, repository: Path) -> None:
+        git(repository, "tag", "v0.25.0")
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "tag v0.25.0 releases 0.25.0", "release", version="0.24.0", files=FILES)
+
+    def test_a_release_on_an_alpha_line_checks_the_base_again(
+        self, recorded: Path, linked: Path, repository: Path
+    ) -> None:
+        alpha(recorded, linked, 1)
+        git(repository, "tag", "v0.24.0")
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "base 0.24.0 is occupied", "release", version="0.24.0")
+
+    def test_closure_wants_a_release_or_an_exemption(self, recorded: Path, linked: Path, gated: None) -> None:
+        op(recorded, linked, "pull_request", host="github", url=URL, number=7)
+        op(recorded, linked, "merge", merge_state="declined")
+
+        def version_findings() -> list[str]:
+            return [f for f in closure_findings(load_state(recorded)) if "release record or version_exemption" in f]
+
+        assert version_findings()
+        alpha(recorded, linked, 1)
+        assert "release record or version_exemption" in version_findings()[0]
+        write_versions(linked, "0.24.0", None)
+        op(recorded, linked, "release", version="0.24.0")
+        assert version_findings() == []
+
+    def test_an_exemption_closes_the_version_gate(self, recorded: Path, linked: Path, gated: None) -> None:
+        op(recorded, linked, "pull_request", host="github", url=URL, number=7)
+        op(recorded, linked, "merge", merge_state="declined")
+        exempt(recorded, linked)
+        assert closure_findings(load_state(recorded)) == []
+
+
+RELEASE_RECORD = {"version": "0.24.0", "recorded_at": "2026-01-02T10:00:00+00:00"}
+
+
+class TestReleaseOnlyShape:
+    def errors(self, line: dict[str, Any]) -> list[str]:
+        return delivery_errors({**entry(), "version_line": line}, "worktree #1")
+
+    def test_a_release_only_line_is_valid(self) -> None:
+        line = {**LINE, "alpha": None, "history": [], "release": RELEASE_RECORD}
+        assert self.errors(line) == []
+
+    def test_a_line_with_no_alpha_needs_an_empty_history_and_a_release(self) -> None:
+        for line in (
+            {**LINE, "alpha": None, "history": [], "release": None},
+            {**LINE, "alpha": None, "release": RELEASE_RECORD},
+        ):
+            assert any("no alpha needs an empty history and a release" in problem for problem in self.errors(line))
+
+    def test_an_exemption_may_carry_a_reason_or_not(self) -> None:
+        plain = {"source": "user", "response": "no version"}
+        assert delivery_errors({**entry(), "version_exemption": plain}, "worktree #1") == []
+        assert delivery_errors({**entry(), "version_exemption": {**plain, "reason": "docs only"}}, "worktree #1") == []
+        extra = {**plain, "reason": "docs only", "other": "x"}
+        assert delivery_errors({**entry(), "version_exemption": extra}, "worktree #1") != []
+
+
+class TestOccupancyAtRecord:
+    """The check runs through the real worktree action: first alpha, a moved base, a moved release."""
+
+    def hold(self, repository: Path, name: str, branch: str, python: str, manifest: str) -> Path:
+        other = add_worktree(repository, name, branch)
+        (other / "pyproject.toml").write_text(f'[project]\nversion = "{python}"\n', encoding="utf-8")
+        (other / "plugin.json").write_text(json.dumps({"version": manifest}), encoding="utf-8")
+        return other
+
+    def test_a_first_alpha_on_an_occupied_base_is_refused(self, recorded: Path, linked: Path, repository: Path) -> None:
+        self.hold(repository, "2026-01-01-002", "npham/other", "0.24.0a4", "0.24.0-alpha.4")
+        write_versions(linked, "0.24.0", 1)
+        refuse(recorded, linked, "base 0.24.0 is occupied", "alpha", base="0.24.0", alpha=1, reason="r", files=FILES)
+        assert "version_line" not in entry_of(recorded)
+
+    def test_a_moved_base_that_another_worktree_holds_is_refused(
+        self, recorded: Path, linked: Path, repository: Path
+    ) -> None:
+        alpha(recorded, linked, 1)
+        other = self.hold(repository, "2026-01-01-002", "npham/other", "0.25.0a3", "0.25.0-alpha.3")
+        write_versions(linked, "0.25.0", 1)
+        refuse(
+            recorded, linked, "base 0.25.0 is occupied", "alpha", base="0.25.0", alpha=1, reason="r", base_moved=True
+        )
+        (other / "pyproject.toml").write_text('[project]\nversion = "0.26.0a1"\n', encoding="utf-8")
+        (other / "plugin.json").write_text(json.dumps({"version": "0.26.0-alpha.1"}), encoding="utf-8")
+        op(recorded, linked, "alpha", base="0.25.0", alpha=1, reason="free now", base_moved=True)
+        assert entry_of(recorded)["version_line"]["base"] == "0.25.0"
+
+    def test_a_release_that_moves_the_base_checks_it(self, recorded: Path, linked: Path, repository: Path) -> None:
+        alpha(recorded, linked, 1)
+        self.hold(repository, "2026-01-01-002", "npham/other", "0.25.1a1", "0.25.1-alpha.1")
+        write_versions(linked, "0.25.1", None)
+        refuse(recorded, linked, "base 0.25.1 is occupied", "release", version="0.25.1", base_moved=True, reason="r")
+
+    def test_a_stale_origin_is_noted_in_the_result(self, recorded: Path, linked: Path, repository: Path) -> None:
+        fetch_head = Path(git(repository, "rev-parse", "--git-path", "FETCH_HEAD"))
+        fetch_head = fetch_head if fetch_head.is_absolute() else repository / fetch_head
+        fetch_head.write_text("", encoding="utf-8")
+        old = time.time() - 5 * 24 * 3600
+        os.utime(fetch_head, (old, old))
+        result = alpha(recorded, linked, 1)
+        assert any("last fetched" in note for note in result["notes"])
+        write_versions(linked, "0.24.0", 2)
+        assert "notes" not in op(recorded, linked, "alpha", base="0.24.0", alpha=2, reason="again")
+
+
 class TestShape:
     def errors(self, **fields: Any) -> list[str]:
         return delivery_errors({**entry(), **fields}, "worktree #1")
@@ -454,7 +725,7 @@ class TestShape:
             ("version_line", {**LINE, "history": []}, "history must be a non-empty list"),
             ("version_line", {**LINE, "history": [{"alpha": 2}]}, "history item 1 needs"),
             ("version_line", {**LINE, "history": [{**LINE["history"][0], "alpha": True}]}, "history item 1 needs"),
-            ("version_line", {**LINE, "alpha": 3}, "must increase and end at the current alpha"),
+            ("version_line", {**LINE, "alpha": 3}, "must end at the current alpha"),
             ("version_line", {**LINE, "history": [LINE["history"][1], LINE["history"][0]]}, "must increase"),
             (
                 "version_line",
@@ -524,12 +795,13 @@ class TestGates:
 
     def planned_project(self, tmp_path: Path, repository: Path, linked: Path, *, first_writes: bool = True) -> Path:
         git(repository, "remote", "add", "origin", "https://github.com/o/r.git")
+        fetched(repository)
         project = make_project(tmp_path, repository)
         self.write_plan(project, first_writes=first_writes)
         record(project, linked)
         return project
 
-    def test_a_task_that_writes_needs_the_mr_and_the_alpha_line(
+    def test_a_task_that_writes_needs_the_mr_and_no_alpha_line(
         self, tmp_path: Path, repository: Path, linked: Path, gated: None
     ) -> None:
         project = self.planned_project(tmp_path, repository, linked)
@@ -537,12 +809,10 @@ class TestGates:
         def revision() -> int:
             return load_state(project)["revision"]
 
-        with pytest.raises(WorkspaceError, match=r"no merge request.*no alpha line"):
+        with pytest.raises(WorkspaceError, match=r"no merge request") as refusal:
             task_operation(project, "start", "T01", expected_revision=revision())
+        assert "alpha" not in str(refusal.value)
         op(project, linked, "pull_request", host="github", url=URL, number=7)
-        with pytest.raises(WorkspaceError, match="no alpha line"):
-            task_operation(project, "start", "T01", expected_revision=revision())
-        alpha(project, linked, 1)
         started = task_operation(project, "start", "T01", expected_revision=revision())
         assert started["status"] == "EXECUTING"
 
@@ -578,7 +848,7 @@ class TestGates:
         self.write_plan(project)
         record(project, linked)
         op(project, linked, "pull_request", exempt="no_remote")
-        op(project, linked, "alpha", exempt=True)
+        exempt(project, linked)
         assert start_findings(load_state(project)) == []
         assert closure_findings(load_state(project)) == []
 
@@ -589,11 +859,11 @@ class TestGates:
     def test_closure_names_each_missing_record(self, recorded: Path, linked: Path, gated: None) -> None:
         findings = closure_findings(load_state(recorded))
         assert [f for f in findings if "no pull_request or pr_exemption" in f]
-        assert [f for f in findings if "no version_line or version_exemption" in f]
+        assert [f for f in findings if "no release record or version_exemption" in f]
         op(recorded, linked, "pull_request", host="github", url=URL, number=7)
         assert any("no merge decision" in f for f in closure_findings(load_state(recorded)))
         op(recorded, linked, "merge", merge_state="declined")
-        op(recorded, linked, "alpha", exempt=True)
+        exempt(recorded, linked)
         assert closure_findings(load_state(recorded)) == []
 
     def test_finalize_is_refused_until_the_records_exist(

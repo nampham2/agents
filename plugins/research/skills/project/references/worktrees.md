@@ -12,8 +12,8 @@ commands only after the user confirms them in their own words.
 2. Propose, do not assume. Path: `<repo-parent>/<repo-name>.worktrees/<project-id>`. Branch:
    `<prefix>/<project-id>-<slug>`, with the prefix the repository's local branches already use,
    else `project/`, and `<slug>` from the title. Also propose the empty seed commit, the push, the
-   draft MR, the alpha line (step 7) and one approval to post replies and resolve threads on that
-   MR. Keep the user's confirming words for the record.
+   draft MR and one approval to post replies and resolve threads on that MR. Keep the user's
+   confirming words for the record.
 3. Create it with `git -C <repo> worktree add -b <branch> <path>`. `git status --short --branch` in
    the main checkout must read the same before and after.
 4. Run `git commit --allow-empty`, `git push -u origin <branch>`, then `gh pr create --draft`
@@ -38,16 +38,11 @@ commands only after the user confirms them in their own words.
 6. Record the MR with `"operation":"pull_request"`, `host` (`github` or `gitlab`), `url` and
    `number`. A repository with no remote records `"exempt":"no_remote"` instead. A target that is
    no repository needs neither.
-7. Find the version files. Propose a base `X.Y.Z` and a first alpha `X.Y.Za1`. After the user
-   confirms, write `X.Y.ZaN` into Python files and `X.Y.Z-alpha.N` into plugin manifests. Record
-   `"operation":"alpha"` with `files` (`path`, `style` `pep440` or `semver`), `base`, `alpha` and
-   `reason`. With no version file, record `"exempt":true`.
-8. Keep one alpha line. Record `"operation":"alpha"` again before each test deploy or plugin
-   refresh. Increase only the number. If the main branch released past the base, ask the user,
-   then send the new `base` with `"base_moved":true` and a `reason`.
+7. Record an alpha line only when the project needs a test or experiment build, and the version
+   decision before closing, as [versioning.md](versioning.md) says.
 
 For a project created after the gate cutoff, `task start` refuses a task with `target` outputs
-until steps 6 and 7 are recorded.
+until step 6 is recorded.
 
 ## Never
 

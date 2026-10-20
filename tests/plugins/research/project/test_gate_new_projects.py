@@ -1,7 +1,7 @@
 """The alignment gate for new projects: what counts as new, and what proves the tool confirmed.
 
 Across 85 projects the only thing a project needed to leave ALIGNING was a legal transition: the
-spec, the agreed architecture and the confirmations were warnings at most. The gate enforces them
+spec, the agreed planning document and the confirmations were warnings at most. The gate enforces them
 for projects created on or after a cutoff date, so no existing project changes shape and no older
 launcher is locked out by the gate itself. These tests cover the foundations (the cutoff, the
 confirmation marker, the test fixtures); the gate's own transitions are tested further down once it
@@ -88,7 +88,7 @@ class TestFixtures:
 
 class TestConfirmationMarker:
     def confirm(self, project: Path, kind: str, review_id: str, identity: str) -> str:
-        name = "spec" if kind == "requirements" else "architecture"
+        name = "spec" if kind == "requirements" else "planning"
         token = lib.document_sha256((project / f"{name}.md").read_text(encoding="utf-8"))
         workflow(
             project,
@@ -102,27 +102,27 @@ class TestConfirmationMarker:
 
     def test_confirm_writes_one_marker_per_confirmation_into_the_spec(self, project: Path) -> None:
         fill_spec(project)
-        (project / "architecture.md").write_text("# A1\n\nStatus: draft\n\n## Modules\n\nOne.\n", encoding="utf-8")
+        (project / "planning.md").write_text("# A1\n\nStatus: draft\n\n## Modules\n\nOne.\n", encoding="utf-8")
         spec_token = self.confirm(project, "requirements", "R1", "confirm-r1")
-        arch_token = self.confirm(project, "architecture", "A1", "confirm-a1")
+        arch_token = self.confirm(project, "planning", "A1", "confirm-a1")
         spec = (project / "spec.md").read_text(encoding="utf-8")
         found = lib.recorded_confirmations(spec)
-        assert found == {"requirements": [("R1", spec_token)], "architecture": [("A1", arch_token)]}
-        assert lib.confirmation_marker("architecture", "A1", arch_token) in (
-            (project / "architecture.md").read_text(encoding="utf-8")
-        ), "the architecture confirmation block carries the same marker"
+        assert found == {"requirements": [("R1", spec_token)], "planning": [("A1", arch_token)]}
+        assert lib.confirmation_marker("planning", "A1", arch_token) in (
+            (project / "planning.md").read_text(encoding="utf-8")
+        ), "the planning confirmation block carries the same marker"
 
     def test_a_hand_typed_decision_is_not_a_recorded_confirmation(self, project: Path) -> None:
         from workspace_documents import append_record
 
         append_record(
             project, "decision",
-            "kind: architecture\nreview_id: A1\nproposal_sha256: " + "0" * 64
+            "kind: planning\nreview_id: A1\nproposal_sha256: " + "0" * 64
             + "\nresponse: yes\nsource: me\nscope: all",
             entry_id="looks-like-one",
         )
         assert lib.recorded_confirmations((project / "spec.md").read_text(encoding="utf-8")) == {
-            "requirements": [], "architecture": [],
+            "requirements": [], "planning": [],
         }
 
     def test_the_finder_ignores_a_marker_with_a_malformed_sha_or_kind(self) -> None:
@@ -131,19 +131,19 @@ class TestConfirmationMarker:
             "<!-- research-confirmation: kind=design review_id=A1 proposal_sha256=" + "a" * 64 + " -->\n"
             "<!-- research-confirmation: kind=requirements review_id=R2 proposal_sha256=" + "b" * 64 + " -->\n"
         )
-        assert lib.recorded_confirmations(text) == {"requirements": [("R2", "b" * 64)], "architecture": []}
+        assert lib.recorded_confirmations(text) == {"requirements": [("R2", "b" * 64)], "planning": []}
 
     def test_confirming_closes_the_lifecycle_as_before(self, project: Path) -> None:
         # The marker must not disturb what confirm already did: agreed status and the spec link.
         fill_spec(project)
-        (project / "architecture.md").write_text("# A1\n\nStatus: draft\n\n## Modules\n\nOne.\n", encoding="utf-8")
-        self.confirm(project, "architecture", "A1", "confirm-a1")
-        assert lib.architecture_status((project / "architecture.md").read_text(encoding="utf-8")) == "agreed"
+        (project / "planning.md").write_text("# A1\n\nStatus: draft\n\n## Modules\n\nOne.\n", encoding="utf-8")
+        self.confirm(project, "planning", "A1", "confirm-a1")
+        assert lib.planning_status((project / "planning.md").read_text(encoding="utf-8")) == "agreed"
         spec = (project / "spec.md").read_text(encoding="utf-8")
-        assert "Agreed architecture: [revision A1](architecture.md)." in spec
+        assert "Agreed planning: [revision A1](planning.md)." in spec
 
 
-ARCHITECTURE = "# A1\n\nStatus: draft\n\n## Modules\n\nOne parser.\n"
+PLANNING = "# A1\n\nStatus: draft\n\n## Modules\n\nOne parser.\n"
 
 
 def plan_patch(status: str = "PLANNING") -> dict[str, Any]:
@@ -152,18 +152,18 @@ def plan_patch(status: str = "PLANNING") -> dict[str, Any]:
     return {"status": status, "tasks": [task("T01")]}
 
 
-def align(project: Path, *, spec: bool = True, architecture: bool = True, requirements: bool = True,
+def align(project: Path, *, spec: bool = True, planning: bool = True, requirements: bool = True,
           agreed: bool = True) -> None:
     """Bring a project to the fully aligned state, or leave out one fact."""
     if spec:
         fill_spec(project)
-    if architecture:
-        (project / "architecture.md").write_text(ARCHITECTURE, encoding="utf-8")
+    if planning:
+        (project / "planning.md").write_text(PLANNING, encoding="utf-8")
     confirmer = TestConfirmationMarker()
     if requirements:
         confirmer.confirm(project, "requirements", "R1", "confirm-r1")
-    if architecture and agreed:
-        confirmer.confirm(project, "architecture", "A1", "confirm-a1")
+    if planning and agreed:
+        confirmer.confirm(project, "planning", "A1", "confirm-a1")
 
 
 def state_of(project: Path) -> dict[str, Any]:
@@ -203,8 +203,8 @@ class TestGate:
     @pytest.mark.parametrize(
         ("left_out", "expected"),
         [
-            ({"architecture": False}, "architecture.md missing"),
-            ({"agreed": False}, "architecture.md is a draft"),
+            ({"planning": False}, "planning.md missing"),
+            ({"agreed": False}, "planning.md is a draft"),
             ({"requirements": False}, "no requirements confirmation was recorded"),
         ],
     )
@@ -222,15 +222,15 @@ class TestGate:
 
     def test_a_hand_written_agreed_status_without_the_markers_is_refused(self, new_project: Path) -> None:
         fill_spec(new_project)
-        (new_project / "architecture.md").write_text(ARCHITECTURE.replace("draft", "agreed"), encoding="utf-8")
+        (new_project / "planning.md").write_text(PLANNING.replace("draft", "agreed"), encoding="utf-8")
         with pytest.raises(lib.WorkspaceError, match="no requirements confirmation"):
             self.leave(new_project)
 
-    def test_an_architecture_marker_must_name_a_review_present_in_the_document(self, new_project: Path) -> None:
+    def test_a_planning_marker_must_name_a_review_present_in_the_document(self, new_project: Path) -> None:
         align(new_project)
-        path = new_project / "architecture.md"
+        path = new_project / "planning.md"
         path.write_text(path.read_text(encoding="utf-8").replace("A1", "A2"), encoding="utf-8")
-        with pytest.raises(lib.WorkspaceError, match=r"review identifier present in architecture\.md"):
+        with pytest.raises(lib.WorkspaceError, match=r"review identifier present in planning\.md"):
             self.leave(new_project)
 
     def test_the_dry_run_reports_the_same_refusal_without_writing(self, new_project: Path) -> None:
@@ -248,7 +248,7 @@ class TestGate:
         state = update_project_data(project, plan_patch(), expected_revision=0)
         assert state["status"] == "PLANNING"
         report = lib.validate_project(project)
-        assert report.valid and any("architecture.md is missing" in w for w in report.warnings)
+        assert report.valid and any("planning.md is missing" in w for w in report.warnings)
 
     def test_blocked_is_reachable_but_leaving_it_for_planning_is_gated(self, new_project: Path) -> None:
         from workspace_session import update_project_data
@@ -280,7 +280,7 @@ class TestGate:
         task_operation(new_project, "start", "T01", expected_revision=state_of(new_project)["revision"])
         record = lib.record_evidence_result(new_project, "T01", ["python3", "-c", "pass"]).record_id
         # A design revision reopened as a draft while executing: commits must still go through.
-        path = new_project / "architecture.md"
+        path = new_project / "planning.md"
         path.write_text(path.read_text(encoding="utf-8").replace("Status: agreed", "Status: draft"), encoding="utf-8")
         task_operation(
             new_project, "finish", "T01", expected_revision=state_of(new_project)["revision"],
@@ -359,7 +359,7 @@ class TestAgreementIsBoundToContent:
     """Confirming A1 and then rewriting it left the review id and status in place, and PLANNING still succeeded.
 
     The gate now compares the digest recorded when the user agreed with the digest of what the
-    documents hold, ignoring only what the tool itself writes: decision history, the architecture
+    documents hold, ignoring only what the tool itself writes: decision history, the planning document
     link, the status word, the confirmation block, blank lines.
     """
 
@@ -374,12 +374,12 @@ class TestAgreementIsBoundToContent:
 
         return update_project_data(project, plan_patch(), expected_revision=state_of(project)["revision"])
 
-    def edit_architecture(self, project: Path, transform: Any) -> dict[str, Any]:
+    def edit_planning(self, project: Path, transform: Any) -> dict[str, Any]:
         from workspace_documents import document_snapshot, edit_document
 
-        text = (project / "architecture.md").read_text(encoding="utf-8")
-        token = document_snapshot(project, "architecture")["document_sha256"]
-        return edit_document(project, "architecture", expected_sha256=token, body=transform(text))
+        text = (project / "planning.md").read_text(encoding="utf-8")
+        token = document_snapshot(project, "planning")["document_sha256"]
+        return edit_document(project, "planning", expected_sha256=token, body=transform(text))
 
     def edit_spec(self, project: Path, heading: str, body: str) -> dict[str, Any]:
         from workspace_documents import document_snapshot, edit_document
@@ -387,12 +387,12 @@ class TestAgreementIsBoundToContent:
         token = document_snapshot(project, "spec")["document_sha256"]
         return edit_document(project, "spec", expected_sha256=token, sections={heading: body})
 
-    def test_an_architecture_rewritten_after_agreement_cannot_leave_aligning(self, aligned: Path) -> None:
-        self.edit_architecture(aligned, lambda text: text.replace("One parser.", "A different design entirely."))
-        text = (aligned / "architecture.md").read_text(encoding="utf-8")
-        assert "A1" in text and lib.architecture_status(text) == "agreed", "status and review id still look agreed"
+    def test_a_planning_document_rewritten_after_agreement_cannot_leave_aligning(self, aligned: Path) -> None:
+        self.edit_planning(aligned, lambda text: text.replace("One parser.", "A different design entirely."))
+        text = (aligned / "planning.md").read_text(encoding="utf-8")
+        assert "A1" in text and lib.planning_status(text) == "agreed", "status and review id still look agreed"
         before = state_of(aligned)["revision"]
-        with pytest.raises(lib.WorkspaceError, match=r"architecture\.md changed after its architecture confirmation"):
+        with pytest.raises(lib.WorkspaceError, match=r"planning\.md changed after its planning confirmation"):
             self.leave(aligned)
         assert state_of(aligned)["revision"] == before
 
@@ -402,11 +402,11 @@ class TestAgreementIsBoundToContent:
             self.leave(aligned)
 
     def test_confirming_the_current_text_again_repairs_it(self, aligned: Path) -> None:
-        self.edit_architecture(aligned, lambda text: text.replace("One parser.", "A different design entirely."))
+        self.edit_planning(aligned, lambda text: text.replace("One parser.", "A different design entirely."))
         with pytest.raises(lib.WorkspaceError, match="changed after"):
             self.leave(aligned)
         confirmer = TestConfirmationMarker()
-        confirmer.confirm(aligned, "architecture", "A1", "confirm-a1-again")
+        confirmer.confirm(aligned, "planning", "A1", "confirm-a1-again")
         assert self.leave(aligned)["status"] == "PLANNING"
 
     def test_the_tools_own_writes_do_not_unconfirm_anything(self, aligned: Path) -> None:
@@ -415,7 +415,7 @@ class TestAgreementIsBoundToContent:
         append_record(aligned, "decision", "A later decision.", entry_id="later-decision")
         spec = (aligned / "spec.md").read_text(encoding="utf-8")
         assert lib.proposal_digest("requirements", spec) == lib.recorded_proposals(spec)["requirements"][-1][1]
-        self.edit_architecture(aligned, lambda text: text.replace("\n\n", "\n\n\n").replace("Modules", "Modules  "))
+        self.edit_planning(aligned, lambda text: text.replace("\n\n", "\n\n\n").replace("Modules", "Modules  "))
         assert self.leave(aligned)["status"] == "PLANNING"
 
     def test_a_confirmation_that_predates_content_binding_is_refused_with_a_repair(self, aligned: Path) -> None:
@@ -428,13 +428,13 @@ class TestAgreementIsBoundToContent:
         assert "workflow confirm" in str(excinfo.value)
 
     def test_edits_report_which_confirmations_they_made_stale(self, aligned: Path) -> None:
-        result = self.edit_architecture(aligned, lambda text: text.replace("One parser.", "Two parsers."))
-        assert [item.split(" confirmation")[0] for item in result["stale_confirmations"]] == ["the architecture"]
+        result = self.edit_planning(aligned, lambda text: text.replace("One parser.", "Two parsers."))
+        assert [item.split(" confirmation")[0] for item in result["stale_confirmations"]] == ["the planning"]
         assert "A1" in result["stale_confirmations"][0]
         spec_result = self.edit_spec(aligned, "In scope", "Changed scope.")
         assert len(spec_result["stale_confirmations"]) == 2
         TestConfirmationMarker().confirm(aligned, "requirements", "R1", "confirm-r1-again")
-        TestConfirmationMarker().confirm(aligned, "architecture", "A1", "confirm-a1-again")
+        TestConfirmationMarker().confirm(aligned, "planning", "A1", "confirm-a1-again")
         quiet = self.edit_spec(aligned, "In scope", "Changed scope.")
         assert "stale_confirmations" not in quiet
 
@@ -447,7 +447,7 @@ class TestAgreementIsBoundToContent:
 
     def test_an_unconfirmed_draft_has_nothing_to_go_stale(self, project: Path) -> None:
         fill_spec(project)
-        (project / "architecture.md").write_text(ARCHITECTURE, encoding="utf-8")
+        (project / "planning.md").write_text(PLANNING, encoding="utf-8")
         payload = request(project, "round-draft", sections={"Out of scope": "Anything."})
         assert "stale_confirmations" not in workflow(project, "round", payload)
 
@@ -459,21 +459,21 @@ class TestAgreementIsBoundToContent:
 
 
 class TestProposalDigest:
-    def test_the_architecture_status_word_and_confirmation_block_are_ignored(self) -> None:
+    def test_the_planning_status_word_and_confirmation_block_are_ignored(self) -> None:
         draft = "# A1\n\nStatus: draft\n\nOne parser.\n"
         agreed = draft.replace("draft", "agreed") + "\nConfirmation (2026-10-02T10:00:00+02:00):\n\nresponse: yes\n"
-        assert lib.proposal_digest("architecture", draft) == lib.proposal_digest("architecture", agreed)
-        assert lib.proposal_digest("architecture", draft) != lib.proposal_digest("architecture", draft + "More.\n")
+        assert lib.proposal_digest("planning", draft) == lib.proposal_digest("planning", agreed)
+        assert lib.proposal_digest("planning", draft) != lib.proposal_digest("planning", draft + "More.\n")
 
-    def test_an_architecture_without_a_status_line_is_digested_as_written(self) -> None:
-        assert lib.proposal_digest("architecture", "# A1\n\nBody.\n") != lib.proposal_digest(
-            "architecture", "# A1\n\nOther body.\n"
+    def test_a_planning_document_without_a_status_line_is_digested_as_written(self) -> None:
+        assert lib.proposal_digest("planning", "# A1\n\nBody.\n") != lib.proposal_digest(
+            "planning", "# A1\n\nOther body.\n"
         )
 
     def test_requirements_are_the_current_specification_alone(self) -> None:
         base = "# T\n\n## Current specification\n\n### In scope\n\nWork.\n\n## Decision history\n\n- one\n"
         grown = base + "- two\n"
-        linked = base.replace("Work.\n", "Work.\n\nAgreed architecture: [revision A1](architecture.md).\n")
+        linked = base.replace("Work.\n", "Work.\n\nAgreed planning: [revision A1](planning.md).\n")
         assert lib.proposal_digest("requirements", base) == lib.proposal_digest("requirements", grown)
         assert lib.proposal_digest("requirements", base) == lib.proposal_digest("requirements", linked)
         assert lib.proposal_digest("requirements", base) != lib.proposal_digest(
@@ -491,13 +491,13 @@ class TestAlignmentConfirmation:
     def drafted(self, project: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         monkeypatch.setattr(lib, "GATES_ENFORCED_FROM", "2020-01-01T00:00:00+00:00")
         fill_spec(project)
-        (project / "architecture.md").write_text(ARCHITECTURE, encoding="utf-8")
+        (project / "planning.md").write_text(PLANNING, encoding="utf-8")
         return project
 
     def tokens(self, project: Path) -> dict[str, str]:
         return {
             "requirements_sha256": lib.document_sha256((project / "spec.md").read_text(encoding="utf-8")),
-            "architecture_sha256": lib.document_sha256((project / "architecture.md").read_text(encoding="utf-8")),
+            "planning_sha256": lib.document_sha256((project / "planning.md").read_text(encoding="utf-8")),
         }
 
     def confirm(self, project: Path, identity: str = "align-1", **overrides: Any) -> dict[str, Any]:
@@ -513,7 +513,7 @@ class TestAlignmentConfirmation:
     def files(self, project: Path) -> dict[str, str]:
         return {
             name: (project / name).read_text(encoding="utf-8")
-            for name in ("spec.md", "architecture.md", "project.json")
+            for name in ("spec.md", "planning.md", "project.json")
         }
 
     def test_one_reply_satisfies_the_gate_for_both_documents(self, drafted: Path) -> None:
@@ -522,17 +522,17 @@ class TestAlignmentConfirmation:
         tokens = self.tokens(drafted)
         self.confirm(drafted)
         spec = (drafted / "spec.md").read_text(encoding="utf-8")
-        architecture = (drafted / "architecture.md").read_text(encoding="utf-8")
+        planning = (drafted / "planning.md").read_text(encoding="utf-8")
         assert lib.recorded_confirmations(spec) == {
             "requirements": [("A1", tokens["requirements_sha256"])],
-            "architecture": [("A1", tokens["architecture_sha256"])],
+            "planning": [("A1", tokens["planning_sha256"])],
         }
         proposals = lib.recorded_proposals(spec)
         assert proposals["requirements"][0][1] == lib.proposal_digest("requirements", spec)
-        assert proposals["architecture"][0][1] == lib.proposal_digest("architecture", architecture)
-        assert lib.architecture_status(architecture) == "agreed"
-        assert "Agreed architecture: [revision A1](architecture.md)." in spec
-        assert "align-1-requirements" in spec and "align-1-architecture" in spec
+        assert proposals["planning"][0][1] == lib.proposal_digest("planning", planning)
+        assert lib.planning_status(planning) == "agreed"
+        assert "Agreed planning: [revision A1](planning.md)." in spec
+        assert "align-1-requirements" in spec and "align-1-planning" in spec
         patched = update_project_data(drafted, plan_patch(), expected_revision=state_of(drafted)["revision"])
         assert patched["status"] == "PLANNING"
 
@@ -541,19 +541,19 @@ class TestAlignmentConfirmation:
         from workspace_session import update_project_data
 
         self.confirm(drafted)
-        token = document_snapshot(drafted, "architecture")["document_sha256"]
-        text = (drafted / "architecture.md").read_text(encoding="utf-8")
-        edit_document(drafted, "architecture", expected_sha256=token, body=text.replace("One parser.", "Two."))
-        with pytest.raises(lib.WorkspaceError, match="changed after its architecture confirmation"):
+        token = document_snapshot(drafted, "planning")["document_sha256"]
+        text = (drafted / "planning.md").read_text(encoding="utf-8")
+        edit_document(drafted, "planning", expected_sha256=token, body=text.replace("One parser.", "Two."))
+        with pytest.raises(lib.WorkspaceError, match="changed after its planning confirmation"):
             update_project_data(drafted, plan_patch(), expected_revision=state_of(drafted)["revision"])
 
     @pytest.mark.parametrize(
         ("overrides", "fragment"),
         [
             ({"requirements_sha256": "0" * 64}, "proposal token changed"),
-            ({"architecture_sha256": "0" * 64}, "proposal token changed"),
+            ({"planning_sha256": "0" * 64}, "proposal token changed"),
             ({"proposal_sha256": "0" * 64}, "not proposal_sha256"),
-            ({"architecture_sha256": None}, "architecture_sha256"),
+            ({"planning_sha256": None}, "planning_sha256"),
             ({"requirements_sha256": None}, "requirements_sha256"),
             ({"review_id": "Z9"}, "declare its status and reviewed identifier"),
             ({"response": None}, "response"),
@@ -571,7 +571,7 @@ class TestAlignmentConfirmation:
         before = self.files(drafted)
         with pytest.raises(lib.WorkspaceError, match="only kind alignment"):
             self.confirm(drafted, kind="requirements", proposal_sha256=self.tokens(drafted)["requirements_sha256"])
-        with pytest.raises(lib.WorkspaceError, match="confirmation kind must be requirements, architecture or"):
+        with pytest.raises(lib.WorkspaceError, match="confirmation kind must be requirements, planning or"):
             self.confirm(drafted, kind="everything")
         assert self.files(drafted) == before
 
@@ -584,3 +584,103 @@ class TestAlignmentConfirmation:
         assert workflow(drafted, "confirm", payload) == first
         spec = (drafted / "spec.md").read_text(encoding="utf-8")
         assert spec.count("<!-- research-confirmation:") == 2 and spec.count("<!-- research-proposal:") == 2
+
+
+class TestTheNamesBeforeThePlanningSplit:
+    """What older records, habits and callers say still works, and means the planning document."""
+
+    def test_markers_written_as_architecture_count_as_planning(self) -> None:
+        text = (
+            "<!-- research-confirmation: kind=architecture review_id=A1 proposal_sha256=" + "a" * 64 + " -->\n"
+            "<!-- research-proposal: kind=architecture review_id=A1 content_sha256=" + "b" * 64 + " -->\n"
+            "<!-- research-confirmation: kind=planning review_id=A2 proposal_sha256=" + "c" * 64 + " -->\n"
+            "<!-- research-proposal: kind=planning review_id=A2 content_sha256=" + "d" * 64 + " -->\n"
+        )
+        assert lib.recorded_confirmations(text) == {
+            "requirements": [], "planning": [("A1", "a" * 64), ("A2", "c" * 64)],
+        }
+        assert lib.recorded_proposals(text) == {
+            "requirements": [], "planning": [("A1", "b" * 64), ("A2", "d" * 64)],
+        }
+
+    def test_the_old_agreed_line_does_not_change_the_requirements_digest(self) -> None:
+        base = "# T\n\n## Current specification\n\n### In scope\n\nWork.\n"
+        old = base.replace("Work.\n", "Work.\n\nAgreed architecture: [revision A1](architecture.md).\n")
+        assert lib.proposal_digest("requirements", base) == lib.proposal_digest("requirements", old)
+
+    def test_confirm_kind_architecture_is_a_planning_confirmation(self, project: Path) -> None:
+        fill_spec(project)
+        (project / "planning.md").write_text("# A1\n\nStatus: draft\n\n## Modules\n\nOne.\n", encoding="utf-8")
+        TestConfirmationMarker().confirm(project, "architecture", "A1", "confirm-a1")
+        spec = (project / "spec.md").read_text(encoding="utf-8")
+        assert "kind=planning review_id=A1" in spec
+        assert "kind=architecture" not in spec
+        assert lib.planning_status((project / "planning.md").read_text(encoding="utf-8")) == "agreed"
+
+    def test_a_legacy_layout_is_agreed_in_place_and_linked_by_its_own_name(self, project: Path) -> None:
+        fill_spec(project)
+        (project / "architecture.md").write_text("# A1\n\nStatus: draft\n\n## Modules\n\nOne.\n", encoding="utf-8")
+        token = lib.document_sha256((project / "architecture.md").read_text(encoding="utf-8"))
+        workflow(
+            project,
+            "confirm",
+            request(
+                project, "confirm-legacy", kind="planning", proposal_sha256=token, review_id="A1",
+                response="I confirm", source="user reply", scope="planning",
+                continuation={"next": "Plan", "questions": ""},
+                tokens={
+                    "spec": lib.document_sha256((project / "spec.md").read_text(encoding="utf-8")),
+                    "planning": token,
+                },
+            ),
+        )
+        assert not (project / "planning.md").exists()
+        assert lib.planning_status((project / "architecture.md").read_text(encoding="utf-8")) == "agreed"
+        spec = (project / "spec.md").read_text(encoding="utf-8")
+        assert "Agreed planning: [revision A1](architecture.md)." in spec
+
+    def test_alignment_takes_the_old_token_name_but_not_both(
+        self, project: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(lib, "GATES_ENFORCED_FROM", "2020-01-01T00:00:00+00:00")
+        fill_spec(project)
+        (project / "planning.md").write_text(PLANNING, encoding="utf-8")
+        tokens = TestAlignmentConfirmation().tokens(project)
+        common = {
+            "kind": "alignment", "review_id": "A1", "response": "Yes", "source": "user reply", "scope": "both",
+            "continuation": {"next": "Plan", "questions": ""}, "requirements_sha256": tokens["requirements_sha256"],
+        }
+        with pytest.raises(lib.WorkspaceError, match="not both"):
+            workflow(
+                project, "confirm",
+                request(project, "both-names", **common, planning_sha256=tokens["planning_sha256"],
+                        architecture_sha256=tokens["planning_sha256"]),
+            )
+        old_name = request(project, "old-name", **common, architecture_sha256=tokens["planning_sha256"])
+        workflow(project, "confirm", old_name)
+        spec = (project / "spec.md").read_text(encoding="utf-8")
+        assert [review for review, _ in lib.recorded_confirmations(spec)["planning"]] == ["A1"]
+
+    def test_round_refuses_the_design_key_in_a_legacy_layout_and_takes_planning(self, project: Path) -> None:
+        legacy = "# A1\n\nStatus: draft\n\n## Modules\n\nOne.\n"
+        (project / "architecture.md").write_text(legacy, encoding="utf-8")
+        continuation = {"next": "Review", "questions": ""}
+        with pytest.raises(lib.WorkspaceError, match="use the document id planning"):
+            workflow(
+                project, "round", request(project, "design-key", architecture="# Design\n", continuation=continuation)
+            )
+        assert (project / "architecture.md").read_text(encoding="utf-8") == legacy
+        assert not (project / "artifacts").exists()
+        tokens = {"planning": lib.document_sha256(legacy)}
+        revised = "# A2\n\nStatus: draft\n\n## Modules\n\nTwo.\n"
+        planning_round = request(project, "planning-key", planning=revised, tokens=tokens, continuation=continuation)
+        workflow(project, "round", planning_round)
+        assert (project / "architecture.md").read_text(encoding="utf-8") == revised
+        assert not (project / "planning.md").exists()
+
+    def test_round_writes_the_design_key_under_artifacts_when_there_is_no_legacy_file(self, project: Path) -> None:
+        continuation = {"next": "Review", "questions": ""}
+        workflow(project, "round", request(project, "design", architecture="# Design\n", continuation=continuation))
+        assert (project / "artifacts" / "architecture.md").read_text(encoding="utf-8") == "# Design\n"
+        assert not (project / "planning.md").exists()
+        assert not (project / "architecture.md").exists()

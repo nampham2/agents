@@ -902,8 +902,8 @@ def test_automated_cli_lifecycle_interaction_budget(
     def checkpoint(phase: str, next_action: str, session: str = "working") -> None:
         edit("handoff", (
             f"# Continuation\nSession state: {session}\nPhase: {phase}; revision: {revision}\n"
-            f"Spec: {tokens['spec']}\nArchitecture: {tokens['architecture']}\n"
-            f"Next: {next_action}\nRead spec.md constraints and architecture.md A1.\n"
+            f"Spec: {tokens['spec']}\nPlanning: {tokens['planning']}\n"
+            f"Next: {next_action}\nRead spec.md constraints and planning.md A1.\n"
             "No workers or external effects; commands observed terminal. Prior lessons: no candidates.\n"
         ))
 
@@ -912,7 +912,7 @@ def test_automated_cli_lifecycle_interaction_budget(
     sections["Objective and audience"] = "Produce three verified local fixture files."
     sections["Success and verification criteria"] = "Each task file must contain its task ID exactly."
     sections["Constraints and important assumptions"] = "Preserve unrelated files; no external effects."
-    sections["Deliverables and roots"] = "Target: T01.txt, T02.txt, T03.txt. Workspace: architecture.md A1."
+    sections["Deliverables and roots"] = "Target: T01.txt, T02.txt, T03.txt. Workspace: planning.md A1."
     result = call([
         "edit", str(project), "spec", "--sections-json", "-", "--expected-sha256", tokens["spec"],
     ], stdin=json.dumps(sections))
@@ -922,18 +922,18 @@ def test_automated_cli_lifecycle_interaction_budget(
     tokens["spec"] = result["document_sha256"]
     checkpoint("ALIGNING", "Review design A1.")
 
-    architecture = (
-        "# Architecture A1\nStatus: draft\n"
+    planning = (
+        "# Planning A1\nStatus: draft\n"
         "One module writes three local text files, preserving unrelated paths. "
         "Sequential tasks verify exact text; failed assertions require correction. "
         "No migration or external actions. Effort: low overall.\n"
     )
-    edit("architecture", architecture)
-    checkpoint("ALIGNING", "Await fixture user's architecture A1 confirmation.", "waiting")
+    edit("planning", planning)
+    checkpoint("ALIGNING", "Await fixture user's planning A1 confirmation.", "waiting")
     # The simulated user confirms this concrete proposal, rather than a task runner granting consent.
-    edit("architecture", architecture.replace("Status: draft", "Status: agreed"))
+    edit("planning", planning.replace("Status: draft", "Status: agreed"))
     result = call(["append", str(project), "decision", "--body",
-                   "Fixture user confirmed architecture A1 and its effort; no external actions authorized."])
+                   "Fixture user confirmed planning A1 and its effort; no external actions authorized."])
     tokens["spec"] = result["document_sha256"]
     tasks = [{
         **task(task_id, depends_on=[f"T0{index - 1}"] if index > 1 else []),
@@ -967,7 +967,7 @@ def test_automated_cli_lifecycle_interaction_budget(
                 note = call(["read", str(project), "handoff"])
                 assert note["document_sha256"] == resumed["documents"]["handoff"]["sha256"]
                 assert failed_id in note["text"]
-                design = call(["read", str(project), "architecture"])
+                design = call(["read", str(project), "planning"])
                 assert "Status: agreed" in design["text"]
                 assignment = call(["context", str(project), "--task", task_id, "--task-only"])
                 assert assignment["selected_task"]["status"] == "RUNNING"

@@ -22,7 +22,7 @@ from tests.conftest import REPO_ROOT, backdate_project
 from tests.plugins.research.project.test_worktrees import REFLECTION, git, make_repository
 
 SURFACES = ["bin", "skills/project/scripts"]
-ARCHITECTURE = "# A1\n\nStatus: draft\n\n## Modules\n\nOne parser, one test file.\n"
+PLANNING = "# A1\n\nStatus: draft\n\n## Modules\n\nOne parser, one test file.\n"
 TASK = {
     "id": "T01", "name": "Do the work", "success_criteria": "The check passes", "verification": "Run the check",
     "effect": {"kind": "none"}, "outputs": [],
@@ -49,7 +49,7 @@ class Cli:
         state = json.loads((project / "project.json").read_text(encoding="utf-8"))
         tokens = {
             name: snapshot(project / f"{name}.md")[1]
-            for name in ("spec", "architecture", "handoff", "reflection")
+            for name in ("spec", "planning", "handoff", "reflection")
             if (project / f"{name}.md").exists()
         }
         payload = {"id": identity, "expected_revision": state["revision"], "tokens": tokens, **fields}
@@ -87,27 +87,27 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
     sections = {heading: f"Agreed content for {heading}." for heading, _ in lib.SPEC_CANONICAL_SECTIONS}
     step("spec", cli.run("edit", project, "spec", "--sections-json", "-", "--expected-sha256",
                          snapshot(project / "spec.md")[1], stdin=json.dumps(sections)), refused=False)
-    step("architecture", cli.run("edit", project, "architecture", "--body-file", "-", "--expected-sha256",
-                                 "missing", stdin=ARCHITECTURE), refused=False)
+    step("planning", cli.run("edit", project, "planning", "--body-file", "-", "--expected-sha256",
+                             "missing", stdin=PLANNING), refused=False)
     confirmation = {
         "kind": "alignment", "review_id": "A1", "response": "Yes, go ahead", "source": "user reply in the test",
         "scope": "requirements and design",
         "requirements_sha256": snapshot(project / "spec.md")[1],
-        "architecture_sha256": snapshot(project / "architecture.md")[1],
+        "planning_sha256": snapshot(project / "planning.md")[1],
     }
     step("confirm-alignment", cli.flow(project, "confirm", "align-1", **confirmation), refused=False)
 
     # F1: rewriting the agreed design makes the confirmation stale, and the real gate says so.
-    architecture = (project / "architecture.md").read_text(encoding="utf-8")
+    planning = (project / "planning.md").read_text(encoding="utf-8")
     step("rewrite-design", cli.run(
-        "edit", project, "architecture", "--body-file", "-", "--expected-sha256",
-        snapshot(project / "architecture.md")[1], stdin=architecture.replace("One parser", "Three parsers")),
+        "edit", project, "planning", "--body-file", "-", "--expected-sha256",
+        snapshot(project / "planning.md")[1], stdin=planning.replace("One parser", "Three parsers")),
         refused=False)
     stale = step("plan-with-stale-agreement", cli.run(
         "update", project, "-", "--expected-revision", 0, stdin=json.dumps(plan)), refused=True)
-    assert "changed after its architecture confirmation" in stale.stderr
+    assert "changed after its planning confirmation" in stale.stderr
     # The repair the message names: agree to the current text again.
-    reconfirm = dict(confirmation, architecture_sha256=snapshot(project / "architecture.md")[1],
+    reconfirm = dict(confirmation, planning_sha256=snapshot(project / "planning.md")[1],
                      requirements_sha256=snapshot(project / "spec.md")[1])
     step("reconfirm", cli.flow(project, "confirm", "align-2", **reconfirm), refused=False)
     step("plan", cli.run("update", project, "-", "--expected-revision", 0, stdin=json.dumps(plan)), refused=False)
@@ -126,7 +126,7 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         confirmation=user), refused=False)
     step("record-alpha-exemption", cli.flow(
         project, "worktree", "wt-alpha", operation="alpha", path=str(worktree), exempt=True,
-        confirmation=user), refused=False)
+        reason="the repository has no version file", confirmation=user), refused=False)
 
     step("start", cli.run("task", project, "start", "T01", "--expected-revision", state_of(project)["revision"]),
          refused=False)
