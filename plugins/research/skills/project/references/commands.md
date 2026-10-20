@@ -12,7 +12,7 @@ T01 --task-only` returns task/dependencies; `--worker` changes its role, grantin
 `read <project-dir> spec --section "Constraints and important assumptions"` selects an exact
 heading; `--outline` returns headings and the SHA-256 token. Default reads exclude Decision history;
 select it explicitly. `read <project-dir> evidence --task T01` selects task entries; `--step report`
-selects report-check evidence; omit both for all. `read <project-dir> architecture` or `handoff`
+selects report-check evidence; omit both for all. `read <project-dir> planning` or `handoff`
 reads that document. Reads cap at 4,000 characters; continue with `--offset <next_offset>`.
 
 `list-projects <root> --query "<text>" [--status EXECUTING]` matches every word in
@@ -51,12 +51,12 @@ update.
 
 Reuse tokens from edits, context or outline reads. Initial `--sections-json -`
 maps the seven headings to bodies; later batches replace non-overlapping sections.
-Reflection, architecture and handoff use whole-document `--body-file -`:
+Reflection, planning and handoff use whole-document `--body-file -`:
 
 ```sh
 research-project edit <project-dir> spec --sections-json - --expected-sha256 <token>
 research-project edit <project-dir> reflection --body-file - --expected-sha256 missing
-research-project edit <project-dir> architecture --body-file - --expected-sha256 <token-or-missing>
+research-project edit <project-dir> planning --body-file - --expected-sha256 <token-or-missing>
 ```
 
 Append prose:

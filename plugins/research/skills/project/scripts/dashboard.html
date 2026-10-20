@@ -297,7 +297,7 @@ function sessionHtml(s, i) {
 function detailHtml(p) {
   if (p.unreadable) return `<section><p class="mute">project.json could not be read. Path: ${esc(p.path)}</p></section>`;
   const tasks = p.tasks.length ? `<table><tr><th>Task</th><th>Name</th><th>Status</th><th>Effect</th><th>Evidence</th></tr>${p.tasks.map(t => `<tr><td>${esc(t.id)}</td><td>${esc(t.name)}</td><td class="st ${esc(t.status)}">${esc(t.status.toLowerCase())}</td><td>${esc(t.effect || "")}</td><td>${t.evidence || ""}</td></tr>`).join("")}</table>` : `<p class="mute">No tasks planned yet.</p>`;
-  const files = ["spec.md", "architecture.md", "handoff.md", "evidence.md"].map(f => `<button data-copy="${esc(p.path + "/" + f)}">${ic("file")}${f}</button>`).join("");
+  const files = ["spec.md", p.planning_file || "planning.md", "handoff.md", "evidence.md"].map(f => `<button data-copy="${esc(p.path + "/" + f)}">${ic("file")}${f}</button>`).join("");
   const wts = (p.worktrees || []).map(w => `<li>${esc(w.branch)} <span class="mute">(${esc(w.status)})</span><br><span class="mute">${esc(w.path)}</span>${w.mr ? `<br>${link(w.mr, w.mr)}` : ""}</li>`).join("");
   const active = (p.worktrees || []).filter(w => w.status === "active");
   const wt = active[0];

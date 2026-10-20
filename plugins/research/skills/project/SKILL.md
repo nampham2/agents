@@ -2,7 +2,7 @@
 name: project
 description: >
   Start, resume, review, or close a persistent project workspace for complex or multi-session
-  work. Requires a requirements interview and architecture agreement before task planning. Use
+  work. Requires a requirements interview and planning agreement before task planning. Use
   when explicitly requested; ordinary one-turn changes and reviews do not need this workflow.
 ---
 
@@ -64,13 +64,13 @@ research-project init <root> --title "<title>" --working-directory <target> --js
 or commit repositories implicitly.
 Read [commands.md](references/commands.md) before the first record update, including alignment.
 
-## Align requirements and architecture
+## Align requirements and planning
 
-Review relevant [lessons](references/memory-operations.md) before requirements/design agreement.
+Review relevant [lessons](references/memory-operations.md) before requirements/planning agreement.
 Reassess after direction changes; resolve staged lessons at closure.
 
 Every project requires [grill](references/grill.md), then
-[architecture review](references/architecture-review.md); read and follow both before planning.
+[planning review](references/planning-review.md); read and follow both before planning.
 Clear requirements need confirmation, even with zero question rounds. Write these sections under
 `## Current specification`, in order:
 
@@ -84,16 +84,17 @@ Clear requirements need confirmation, even with zero question rounds. Write thes
 ### Destructive and external actions
 ```
 
-Save related spec sections, decisions, design drafts and continuation with `workflow ... round`.
+Save spec sections, decisions, drafts and continuation with `workflow ... round`.
 Use `workflow ... confirm` for actual agreement against the proposal token.
 
-Record explicit requirements/design agreement and `Status: agreed` before planning; reuse current
+Record explicit requirements/planning agreement and `Status: agreed` before planning; reuse current
 agreement on resume; reopen affected choices for missing records or material changes.
 
 ## Plan tasks
 
-After agreement, enter `PLANNING` and derive milestones from `architecture.md` with success
-criteria, verification, effects, `depends_on` and rooted outputs. Only plan publication, pushes, or
+After agreement, enter `PLANNING`; derive milestones from `planning.md` with success
+criteria, verification, effects, `depends_on` and rooted outputs. A code project's first task is the
+design task ([design-document.md](references/design-document.md)). Only plan publication, pushes, or
 commits when requested. Send a compact patch through stdin:
 
 ```sh

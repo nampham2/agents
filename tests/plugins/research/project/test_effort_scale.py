@@ -6,7 +6,7 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-REFERENCE = REPO_ROOT / "plugins/research/skills/project/references/architecture-review.md"
+REFERENCE = REPO_ROOT / "plugins/research/skills/project/references/planning-review.md"
 TIME_UNITS = re.compile(r"\b(hours?|days?|weeks?|engineer-days?|person-days?)\b", re.IGNORECASE)
 
 

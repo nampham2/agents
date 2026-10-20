@@ -1241,6 +1241,100 @@ def planning_warnings(project_dir: Path, status: object, state: "dict[str, Any] 
     return found
 
 
+# The design document, `artifacts/architecture.md`, is written by the first task of a project that
+# writes code and kept current by every code task after it. It is never gated, so these are warnings
+# for a project created on or after `PLANNING_SPLIT_FROM` and nothing else: a docs-only plan, a
+# closed project and an older project are quiet. A code task is a `local_write` task with a `target`
+# output that is not prose; the test is a heuristic that only drives warnings.
+PROSE_SUFFIXES = (".md", ".rst", ".txt")
+# Sections every design carries; a profile named on its `Profiles:` line adds the others.
+DESIGN_CORE_SECTIONS = (
+    "Purpose and quality attributes", "Context and containers", "Modules and code layout", "Key flows",
+    "Failure modes and recovery", "Evaluation plan", "Decisions", "Implementation status",
+)
+DESIGN_PROFILE_SECTIONS = {
+    "algorithmic": ("Algorithms",),
+    "concurrent-distributed": ("Concurrency and distribution",),
+    "service": ("Security, privacy and limits", "Operations and rollout"),
+}
+DESIGN_STATUS_SECTION = "Implementation status"
+DESIGN_PROFILES_LINE = re.compile(r"^\W*profiles?\W*:(?P<names>.*)$", re.IGNORECASE | re.MULTILINE)
+DESIGN_HEADING = re.compile(r"^(?P<marks>#{1,6})[ \t]+(?P<title>.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
+
+
+def is_code_task(task: object) -> bool:
+    """Whether `task` writes files that are not prose into the target (arbitrary JSON is never one)."""
+    if not isinstance(task, dict):
+        return False
+    effect = task.get("effect")
+    outputs = task.get("outputs")
+    if not isinstance(effect, dict) or effect.get("kind") != "local_write" or not isinstance(outputs, list):
+        return False
+    return any(
+        isinstance(item, dict)
+        and item.get("root") == "target"
+        and isinstance(item.get("path"), str)
+        and not item["path"].lower().endswith(PROSE_SUFFIXES)
+        for item in outputs
+    )
+
+
+def _design_section_text(text: str, title: str) -> "str | None":
+    """The body under the first heading that names `title`, up to the next heading of its level or above."""
+    headings = list(DESIGN_HEADING.finditer(text))
+    for index, heading in enumerate(headings):
+        if title.lower() in heading.group("title").lower():
+            level = len(heading.group("marks"))
+            end = next((later.start() for later in headings[index + 1 :] if len(later.group("marks")) <= level), len(text))
+            return text[heading.end() : end]
+    return None
+
+
+def design_document_warnings(project_dir: Path, status: object, state: "dict[str, Any]") -> "list[str]":
+    """Warn when a code project has no current design document: missing, short of a section, or a row behind."""
+    if not isinstance(status, str) or status not in PLANNING_GATE_STATUSES:
+        return []
+    if not _created_on_or_after(state, PLANNING_SPLIT_FROM):
+        return []
+    tasks = state.get("tasks")
+    code_tasks = [task for task in tasks if is_code_task(task) and task.get("status") != "SKIPPED"] if isinstance(tasks, list) else []
+    if not code_tasks:
+        return []
+    path = project_dir / DESIGN_DOCUMENT
+    if not path.is_file():
+        return [
+            f"{DESIGN_DOCUMENT} is missing; a project with code tasks starts with a design task that writes it "
+            "(references/design-document.md)"
+        ]
+    text = read_text(path)
+    found: "list[str]" = []
+    profiles = {
+        name.strip().lower()
+        for line in DESIGN_PROFILES_LINE.finditer(text)
+        for name in re.split(r"[,\s]+", line.group("names"))
+        if name.strip()
+    }
+    required = list(DESIGN_CORE_SECTIONS)
+    for profile in sorted(profiles & DESIGN_PROFILE_SECTIONS.keys()):
+        required.extend(DESIGN_PROFILE_SECTIONS[profile])
+    absent = [title for title in required if _design_section_text(text, title) is None]
+    if absent:
+        found.append(f"{DESIGN_DOCUMENT} lacks section(s): " + "; ".join(absent) + " (write 'Not applicable: <reason>' under one that does not apply)")
+    rows = _design_section_text(text, DESIGN_STATUS_SECTION)
+    if rows is not None:
+        table = [line for line in rows.splitlines() if line.lstrip().startswith("|")]
+        behind = [
+            task["id"]
+            for task in code_tasks
+            if task.get("status") == "DONE"
+            and isinstance(task.get("id"), str)
+            and not any(re.search(rf"\b{re.escape(task['id'])}\b", line) for line in table)
+        ]
+        if behind:
+            found.append(f"{DESIGN_DOCUMENT} has no '{DESIGN_STATUS_SECTION}' row for DONE code task(s): " + ", ".join(behind))
+    return found
+
+
 # Where the closing report lives, and the sections it carries. Two authored files rather than one
 # generated from the other: the Markdown is the record a terminal, `grep` and `diff` can read, and the
 # HTML is the same findings presented, with charts. Deriving either from the other would mean shipping
@@ -2033,6 +2127,7 @@ def validate_v3_state(
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
         report.warnings.extend(planning_warnings(project_dir, status, state))
+        report.warnings.extend(design_document_warnings(project_dir, status, state))
         report.warnings.extend(verification_order_warnings(state.get("tasks")))
 
     # The closing report is checked at close and for a project already past it, and at no other
@@ -2348,6 +2443,7 @@ def validate_v4_state(
         if briefing_path.exists():
             report.warnings.extend(briefing_section_warnings(read_text(briefing_path)))
         report.warnings.extend(planning_warnings(project_dir, status, state))
+        report.warnings.extend(design_document_warnings(project_dir, status, state))
         report.warnings.extend(verification_order_warnings(state.get("tasks")))
 
     # Unlike the specification-section warnings, style does not depend on a record being complete,

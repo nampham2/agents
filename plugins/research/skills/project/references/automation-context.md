@@ -19,9 +19,10 @@ writing; it returns changed fields and canonical validation findings.
 | `memory-health` | `{}`; `absent`, `no_matches`, `available` or `failed`, with bounded diagnostics/candidates. |
 | `recover` | `id`, optional boolean `apply`; inspect a journal, or explicitly resume metadata/index persistence only. |
 
-Documents are `spec`, `architecture`, `handoff`, `reflection`, `memory-staging`, `evidence`,
-`tasks/T01`, `reviews/review_01`, or `artifacts/report`. Exact `entry` selects a saved decision,
-finding or evidence record ID; `section` selects an exact heading, including architecture sections.
+Documents are `spec`, `planning`, `architecture` (the design), `handoff`, `reflection`,
+`memory-staging`, `evidence`, `tasks/T01`, `reviews/review_01`, or `artifacts/report`. Exact `entry`
+selects a saved decision, finding or evidence record ID; `section` selects an exact heading,
+including planning sections.
 Reads default to 2,000 characters, maximum 20,000, with `next_offset` and truncation metadata.
 `next_offset: null` ends pagination; `truncated` also marks pages that omit earlier content.
 `if_sha256` suppresses unchanged content only when that content is still retained by the caller.
@@ -32,7 +33,7 @@ Handoff reads omit the generated metadata block; freshness compares those machin
 {"task":"T01","max_chars":12000,"selections":[
   {"document":"handoff"},
   {"document":"spec","section":"Constraints and important assumptions"},
-  {"document":"architecture","section":"Interfaces"},
+  {"document":"planning","section":"Approach and key decisions"},
   {"document":"evidence","entry":"ev-<saved-id>"}
 ]}
 ```

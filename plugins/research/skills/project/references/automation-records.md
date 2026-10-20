@@ -12,15 +12,15 @@ input with the same ID conflicts. Metadata operations never replay commands or e
 {"id":"round-2","expected_revision":0,"tokens":{"spec":"<sha256>"},
  "sections":{"In scope":"Parse the existing format; preserve compatibility."},
  "decisions":[{"id":"format-decision","body":"User chose compatibility; source: current reply."}],
- "architecture":"# A2\n\nStatus: draft\n\n<complete current proposal>",
+ "planning":"# A2\n\nStatus: draft\n\n<complete current proposal>",
  "continuation":{"next":"Ask for A2 confirmation","questions":"Confirm A2?"}}
 ```
 
 | Action | Additional input and behavior |
 | --- | --- |
 | `checkpoint` | `continuation`; derives phase, revision, spec/design tokens and Git observations; returns saved tokens and a resume prompt. |
-| `round` | Saves optional `sections` (spec heading to body), `decisions` (`{id,body}`), `architecture` and `continuation` together; existing architecture/handoff need their tokens. Infers no answers, advances no phase, marks no agreement. |
-| `confirm` | `kind` (`requirements`, `architecture` or `alignment`), exact `proposal_sha256` (`alignment`: `requirements_sha256` and `architecture_sha256`), `review_id`, actual `response`, `source`, `scope`; optional `continuation`. Appends a marked confirmation; architecture also updates its status and spec link. |
+| `round` | Saves optional `sections` (spec heading to body), `decisions` (`{id,body}`), `planning` and `continuation` together; existing planning/handoff need their tokens. `architecture` writes the design document. Infers no answers, advances no phase, marks no agreement. |
+| `confirm` | `kind` (`requirements`, `planning` or `alignment`; old name `architecture`), exact `proposal_sha256` (`alignment`: `requirements_sha256` and `planning_sha256`), `review_id`, actual `response`, `source`, `scope`; optional `continuation`. Appends a marked confirmation; planning also updates its status and spec link. |
 | `correct` | Terminal `task`, `reason`, `replacement` with new task fields except ID/status/evidence/authorization/receipts; optional `continuation`. Allocates a new ID and links prior work without copying consent or acceptance. |
 | `reconcile` | Explicit `patch`, `decision`, `continuation`; saves selected dispositions, rewiring and pointers through normal commit guards. |
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |
@@ -44,8 +44,8 @@ not verify the prose; merged fields keep their observation times.
 Existing free-form handoffs require `import_legacy: true`; their full text is preserved. An
 unchanged checkpoint is not rewritten.
 
-Requirements confirmation does not approve architecture; only `alignment` records both from one
-reply. Architecture confirmation needs its review identifier in the saved proposal and never
+Requirements confirmation does not approve planning; only `alignment` records both from one
+reply. Planning confirmation needs its review identifier in the saved proposal and never
 authorizes effects or accepts delivery review. A later substantive edit makes a confirmation stale
 (`edit` and `round` return `stale_confirmations`); the gate refuses until it is confirmed again.
 

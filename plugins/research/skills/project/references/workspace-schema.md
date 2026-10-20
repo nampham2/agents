@@ -129,15 +129,15 @@ it no longer controls automatic dispatch. Schema-v3 task objects remain unchange
 Project statuses are `ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, `BLOCKED`, `DONE`, and
 `CANCELLED`.
 
-At the skill level, `ALIGNING` includes mandatory requirements grill and iterative architecture
-review. Requirements, design, edge cases, and effort are revisited until agent and user agree;
-record the agreement and finalize the required workspace `architecture.md` before task planning.
+At the skill level, `ALIGNING` includes mandatory requirements grill and iterative planning
+review. Requirements, plan, edge cases, and effort are revisited until agent and user agree;
+record the agreement and finalize the required workspace `planning.md` before task planning.
 This uses specification and decision records, not a new JSON state or the delivery `review` field.
 Validation warns, and never errors, when a `PLANNING`, `EXECUTING`, or `REVIEW` project has no
-`architecture.md`, none with a recognisable `Status: draft` or `Status: agreed` line, or one still a
+`planning.md`, none with a recognisable `Status: draft` or `Status: agreed` line, or one still a
 draft. `BLOCKED` is reachable from `ALIGNING` and is not checked; `DONE` and `CANCELLED` stay quiet
 so history remains valid. The CLI cannot verify conversational agreement. See
-[architecture-review.md](architecture-review.md) for the document contract and resume behavior.
+[planning-review.md](planning-review.md) for the document contract and resume behavior.
 
 Allowed transitions are:
 
@@ -167,9 +167,9 @@ State coherence rules:
 A project created on or after `GATES_ENFORCED_FROM` (the release date of the release that shipped
 the gate; the constant lives in `workspace_lib.py`) may not move from `ALIGNING` or `BLOCKED` to
 `PLANNING` or `EXECUTING` until three facts are on record: the seven `### Current specification`
-sections are filled, `architecture.md` declares `Status: agreed`, and `workflow confirm` recorded
-both a requirements and an architecture confirmation whose review identifier appears in
-`architecture.md`. The refusal names each missing fact and the command that records it. Projects
+sections are filled, `planning.md` declares `Status: agreed`, and `workflow confirm` recorded
+both a requirements and a planning confirmation whose review identifier appears in
+`planning.md`. The refusal names each missing fact and the command that records it. Projects
 created before the cutoff keep the warnings they always had, so no existing project changes shape
 and no older launcher is locked out by the gate itself. Only that transition is gated: a reopen
 (`DONE` to `PLANNING`) and a design revision reopened as a draft while executing go through.
@@ -377,11 +377,24 @@ The briefing is append-only in spirit: when the grill interview contradicts a fa
 correction is recorded as a dated decision in `spec.md` rather than by rewriting the briefing. Grill
 reads it and does not write it.
 
-`architecture.md` records the design the user agreed to before task planning. It is read whole with
-`read <project-dir> architecture` and replaced whole with `edit <project-dir> architecture` under
+`planning.md` records the plan the user agreed to before task planning. It is read whole with
+`read <project-dir> planning` and replaced whole with `edit <project-dir> planning` under
 the same content-token guard as `reflection.md`; resume context lists its token beside the other
 documents. Its status line (`Status: draft` or `Status: agreed`) is what validation reads. Like the
 briefing it warns and never errors, and it is not in the list of files required non-empty at close.
+
+Legacy note: a project begun before the split keeps this document as a root `architecture.md`. The
+tools read it as the planning document when no `planning.md` exists; `planning.md` wins when both
+do, with a warning, and a project created after `PLANNING_SPLIT_FROM` that keeps only the root file
+is told to rename it. Older markers read `kind=architecture` and still count as planning.
+
+`artifacts/architecture.md` is the living design of a project that writes code, written by its
+first task and never gated ([design-document.md](design-document.md)). Read it with
+`read <project-dir> architecture`; replace it whole with `edit <project-dir> architecture`. In a
+legacy layout those two refuse and point to `planning`. For a project created after
+`PLANNING_SPLIT_FROM`, with a `PLANNING`, `EXECUTING` or `REVIEW` status and a code task, validation
+warns when it is missing, lacks a section its `Profiles:` line requires, or lacks an
+`Implementation status` row for a `DONE` code task. It is not required at close.
 
 `handoff.md` is a live continuation note for ongoing work and coordinator replacement. Read
 and replace it with `read ... handoff` and guarded `edit ... handoff`; validated context exposes its
@@ -410,8 +423,8 @@ deliverables, and authorization state.
 
 Current requirements are maintained in place; decision history is append-only. A decision written by
 `workflow confirm` opens with a marker the alignment gate looks for, in the form `<!--
-research-confirmation: kind=architecture review_id=A1 proposal_sha256=<64 hex> -->`; the same line
-is appended to `architecture.md` with the confirmation. A hand-typed `kind: architecture` is not
+research-confirmation: kind=planning review_id=A1 proposal_sha256=<64 hex> -->`; the same line
+is appended to `planning.md` with the confirmation. A hand-typed `kind: planning` is not
 one.
 
 `evidence.md` records concise milestone evidence. Entries for commands are written by
@@ -675,8 +688,8 @@ A v4 or compatible v3 project may be `DONE` only when:
 - every authorization-required completed task has scoped explicit authorization;
 - every completed external task has a durable receipt;
 - `spec.md`, `evidence.md`, and `reflection.md` are present and non-empty (`briefing.md`,
-  `architecture.md` and the two report files under `artifacts/` are deliberately not required, and
-  warn at most);
+  `planning.md`, `artifacts/architecture.md` and the two report files under `artifacts/` are
+  deliberately not required, and warn at most);
 - required specification sections and numbered review files exist;
 - canonical state, local files, and the generated `INDEX.md`, `MEMORY.md`, and `POSTMORTEMS.md`
   agree.

@@ -52,7 +52,7 @@ longer cover it. Update project-local assessments and their design/task conseque
 a lesson forward merely because the previous handoff listed it. Preserve unaffected assessments.
 
 Update relevant specification sections; retain previous decisions and append the correction.
-For a material design change, follow [architecture-review.md](architecture-review.md): create the
+For a material design change, follow [planning-review.md](planning-review.md): create the
 revised draft, link its review identifier, explain consequences and confirm the affected proposal
 before replanning or implementing it. Revisit only unresolved branches of [grill.md](grill.md).
 Do not treat approval of the former design as approval of a different design or external effect.
@@ -104,7 +104,7 @@ Do not erase historical failures or relabel an old pass as a failed command.
 Revise acceptance criteria and verification commands with the plan. Rerun affected checks and
 reuse prior evidence only when its scope and checked outputs still apply. If required delivery
 review acceptance no longer covers the deliverable, reopen that review as `pending`, preserving
-its earlier records. Architecture agreement and delivery review remain separate gates.
+its earlier records. Planning agreement and delivery review remain separate gates.
 
 When resuming correction work from `REVIEW`, `task ... start` transitions to `EXECUTING` while
 preserving review state. If using `update` to start tasks instead, include `status: EXECUTING`.
