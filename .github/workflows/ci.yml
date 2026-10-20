@@ -57,7 +57,11 @@ jobs:
     # SKILL.md tells Claude to run the scripts with plain `python3`, which on many
     # machines is still 3.9. The dev toolchain needs >=3.11, but the shipped scripts
     # must keep importing and running on 3.9 — this job is what enforces that.
-    runs-on: ubuntu-latest
+    #
+    # Pinned, unlike `test`: `ubuntu-latest` became Ubuntu 26.04, and actions/python-versions
+    # publishes no 3.9 build for it (only 22.04 and 24.04), so setup-python failed before any
+    # script ran. Move the pin only after the manifest lists 3.9 for the newer image.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
 
