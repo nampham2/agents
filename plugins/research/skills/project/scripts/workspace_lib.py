@@ -5169,6 +5169,7 @@ def allocate_project(
     lock_timeout: float = 5.0,
     create_root: bool = False,
     briefing: bool = False,
+    acknowledged_duplicates: "list[str] | None" = None,
 ) -> Path:
     workspace_root = workspace_root.expanduser()
     if not _non_empty_string(title):
@@ -5225,10 +5226,15 @@ def allocate_project(
         # project.json is the commit point: write the skeleton first so an interrupted init leaves
         # an inert directory that detect_schema does not recognise and render_index skips, rather
         # than a project that reports schema v4 while missing the files v4 requires.
+        history = "- Project initialized; requirements pending alignment.\n"
+        if acknowledged_duplicates:
+            history += (
+                "- The user acknowledged these live projects as possible duplicates at init: "
+                + ", ".join(acknowledged_duplicates) + ".\n"
+            )
         atomic_write_text(
             project_dir / "spec.md",
-            f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n"
-            "## Decision history\n\n- Project initialized; requirements pending alignment.\n",
+            f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n## Decision history\n\n{history}",
         )
         if briefing:
             atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))

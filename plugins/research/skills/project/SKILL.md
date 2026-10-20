@@ -42,15 +42,16 @@ Keep secrets out of records. Only the coordinator writes canonical state and sha
 
 ## Start or resume
 
-Find an existing project with paged `list-projects <root> --query "<objective>"`; a supplied path
-needs no discovery. Check objective and ownership, then run:
+Find an existing project with
+`find-similar <root> --title "<objective>" --working-directory <target>`; a supplied path needs no
+discovery. Check objective and ownership, then run:
 
 ```sh
 research-project workflow <project-dir> resume -
 ```
 
 Send `{}` or explicit source/task selections. Resolve validation errors and contradictions;
-follow truncation with targeted reads. `context --validate` remains a compact metadata-only option.
+follow truncation with targeted reads.
 
 Create a project with:
 
@@ -58,7 +59,8 @@ Create a project with:
 research-project init <root> --title "<title>" --working-directory <target> --json
 ```
 
-Report version-control warnings; never initialize or commit repositories implicitly.
+`init` refuses a likely duplicate; ask the user. Report version-control warnings; never initialize
+or commit repositories implicitly.
 Read [commands.md](references/commands.md) before the first record update, including alignment.
 
 ## Align requirements and architecture
@@ -83,7 +85,7 @@ Clear requirements need confirmation, even with zero question rounds. Write thes
 
 Save related spec sections, decisions, design drafts and continuation with `workflow ... round`.
 Use `workflow ... confirm` for actual agreement against the proposal token. Single findings can
-use `append ... finding`; avoid transcripts and duplicate task narratives.
+use `append ... finding`.
 
 Record explicit requirements/design agreement and `Status: agreed` before planning; reuse current
 agreement on resume; reopen affected choices for missing records or material changes.

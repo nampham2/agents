@@ -15,8 +15,8 @@ select it explicitly. `read <project-dir> evidence --task T01` selects task entr
 selects report-check evidence; omit both for all. `read <project-dir> architecture` or `handoff`
 reads that document. Reads cap at 4,000 characters; continue with `--offset <next_offset>`.
 
-`list-projects <root> --query "<text>" [--status EXECUTING]` searches identity/title/target
-(10 matches; page with `--limit`, `--offset`).
+`list-projects <root> --query "<text>" [--status EXECUTING]` matches every word in
+identity/title/target (10 matches; page with `--limit`, `--offset`).
 
 ## Update
 

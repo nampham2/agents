@@ -63,12 +63,30 @@ A repository target needs a user-confirmed, recorded worktree before the first w
 recording a new one, at a new path. An optional briefing (`init --briefing`) can seed the grill; it
 is checked only when `briefing.md` exists and is never required.
 
+## Duplicate guard
+
+`init` compares the new title with every project in the workspace before it creates a directory. It
+scores word overlap with a weighted Jaccard similarity (words that many titles share count for
+little). A likely duplicate is a similarity of at least 0.35 on the same repository (a
+`<repo>.worktrees/<id>` path counts as `<repo>`) or at least 0.5 elsewhere. A live project
+(`ALIGNING`, `PLANNING`, `EXECUTING`, `REVIEW`, `BLOCKED`) that matches blocks `init`: nothing is
+created and the refusal lists each candidate. Show the candidates to the user. Only after the user
+chooses a new project, rerun `init --acknowledge-duplicates <project-id>...`; the spec history then
+records the ids. A finished project (`DONE`, `CANCELLED`) that matches is listed as a warning and
+never blocks. `find-similar <root> --title "<title>" --working-directory <dir>` prints both lists
+without creating anything. The thresholds come from the calibration of the project that added the
+guard; recalibrate when the workspace grows a lot.
+
+`list-projects --query` matches a project when every word of the query occurs in its row, so a
+multi-word objective finds the project; one literal phrase still matches as before.
+
 ## Commands
 
 Claude uses launchers on `PATH`; Codex resolves them beside the loaded skill.
 
 ```sh
 research-project list-projects /path/to/workspace --query parser
+research-project find-similar /path/to/workspace --title "New title" --working-directory /path/to/target
 research-project list-projects /path/to/workspace --status ALIGNING --older-than-days 20
 research-project workflow /path/to/project resume -            # JSON {} on stdin
 research-project workflow /path/to/project resume --schema     # allowed and required keys

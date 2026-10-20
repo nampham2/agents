@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import re
 from collections import Counter
+from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -298,6 +299,16 @@ def _older_than(stamp: str | None, days: int) -> bool:
     return datetime.now(timezone.utc) - moment > timedelta(days=days)
 
 
+def _matches_query(query: str, values: Iterable[str]) -> bool:
+    """True when every whitespace-separated word of the query occurs somewhere in the row.
+
+    One literal substring of the whole query never matched a multi-word objective. A query that was a
+    substring of the row text still matches, because each of its words does.
+    """
+    haystack = " ".join(values).casefold()
+    return all(word in haystack for word in query.casefold().split())
+
+
 def list_projects(
     workspace_root: Path, *, query: str = "", status: str | None = None, limit: int = 10, offset: int = 0,
     older_than_days: int | None = None,
@@ -336,7 +347,7 @@ def list_projects(
             row["path"] = str(directory)
             if row["status"] not in ("INVALID", "LEGACY") and (
                 (status is not None and row["status"] != status)
-                or query.casefold() not in " ".join(row.values()).casefold()
+                or not _matches_query(query, row.values())
                 or (older_than_days is not None and not _older_than(times.get("updated"), older_than_days))
             ):
                 continue
