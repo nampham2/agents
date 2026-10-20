@@ -62,8 +62,10 @@ placement. Keep these surfaces aligned:
   `uv.lock` and the Claude and Codex plugin manifests, after the alpha spellings normalize. Committed manifests use SemVer, without a
   Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:
   `uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py`.
-- A project branch works on one alpha line per base: the release version with an alpha number that
-  rises while the base stays and restarts at 1 when the base moves. Python files spell it
+- A project branch records an alpha line only when it needs a test or experiment build; a project
+  that never tests a build needs none, but closes with a release record or a user-granted
+  exemption. An alpha line is one per base: the release version with an alpha number that rises
+  while the base stays and restarts at 1 when the base moves. Python files spell it
   `0.24.0a3` and plugin manifests spell it `0.24.0-alpha.3`. Bump it before each test deploy or
   plugin refresh. The base moves when `main` released past it or another source occupies it
   (another live project, `origin/*` branch, local worktree or local branch), recorded with

@@ -67,6 +67,11 @@ def fetched(repository: Path) -> None:
     git(repository, "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main")
 
 
+def exempt(project: Path, linked: Path) -> dict[str, Any]:
+    """The user's exemption from a version record, with the reason the tool now requires."""
+    return op(project, linked, "alpha", exempt=True, reason="docs-only project; no version change")
+
+
 def entry_of(project: Path) -> dict[str, Any]:
     return load_state(project)["worktrees"][0]
 
@@ -273,14 +278,19 @@ class TestAlphaLine:
         refuse(recorded, linked, "does not contain 0.24.0a1", "alpha", base="0.24.0", alpha=1, reason="r", files=FILES)
 
     def test_an_exemption_excludes_the_line(self, recorded: Path, linked: Path) -> None:
-        op(recorded, linked, "alpha", exempt=True)
+        exempt(recorded, linked)
         assert entry_of(recorded)["version_exemption"]["response"] == "approve"
+        assert entry_of(recorded)["version_exemption"]["reason"] == "docs-only project; no version change"
         refuse(recorded, linked, "no alpha line applies", "alpha", base="0.24.0", alpha=1, reason="r", files=FILES)
-        refuse(recorded, linked, "already has", "alpha", exempt=True)
+        refuse(recorded, linked, "already has", "alpha", exempt=True, reason="again")
+
+    def test_an_exemption_needs_a_reason(self, recorded: Path, linked: Path) -> None:
+        refuse(recorded, linked, "reason must be non-empty text", "alpha", exempt=True)
+        assert "version_exemption" not in entry_of(recorded)
 
     def test_an_exemption_after_a_line_is_refused(self, recorded: Path, linked: Path) -> None:
         alpha(recorded, linked, 1)
-        refuse(recorded, linked, "already has", "alpha", exempt=True)
+        refuse(recorded, linked, "already has", "alpha", exempt=True, reason="r")
 
     def test_a_bump_after_the_release_clears_it_and_keeps_the_history(self, recorded: Path, linked: Path) -> None:
         alpha(recorded, linked, 1)
@@ -332,7 +342,7 @@ class TestRelease:
         assert delivery_errors(entry_of(recorded), "worktree #1") == []
 
     def test_refusals(self, recorded: Path, linked: Path) -> None:
-        refuse(recorded, linked, "no version_line", "release", version="0.24.0")
+        refuse(recorded, linked, "files are required for the first alpha or release", "release", version="0.24.0")
         alpha(recorded, linked, 1)
         refuse(recorded, linked, "must equal the base", "release", version="0.24.1")
         refuse(recorded, linked, "plain X.Y.Z", "release", version="0.24.0a1")
@@ -358,7 +368,7 @@ class TestMerge:
             "method": None,
             "evidence": None,
         }
-        op(recorded, linked, "alpha", exempt=True)
+        exempt(recorded, linked)
         op(recorded, linked, "merge", merge_state="merged", method="rebase", evidence="https://github.com/o/r/pull/7")
         assert entry_of(recorded)["merge"]["method"] == "rebase"
 
@@ -513,6 +523,124 @@ class TestHistoryRules:
     def test_a_malformed_base_on_an_item_is_reported(self) -> None:
         line = {"history": [item(1, "not-a-version"), item(2, "0.24.0")]}
         assert any("history item 1 needs" in problem for problem in self.errors(line))
+
+
+class TestReleaseWithoutAlpha:
+    """An alpha line is optional: a release alone starts the line, and closure wants a release or an exemption."""
+
+    def release(self, project: Path, linked: Path, version: str = "0.24.0", **fields: Any) -> dict[str, Any]:
+        write_versions(linked, version, None)
+        return op(project, linked, "release", version=version, files=FILES, **fields)
+
+    def test_a_release_with_no_alpha_line_starts_a_release_only_line(self, recorded: Path, linked: Path) -> None:
+        self.release(recorded, linked)
+        line = entry_of(recorded)["version_line"]
+        assert (line["base"], line["alpha"], line["history"], line["base_moves"]) == ("0.24.0", None, [], [])
+        assert line["release"]["version"] == "0.24.0" and line["files"] == FILES
+        assert delivery_errors(entry_of(recorded), "worktree #1") == []
+
+    def test_a_release_only_line_may_be_merged(self, recorded: Path, linked: Path) -> None:
+        self.release(recorded, linked)
+        op(recorded, linked, "pull_request", host="github", url=URL, number=7)
+        op(recorded, linked, "merge", merge_state="merged", method="squash", evidence="https://github.com/o/r/pull/7")
+        assert entry_of(recorded)["merge"]["state"] == "merged"
+
+    def test_an_alpha_may_follow_a_release_only_line_and_clears_the_release(self, recorded: Path, linked: Path) -> None:
+        self.release(recorded, linked)
+        write_versions(linked, "0.24.0", 1)
+        op(recorded, linked, "alpha", base="0.24.0", alpha=1, reason="a test build after all")
+        line = entry_of(recorded)["version_line"]
+        assert (line["alpha"], line["release"], [item["alpha"] for item in line["history"]]) == (1, None, [1])
+        assert delivery_errors(entry_of(recorded), "worktree #1") == []
+
+    def test_a_release_only_line_refuses_a_moved_base_with_the_wrong_number(self, recorded: Path, linked: Path) -> None:
+        self.release(recorded, linked)
+        write_versions(linked, "0.25.0", 2)
+        refuse(recorded, linked, "restarts the alpha number at 1", "alpha", base="0.25.0", alpha=2, reason="r",
+               base_moved=True)
+
+    @pytest.mark.parametrize(
+        ("fields", "fragment"),
+        [
+            ({"files": None}, "files are required for the first alpha or release"),
+            ({"version": "0.24.0a1"}, "plain X.Y.Z"),
+            ({"version": "0.99.0"}, "does not contain 0.99.0"),
+        ],
+    )
+    def test_refusals_without_a_line(self, recorded: Path, linked: Path, fields: dict[str, Any], fragment: str) -> None:
+        write_versions(linked, "0.24.0", None)
+        request: dict[str, Any] = {"version": "0.24.0", "files": FILES, **fields}
+        request = {key: value for key, value in request.items() if value is not None}
+        refuse(recorded, linked, fragment, "release", **request)
+        assert "version_line" not in entry_of(recorded)
+
+    def test_a_version_file_that_still_carries_an_alpha_is_refused(self, recorded: Path, linked: Path) -> None:
+        write_versions(linked, "0.24.0", 3)
+        refuse(recorded, linked, "still carries an alpha", "release", version="0.24.0", files=FILES)
+
+    def test_an_exemption_and_a_release_exclude_each_other(self, recorded: Path, linked: Path) -> None:
+        exempt(recorded, linked)
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "no release record applies", "release", version="0.24.0", files=FILES)
+
+    def test_a_release_checks_that_the_base_is_still_free(self, recorded: Path, linked: Path, repository: Path) -> None:
+        git(repository, "tag", "v0.25.0")
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "tag v0.25.0 releases 0.25.0", "release", version="0.24.0", files=FILES)
+
+    def test_a_release_on_an_alpha_line_checks_the_base_again(
+        self, recorded: Path, linked: Path, repository: Path
+    ) -> None:
+        alpha(recorded, linked, 1)
+        git(repository, "tag", "v0.24.0")
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "base 0.24.0 is occupied", "release", version="0.24.0")
+
+    def test_closure_wants_a_release_or_an_exemption(self, recorded: Path, linked: Path, gated: None) -> None:
+        op(recorded, linked, "pull_request", host="github", url=URL, number=7)
+        op(recorded, linked, "merge", merge_state="declined")
+
+        def version_findings() -> list[str]:
+            return [f for f in closure_findings(load_state(recorded)) if "release record or version_exemption" in f]
+
+        assert version_findings()
+        alpha(recorded, linked, 1)
+        assert "release record or version_exemption" in version_findings()[0]
+        write_versions(linked, "0.24.0", None)
+        op(recorded, linked, "release", version="0.24.0")
+        assert version_findings() == []
+
+    def test_an_exemption_closes_the_version_gate(self, recorded: Path, linked: Path, gated: None) -> None:
+        op(recorded, linked, "pull_request", host="github", url=URL, number=7)
+        op(recorded, linked, "merge", merge_state="declined")
+        exempt(recorded, linked)
+        assert closure_findings(load_state(recorded)) == []
+
+
+RELEASE_RECORD = {"version": "0.24.0", "recorded_at": "2026-01-02T10:00:00+00:00"}
+
+
+class TestReleaseOnlyShape:
+    def errors(self, line: dict[str, Any]) -> list[str]:
+        return delivery_errors({**entry(), "version_line": line}, "worktree #1")
+
+    def test_a_release_only_line_is_valid(self) -> None:
+        line = {**LINE, "alpha": None, "history": [], "release": RELEASE_RECORD}
+        assert self.errors(line) == []
+
+    def test_a_line_with_no_alpha_needs_an_empty_history_and_a_release(self) -> None:
+        for line in (
+            {**LINE, "alpha": None, "history": [], "release": None},
+            {**LINE, "alpha": None, "release": RELEASE_RECORD},
+        ):
+            assert any("no alpha needs an empty history and a release" in problem for problem in self.errors(line))
+
+    def test_an_exemption_may_carry_a_reason_or_not(self) -> None:
+        plain = {"source": "user", "response": "no version"}
+        assert delivery_errors({**entry(), "version_exemption": plain}, "worktree #1") == []
+        assert delivery_errors({**entry(), "version_exemption": {**plain, "reason": "docs only"}}, "worktree #1") == []
+        extra = {**plain, "reason": "docs only", "other": "x"}
+        assert delivery_errors({**entry(), "version_exemption": extra}, "worktree #1") != []
 
 
 class TestOccupancyAtRecord:
@@ -673,7 +801,7 @@ class TestGates:
         record(project, linked)
         return project
 
-    def test_a_task_that_writes_needs_the_mr_and_the_alpha_line(
+    def test_a_task_that_writes_needs_the_mr_and_no_alpha_line(
         self, tmp_path: Path, repository: Path, linked: Path, gated: None
     ) -> None:
         project = self.planned_project(tmp_path, repository, linked)
@@ -681,12 +809,10 @@ class TestGates:
         def revision() -> int:
             return load_state(project)["revision"]
 
-        with pytest.raises(WorkspaceError, match=r"no merge request.*no alpha line"):
+        with pytest.raises(WorkspaceError, match=r"no merge request") as refusal:
             task_operation(project, "start", "T01", expected_revision=revision())
+        assert "alpha" not in str(refusal.value)
         op(project, linked, "pull_request", host="github", url=URL, number=7)
-        with pytest.raises(WorkspaceError, match="no alpha line"):
-            task_operation(project, "start", "T01", expected_revision=revision())
-        alpha(project, linked, 1)
         started = task_operation(project, "start", "T01", expected_revision=revision())
         assert started["status"] == "EXECUTING"
 
@@ -722,7 +848,7 @@ class TestGates:
         self.write_plan(project)
         record(project, linked)
         op(project, linked, "pull_request", exempt="no_remote")
-        op(project, linked, "alpha", exempt=True)
+        exempt(project, linked)
         assert start_findings(load_state(project)) == []
         assert closure_findings(load_state(project)) == []
 
@@ -733,11 +859,11 @@ class TestGates:
     def test_closure_names_each_missing_record(self, recorded: Path, linked: Path, gated: None) -> None:
         findings = closure_findings(load_state(recorded))
         assert [f for f in findings if "no pull_request or pr_exemption" in f]
-        assert [f for f in findings if "no version_line or version_exemption" in f]
+        assert [f for f in findings if "no release record or version_exemption" in f]
         op(recorded, linked, "pull_request", host="github", url=URL, number=7)
         assert any("no merge decision" in f for f in closure_findings(load_state(recorded)))
         op(recorded, linked, "merge", merge_state="declined")
-        op(recorded, linked, "alpha", exempt=True)
+        exempt(recorded, linked)
         assert closure_findings(load_state(recorded)) == []
 
     def test_finalize_is_refused_until_the_records_exist(

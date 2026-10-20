@@ -259,13 +259,16 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
   `response`) replaces it for a repository with no remote.
 - `version_line`: `files` (`path`, `style` `pep440` or `semver`), `base` (plain `X.Y.Z`), `alpha`,
   `history` (`alpha`, `base`, `recorded_at`, `reason`), `release` (null or `version`, `recorded_at`)
-  and `base_moves` (`from`, `to`, `reason`, `recorded_at`). While the base stays, `alpha` rises.
+  and `base_moves` (`from`, `to`, `reason`, `recorded_at`). A release on a worktree with no alpha
+  record starts a release-only line: `alpha` is null, `history` is empty and `release` is set.
+  While the base stays, `alpha` rises.
   When the base moves, through an `alpha` record or a `release` record with `base_moved`, the
   number restarts at 1; the validator checks that each change of base in `history` restarts at 1
   and has a `base_moves` entry. A history item without `base` was recorded before items carried
   one: such an item only has to rise. Each file holds `X.Y.ZaN` (`pep440`) or `X.Y.Z-alpha.N`
   (`semver`). `release` equals `base` and no file keeps an alpha spelling.
-  `version_exemption` (`source`, `response`) replaces the line for a repository with no version.
+  `version_exemption` (`reason`, `source`, `response`; records before 0.30.0 have no `reason`)
+  replaces the line for a repository with no version or a change that needs none.
 - Occupied base: when a base first appears or moves, the tool reads local Git refs and the
   workspace and refuses a base that is at or below the newest version released on main (version
   files at `origin/HEAD`, `origin/main` or `origin/master`, and version tags), or that another
@@ -282,8 +285,8 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
 
 `DELIVERY_GATES_FROM` in `workspace_lib.py` turns on two gates for projects created at or after it.
 `task start` refuses a task with `target` outputs while the active target worktree lacks an MR or
-exemption and an alpha line or exemption. `finalize`, `close` and an update to DONE refuse a
-worktree with no MR or exemption, no merge decision for its MR, or no version line or exemption.
+exemption; an alpha line is optional. `finalize`, `close` and an update to DONE refuse a worktree
+with no MR or exemption, no merge decision for its MR, or no release record or version exemption.
 
 ## Effects and authorization
 

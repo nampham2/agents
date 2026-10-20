@@ -126,7 +126,7 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         confirmation=user), refused=False)
     step("record-alpha-exemption", cli.flow(
         project, "worktree", "wt-alpha", operation="alpha", path=str(worktree), exempt=True,
-        confirmation=user), refused=False)
+        reason="the repository has no version file", confirmation=user), refused=False)
 
     step("start", cli.run("task", project, "start", "T01", "--expected-revision", state_of(project)["revision"]),
          refused=False)

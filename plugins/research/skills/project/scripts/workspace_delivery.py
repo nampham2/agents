@@ -125,7 +125,7 @@ def _pull_request(entry: dict[str, Any], request: dict[str, Any], root: Path, co
 def _files(request: dict[str, Any], line: dict[str, Any] | None) -> list[dict[str, str]]:
     if "files" not in request:
         if line is None:
-            raise WorkspaceError("files are required for the first alpha")
+            raise WorkspaceError("files are required for the first alpha or release record")
         return line["files"]
     files = []
     for item in list_input(request["files"], MAXIMUM_FILES, "files"):
@@ -148,7 +148,8 @@ def _alpha(
     if request.get("exempt") is True:
         if "version_line" in entry or "version_exemption" in entry:
             raise WorkspaceError("the worktree already has a version_line or a version_exemption")
-        entry["version_exemption"] = dict(confirmation)
+        reason = string_input(request.get("reason"), "reason")
+        entry["version_exemption"] = {"reason": reason, **confirmation}
         return []
     if "version_exemption" in entry:
         raise WorkspaceError("the worktree has a version_exemption; no alpha line applies")
@@ -162,11 +163,11 @@ def _alpha(
     alpha = _positive_integer(request.get("alpha"), "alpha")
     if line is not None:
         # The base differs from the last record's when this record moves it, and also when a release moved
-        # it earlier: either way the alpha line starts again at 1.
-        previous_base = line["history"][-1].get("base", line["base"])
+        # it earlier: either way the alpha line starts again at 1. A release-only line has no record yet.
+        previous_base = line["history"][-1].get("base", line["base"]) if line["history"] else line["base"]
         if base != previous_base and alpha != 1:
             raise WorkspaceError(f"a moved base restarts the alpha number at 1: found {alpha}")
-        if base == previous_base and alpha <= line["alpha"]:
+        if base == previous_base and line["alpha"] is not None and alpha <= line["alpha"]:
             raise WorkspaceError(
                 f"the alpha number only goes up while the base stays: recorded {line['alpha']}, found {alpha}"
             )
@@ -194,27 +195,34 @@ def _alpha(
 def _release(
     entry: dict[str, Any], request: dict[str, Any], root: Path, workspace_root: Path, project: str,
 ) -> list[str]:
+    """Record the plain release version. A project that never recorded an alpha line starts its line here."""
+    if "version_exemption" in entry:
+        raise WorkspaceError("the worktree has a version_exemption; no release record applies")
     line = entry.get("version_line")
-    if line is None:
-        raise WorkspaceError("no version_line is recorded; record the alpha line first")
     version = string_input(request.get("version"), "version")
     if not PLAIN_VERSION.match(version):
         raise WorkspaceError("the release version must be a plain X.Y.Z version")
-    move = _base_move(line, version, request, "the release version must equal the base")
-    notes: list[str] = []
-    if move is not None:
-        notes = check_base(root, entry, line["files"], version, workspace_root=workspace_root, project=project)
+    move = None if line is None else _base_move(line, version, request, "the release version must equal the base")
+    files = _files(request, None) if line is None else line["files"]
     leftover = re.compile(re.escape(version) + r"(?:a\d+|-alpha\.\d+)")
-    for item in line["files"]:
+    for item in files:
         text = _read_version_file(root, item["path"])
         if leftover.search(text):
             raise WorkspaceError(f"version file {item['path']} still carries an alpha version of {version}")
         if not _contains(text, version):
             raise WorkspaceError(f"version file {item['path']} does not contain {version}")
+    # The base was checked when it was first recorded, but main may have released it since.
+    notes = check_base(root, entry, files, version, workspace_root=workspace_root, project=project)
+    release = {"version": version, "recorded_at": now_iso()}
+    if line is None:
+        entry["version_line"] = {
+            "files": files, "base": version, "alpha": None, "history": [], "release": release, "base_moves": [],
+        }
+        return notes
     if move is not None:
         line["base"] = version
         line["base_moves"] = [*line.get("base_moves", []), move]
-    line["release"] = {"version": version, "recorded_at": now_iso()}
+    line["release"] = release
     return notes
 
 
@@ -284,15 +292,20 @@ def _line_errors(line: object, label: str) -> list[str]:
     if not isinstance(base, str) or not PLAIN_VERSION.match(base):
         problems.append(f"{label}: base must be a plain X.Y.Z version")
     problems += _move_errors(line.get("base_moves", []), base, label)
-    if isinstance(alpha, bool) or not isinstance(alpha, int) or alpha < 1:
-        problems.append(f"{label}: alpha must be a whole number of at least 1")
+    release_only = alpha is None
+    if release_only:
+        if history != [] or release is None:
+            problems.append(f"{label}: a line with no alpha needs an empty history and a release")
+    elif isinstance(alpha, bool) or not isinstance(alpha, int) or alpha < 1:
+        problems.append(f"{label}: alpha must be a whole number of at least 1, or null on a release-only line")
     files = line["files"]
     if not isinstance(files, list) or not files or not all(
         isinstance(item, dict) and item.keys() == {"path", "style"} and _non_empty_string(item["path"])
         and item["style"] in STYLES for item in files
     ):
         problems.append(f"{label}: files must list objects with a path and a style of pep440 or semver")
-    problems += _history_errors(history, line, label)
+    if not release_only:
+        problems += _history_errors(history, line, label)
     if release is not None and (
         _object_errors(release, f"{label}.release", {"version", "recorded_at"})
         or release["version"] != base or not _is_timestamp(release["recorded_at"])
@@ -384,6 +397,8 @@ def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
     for name, reason in (("pr_exemption", True), ("version_exemption", False)):
         if name in entry:
             fields = {"reason", "source", "response"} if reason else {"source", "response"}
+            if not reason and isinstance(entry[name], dict) and "reason" in entry[name]:
+                fields = {"reason", "source", "response"}  # records before 0.30.0 carry no reason
             found = _object_errors(entry[name], f"{label}.{name}", fields)
             problems += found
             if not found and (not all(_non_empty_string(entry[name][key]) for key in fields)
@@ -416,7 +431,7 @@ def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
 
 
 def start_findings(state: dict[str, Any]) -> list[str]:
-    """What stops a task that writes to the target: no MR or no version decision for the target worktree."""
+    """What stops a task that writes to the target: no MR for the target worktree. An alpha line is optional."""
     if not is_delivery_gated(state):
         return []
     findings = []
@@ -427,11 +442,6 @@ def start_findings(state: dict[str, Any]) -> list[str]:
             findings.append(
                 f"worktree {item['path']} has no merge request; open a draft MR after the user approves it, then "
                 "record `workflow <project-dir> worktree` operation pull_request"
-            )
-        if "version_line" not in item and "version_exemption" not in item:
-            findings.append(
-                f"worktree {item['path']} has no alpha line; propose one to the user, then record "
-                "`workflow <project-dir> worktree` operation alpha (or an exemption)"
             )
     return findings
 
@@ -452,6 +462,11 @@ def closure_findings(state: dict[str, Any]) -> list[str]:
                 f"worktree {path} has no merge decision; ask the user to merge the MR (naming the method), "
                 "then record operation merge, merged or declined"
             )
-        if "version_line" not in item and "version_exemption" not in item:
-            findings.append(f"worktree {path} has no version_line or version_exemption")
+        line = item.get("version_line")
+        if "version_exemption" not in item and (not isinstance(line, dict) or line.get("release") is None):
+            findings.append(
+                f"worktree {path} has no release record or version_exemption; record operation release with the "
+                "plain version, or ask the user for an exemption and record operation alpha with exempt true, "
+                "a reason and their words"
+            )
     return findings

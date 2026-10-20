@@ -114,7 +114,7 @@ tasks for terminal work without copying old acceptance or consent.
 and roots; it resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`. Start before writing;
 `finish --backfill --note` records earlier work. Supply applicable constraints. Dependencies must
 be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
-existing authorization counts. A repository target needs a recorded worktree, MR and alpha line
+existing authorization counts. A repository target needs a recorded worktree and MR
 before its first write: follow [worktrees.md](references/worktrees.md) when the assignment warns.
 
 Resolve worker ownership before takeover. If `execution_active` is true, read

@@ -79,7 +79,7 @@ def _result(
 
 
 def _refuse_without_delivery_records(state: dict[str, Any], task: dict[str, Any]) -> None:
-    """A task that writes to the target needs its merge request and alpha line first (gated projects)."""
+    """A task that writes to the target needs its merge request first (gated projects)."""
     if not any(output["root"] == "target" for output in task["outputs"]):
         return
     from workspace_delivery import start_findings
