@@ -10,8 +10,6 @@ description: >
 
 Invoke with `/research:project [problem statement]`; in Pi, `/skill:project`.
 
-Reuse saved context and retrieve selectively, preserving constraints and evidence.
-
 ## Durable context
 
 Save consequential decisions before dependent work and findings before switching work. Read
@@ -24,10 +22,13 @@ Prefer its named commands over agent-authored bookkeeping; supply judgments and 
 
 ## Session boundaries
 
-Phase boundaries are checkpoints; continue authorized work in the same session. Restart on user
-request or when context pressure impairs reliable continuation. Read
-[session-handoff.md](references/session-handoff.md) only for handoff or interruption recovery.
-For a restart, checkpoint, supply a resume prompt, and stop; the user opens the replacement session.
+Continue authorized work after each task: start the `continue` task that `task finish` and
+`resume` return. Stop only for a `stop_reason` ([stopping.md](references/stopping.md)):
+`user-decision`, `authorization`, `blocked`, `context-pressure`, `closure-step` or `closed`; name
+it in the checkpoint. Never end a turn by asking whether to continue. Restart on user request or
+`context-pressure`: checkpoint, supply a resume prompt, and stop; the user opens the replacement
+session. Read [session-handoff.md](references/session-handoff.md) only for handoff or interruption
+recovery.
 
 ## Resolve once
 
@@ -84,8 +85,7 @@ Clear requirements need confirmation, even with zero question rounds. Write thes
 ```
 
 Save related spec sections, decisions, design drafts and continuation with `workflow ... round`.
-Use `workflow ... confirm` for actual agreement against the proposal token. Single findings can
-use `append ... finding`.
+Use `workflow ... confirm` for actual agreement against the proposal token.
 
 Record explicit requirements/design agreement and `Status: agreed` before planning; reuse current
 agreement on resume; reopen affected choices for missing records or material changes.
@@ -111,7 +111,7 @@ For invalidated assignments, inputs or agreement, follow
 tasks for terminal work without copying old acceptance or consent.
 
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
-and roots; it resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`. Start before writing;
+and roots. Start before writing;
 `finish --backfill --note` records earlier work. Supply applicable constraints. Dependencies must
 be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization;
 existing authorization counts. A repository target needs a recorded worktree and MR

@@ -23,14 +23,22 @@ from workspace_journal import (
     string_input,
 )
 from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso
-from workspace_session import _headings, _load_state, project_context, validated_project_context
+from workspace_session import (
+    STOP_REASONS,
+    _headings,
+    _load_state,
+    next_move,
+    project_context,
+    validated_project_context,
+)
 
 CHECKPOINT = re.compile(r"\A<!-- research-checkpoint-v1\n(.*?)\n-->\n", re.DOTALL)
 CONTINUATION_FIELDS = {
     "next", "questions", "pointers", "partial", "ownership", "effects", "lessons", "do_not", "session",
+    "stop_reason",
 }
 # `key.title()` would print "Do_Not"; the one field whose heading is not its name.
-CONTINUATION_HEADINGS = {"do_not": "Do not"}
+CONTINUATION_HEADINGS = {"do_not": "Do not", "stop_reason": "Stop reason"}
 SESSION_FIELDS = {"host", "id", "cwd"}
 
 
@@ -386,8 +394,18 @@ def render_checkpoint(
                     )
             continuation[key] = value
     string_input(continuation.get("next"))
-    if continuation.get("session", "working") not in ("working", "waiting", "blocked", "ready for handoff"):
+    session_label = continuation.get("session", "working")
+    if session_label not in ("working", "waiting", "blocked", "ready for handoff"):
         raise WorkspaceError("invalid session label")
+    if session_label == "working":
+        if changes.get("stop_reason"):
+            raise WorkspaceError("a working session carries no stop_reason; stop_reason names why work stops")
+        continuation.pop("stop_reason", None)
+    elif continuation.get("stop_reason") not in STOP_REASONS:
+        raise WorkspaceError(
+            f"session {session_label!r} needs a stop_reason, one of: {', '.join(STOP_REASONS)}. Continue the "
+            "next ready task instead of stopping when none of them applies"
+        )
     sources = {}
     for name in ("spec", "architecture"):
         sources[name] = (
@@ -516,6 +534,7 @@ def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
         if do_not:
             context["do_not"] = do_not
         context["worktree"] = worktree_status(_load_state(project))
+        context.update(next_move(_load_state(project)))
         context["memory_health"] = memory_health(project.parent, context["title"])
         if "task" in request:
             context["assignment"] = project_context(

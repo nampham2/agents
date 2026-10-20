@@ -192,7 +192,8 @@ def test_a_waiting_session_label_needs_the_user(
     project = lib.allocate_project(
         tmp_path / "workspace", title="Waiting", working_directory=tmp_path, create_root=True
     )
-    workflow(project, "checkpoint", request(project, "cp", continuation={"next": "Do it", "session": label}))
+    reason = {} if label == "working" else {"stop_reason": "user-decision"}
+    workflow(project, "checkpoint", request(project, "cp", continuation={"next": "Do it", "session": label, **reason}))
     row = dash.build_project(project)
     assert row["has_handoff"] is True
     assert row["session"] == label

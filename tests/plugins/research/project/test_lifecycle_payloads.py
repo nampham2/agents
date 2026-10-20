@@ -198,6 +198,7 @@ CONDITIONAL = {
     "report-execution": "only when an execution report is requested",
     "report-html": "only when an HTML report is requested",
     "session-handoff": "only for handoff or interruption recovery",
+    "stopping": "only when deciding whether the work may stop after a task",
     "task-workers": "only when delegating to workers",
     "versioning": "only when proposing a base, recording an alpha line, moving a base or recording a release",
     "workspace-schema": "only for schema, migration or validation-error repairs",

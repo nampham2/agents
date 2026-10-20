@@ -171,7 +171,7 @@ def test_corrections_reconciliation_reviews_and_finalization(project: Path) -> N
             project,
             "final",
             reflection=REFLECTION,
-            continuation={"next": "No further work", "session": "ready for handoff"},
+            continuation={"next": "No further work", "session": "ready for handoff", "stop_reason": "closed"},
         ),
     )
     assert final["committed"] and _load_state(project)["status"] == "DONE"
