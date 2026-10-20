@@ -13,10 +13,12 @@ from typing import Any
 from memory_search import memory_candidates, objective_text
 from workspace_lib import (
     CLOSURE_STEPS,
+    DESIGN_DOCUMENT,
     WorkspaceError,
     commit_state,
     document_sha256,
     load_json,
+    planning_path,
     read_text,
     validate_project,
     validate_v3_state,
@@ -174,8 +176,11 @@ def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str,
     if after["revision"] != result["revision"]:
         raise WorkspaceError("project changed while context was validated; reload context")
     documents: dict[str, Any] = {}
-    for name in ("spec", "evidence", "reflection", "architecture", "handoff", "memory-staging"):
-        path = project_dir / f"{name}.md"
+    for name in ("spec", "evidence", "reflection", "planning", "architecture", "handoff", "memory-staging"):
+        if name == "planning":
+            path = planning_path(project_dir)
+        else:
+            path = project_dir / (DESIGN_DOCUMENT if name == "architecture" else f"{name}.md")
         if path.exists():
             content = read_text(path, preserve_newlines=True)
             documents[name] = {

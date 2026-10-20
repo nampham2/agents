@@ -334,7 +334,8 @@ def checkpoint_data(project: Path) -> dict[str, Any] | None:
         or not isinstance(value["git"], dict)
     ):
         raise WorkspaceError("unsupported checkpoint metadata")
-    object_input(value["sources"], {"spec", "architecture"})
+    # `architecture` is the key checkpoints held before the planning document was split from the design.
+    object_input(value["sources"], {"spec", "planning", "architecture"})
     object_input(value["continuation"], CONTINUATION_FIELDS)
     if not all(isinstance(item, str) for item in [*value["sources"].values(), *value["continuation"].values()]):
         raise WorkspaceError("invalid checkpoint fields")
@@ -407,7 +408,7 @@ def render_checkpoint(
             "next ready task instead of stopping when none of them applies"
         )
     sources = {}
-    for name in ("spec", "architecture"):
+    for name in ("spec", "planning"):
         sources[name] = (
             document_sha256(documents[name])
             if documents and name in documents
@@ -478,7 +479,8 @@ def checkpoint_freshness(project: Path) -> dict[str, Any]:
     state = _load_state(project)
     sources = {}
     for name, old in previous["sources"].items():
-        actual = snapshot(document_path(project, name))[1]
+        # A checkpoint's `architecture` source was the agreement, which is now the planning document.
+        actual = snapshot(document_path(project, "planning" if name == "architecture" else name))[1]
         sources[name] = "missing" if actual == "missing" else "unchanged" if actual == old else "changed"
     git = git_observation(Path(state["working_directory"]))
     freshness: dict[str, Any] = {
