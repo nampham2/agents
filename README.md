@@ -44,6 +44,15 @@ Confirm with `pi list`. Pi exposes the three skills as `/skill:project`,
 `/skill:dashboard` and `/skill:retro`. Pi does not add the plugin `bin` directory to `PATH`;
 each skill runs the launcher beside its own `SKILL.md`.
 
+## Python
+
+The research launchers need Python 3.11 or later. They need no virtual environment. Each launcher
+uses the newest of `python3.14` down to `python3.11` on `PATH`, then `python3`. If none qualifies,
+it runs through [`uv`](https://docs.astral.sh/uv/) (`uv run --python ">=3.11"`), which fetches a
+Python once. Without either, it exits with a message that names both fixes. Stock macOS `python3`
+is 3.9.6, below the floor: install a newer Python (`brew install python`) or `uv`. Releases
+through 0.29.0 ran on Python 3.9.
+
 ## Development from a clone
 
 ```bash

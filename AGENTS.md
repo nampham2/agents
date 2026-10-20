@@ -73,9 +73,15 @@ placement. Keep these surfaces aligned:
 
 ## Python and tests
 
-- The dev toolchain requires Python 3.11+. Shipped plugin scripts must also run on Python 3.9
-  because wrappers execute `python3` and stock macOS provides 3.9.6. Keep them stdlib-only and put
-  3.10+ typing imports behind `if TYPE_CHECKING:`.
+- The dev toolchain and the shipped plugin scripts both require Python 3.11+. The three launchers
+  (`research-project`, `research-validate`, `research-dashboard`) source
+  `skills/project/scripts/python_select.sh`, which holds the floor and picks the newest qualifying
+  `python3.14` down to `python3.11`, then `python3`, then `uv run --python '>=3.11'`, else exits with
+  both fixes. Stock macOS `python3` (3.9.6) is below the floor. Keep the scripts stdlib-only: they
+  need an interpreter, not a venv. Code written before the floor moved keeps its 3.9 workarounds
+  (`from __future__` imports, `TYPE_CHECKING` guards); new code may use 3.11 syntax.
+  `test_launcher_python.py` checks the launchers and that the floor matches `requires-python`; the
+  `python-floor` CI job runs them on 3.11 from `uv`.
 - Tests import skill scripts as top-level modules. Keep `tests/conftest.py` and
   `[tool.ty.environment].extra-paths` in `pyproject.toml` synchronized.
 - Project state is `dict[str, Any]`, not `dict[str, object]`. Type all public functions.

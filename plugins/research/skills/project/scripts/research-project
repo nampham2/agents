@@ -16,9 +16,12 @@ if [[ ! -f $script ]]; then
   exit 1
 fi
 
-if ! command -v python3 >/dev/null 2>&1; then
-  echo "error: python3 is not on PATH; it is what runs manage_workspace.py" >&2
+selector=$here/python_select.sh
+if [[ ! -f $selector ]]; then
+  echo "error: $selector is missing; the launcher must stay beside the project scripts" >&2
   exit 1
 fi
 
-exec python3 "$script" "$@"
+# shellcheck source=python_select.sh
+source "$selector"
+research_run_python "$script" "$@"

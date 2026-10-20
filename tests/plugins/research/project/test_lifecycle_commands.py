@@ -469,6 +469,10 @@ def test_cross_host_commands(tmp_path: Path, host: str, schema: int, runtime: st
     if runtime == "system":
         if not Path("/usr/bin/python3").exists():
             pytest.skip("system Python unavailable")
+        # Stock macOS python3 is 3.9, below the launchers' floor; they refuse it (test_launcher_python.py).
+        floor_probe = "import sys; raise SystemExit(sys.version_info < (3, 11))"
+        if subprocess.run(["/usr/bin/python3", "-c", floor_probe], check=False).returncode != 0:
+            pytest.skip("system Python is below the launchers' floor")
         environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
     initialized = subprocess.run(
         [

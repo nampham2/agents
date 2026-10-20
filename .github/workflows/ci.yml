@@ -53,45 +53,53 @@ jobs:
         env:
           REQUIRE_RELEASE_VERSION: "1"
 
-  python39-compat:
-    # SKILL.md tells Claude to run the scripts with plain `python3`, which on many
-    # machines is still 3.9. The dev toolchain needs >=3.11, but the shipped scripts
-    # must keep importing and running on 3.9 — this job is what enforces that.
+  python-floor:
+    # The shipped scripts need Python 3.11 or later, and the launchers pick the interpreter (see
+    # plugins/research/skills/project/scripts/python_select.sh). This job runs them on exactly the
+    # floor version, and runs the uv fallback with no Python on PATH.
     #
-    # Pinned, unlike `test`: `ubuntu-latest` became Ubuntu 26.04, and actions/python-versions
-    # publishes no 3.9 build for it (only 22.04 and 24.04), so setup-python failed before any
-    # script ran. Move the pin only after the manifest lists 3.9 for the newer image.
-    runs-on: ubuntu-24.04
+    # The interpreter comes from uv, not from actions/setup-python: setup-python publishes an old
+    # version only for some runner images, and `ubuntu-latest` becoming Ubuntu 26.04 once left the
+    # old 3.9 job with no interpreter before any script ran.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
-      - uses: actions/setup-python@v7
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
-          python-version: "3.9"
+          version: "latest"
 
-      - name: Smoke-test the shipped scripts on Python 3.9
-        working-directory: plugins/research/skills/project/scripts
+      - name: Install the floor Python
+        run: uv python install 3.11
+
+      - name: Smoke-test the shipped launchers on Python 3.11
         run: |
-          python -c "import workspace_delivery, workspace_documents, workspace_evidence, workspace_lib, workspace_operations, workspace_session, workspace_dashboard"
+          scripts="$PWD/plugins/research/skills/project/scripts"
+          # A PATH that holds the floor Python as python3 and only the tools a launcher itself needs,
+          # so a newer system Python cannot win the choice and this job tests the floor.
+          floor="$RUNNER_TEMP/floor"
+          mkdir "$floor"
+          for tool in bash dirname readlink env; do ln -s "$(command -v "$tool")" "$floor/$tool"; done
+          ln -s "$(uv python find 3.11)" "$floor/python3"
+          test "$(env PATH="$floor" python3 -c 'import sys; print(sys.version_info[:2])')" = "(3, 11)"
+          launch() { env PATH="$floor" "$@"; }
           workdir="$(mktemp -d)"
           # init refuses to create a workspace root implicitly, so a fresh root is explicit here and
           # resolution from the environment is exercised in the same breath.
-          project="$(python manage_workspace.py init "$workdir/ws" --create-root \
+          project="$(launch "$scripts/research-project" init "$workdir/ws" --create-root \
             --title "CI smoke" --working-directory "$workdir")"
-          python validate_workspace.py "$project"
-          python manage_workspace.py context "$project" --validate
-          python manage_workspace.py read "$project" spec --outline
-          RESEARCH_WORKSPACE="$workdir/ws" python manage_workspace.py rebuild-index
+          launch "$scripts/research-validate" "$project"
+          launch "$scripts/research-project" context "$project" --validate
+          launch "$scripts/research-project" read "$project" spec --outline
+          launch RESEARCH_WORKSPACE="$workdir/ws" "$scripts/research-project" rebuild-index
           # show-graph renders text a user reads, so importing the module is not enough. The project
-          # above is fresh and has no tasks, so this reaches the dispatch and the empty-plan render
-          # rather than the table; the table's 3.9 output is compared against the dev interpreter's,
-          # byte for byte, over every real project by tasks/check_python39_floor.py in 2026-09-10-003.
-          python manage_workspace.py show-graph "$project"
+          # above is fresh and has no tasks, so this reaches the dispatch and the empty-plan render.
+          launch "$scripts/research-project" show-graph "$project"
           # The dashboard is a server, so import is not enough either: serve the fresh workspace, answer
-          # one request on 3.9, and stop it. An async job in a non-interactive shell ignores SIGINT, so
-          # it is stopped with TERM, and its exit status is not judged here. The suite covers Ctrl-C.
-          python workspace_dashboard.py "$workdir/ws" --no-browser --port 0 --claude-dir "$workdir/claude" \
-            > "$workdir/dashboard.out" &
+          # one request, and stop it. An async job in a non-interactive shell ignores SIGINT, so it is
+          # stopped with TERM, and its exit status is not judged here. The suite covers Ctrl-C.
+          env PATH="$floor" "$scripts/research-dashboard" "$workdir/ws" --no-browser --port 0 \
+            --claude-dir "$workdir/claude" > "$workdir/dashboard.out" &
           dashboard=$!
           for _ in 1 2 3 4 5 6 7 8 9 10; do
             grep -q '^Dashboard: ' "$workdir/dashboard.out" && break
@@ -100,6 +108,17 @@ jobs:
           url="$(sed -n 's/^Dashboard: //p' "$workdir/dashboard.out")"
           test -n "$url"
           curl --fail --silent "$url/api/projects" \
-            | python -c "import json, sys; assert json.load(sys.stdin)['projects'], 'no projects'"
+            | launch python3 -c "import json, sys; assert json.load(sys.stdin)['projects'], 'no projects'"
           kill "$dashboard"
           wait "$dashboard" || true
+
+      - name: Smoke-test the uv fallback with no Python on PATH
+        run: |
+          scripts="$PWD/plugins/research/skills/project/scripts"
+          bare="$RUNNER_TEMP/bare"
+          mkdir "$bare"
+          for tool in bash dirname readlink env; do ln -s "$(command -v "$tool")" "$bare/$tool"; done
+          ln -s "$(command -v uv)" "$bare/uv"
+          # Only the managed Python installed above may be used, and nothing is downloaded.
+          env PATH="$bare" UV_PYTHON_PREFERENCE=only-managed UV_PYTHON_DOWNLOADS=never \
+            "$scripts/research-project" --help | grep -q '^usage: research-project'
