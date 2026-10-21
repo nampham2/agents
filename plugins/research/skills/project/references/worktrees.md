@@ -41,6 +41,9 @@ commands only after the user confirms them in their own words.
 7. Record an alpha line only when the project needs a test or experiment build, and the version
    decision before closing, as [versioning.md](versioning.md) says.
 
+Delivery order: release, merge on the host, record the merge, then close/remove. Removal is last;
+it is refused while the release or merge is unrecorded.
+
 Every record above takes `path` and a quoted `confirmation`; `workflow <project-dir> worktree
 --schema` prints each operation's full key list.
 

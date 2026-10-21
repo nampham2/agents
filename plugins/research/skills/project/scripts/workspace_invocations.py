@@ -21,7 +21,8 @@ if TYPE_CHECKING:
     import argparse
 
 INVOCATIONS_FILENAME = "invocations.jsonl"
-# Longest message kept: the first line of the error, enough to group refusals by their cause.
+# Longest message kept: the first line plus the first bullet of a multi-line error, enough to group
+# refusals by their cause without letting one line grow unbounded.
 MESSAGE_CHARS = 200
 EXAMPLE_LIMIT = 10
 # `conflict`: a revision, token or entry conflict. `operation`: a named operation failed with a partial
@@ -50,6 +51,27 @@ def project_directory_of(args: "argparse.Namespace") -> "Path | None":
     if not isinstance(value, Path):
         return None
     return value.expanduser().resolve()
+
+
+def refusal_message(error: "BaseException | None", *, limit: int = MESSAGE_CHARS) -> str:
+    """The first line plus the first bullet of a multi-line refusal, joined onto one line.
+
+    A candidate-validation refusal reads `candidate validation failed:` and then one bullet per
+    problem. Keeping only the first line logged the header and dropped every cause, so a retro could
+    not group the failures; keeping the first bullet as well restores the cause without unbounded
+    growth. A single-line error is returned unchanged.
+    """
+    if error is None:
+        return ""
+    lines = [line.strip() for line in str(error).strip().splitlines() if line.strip()]
+    if not lines:
+        return ""
+    parts = [lines[0]]
+    for line in lines[1:]:
+        if line.startswith(("-", "*")):
+            parts.append(line)
+            break
+    return " ".join(parts)[:limit]
 
 
 def action_of(args: "argparse.Namespace") -> str:
@@ -106,9 +128,9 @@ class Invocation:
         kind = classify(error, exit_code)
         if kind is not None:
             line["error"] = kind
-            message = str(error).strip().splitlines()[0] if error is not None and str(error).strip() else ""
+            message = refusal_message(error)
             if message:
-                line["message"] = message[:MESSAGE_CHARS]
+                line["message"] = message
         path = self.project_dir / INVOCATIONS_FILENAME
         try:
             with path.open("a", encoding="utf-8") as handle:

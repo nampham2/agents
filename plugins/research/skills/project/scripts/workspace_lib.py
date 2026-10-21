@@ -3905,6 +3905,9 @@ class EvidenceResult:
     # no exit code to be mistaken for a pass.
     dry_run: bool = False
     command: list[str] = field(default_factory=list)
+    # c3: a deliberately failing check recorded with `--control`. The entry carries the marker and a
+    # finish may cite it; it never turns the exit code into a pass.
+    control: bool = False
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -3914,6 +3917,7 @@ class EvidenceResult:
             "owner": {"kind": self.owner_kind, "id": self.owner_id},
             "exit_code": self.exit_code,
             "passed": self.exit_code == 0,
+            "control": self.control,
             "working_directory": self.working_directory,
             "reference": self.reference,
             "warnings": list(self.warnings),
@@ -4236,6 +4240,64 @@ def _command_warnings(command: Sequence[str]) -> "list[str]":
     return found
 
 
+# c4: commands whose stdout is the secret itself. Matched by tool and subcommand so a command that
+# only mentions the name is left alone; `security` needs `-w`, which is the flag that prints the value.
+SECRET_READERS = (("security", "find-generic-password"), ("bw", "get"), ("op", "read"))
+SECRET_MARKERS = ("BW_SESSION",)
+# A `>` that redirects stdout: `2>` and `2>&1` redirect stderr and do not count, while `>`, `1>` and
+# `&>` do. The negative lookbehind keeps the file-descriptor prefix out of the match.
+STDOUT_REDIRECT = re.compile(r"(?<!2)>")
+
+
+def _secret_readers(tokens: "Sequence[str]") -> "str | None":
+    """The secret reader in one command's tokens, or None. Names are matched by basename."""
+    names = [Path(token).name for token in tokens]
+    for index, name in enumerate(names):
+        rest = list(tokens[index + 1 :])
+        for tool, subcommand in SECRET_READERS:
+            if name == tool and subcommand in rest:
+                if tool == "security" and "-w" not in rest:
+                    continue
+                return f"{tool} {subcommand}" + (" -w" if tool == "security" else "")
+    for token in tokens:
+        if any(token == marker or token.startswith(marker + "=") for marker in SECRET_MARKERS):
+            return token
+    return None
+
+
+def _secret_read_sites(command: "Sequence[str]") -> "list[str]":
+    """Secret reads whose stdout is not redirected, in argv and in every inline shell script.
+
+    Argv runs without a shell, so a redirect cannot exist there and any secret read is a site. An
+    inline script is split at the shell's command separators; a segment whose raw text carries a
+    stdout redirect (`>` not the `2>` of stderr) is left alone, because the value goes to the file
+    rather than into the captured output.
+    """
+    sites: list[str] = []
+    if _secret_readers(command) is not None:
+        sites.append(shlex.join(command))
+    for script in _inline_shell_scripts(command):
+        for segment in re.split(r"(?:\|\||&&|[;|\n])", script):
+            tokens = _shell_tokens(segment)
+            if _secret_readers(tokens) is not None and STDOUT_REDIRECT.search(segment) is None:
+                sites.append(segment.strip())
+    return sites
+
+
+def _secret_read_refusal(command: "Sequence[str]", sites: "list[str]") -> str:
+    """The refusal for a secret read, with the runnable redirect form the caller should use."""
+    scripts = _inline_shell_scripts(command)
+    inner = scripts[0].rstrip() if scripts else shlex.join(command)
+    redirect = f"bash -lc {shlex.quote(inner + ' > /dev/null')}"
+    found = "\n".join(f"  {site}" for site in sites)
+    return (
+        "record-evidence refuses to run a command that reads a secret into stdout, because the value "
+        f"would be written to evidence.md:\n{found}\n"
+        "Redirect the value and record only a status or a length, for example:\n"
+        f"  {redirect}"
+    )
+
+
 def _launch_hint(returncode: int, output: str, working_directory: str, project_dir: Path) -> str:
     """Say where a 'not found' result most likely came from; empty when there is nothing to add."""
     if returncode not in (126, 127) and "No such file or directory" not in output:
@@ -4256,6 +4318,7 @@ def record_evidence(
     tail_lines: int = EVIDENCE_TAIL_LINES,
     timeout: float | None = None,
     lock_timeout: float = 5.0,
+    control: bool = False,
 ) -> int:
     """Run `command`, append what it actually did to `evidence.md`, and return its exit code.
 
@@ -4281,6 +4344,7 @@ def record_evidence(
         tail_lines=tail_lines,
         timeout=timeout,
         lock_timeout=lock_timeout,
+        control=control,
     ).exit_code
 
 
@@ -4319,6 +4383,7 @@ def record_evidence_result(
     observe: Callable[[dict[str, Any]], None] | None = None,
     cwd: "Path | None" = None,
     dry_run: bool = False,
+    control: bool = False,
 ) -> EvidenceResult:
     """Run and durably record a command, returning its selectable evidence identity.
 
@@ -4331,8 +4396,12 @@ def record_evidence_result(
     if not command:
         raise WorkspaceError("record-evidence requires a command to run after '--'")
     # Before the project is even read: an argv holding a bare operator is malformed whatever the
-    # project says, and reporting that beats reporting whatever the command made of it.
+    # project says, and reporting that beats reporting whatever the command made of it. The secret
+    # guard runs here too, so a leaked value is refused before the command runs, not after.
     _refuse_shell_operators(command)
+    secret_sites = _secret_read_sites(command)
+    if secret_sites:
+        raise WorkspaceError(_secret_read_refusal(command, secret_sites))
 
     state, tasks = _owner_state(project_dir, task_id)
 
@@ -4394,6 +4463,7 @@ def record_evidence_result(
             warnings=warnings,
             dry_run=True,
             command=list(command),
+            control=control,
         )
 
     if observe is not None:
@@ -4428,6 +4498,12 @@ def record_evidence_result(
                      "stdout": str(error.stdout or "")[-8000:], "stderr": str(error.stderr or "")[-8000:]})
         raise WorkspaceError(f"command timed out after {timeout}s: {shlex.join(command)}") from error
 
+    if control and completed.returncode == 0:
+        raise WorkspaceError(
+            "record-evidence --control needs the command to be observed failing; "
+            f"{shlex.join(command)} exited 0. Record the passing run without --control, or make the check "
+            "fail on the input the control describes."
+        )
     outcome = "passed" if completed.returncode == 0 else "FAILED"
     joined = shlex.join(command)
     heading = _evidence_heading_command(joined)
@@ -4442,6 +4518,7 @@ def record_evidence_result(
         f"- Recorded: {now_iso()}",
         f"- Working directory: {working_directory}",
         f"- Exit code: {completed.returncode} ({outcome})",
+        *(["- Control: true"] if control else []),
         "- Output decoding: UTF-8; undecodable bytes escaped as \\xNN",
         "",
     ]
@@ -4463,6 +4540,7 @@ def record_evidence_result(
         working_directory=working_directory,
         reference={"root": "workspace", "path": "evidence.md", "anchor": anchor},
         warnings=warnings,
+        control=control,
         hint=_launch_hint(
             completed.returncode, completed.stdout + completed.stderr, working_directory, project_dir
         ),

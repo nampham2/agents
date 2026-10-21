@@ -16,7 +16,8 @@ closes a repository project. An MR means a GitHub pull request or a GitLab merge
 
 ## Release and merge
 
-Do this once, when all the work is done.
+Do this once, when all the work is done. The delivery order is fixed: release, merge on the host,
+record the merge, then close/remove.
 
 1. Sweep the threads.
 2. Commit the plain release version `X.Y.Z` into each version file and push. Record
@@ -32,7 +33,7 @@ An alpha version never merges to the main branch. A worktree with no MR needs no
 
 ## Clean up
 
-1. Ask only after the merge is recorded. The tool refuses removal while an MR is not merged.
+1. Ask only after the merge is recorded.
 2. For each recorded worktree show `git status --short --branch` (`workflow ... readiness` lists
    findings). Ask whether to commit now (only when asked) and whether to keep or remove it.
 3. Record the answer:

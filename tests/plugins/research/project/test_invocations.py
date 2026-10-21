@@ -7,6 +7,7 @@ behaviour under failure, and the bounded summary the retro reads.
 
 from __future__ import annotations
 
+import argparse
 import io
 import json
 import os
@@ -24,7 +25,9 @@ from workspace_invocations import (
     ERROR_CLASSES,
     INVOCATIONS_FILENAME,
     MESSAGE_CHARS,
+    Invocation,
     classify,
+    refusal_message,
     summarize_invocations,
 )
 from workspace_journal import OperationError
@@ -177,6 +180,40 @@ class SummaryTests(_Fixture):
         self.assertEqual("2026-10-15T10:00:00+02:00", summary["first_at"])
         self.assertEqual("2026-10-15T11:00:00+02:00", summary["last_at"])
         self.assertEqual(155, summary["ms_total"])
+
+
+class MultiLineMessageTests(_Fixture):
+    """c6: a multi-line refusal keeps its first bullet, so the log names the cause.
+
+    `candidate validation failed:` was logged alone in 8 projects, which is a header with no cause
+    and nothing a retro can group by.
+    """
+
+    def test_the_first_line_and_first_bullet_are_kept(self) -> None:
+        message = refusal_message(
+            WorkspaceError("candidate validation failed:\n- project field must match\n- a second problem")
+        )
+        self.assertEqual(message, "candidate validation failed: - project field must match")
+
+    def test_a_single_line_error_and_none_are_unchanged(self) -> None:
+        self.assertEqual(refusal_message(WorkspaceError("revision conflict")), "revision conflict")
+        self.assertEqual(refusal_message(None), "")
+        self.assertEqual(refusal_message(WorkspaceError("   \n  ")), "")
+
+    def test_the_joined_message_is_bounded(self) -> None:
+        self.assertLessEqual(len(refusal_message(WorkspaceError("head\n- " + "x" * 500))), MESSAGE_CHARS)
+
+    def test_the_first_bullet_after_prose_wins(self) -> None:
+        self.assertEqual(refusal_message(WorkspaceError("head\nprose\n* first\n* second")), "head * first")
+
+    def test_the_logged_line_carries_the_cause(self) -> None:
+        invocation = Invocation(
+            "research-project",
+            argparse.Namespace(project_directory=self.project, command="update", action="", expected_revision=2),
+        )
+        invocation.record(1, WorkspaceError("candidate validation failed:\n- project field must match the name"))
+        (line,) = _lines(self.project)
+        self.assertEqual(line["message"], "candidate validation failed: - project field must match the name")
 
 
 class DocumentConflictMessageTests(unittest.TestCase):
