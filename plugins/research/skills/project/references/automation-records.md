@@ -20,7 +20,7 @@ input with the same ID conflicts. Metadata operations never replay commands or e
 | --- | --- |
 | `checkpoint` | `continuation`; derives phase, revision, spec/design tokens and Git observations; returns saved tokens and a resume prompt. |
 | `round` | Saves optional `sections` (spec heading to body), `decisions` (`{id,body}`), `planning` and `continuation` together; existing planning/handoff need their tokens. `architecture` writes the design document. Infers no answers, advances no phase, marks no agreement. |
-| `confirm` | `kind` (`requirements`, `planning` or `alignment`; old name `architecture`), exact `proposal_sha256` (`alignment`: `requirements_sha256` and `planning_sha256`), `review_id`, actual `response`, `source`, `scope`; optional `continuation`. Appends a marked confirmation; planning also updates its status and spec link. |
+| `confirm` | `kind` (`requirements`, `planning` or `alignment`; old name `architecture`), exact `proposal_sha256` (`alignment`: `requirements_sha256` and `planning_sha256`), required `review_id`, actual `response`, `source`, `scope`; optional `continuation`. Appends a marked confirmation; planning also updates its status and spec link. |
 | `correct` | Terminal `task`, `reason`, `replacement` with new task fields except ID/status/evidence/authorization/receipts; optional `continuation`. Allocates a new ID and links prior work without copying consent or acceptance. |
 | `reconcile` | Explicit `patch`, `decision`, `continuation`; saves selected dispositions, rewiring and pointers through normal commit guards. |
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |
@@ -30,7 +30,7 @@ input with the same ID conflicts. Metadata operations never replay commands or e
 | `maintenance` | `reason`, optional `tasks`, `continuation`; reopens DONE as PLANNING. |
 | `cancel` | `reason`, explicit `tasks` dispositions, `continuation`; commits CANCELLED without deleting work or claiming workers stopped. |
 | `assess` | `topic`, `disposition` (`apply`, `reject`, `defer`), `reason`, `application`; saves the lesson assessment with its actual topic token. |
-| `worktree` | `operation` `record` (`path`, `branch`, optional `repository`, `kind`, `role`) or `close` (`path`, `decision` `keep`/`accept_dirty`/`remove`), or a delivery record: `pull_request`, `alpha`, `release`, `merge`; plus quoted `confirmation`; verifies against Git and repoints the target; see [worktrees.md](worktrees.md). |
+| `worktree` | `operation` `record` (`path`, `branch`, optional `repository`, `kind`, `role`) or `close` (`path`, `decision` `keep`/`accept_dirty`/`remove`), or a delivery record (`path` each): `pull_request`, `alpha`, `release`, `merge`; plus required `confirmation`; verifies against Git and repoints it; see [worktrees.md](worktrees.md). |
 | `report` | Optional canonical report `sections` and boolean `graph`; generates requested Markdown scaffold/accounting and checks generated citations. |
 
 Continuation fields are strings: `next` (required on first checkpoint), `questions`, `pointers`,
