@@ -567,6 +567,19 @@ class TestAlignmentConfirmation:
             self.confirm(drafted, **overrides)
         assert self.files(drafted) == before
 
+    def test_a_stale_proposal_token_names_the_field_and_the_reload(self, drafted: Path) -> None:
+        """An out-of-band edit to the proposal leaves the refusal naming both tokens and the field."""
+        tokens = self.tokens(drafted)
+        path = drafted / "planning.md"
+        path.write_text(path.read_text(encoding="utf-8") + "\nAdded out of band.\n", encoding="utf-8")
+        with pytest.raises(lib.WorkspaceError) as refused:
+            self.confirm(drafted, planning_sha256=tokens["planning_sha256"])
+        message = str(refused.value)
+        assert message.startswith("proposal token changed: planning")
+        assert f"expected token {tokens['planning_sha256']}" in message
+        assert f"research-project context {drafted}" in message
+        assert "supply planning_sha256 as the current token" in message
+
     def test_the_single_document_kinds_refuse_the_alignment_tokens(self, drafted: Path) -> None:
         before = self.files(drafted)
         with pytest.raises(lib.WorkspaceError, match="only kind alignment"):

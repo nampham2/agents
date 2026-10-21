@@ -17,6 +17,7 @@ from workspace_lib import (
     WorkspaceConflict,
     WorkspaceError,
     atomic_write_text,
+    document_conflict_message,
     document_sha256,
     is_legacy_planning_layout,
     now_iso,
@@ -221,7 +222,9 @@ def edit_document(
             current = read_text(path, preserve_newlines=True) if exists else ""
             actual = document_sha256(current) if exists else "missing"
             if actual != expected_sha256:
-                raise WorkspaceConflict(f"document conflict: expected {expected_sha256}, found {actual}")
+                raise WorkspaceConflict(
+                    document_conflict_message(document, expected_sha256, actual, project_dir, use="--expected-sha256")
+                )
             if document in WHOLE_DOCUMENTS:
                 replacement = (body or "").strip()
                 if not replacement:

@@ -259,7 +259,31 @@ class WorkspaceError(RuntimeError):
 
 
 class WorkspaceConflict(WorkspaceError):
-    """Raised when a lock or revision prevents a safe write."""
+    """Raised when a lock, a revision or a document token prevents a safe write."""
+
+
+def document_conflict_message(
+    document: str,
+    expected: str,
+    found: str,
+    project: Path,
+    *,
+    use: str | None = None,
+    prefix: str = "document conflict",
+) -> str:
+    """One shape for every guarded-document refusal, so a retry needs no guesswork.
+
+    The message names the document, the token the request sent, the token the file holds and the
+    command that returns the current one. `use` is the field or flag that takes the token, and
+    `prefix` replaces `document conflict` where a refusal is already known by another name.
+    The document and both tokens come first: the invocation log keeps only the first 200 characters
+    of a refusal, and a retro groups conflicts by that head.
+    """
+    supply = use or f"tokens.{document}"
+    return (
+        f"{prefix}: {document}; expected token {expected}, found {found}; "
+        f"run 'research-project context {project}' and supply {supply} as the current token"
+    )
 
 
 def now_iso() -> str:

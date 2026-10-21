@@ -42,9 +42,11 @@ from workspace_journal import (
 from workspace_lib import (
     PLANNING_STATUS_PATTERN,
     PROJECT_TRANSITIONS,
+    WorkspaceConflict,
     WorkspaceError,
     check_state_candidate,
     confirmation_marker,
+    document_conflict_message,
     document_sha256,
     is_legacy_planning_layout,
     is_retro_gated,
@@ -414,14 +416,24 @@ def _build(
                 "requirements": string_input(request.get("requirements_sha256"), "requirements_sha256"),
                 "planning": string_input(request.get(planning_field), planning_field),
             }
+            source = {"requirements": "requirements_sha256", "planning": planning_field}
         else:
             if "requirements_sha256" in request or "planning_sha256" in request or "architecture_sha256" in request:
                 raise WorkspaceError("only kind alignment takes requirements_sha256 and planning_sha256")
             tokens = {kind: string_input(request.get("proposal_sha256"))}
+            # A single-kind confirmation reads its token from `proposal_sha256`, not from the
+            # per-document key, and a refusal must name the field the retry can actually fill.
+            source = {kind: "proposal_sha256"}
         for confirmed in tokens:
-            current = snapshot(document_path(project, "spec" if confirmed == "requirements" else "planning"))[1]
+            name = "spec" if confirmed == "requirements" else "planning"
+            current = snapshot(document_path(project, name))[1]
             if current != tokens[confirmed]:
-                raise WorkspaceError("proposal token changed; confirmation must cover the current proposal")
+                raise WorkspaceConflict(
+                    document_conflict_message(
+                        name, tokens[confirmed], current, project, use=source[confirmed],
+                        prefix="proposal token changed",
+                    )
+                )
         for field in ("review_id", "response", "source", "scope"):
             string_input(request.get(field), field)
         review_id = str(request["review_id"])

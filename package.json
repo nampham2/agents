@@ -1,6 +1,6 @@
 {
   "name": "agents",
-  "version": "0.30.0",
+  "version": "0.30.0-alpha.1",
   "private": true,
   "description": "Cross-host agent skills and plugins, including the research Pi package.",
   "pi": {

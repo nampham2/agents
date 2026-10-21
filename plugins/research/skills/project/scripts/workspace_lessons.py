@@ -21,9 +21,11 @@ from workspace_journal import (
 )
 from workspace_lib import (
     DirectoryLock,
+    WorkspaceConflict,
     WorkspaceError,
     amend_memory_topic,
     atomic_write_json,
+    document_conflict_message,
     document_sha256,
     load_json,
     rebuild_index,
@@ -93,8 +95,11 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                     tokens = object_input(request["tokens"], {"memory-staging", "reflection"})
                     staging, token = snapshot(document_path(project, "memory-staging"))
                     reflection, reflection_token = snapshot(document_path(project, "reflection"))
-                    if tokens.get("memory-staging") != token:
-                        raise WorkspaceError("staging token conflict")
+                    supplied_staging = tokens.get("memory-staging", "missing")
+                    if supplied_staging != token:
+                        raise WorkspaceConflict(
+                            document_conflict_message("memory-staging", supplied_staging, token, project)
+                        )
                     spans = []
                     promotions = []
                     seen = set()
@@ -134,8 +139,11 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                     staging += "\n<!-- Resolved lesson records: .operations/" + request["id"] + ".json -->\n"
                     documents = {"memory-staging": staging}
                     if any(item["disposition"] == "reflection" for item in items):
-                        if tokens.get("reflection", "missing") != reflection_token:
-                            raise WorkspaceError("reflection token conflict")
+                        supplied_reflection = tokens.get("reflection", "missing")
+                        if supplied_reflection != reflection_token:
+                            raise WorkspaceConflict(
+                                document_conflict_message("reflection", supplied_reflection, reflection_token, project)
+                            )
                         documents["reflection"] = reflection
                     journal = {
                         "kind": "memory",

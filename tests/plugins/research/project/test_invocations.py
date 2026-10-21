@@ -23,11 +23,12 @@ import validate_workspace
 from workspace_invocations import (
     ERROR_CLASSES,
     INVOCATIONS_FILENAME,
+    MESSAGE_CHARS,
     classify,
     summarize_invocations,
 )
 from workspace_journal import OperationError
-from workspace_lib import WorkspaceConflict, WorkspaceError, allocate_project
+from workspace_lib import WorkspaceConflict, WorkspaceError, allocate_project, document_conflict_message
 
 from tests.conftest import MANAGER
 
@@ -176,6 +177,27 @@ class SummaryTests(_Fixture):
         self.assertEqual("2026-10-15T10:00:00+02:00", summary["first_at"])
         self.assertEqual("2026-10-15T11:00:00+02:00", summary["last_at"])
         self.assertEqual(155, summary["ms_total"])
+
+
+class DocumentConflictMessageTests(unittest.TestCase):
+    """The log keeps the first 200 characters, so the head must carry the document and both tokens."""
+
+    def test_the_logged_head_names_the_document_and_both_tokens(self) -> None:
+        message = document_conflict_message("architecture", "a" * 64, "b" * 64, Path("/w/2026-10-21-001"))
+        head = message.splitlines()[0][:MESSAGE_CHARS]
+        self.assertIn("document conflict: architecture", head)
+        self.assertIn("expected token " + "a" * 64, head)
+        self.assertIn("found " + "b" * 64, head)
+        self.assertIn("run 'research-project context /w/2026-10-21-001'", message)
+
+    def test_use_and_prefix_change_only_their_own_part(self) -> None:
+        message = document_conflict_message(
+            "spec", "a" * 64, "missing", Path("/w/2026-10-21-001"),
+            use="requirements_sha256", prefix="proposal token changed",
+        )
+        self.assertTrue(message.startswith("proposal token changed: spec"))
+        self.assertIn("supply requirements_sha256 as the current token", message)
+        self.assertIn("found missing", message)
 
 
 def _stdin(text: str) -> io.StringIO:

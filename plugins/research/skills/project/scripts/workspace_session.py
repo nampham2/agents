@@ -37,6 +37,37 @@ def _load_state(project_dir: Path) -> dict[str, Any]:
     return state
 
 
+# The documents a guarded write names in its `tokens` field. Their tokens are whole-document SHA-256
+# values, so a write guard needs no external hashing command to be answered.
+TOKEN_DOCUMENTS = ("spec", "planning", "architecture", "reflection", "handoff", "memory-staging")
+
+
+def document_token_path(project_dir: Path, name: str) -> Path:
+    """Where one managed document lives, matching `document_path` in workspace_journal.py.
+
+    `workspace_journal` imports this module, so the resolution cannot live there and be imported back.
+    The two must agree, or `context` would hand out a token for a file the guard never reads.
+    """
+    if name == "planning":
+        return planning_path(project_dir)
+    if name == "architecture":
+        return project_dir / DESIGN_DOCUMENT
+    return project_dir / f"{name}.md"
+
+
+def document_tokens(project_dir: Path) -> dict[str, str]:
+    """Current token of each guarded document, for the write guards that ask for them.
+
+    `missing` is the token of a document that does not exist, which is the value a write that creates
+    it supplies. The value equals `snapshot()` in workspace_journal.py, which compares it.
+    """
+    tokens: dict[str, str] = {}
+    for name in TOKEN_DOCUMENTS:
+        path = document_token_path(project_dir, name)
+        tokens[name] = document_sha256(read_text(path, preserve_newlines=True)) if path.exists() else "missing"
+    return tokens
+
+
 def _worker_context(project_dir: Path, state: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
     """Project one assignment without loading specification text, logs, or unrelated tasks."""
     by_id = {item["id"]: item for item in state["tasks"]}
@@ -136,6 +167,7 @@ def project_context(
         "revision": state["revision"],
         "schema_version": state["schema_version"],
         "working_directory": state["working_directory"],
+        "tokens": document_tokens(project_dir),
         "task_counts": dict(Counter(t["status"] for t in tasks)),
         "tasks": summaries,
         "omitted_active_tasks": max(0, len(active) - limit),
@@ -177,10 +209,7 @@ def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str,
         raise WorkspaceError("project changed while context was validated; reload context")
     documents: dict[str, Any] = {}
     for name in ("spec", "evidence", "reflection", "planning", "architecture", "handoff", "memory-staging"):
-        if name == "planning":
-            path = planning_path(project_dir)
-        else:
-            path = project_dir / (DESIGN_DOCUMENT if name == "architecture" else f"{name}.md")
+        path = document_token_path(project_dir, name)
         if path.exists():
             content = read_text(path, preserve_newlines=True)
             documents[name] = {
