@@ -1072,3 +1072,64 @@ class CommandWarningTests(_ProjectFixture):
             )
         self.assertEqual(code, 0)
         self.assertIn("WARNING: task T01 is TODO", stderr.getvalue())
+
+
+class SecretReadGuardTests(_ProjectFixture):
+    """c4: a secret read must not be captured into `evidence.md`.
+
+    The recorded incident is a Keychain bearer token written to `evidence.md` by
+    `security find-generic-password -w` with no redirect. The guard refuses before the command runs
+    and prints the redirect form; a redirected spelling is accepted. No real secret command is run:
+    every refusal happens before execution, and the accepted cases use `echo`.
+    """
+
+    def _refused(self, command: list[str]) -> str:
+        before = self.evidence.read_text(encoding="utf-8")
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence(self.project_dir, "T01", command)
+        self.assertEqual(self.evidence.read_text(encoding="utf-8"), before, "a refusal must not be recorded")
+        return str(caught.exception)
+
+    def test_a_keychain_password_read_is_refused_with_the_redirect_form(self) -> None:
+        message = self._refused(["security", "find-generic-password", "-s", "svc", "-a", "user", "-w"])
+        self.assertIn("reads a secret into stdout", message)
+        self.assertIn("find-generic-password", message)
+        self.assertIn("> /dev/null", message)
+        self.assertIn("bash -lc", message)
+
+    def test_the_redirected_inline_form_is_accepted(self) -> None:
+        code = record_evidence(
+            self.project_dir,
+            "T01",
+            ["bash", "-lc", "echo security find-generic-password -w > /dev/null"],
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("> /dev/null", self.evidence.read_text(encoding="utf-8"))
+
+    def test_the_named_readers_are_refused(self) -> None:
+        for command in (
+            ["bw", "get", "password", "item"],
+            ["op", "read", "op://vault/item/password"],
+            ["bash", "-c", "echo $BW_SESSION"],
+        ):
+            with self.subTest(command=command):
+                self.assertIn("secret", self._refused(command))
+
+    def test_a_security_read_without_w_is_not_the_secret(self) -> None:
+        code = record_evidence(
+            self.project_dir, "T01", ["bash", "-c", "echo security find-generic-password -s svc"]
+        )
+        self.assertEqual(code, 0)
+
+    def test_a_redirected_stderr_is_not_a_stdout_redirect(self) -> None:
+        self.assertIn("secret", self._refused(["bash", "-c", "echo security find-generic-password -w 2>/dev/null"]))
+
+    def test_a_command_that_merely_mentions_the_reader_is_left_alone(self) -> None:
+        code = record_evidence(
+            self.project_dir, "T01", [sys.executable, "-c", "print('security find-generic-password')"]
+        )
+        self.assertEqual(code, 0)
+
+    def test_a_secret_read_inside_command_substitution_is_refused(self) -> None:
+        message = self._refused(["bash", "-c", "out=$(security find-generic-password -w); echo ${#out}"])
+        self.assertIn("security find-generic-password", message)

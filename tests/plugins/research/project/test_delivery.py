@@ -16,6 +16,7 @@ from workspace_operations import task_operation
 from workspace_session import update_project_data
 from workspace_workflows import workflow
 
+from tests.conftest import REPO_ROOT
 from tests.plugins.research.project.test_lifecycle_commands import done, planned
 from tests.plugins.research.project.test_workflow_automation import task
 from tests.plugins.research.project.test_worktrees import (
@@ -425,6 +426,53 @@ class TestRemovalFollowsTheMerge:
             close(recorded, linked, "remove")
         close(recorded, linked, "keep")
         assert entry_of(recorded)["status"] == "kept"
+
+
+class TestRemovalNamesEveryMissingRecord:
+    """c5: removal is last, and the refusal names the release or merge that is still missing."""
+
+    def test_a_gated_removal_refuses_until_each_record_exists(
+        self, tmp_path: Path, repository: Path, linked: Path, gated: None
+    ) -> None:
+        git(repository, "remote", "add", "origin", "https://github.com/o/r.git")
+        fetched(repository)
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        with pytest.raises(WorkspaceError, match="no merge request"):
+            close(project, linked, "remove")
+        op(project, linked, "pull_request", host="github", url=URL, number=7)
+        with pytest.raises(WorkspaceError, match="no release record"):
+            close(project, linked, "remove")
+        alpha(project, linked, 1)
+        write_versions(linked, "0.24.0", None)
+        op(project, linked, "release", version="0.24.0")
+        with pytest.raises(WorkspaceError, match="not merged"):
+            close(project, linked, "remove")
+        op(project, linked, "merge", merge_state="merged", method="squash", evidence="abc")
+        git(repository, "worktree", "remove", "--force", str(linked))
+        close(project, linked, "remove")
+        assert entry_of(project)["status"] == "removed"
+
+    def test_exemptions_satisfy_their_half_of_the_guard(
+        self, tmp_path: Path, repository: Path, linked: Path, gated: None
+    ) -> None:
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        op(project, linked, "pull_request", exempt="no_remote")
+        exempt(project, linked)
+        git(repository, "worktree", "remove", "--force", str(linked))
+        close(project, linked, "remove")
+        assert entry_of(project)["status"] == "removed"
+
+    def test_the_reference_states_the_order(self) -> None:
+        for name in ("worktrees.md", "pull-requests.md"):
+            text = " ".join(
+                (REPO_ROOT / "plugins/research/skills/project/references" / name)
+                .read_text(encoding="utf-8")
+                .split()
+            )
+            assert "release, merge on the host, record the merge" in text
+            assert "close/remove" in text
 
 
 LINE = {

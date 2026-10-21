@@ -19,7 +19,7 @@ from workspace_context import (
     worktree_observation,
     worktree_registered,
 )
-from workspace_delivery import DELIVERY_OPERATIONS, delivery_operation
+from workspace_delivery import DELIVERY_OPERATIONS, delivery_operation, removal_findings
 from workspace_documents import (
     LEGACY_PLANNING_HINT,
     _replace_sections,
@@ -48,6 +48,7 @@ from workspace_lib import (
     confirmation_marker,
     document_conflict_message,
     document_sha256,
+    is_delivery_gated,
     is_legacy_planning_layout,
     is_retro_gated,
     memory_staging_warnings,
@@ -368,10 +369,13 @@ def _worktree(
     # history (`superseded` below) and only then is the new one recorded. A removed worktree is final.
     if entry is None or entry["status"] not in ("active", "kept") or entry["kind"] == "none":
         raise WorkspaceError(f"no active or kept repository worktree is recorded at {path}")
-    if decision == "remove" and "pull_request" in entry and entry.get("merge", {}).get("state") != "merged":
-        raise WorkspaceError(
-            "the merge request is not merged; record operation merge, merged, before removing the worktree"
-        )
+    if decision == "remove":
+        missing = removal_findings(entry, gated=is_delivery_gated(state))
+        if missing:
+            raise WorkspaceError(
+                "the worktree cannot be removed before its delivery records are complete:\n- "
+                + "\n- ".join(missing)
+            )
     superseded = copy.deepcopy(entry["closure"]) if entry["status"] == "kept" else None
     seen = worktree_observation(Path(path))
     if not seen["available"]:
@@ -634,6 +638,11 @@ def _build(
         from workspace_checks import control_warnings
 
         result["control_warnings"] = control_warnings(project)
+        # c3: a task whose only evidence is a deliberately failing control proved the guard fires but
+        # not that the real check passes. Warning, not refusal: the task may legitimately finish on it.
+        from workspace_evidence import failing_evidence_warnings
+
+        result["failing_evidence_warnings"] = failing_evidence_warnings(project, state)
         patch = {"status": "DONE"}
         result["_after_commit"] = ["handoff"]
     elif action in ("maintenance", "cancel"):

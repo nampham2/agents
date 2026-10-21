@@ -280,6 +280,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="run every check and report the directory, command and warnings, without running or recording",
     )
+    record.add_argument(
+        "--control",
+        action="store_true",
+        help="record a command that is expected to fail as a deliberate control; task finish may cite it",
+    )
 
     observe = subparsers.add_parser(
         "record-observation",
@@ -772,11 +777,15 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
             timeout=args.timeout,
             cwd=args.cwd,
             dry_run=args.dry_run,
+            control=args.control,
         )
         exit_code = result.exit_code
+        # A control that fired is the outcome `--control` asked for, so it exits 0 like a pass; the
+        # JSON still reports passed=false and control=true, so the record is never mistaken for one.
+        control_fired = args.control and exit_code != 0
         if args.json:
             print(json.dumps(result.as_dict(), indent=2))
-            return 0 if exit_code == 0 else 1
+            return 0 if exit_code == 0 or control_fired else 1
         for warning in result.warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
         if result.dry_run:
@@ -788,6 +797,9 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         evidence_path = args.project_directory.resolve() / "evidence.md"
         if result.hint:
             print(f"HINT: {result.hint}", file=sys.stderr)
+        if control_fired:
+            print(f"Recorded a deliberate control failure for {owner} in {evidence_path}")
+            return 0
         if exit_code == 0:
             print(f"Recorded a passing result for {owner} in {evidence_path}")
             return 0
@@ -999,6 +1011,11 @@ def main() -> int:
     parser = _build_parser()
     options, command_argv = _split_at_separator(list(sys.argv[1:]))
     args = parser.parse_args(options)
+    # c7: a relative project argument such as `.` keeps an empty basename, which state validation
+    # compares against the `project` field. Resolve once here, before dispatch and before the
+    # invocation line, so every project-scoped command sees the absolute directory.
+    if isinstance(getattr(args, "project_directory", None), Path):
+        args.project_directory = args.project_directory.expanduser().resolve()
     skew = launcher_version_warning()
     if skew:
         print(f"WARNING: {skew}", file=sys.stderr)

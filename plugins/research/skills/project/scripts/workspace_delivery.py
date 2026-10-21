@@ -446,6 +446,30 @@ def start_findings(state: dict[str, Any]) -> list[str]:
     return findings
 
 
+def removal_findings(entry: dict[str, Any], *, gated: bool) -> list[str]:
+    """What must be recorded before a worktree may be removed, each missing record named.
+
+    c5: the removal decision comes last, after the release and the host merge have records. The MR
+    and release requirements belong to the delivery gates, so `gated` turns them on; the merged
+    check has always applied to a worktree that has an MR, so it stays unconditional. An exemption
+    satisfies its half.
+    """
+    path = entry["path"]
+    findings: list[str] = []
+    if gated and "pull_request" not in entry and "pr_exemption" not in entry:
+        findings.append(f"worktree {path} has no merge request; record operation pull_request, or a pr_exemption")
+    if gated and "version_exemption" not in entry:
+        line = entry.get("version_line")
+        if not isinstance(line, dict) or line.get("release") is None:
+            findings.append(
+                f"worktree {path} has no release record; record operation release with the plain version, or a "
+                "version_exemption"
+            )
+    if "pull_request" in entry and entry.get("merge", {}).get("state") != "merged":
+        findings.append(f"worktree {path} is not merged; record operation merge, merged, before removing it")
+    return findings
+
+
 def closure_findings(state: dict[str, Any]) -> list[str]:
     """What stops closure for a gated project: every repository worktree needs its delivery records."""
     if not is_delivery_gated(state):

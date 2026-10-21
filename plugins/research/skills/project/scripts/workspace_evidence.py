@@ -21,6 +21,8 @@ RECORD_ID = re.compile(r"^- Record ID: (?P<id>ev-[0-9a-f]{32})$", re.MULTILINE)
 ANCHOR = re.compile(r'^<a id="(?P<anchor>evidence-[0-9a-f]{32})"></a>$', re.MULTILINE)
 RECORDED = re.compile(r"^- Recorded: (?P<stamp>.+)$", re.MULTILINE)
 EXIT_CODE = re.compile(r"^- Exit code: (?P<code>-?\d+) \((?P<label>passed|FAILED)\)$", re.MULTILINE)
+# c3: a command recorded with `--control`, expected to fail on the input it exercises.
+CONTROL = re.compile(r"^- Control: true$", re.MULTILINE)
 OBSERVATION = re.compile(rf"^- Observation: (?P<label>passed|FAILED) \({re.escape(OBSERVATION_LABEL)}\)$", re.MULTILINE)
 
 
@@ -38,6 +40,7 @@ def _entry_rows(text: str) -> list[dict[str, Any]]:
         exits = EXIT_CODE.findall(preamble)
         observations = OBSERVATION.findall(preamble)
         stamps = RECORDED.findall(preamble)
+        control = CONTROL.search(preamble) is not None
         # Exactly one verdict line, of exactly one kind: an entry that claims both an exit code and an
         # observation is ambiguous about what kind of evidence it is, so it selects as neither.
         selectable = len(ids) == len(anchors) == 1 and len(exits) + len(observations) == 1
@@ -56,6 +59,7 @@ def _entry_rows(text: str) -> list[dict[str, Any]]:
             "command": command if separator else title,
             "recorded": stamps[0] if len(stamps) == 1 else None,
             "kind": "observation" if observations else "command",
+            "control": control,
             "exit_code": exit_code,
             "passed": passed,
             "anchor": anchors[0] if len(anchors) == 1 else None,
@@ -147,10 +151,46 @@ def selected_evidence_references(
             raise WorkspaceError(
                 f"evidence record {record_id} is a command result, not an observation; use --evidence for it"
             )
-        if not row["passed"]:
+        if not row["passed"] and not row["control"]:
             raise WorkspaceError(f"evidence record did not pass: {record_id}")
         references.append({"root": "workspace", "path": "evidence.md", "anchor": row["anchor"]})
     return references
+
+
+def failing_evidence_warnings(project_dir: Path, state: dict[str, Any]) -> list[str]:
+    """Warn at finalize when a `DONE` task's evidence holds no passing record.
+
+    A control record is a failure by design, so a task may finish on one under c3. When that
+    control is the task's only evidence it proved a guard fires but not that the real check passes,
+    which is exactly the gap c3 wants visible without refusing an otherwise sound closure.
+    """
+    tasks = state.get("tasks")
+    if not isinstance(tasks, list):
+        return []
+    path = project_dir.resolve() / "evidence.md"
+    rows = _entry_rows(read_text(path)) if path.is_file() else []
+    by_anchor = {row["anchor"]: row for row in rows if row["anchor"] is not None}
+    warnings: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("status") != "DONE":
+            continue
+        references = task.get("evidence")
+        if not isinstance(references, list):
+            continue
+        judged = [
+            by_anchor[reference["anchor"]]
+            for reference in references
+            if isinstance(reference, dict)
+            and reference.get("path") == "evidence.md"
+            and isinstance(reference.get("anchor"), str)
+            and reference["anchor"] in by_anchor
+        ]
+        if judged and not any(row["passed"] for row in judged):
+            warnings.append(
+                f"task {task.get('id')}: its only recorded evidence is failing; record the passing check for the "
+                "success criteria as well as the control"
+            )
+    return warnings
 
 
 GENERATED_ANCHOR = re.compile(r"evidence-[0-9a-f]{32}")
@@ -219,7 +259,7 @@ def newly_terminal_task_errors(
             row = matches[0]
             if row["owner"] != task_id:
                 errors.append(f"{label}: evidence record {row['record_id']} belongs to {row['owner']}, not {task_id}")
-            elif not row["passed"]:
+            elif not row["passed"] and not row["control"]:
                 errors.append(
                     f"{label}: evidence record {row['record_id']} did not pass; a task cannot finish on a failed "
                     "record"
