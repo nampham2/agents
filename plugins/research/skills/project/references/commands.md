@@ -13,8 +13,8 @@ changes its role, granting no authority.
 `read <project-dir> spec --section "<exact heading>"` selects an exact heading; `--outline` returns
 headings and the SHA-256 token. Default reads exclude Decision history; select it explicitly.
 `read <project-dir> evidence --task T01` selects task entries; `--step report` selects report-check
-evidence; omit both for all. `read <project-dir> planning` or `handoff` reads that document. Reads cap
-at 4,000 characters; continue with `--offset <next_offset>`.
+evidence; omit both for all. `read <project-dir> planning` or `handoff` reads that document. Reads
+cap at 4,000 characters; continue with `--offset <next_offset>`.
 
 `list-projects <root> --query "<text>" [--status EXECUTING]` matches every word in
 identity/title/target (10 matches; page with `--limit`, `--offset`).

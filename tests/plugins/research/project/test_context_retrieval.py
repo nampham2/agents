@@ -32,7 +32,7 @@ def workspace(tmp_path: Path) -> WorkspaceFixture:
 def test_context_returns_the_tokens_a_guarded_write_needs(workspace: WorkspaceFixture) -> None:
     """The normal resume read answers every `tokens` guard without an external hashing command."""
     (workspace.project_dir / "planning.md").write_text("# Planning\n\nStatus: draft\n", encoding="utf-8")
-    (workspace.project_dir / "artifacts").mkdir()
+    (workspace.project_dir / "artifacts").mkdir(exist_ok=True)
     (workspace.project_dir / "artifacts" / "architecture.md").write_text(
         "# Design\n\nStatus: draft\n", encoding="utf-8"
     )
