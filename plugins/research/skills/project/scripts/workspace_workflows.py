@@ -95,16 +95,57 @@ FIELDS = {
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
 READ_ACTIONS = set(READ_INPUTS)
 
+# Two actions have a discriminator value whose keys the runtime demands on top of the universal
+# ones, and `workflow <action> --schema` must print them per value: a caller that never learns
+# `path`, `branch` or `review_id` until a refusal has already staged the operation learns it too
+# late for a clean retry. Each entry is the complete sorted key set of that variant, so the whole
+# request can be built from one entry. Listing a key the value does not always need (alpha's
+# `files`, merge's `method` and `evidence`) can only over-report: the runtime ignores an extra
+# allowed key outside its condition, while omitting one is the recorded friction. `architecture` is
+# `kind=planning` under the name the runtime still accepts, and an alignment carries either
+# `planning_sha256` or its old name `architecture_sha256`, never both, so the table names the
+# current one.
+CONFIRM_REQUIRED = frozenset({"kind", "review_id", "response", "scope", "source"})
+WORKTREE_REQUIRED = frozenset({"confirmation", "operation", "path"})
+CONFIRM_REQUIRED_BY = {
+    "kind=requirements": frozenset({"proposal_sha256"}),
+    "kind=planning": frozenset({"proposal_sha256"}),
+    "kind=architecture": frozenset({"proposal_sha256"}),
+    "kind=alignment": frozenset({"planning_sha256", "requirements_sha256"}),
+}
+WORKTREE_REQUIRED_BY = {
+    "operation=record": frozenset({"branch"}),
+    "operation=close": frozenset({"decision"}),
+    "operation=pull_request": frozenset({"host", "number", "url"}),
+    "operation=alpha": frozenset({"alpha", "base", "files", "reason"}),
+    "operation=release": frozenset({"version"}),
+    "operation=merge": frozenset({"evidence", "merge_state", "method"}),
+}
+ALWAYS_REQUIRED = {"confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED}
+REQUIRED_BY = {"confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY}
+
 
 def input_schema(action: str) -> dict[str, Any]:
     """Allowed and required top-level keys of a workflow action, from the tables validation uses."""
     if action in FIELDS:
-        allowed, required = COMMON | FIELDS[action], WRITE_REQUIRED
-        note = "write action: further per-action rules are checked when it runs (see references/automation-records.md)"
+        allowed = COMMON | FIELDS[action]
+        required = WRITE_REQUIRED | ALWAYS_REQUIRED.get(action, frozenset())
+        variants = {name: sorted(required | keys) for name, keys in REQUIRED_BY.get(action, {}).items()}
+        note = (
+            "write action: further per-action rules are checked when it runs "
+            "(see references/automation-records.md)"
+        )
     else:
         allowed, required = READ_INPUTS[action]
+        variants = {}
         note = "read action: the keys below are the whole request"
-    return {"action": action, "allowed": sorted(allowed), "required": sorted(required), "note": note}
+    return {
+        "action": action,
+        "allowed": sorted(allowed),
+        "required": sorted(required),
+        "required_by": variants,
+        "note": note,
+    }
 
 
 def _entry(text: str, entry_id: str, body: str, *, decision: bool = False) -> str:
@@ -229,7 +270,9 @@ def worker_events(project: Path) -> list[dict[str, Any]]:
 
 
 def _confirmation(value: object) -> dict[str, str]:
-    confirmation = object_input(value, {"source", "response"}, {"source", "response"})
+    # `confirmation` is printed by `--schema` as required, so its refusal has to name it; without
+    # `where` a caller saw "expected a JSON object, got NoneType" with no field to fill.
+    confirmation = object_input(value, {"source", "response"}, {"source", "response"}, where="confirmation")
     return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 
@@ -420,7 +463,7 @@ def _build(
         else:
             if "requirements_sha256" in request or "planning_sha256" in request or "architecture_sha256" in request:
                 raise WorkspaceError("only kind alignment takes requirements_sha256 and planning_sha256")
-            tokens = {kind: string_input(request.get("proposal_sha256"))}
+            tokens = {kind: string_input(request.get("proposal_sha256"), "proposal_sha256")}
             # A single-kind confirmation reads its token from `proposal_sha256`, not from the
             # per-document key, and a refusal must name the field the retry can actually fill.
             source = {kind: "proposal_sha256"}

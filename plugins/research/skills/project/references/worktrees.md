@@ -41,6 +41,9 @@ commands only after the user confirms them in their own words.
 7. Record an alpha line only when the project needs a test or experiment build, and the version
    decision before closing, as [versioning.md](versioning.md) says.
 
+Every record above takes `path` and a quoted `confirmation`; `workflow <project-dir> worktree
+--schema` prints each operation's full key list.
+
 For a project created after the gate cutoff, `task start` refuses a task with `target` outputs
 until step 6 is recorded.
 

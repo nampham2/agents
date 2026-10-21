@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 import workspace_journal as journal
 import workspace_workflows as workflows
+from workspace_delivery import DELIVERY_OPERATIONS
 from workspace_lib import WorkspaceError, allocate_project
 
 from tests.conftest import REPO_ROOT
@@ -25,6 +26,23 @@ from tests.plugins.research.project.test_workflow_automation import invoke
 ACTIONS = sorted(workflows.FIELDS.keys() | workflows.READ_ACTIONS)
 BIN = REPO_ROOT / "plugins/research/bin"
 SKILL_SCRIPTS = REPO_ROOT / "plugins/research/skills/project/scripts"
+
+# The variant key sets the runtime demands, written out here so the printed `required_by` is
+# compared with an independent expectation rather than with the table that produced it.
+WORKTREE_VARIANTS = {
+    "operation=record": {"branch"},
+    "operation=close": {"decision"},
+    "operation=pull_request": {"host", "number", "url"},
+    "operation=alpha": {"alpha", "base", "files", "reason"},
+    "operation=release": {"version"},
+    "operation=merge": {"evidence", "merge_state", "method"},
+}
+CONFIRM_VARIANTS = {
+    "kind=requirements": {"proposal_sha256"},
+    "kind=planning": {"proposal_sha256"},
+    "kind=architecture": {"proposal_sha256"},
+    "kind=alignment": {"planning_sha256", "requirements_sha256"},
+}
 
 
 @pytest.fixture
@@ -128,10 +146,62 @@ class TestSchemaTable:
 
     def test_write_actions_all_require_an_id_and_a_revision_and_read_actions_say_so(self) -> None:
         for action in workflows.FIELDS:
-            assert workflows.input_schema(action)["required"] == ["expected_revision", "id"]
+            required = set(workflows.input_schema(action)["required"])
+            assert {"expected_revision", "id"} <= required
             assert "write action" in workflows.input_schema(action)["note"]
         assert "read action" in workflows.input_schema("resume")["note"]
         assert workflows.input_schema("freshness")["allowed"] == []
+
+
+class TestRequiredBy:
+    """`required_by` is the discovery the retro asked for: the keys per operation or kind."""
+
+    def test_the_two_discriminated_actions_list_their_variants(self) -> None:
+        assert set(workflows.input_schema("worktree")["required_by"]) == set(WORKTREE_VARIANTS)
+        assert set(workflows.input_schema("confirm")["required_by"]) == set(CONFIRM_VARIANTS)
+
+    @pytest.mark.parametrize("action, variants", (("worktree", WORKTREE_VARIANTS), ("confirm", CONFIRM_VARIANTS)))
+    def test_each_variant_is_the_complete_sorted_key_set(self, action: str, variants: dict[str, set[str]]) -> None:
+        schema = workflows.input_schema(action)
+        universal = set(schema["required"])
+        for name, extra in variants.items():
+            assert schema["required_by"][name] == sorted(universal | extra), name
+            assert set(schema["required_by"][name]) <= set(schema["allowed"])
+
+    @pytest.mark.parametrize("action", ACTIONS)
+    def test_every_other_action_prints_no_variants(self, action: str) -> None:
+        if action not in ("worktree", "confirm"):
+            assert workflows.input_schema(action)["required_by"] == {}
+
+    def test_the_table_matches_the_vocabulary_the_runtime_accepts(self, project: Path) -> None:
+        # The variant names are the discriminator values, so a renamed operation or kind cannot
+        # linger in the printed schema while the runtime accepts something else.
+        operations = {name.split("=", 1)[1] for name in WORKTREE_VARIANTS}
+        assert operations == DELIVERY_OPERATIONS | {"record", "close"}
+        for name in CONFIRM_VARIANTS:
+            kind = name.split("=", 1)[1]
+            with pytest.raises(WorkspaceError) as caught:
+                workflows.workflow(project, "confirm", {"id": f"probe-{kind}", "expected_revision": 0, "kind": kind})
+            assert "confirmation kind must be" not in str(caught.value), kind
+
+
+class TestConfirmationRefusal:
+    def test_a_missing_confirmation_names_the_field_the_schema_prints(self, project: Path) -> None:
+        assert {"confirmation", "operation", "path"} <= set(workflows.input_schema("worktree")["required"])
+        payload = {"id": "worktree-target", "expected_revision": 0, "operation": "record", "path": str(project)}
+        with pytest.raises(WorkspaceError, match=r"^confirmation: expected a JSON object, got NoneType$"):
+            workflows.workflow(project, "worktree", payload)
+
+    def test_an_empty_confirmation_names_its_two_fields(self, project: Path) -> None:
+        payload = {
+            "id": "worktree-target", "expected_revision": 0, "operation": "record", "path": str(project),
+            "confirmation": {},
+        }
+        with pytest.raises(WorkspaceError) as caught:
+            workflows.workflow(project, "worktree", payload)
+        message = str(caught.value)
+        assert message.startswith("confirmation: missing required field(s)")
+        assert "'response', 'source'" in message
 
 
 class TestCommandLine:
