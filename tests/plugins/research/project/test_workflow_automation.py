@@ -20,6 +20,7 @@ import workspace_operations
 import workspace_session
 from workspace_documents import append_record, document_snapshot, edit_document
 from workspace_evidence import evidence_entries, selected_evidence_references
+from workspace_journal import OperationError
 from workspace_lib import (
     SPEC_CANONICAL_SECTIONS,
     WorkspaceConflict,
@@ -281,6 +282,35 @@ def test_batch_spec_edit_preserves_history_and_rejects_stale_token(project: Path
         )
 
 
+def test_an_out_of_band_edit_names_the_token_to_reload(project: Path) -> None:
+    """The refusal states what it wanted, what it found, and the command that returns the current token."""
+    planning = project / "planning.md"
+    planning.write_text("# Planning\n\nStatus: draft\n", encoding="utf-8")
+    stale = validated_project_context(project)["tokens"]["planning"]
+    # A second session writes the file out of band: no operation ran, so no record holds its token.
+    planning.write_text("# Planning\n\nStatus: agreed\n", encoding="utf-8")
+    fresh = validated_project_context(project)["tokens"]["planning"]
+    assert fresh != stale
+    request = {
+        "id": "round-out-of-band",
+        "expected_revision": 0,
+        "tokens": {"planning": stale},
+        "planning": planning.read_text(encoding="utf-8"),
+    }
+    with pytest.raises(OperationError) as refused:
+        workflow(project, "round", request)
+    message = str(refused.value)
+    assert "document conflict: planning" in message
+    assert f"expected token {stale}" in message
+    assert f"found {fresh}" in message
+    # The command the refusal names is the command that returns the token that then works.
+    assert f"research-project context {project}" in message
+    assert "supply tokens.planning as the current token" in message
+    replay = workflow(project, "round", {**request, "tokens": {"planning": fresh}})
+    assert replay["complete"] is True
+    assert replay["tokens"]["planning"] == fresh
+
+
 def test_section_edit_preserves_crlf_and_rejects_parent_heading(project: Path) -> None:
     fill_spec(project)
     path = project / "spec.md"
@@ -414,7 +444,8 @@ def test_handoff_guarded_replacement_pagination_and_cli_errors(project: Path) ->
     code, _, err = invoke([
         "edit", str(project), "handoff", "--body", "Stale writer", "--expected-sha256", "missing",
     ])
-    assert code == 1 and "document conflict" in err
+    assert code == 1 and "document conflict: handoff" in err
+    assert "--expected-sha256" in err and f"research-project context {project}" in err
     assert (project / "handoff.md").read_text() == body
     assert invoke([
         "edit", str(project), "handoff", "--body", "  ", "--expected-sha256", token,

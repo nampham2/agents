@@ -170,9 +170,14 @@ def test_the_document_is_edited_whole_under_the_token_guard(project: Path) -> No
     snapshot = document_snapshot(project, "planning")
     assert snapshot["document_sha256"] == created["document_sha256"]
     assert snapshot["text"] == DRAFT
-    # A stale token is refused, exactly as for the reflection.
-    with pytest.raises(WorkspaceError, match="document conflict"):
+    # A stale token is refused, exactly as for the reflection, and the refusal names the reload.
+    with pytest.raises(WorkspaceError) as refused:
         edit_document(project, "planning", expected_sha256="missing", body=AGREED)
+    message = str(refused.value)
+    assert "document conflict: planning; expected token missing" in message
+    assert f"found {snapshot['document_sha256']}" in message
+    assert f"research-project context {project}" in message
+    assert "--expected-sha256" in message
     agreed = edit_document(project, "planning", expected_sha256=snapshot["document_sha256"], body=AGREED)
     assert planning_status((project / "planning.md").read_text(encoding="utf-8")) == "agreed"
     with pytest.raises(WorkspaceError, match="planning edits require a body"):
@@ -230,6 +235,8 @@ def test_the_cli_reads_and_edits_the_document(project: Path) -> None:
     code, _, err = invoke(["edit", str(project), "planning", "--body", "x", "--expected-sha256", "stale"])
     assert code != 0
     assert "document conflict" in err
+    assert "document conflict: planning; expected token stale" in err
+    assert f"research-project context {project}" in err
 
 
 def test_a_legacy_root_architecture_md_is_the_planning_document(project: Path) -> None:

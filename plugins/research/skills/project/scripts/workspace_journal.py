@@ -17,6 +17,7 @@ from workspace_lib import (
     atomic_write_json,
     atomic_write_text,
     check_state_candidate,
+    document_conflict_message,
     document_sha256,
     load_json,
     planning_path,
@@ -314,7 +315,9 @@ def _run_operation(
                 for name, body in documents.items():
                     before = snapshot(document_path(project, name))[1]
                     if tokens.get(name, "missing") != before:
-                        raise WorkspaceConflict(f"document conflict: {name}; supply its current token")
+                        raise WorkspaceConflict(
+                            document_conflict_message(name, tokens.get(name, "missing"), before, project)
+                        )
                     prepared[name] = {"before": before, "text": body}
                 candidate = prepare_update(state, patch, internal=True) if patch is not None else None
                 if candidate is not None:

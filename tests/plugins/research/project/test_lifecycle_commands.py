@@ -690,9 +690,28 @@ def test_metadata_conflicts(project: Path, change: str) -> None:
         workflow(project, "checkpoint", payload)
 
 
+def test_triage_names_the_staging_token_it_wanted(project: Path) -> None:
+    """The triage refusal names the document, both tokens and the command that returns the current one."""
+    done(project)
+    (project / "memory-staging.md").write_text("# Staging\n\n## Reuse\n\nA general lesson.\n", encoding="utf-8")
+    payload = request(
+        project, "triage", items=[{"section": "Reuse", "disposition": "discard", "reason": "Duplicate"}]
+    )
+    payload["tokens"] = {"memory-staging": "0" * 64}
+    with pytest.raises(lib.WorkspaceError) as refused:
+        workflow(project, "triage", payload)
+    message = str(refused.value)
+    assert "document conflict: memory-staging; expected token " + "0" * 64 in message
+    assert f"research-project context {project}" in message
+    assert "supply tokens.memory-staging as the current token" in message
+
+
 def test_tokens_and_corrupt_journal_guards(project: Path) -> None:
-    with pytest.raises(lib.WorkspaceError, match="document conflict"):
+    with pytest.raises(lib.WorkspaceError) as refused:
         workflow(project, "round", request(project, tokens={}, sections={"Current specification": "Changed"}))
+    message = str(refused.value)
+    assert "document conflict: spec; expected token missing" in message
+    assert f"research-project context {project}" in message
     payload = request(project, continuation={"next": "Proceed"})
     workflow(project, "checkpoint", payload)
     path = journal.journal_path(project, "operation")

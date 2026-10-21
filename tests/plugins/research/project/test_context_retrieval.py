@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -12,8 +13,9 @@ from unittest.mock import patch
 
 import manage_workspace
 import pytest
+from workspace_context import resume_bundle
 from workspace_lib import WorkspaceError, allocate_project, atomic_write_json, validate_project
-from workspace_session import list_projects, project_context, read_project_text
+from workspace_session import TOKEN_DOCUMENTS, document_token_path, list_projects, project_context, read_project_text
 
 from tests.conftest import REPO_ROOT
 from tests.plugins.research.project.test_report_contract import GOOD_HTML, GOOD_MARKDOWN
@@ -25,6 +27,41 @@ def workspace(tmp_path: Path) -> WorkspaceFixture:
     fixture = WorkspaceFixture(tmp_path)
     atomic_write_json(fixture.project_dir / "project.json", fixture.state())
     return fixture
+
+
+def test_context_returns_the_tokens_a_guarded_write_needs(workspace: WorkspaceFixture) -> None:
+    """The normal resume read answers every `tokens` guard without an external hashing command."""
+    (workspace.project_dir / "planning.md").write_text("# Planning\n\nStatus: draft\n", encoding="utf-8")
+    (workspace.project_dir / "artifacts").mkdir(exist_ok=True)
+    (workspace.project_dir / "artifacts" / "architecture.md").write_text(
+        "# Design\n\nStatus: draft\n", encoding="utf-8"
+    )
+    result = project_context(workspace.project_dir)
+    assert set(result["tokens"]) == set(TOKEN_DOCUMENTS)
+    for name, token in result["tokens"].items():
+        path = document_token_path(workspace.project_dir, name)
+        expected = hashlib.sha256(path.read_bytes()).hexdigest() if path.exists() else "missing"
+        assert token == expected
+    assert result["tokens"]["handoff"] == "missing"
+    # An edit out of band changes the token that the next read returns, and only for that document.
+    (workspace.project_dir / "planning.md").write_text("# Planning\n\nStatus: agreed\n", encoding="utf-8")
+    changed = project_context(workspace.project_dir)["tokens"]
+    assert changed["planning"] != result["tokens"]["planning"]
+    assert changed["spec"] == result["tokens"]["spec"]
+
+
+def test_resume_returns_the_same_tokens_as_context(workspace: WorkspaceFixture) -> None:
+    """`workflow resume` reuses the context view, so the two never name different tokens."""
+    tokens = project_context(workspace.project_dir)["tokens"]
+    bundle = resume_bundle(workspace.project_dir, {})
+    for name in TOKEN_DOCUMENTS:
+        assert bundle["documents"][name]["sha256"] == tokens[name]
+
+
+def test_task_projections_carry_no_tokens(workspace: WorkspaceFixture) -> None:
+    """A worker edits no guarded document, so its projection stays without the tokens map."""
+    assert "tokens" not in project_context(workspace.project_dir, task_id="T01", task_only=True)
+    assert "tokens" not in project_context(workspace.project_dir, task_id="T01", worker=True)
 
 
 def test_task_only_preserves_complete_assignment_without_reading_logs(workspace: WorkspaceFixture) -> None:

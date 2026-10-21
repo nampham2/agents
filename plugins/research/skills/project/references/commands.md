@@ -5,15 +5,16 @@ typed JSON on stdin. `init --json` supplies initial tokens; `update --dry-run` p
 
 ## Retrieve
 
-`context <project-dir> --validate` returns revision, active summaries, ready IDs, review/executor
-status, roots, document tokens and validation findings; `--limit` sets summary count (1–20). `--task
-T01 --task-only` returns task/dependencies; `--worker` changes its role, granting no authority.
+`context <project-dir>` returns revision, roots and the `tokens` map that guarded writes take.
+`--validate` adds active summaries, ready IDs, review/executor status and validation findings.
+`--limit` sets summary count (1–20). `--task T01 --task-only` returns task/dependencies; `--worker`
+changes its role, granting no authority.
 
-`read <project-dir> spec --section "Constraints and important assumptions"` selects an exact
-heading; `--outline` returns headings and the SHA-256 token. Default reads exclude Decision history;
-select it explicitly. `read <project-dir> evidence --task T01` selects task entries; `--step report`
-selects report-check evidence; omit both for all. `read <project-dir> planning` or `handoff`
-reads that document. Reads cap at 4,000 characters; continue with `--offset <next_offset>`.
+`read <project-dir> spec --section "<exact heading>"` selects an exact heading; `--outline` returns
+headings and the SHA-256 token. Default reads exclude Decision history; select it explicitly.
+`read <project-dir> evidence --task T01` selects task entries; `--step report` selects report-check
+evidence; omit both for all. `read <project-dir> planning` or `handoff` reads that document. Reads
+cap at 4,000 characters; continue with `--offset <next_offset>`.
 
 `list-projects <root> --query "<text>" [--status EXECUTING]` matches every word in
 identity/title/target (10 matches; page with `--limit`, `--offset`).
@@ -34,16 +35,15 @@ research-project update <project-dir> - --expected-revision 0 --json
 }]}
 ```
 
-New tasks require `id`, `name`, `success_criteria`, `verification`, and explicit `effect.kind`.
-Non-`none` effects need a description. Destructive/external effects default to pending
-authorization.
+New tasks require `id`, `name`, `success_criteria`, `verification` and `effect.kind`. Non-`none`
+effects need a description. Destructive/external effects default to pending authorization.
 Roots: `target` for repository outputs, `workspace` for project files, `workspace_root` for shared
 records, `external` for remote outputs.
 
 Objects merge; lists/scalars replace. Tasks merge by ID; omissions stay unchanged.
 Project fields: `title`, `status`, `review`, `cancellation_reason`, `predecessor`, `tasks`.
 Include `block_reason` for `BLOCKED`, `skip_reason` for `SKIPPED`; clear them with null when
-leaving. Use full `commit` only for changes outside these fields.
+leaving. Use full `commit` only for other fields.
 After a post-commit index failure, run the printed `rebuild-index` recovery; do not repeat the
 update.
 
@@ -76,13 +76,13 @@ different content conflicts.
 
 `record-evidence <project-dir> --task T01 --json -- <command>` records actual exit code and output
 tail; failure returns nonzero. `--tail-lines` adjusts stored output; `--timeout <seconds>` abandons
-a hung command; `--cwd <absolute-dir>` runs elsewhere; `--dry-run` reports directory and warnings
-without running. The command sees `$RESEARCH_PROJECT_DIR`; relative paths to `research-*` tools are
+a hung command; `--cwd <absolute-dir>` runs elsewhere; `--dry-run` reports warnings without running.
+The command sees `$RESEARCH_PROJECT_DIR`; relative paths to `research-*` tools are
 refused. Warnings (task not `RUNNING`, heredoc or unguarded pipe in `bash -c`) never block.
 References have `root`, `path`, `anchor` (or null).
 
 `task ... start` resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`, preserving review state
-and normal dependency/authorization guards. Reopen invalidated review acceptance as `pending`.
+and dependency/authorization guards. Reopen invalidated review acceptance as `pending`.
 Finish after judging success criteria:
 
 ```sh
@@ -94,9 +94,9 @@ research-project task <project-dir> finish T01 --evidence <record-id> \
 commits) for work done before `start`. `read <project-dir> evidence --entries --task T01` lists
 selectable checks; `--entry <record-id>` returns one complete entry.
 
-A failed `close` reports what was saved: keep drafts, reload before retrying uncommitted state, and
-for committed index/validation errors use the reported recovery, never another close.
-`workflow finalize` also saves the final handoff.
+A failed `close` reports what was saved: keep drafts, reload before retrying, and use the reported
+recovery for committed index or validation errors, never another close. `workflow finalize` also
+saves the final handoff.
 
 External effects: `workflow authorize` (`status: explicit`, actual `scope`, user `source`, real
 `authorized_at`; an effect change does not update it), `task start`, the effect through

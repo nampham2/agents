@@ -161,8 +161,12 @@ class TestReflectedLessons:
     def test_a_stale_staging_token_refuses_the_close_before_any_write(self, project: Path) -> None:
         payload = request(project, "close", reflection=LESSON_REFLECTION, continuation={"next": "none"})
         workspace_documents.stage_lesson(project, "Mid project", "Something surprising.")
-        with pytest.raises(WorkspaceError, match="document conflict: memory-staging"):
+        with pytest.raises(WorkspaceError) as refused:
             workflow(project, "finalize", payload)
+        message = str(refused.value)
+        assert "document conflict: memory-staging" in message
+        assert f"expected token {payload['tokens']['memory-staging']}" in message
+        assert f"research-project context {project}" in message
         assert not (project / "reflection.md").exists()
         assert _load_state(project)["status"] != "DONE"
 
