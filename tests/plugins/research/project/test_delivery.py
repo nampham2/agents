@@ -944,3 +944,59 @@ def errors_state(tmp_path: Path) -> tuple[dict[str, Any], Path]:
     )
     none = entry(kind="none", repository=None, branch=None, base_commit=None, path="/t", role="additional")
     return state_with(tmp_path, [removed, none])
+
+
+LOCKED = [{"path": "pyproject.toml", "style": "pep440"}, {"path": "uv.lock", "style": "pep440"}]
+
+
+def write_lock(root: Path, own: str, dependency: str) -> None:
+    """A `uv.lock` whose root project states `own` and whose dependency `regex` states `dependency`."""
+    blocks = [
+        ("regex", dependency, 'source = { registry = "https://pypi.org/simple" }'),
+        ("agents", own, 'source = { virtual = "." }'),
+    ]
+    text = "version = 1\nrevision = 5\n\n" + "\n".join(
+        f'[[package]]\nname = "{name}"\nversion = "{version}"\n{source}\n' for name, version, source in blocks
+    )
+    (root / "uv.lock").write_text(text, encoding="utf-8")
+
+
+class TestUvLockIsReadAtTheProjectsOwnEntry:
+    """A dependency whose version equals the base or its alpha spelling neither satisfies nor fails a record."""
+
+    def release(self, project: Path, linked: Path, **fields: Any) -> dict[str, Any]:
+        return op(project, linked, "release", version="0.24.0", files=LOCKED, **fields)
+
+    def test_a_release_is_recorded_when_a_dependency_carries_an_alpha_of_the_base(
+        self, recorded: Path, linked: Path
+    ) -> None:
+        write_versions(linked, "0.24.0", None)
+        write_lock(linked, own="0.24.0", dependency="0.24.0a1")
+        self.release(recorded, linked)
+        assert entry_of(recorded)["version_line"]["release"]["version"] == "0.24.0"
+
+    def test_a_release_is_refused_when_only_a_dependency_carries_the_base(self, recorded: Path, linked: Path) -> None:
+        write_versions(linked, "0.24.0", None)
+        write_lock(linked, own="0.23.9", dependency="0.24.0")
+        refuse(recorded, linked, "uv.lock does not contain 0.24.0", "release", version="0.24.0", files=LOCKED)
+
+    def test_a_release_is_refused_when_the_project_itself_still_carries_an_alpha(
+        self, recorded: Path, linked: Path
+    ) -> None:
+        write_versions(linked, "0.24.0", None)
+        write_lock(linked, own="0.24.0a1", dependency="2026.9.10")
+        refuse(recorded, linked, "uv.lock still carries an alpha", "release", version="0.24.0", files=LOCKED)
+
+    def test_an_alpha_is_refused_when_only_a_dependency_carries_it(self, recorded: Path, linked: Path) -> None:
+        write_versions(linked, "0.24.0", 1)
+        write_lock(linked, own="0.23.9", dependency="0.24.0a1")
+        refuse(
+            recorded, linked, "uv.lock does not contain 0.24.0a1", "alpha",
+            base="0.24.0", alpha=1, reason="x", files=LOCKED,
+        )
+
+    def test_an_alpha_is_recorded_when_the_project_carries_it(self, recorded: Path, linked: Path) -> None:
+        write_versions(linked, "0.24.0", 1)
+        write_lock(linked, own="0.24.0a1", dependency="0.24.0a1")
+        op(recorded, linked, "alpha", base="0.24.0", alpha=1, reason="x", files=LOCKED)
+        assert entry_of(recorded)["version_line"]["alpha"] == 1

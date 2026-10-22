@@ -29,6 +29,7 @@ from workspace_lib import WorkspaceError, load_json
 from workspace_similar import LIVE_STATUSES
 
 PEP440_VERSION = re.compile(r"""^\s*(?:__version__|version)\s*=\s*["']v?(\d+\.\d+\.\d+)(?:a\d+)?["']""", re.MULTILINE)
+LOCK_ROOT_SOURCE = re.compile(r"""^source\s*=\s*\{\s*(?:editable|virtual)\s*=\s*["']\.["']\s*\}$""")
 SEMVER_VERSION = re.compile(r'"version"\s*:\s*"(\d+\.\d+\.\d+)(?:-alpha\.\d+)?"')
 TAG_VERSION = re.compile(r"^v?(\d+\.\d+\.\d+)$")
 PLAIN_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
@@ -52,9 +53,34 @@ def _query(root: Path, *arguments: str) -> str | None:
         raise WorkspaceError(f"Git could not be consulted ({error}); retry when it is available") from error
 
 
+def own_text(text: str) -> str:
+    """The part of a version file that states this project's version.
+
+    A `uv.lock` lists every locked dependency as a `[[package]]` block, so its text states many versions.
+    The project's own block is the one whose `source` is `{ editable = "." }` or `{ virtual = "." }`. Its
+    `name`, `version` and `source` lines run up to the next line that opens a table. A lock with no such
+    block gives an empty text. Any other text comes back unchanged.
+    """
+    lines = text.splitlines()
+    if not any(line.strip() == "[[package]]" for line in lines):
+        return text
+    collecting = False
+    header: list[str] = []
+    for line in [*lines, "["]:  # the sentinel closes the last block
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if collecting and any(LOCK_ROOT_SOURCE.match(item.strip()) for item in header):
+                return "\n".join(header)
+            collecting = stripped == "[[package]]"
+            header = []
+        elif collecting:
+            header.append(line)
+    return ""
+
+
 def versions_in(text: str, style: str) -> list[str]:
     """The plain versions a version file states, whichever alpha spelling it carries."""
-    return (PEP440_VERSION if style == "pep440" else SEMVER_VERSION).findall(text)
+    return (PEP440_VERSION if style == "pep440" else SEMVER_VERSION).findall(own_text(text))
 
 
 def _default_ref(root: Path) -> str | None:
