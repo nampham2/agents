@@ -16,6 +16,13 @@ deploy, a plugin refresh or an experiment. A project that never tests a build ne
    and suggests the patch above the highest version seen. The occupancy rules are in
    [workspace-schema.md](workspace-schema.md).
 
+### Read a `uv.lock` at its own entry
+
+A `uv.lock` lists every locked dependency, so most of its versions belong to other packages. The
+tool reads only the project's own entry: the `[[package]]` block whose `source` is
+`{ editable = "." }` or `{ virtual = "." }`. This holds for the occupancy check and for the alpha
+and release checks. A lock with no such entry states no version. Other files read as before.
+
 ## Record an alpha line (optional)
 
 1. After the user confirms the base, write `X.Y.ZaN` into Python files and `X.Y.Z-alpha.N` into

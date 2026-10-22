@@ -47,10 +47,27 @@ class Scene:
         self.project = allocate_project(self.workspace, title="Own project", working_directory=self.own).name
         self.entry = {"path": str(self.own), "branch": OWN_BRANCH, "repository": str(self.repository)}
 
-    def check(self, base: str = "0.30.0") -> list[str]:
+    def check(self, base: str = "0.30.0", files: list[dict[str, str]] = FILES) -> list[str]:
         return check_base(
-            self.own, self.entry, FILES, base, workspace_root=self.workspace, project=self.project,
+            self.own, self.entry, files, base, workspace_root=self.workspace, project=self.project,
         )
+
+    def main_lock(self, text: str) -> None:
+        """Release a `uv.lock` on main: commit it and move origin/main to it."""
+        (self.repository / "uv.lock").write_text(text, encoding="utf-8")
+        git(self.repository, "add", "-A")
+        git(self.repository, "commit", "-q", "-m", "lock")
+        git(self.repository, "update-ref", "refs/remotes/origin/main", "HEAD")
+
+    def remote_lock_branch(self, name: str, text: str) -> None:
+        """A branch that exists only on origin and carries a `uv.lock`."""
+        git(self.repository, "checkout", "-q", "-b", "scratch", "main")
+        (self.repository / "uv.lock").write_text(text, encoding="utf-8")
+        git(self.repository, "add", "-A")
+        git(self.repository, "commit", "-q", "-m", "lock")
+        git(self.repository, "update-ref", f"refs/remotes/origin/{name}", git(self.repository, "rev-parse", "HEAD"))
+        git(self.repository, "checkout", "-q", "main")
+        git(self.repository, "branch", "-q", "-D", "scratch")
 
     def remote_branch(self, name: str, python: str, manifest: str) -> None:
         """A branch that exists only on origin: its commit is reachable from a remote-tracking ref alone."""
@@ -298,3 +315,91 @@ def test_a_git_path_that_cannot_be_read_gives_no_note(scene: Scene, monkeypatch:
 
     monkeypatch.setattr(workspace_occupancy, "_query", query)
     assert scene.check("0.30.0") == []
+
+
+LOCKED = [{"path": "pyproject.toml", "style": "pep440"}, {"path": "uv.lock", "style": "pep440"}]
+ROOT = 'source = { virtual = "." }'
+REGISTRY = 'source = { registry = "https://pypi.org/simple" }'
+
+
+def package(name: str, version: str | None, source: str, extra: str = "") -> str:
+    lines = ["[[package]]", f'name = "{name}"']
+    if version is not None:
+        lines.append(f'version = "{version}"')
+    return "\n".join([*lines, source]) + "\n" + extra
+
+
+def lock(*blocks: str) -> str:
+    return 'version = 1\nrevision = 5\nrequires-python = ">=3.11"\n\n' + "\n".join(blocks)
+
+
+class TestOwnEntryOfALock:
+    """A `uv.lock` states one version of this project and many of its dependencies; only the first counts."""
+
+    def test_a_dependency_is_not_the_project(self) -> None:
+        text = lock(package("regex", "2026.9.10", REGISTRY), package("agents", "0.3.6", ROOT))
+        assert versions_in(text, "pep440") == ["0.3.6"]
+
+    def test_the_root_is_found_before_or_after_its_dependencies(self) -> None:
+        text = lock(package("agents", "0.3.6", ROOT), package("regex", "2026.9.10", REGISTRY))
+        assert versions_in(text, "pep440") == ["0.3.6"]
+
+    @pytest.mark.parametrize(
+        "source", ['source = { editable = "." }', 'source = {editable = "."}', 'source = { virtual = "." }']
+    )
+    def test_the_root_is_editable_or_virtual_with_any_spacing(self, source: str) -> None:
+        text = lock(package("regex", "2026.9.10", REGISTRY), package("agents", "0.3.6", source))
+        assert versions_in(text, "pep440") == ["0.3.6"]
+
+    def test_a_workspace_member_is_not_the_root(self) -> None:
+        member = package("member", "9.9.9", 'source = { editable = "packages/member" }')
+        assert versions_in(lock(member, package("agents", "0.3.6", ROOT)), "pep440") == ["0.3.6"]
+        assert versions_in(lock(member), "pep440") == []
+
+    def test_a_lock_with_no_root_has_no_version(self) -> None:
+        assert versions_in(lock(package("regex", "2026.9.10", REGISTRY)), "pep440") == []
+
+    def test_a_root_with_a_dynamic_version_has_no_version(self) -> None:
+        text = lock(package("regex", "2026.9.10", REGISTRY), package("agents", None, ROOT))
+        assert versions_in(text, "pep440") == []
+
+    def test_an_alpha_spelling_of_the_root_reads_as_its_base(self) -> None:
+        text = lock(package("regex", "2026.9.10", REGISTRY), package("agents", "0.3.7a2", ROOT))
+        assert versions_in(text, "pep440") == ["0.3.7"]
+
+    def test_windows_line_endings_read_the_same(self) -> None:
+        text = lock(package("regex", "2026.9.10", REGISTRY), package("agents", "0.3.6", ROOT))
+        assert versions_in(text.replace("\n", "\r\n"), "pep440") == ["0.3.6"]
+
+    def test_a_version_line_in_a_sub_table_is_not_the_root_version(self) -> None:
+        text = lock(package("agents", "0.3.6", ROOT, '\n[package.metadata]\nversion = "9.9.9"\n'))
+        assert versions_in(text, "pep440") == ["0.3.6"]
+
+    def test_main_releasing_a_dependency_does_not_occupy_a_base(self, scene: Scene) -> None:
+        scene.main_lock(lock(package("regex", "2026.9.10", REGISTRY), package("agents", "0.29.0", ROOT)))
+        assert scene.check("0.30.0", LOCKED) == []
+
+    def test_main_releasing_the_project_itself_still_occupies_a_base(self, scene: Scene) -> None:
+        scene.main_lock(lock(package("regex", "2026.9.10", REGISTRY), package("agents", "0.31.0", ROOT)))
+        with pytest.raises(WorkspaceError, match=r"main: origin/main releases 0\.31\.0"):
+            scene.check("0.30.0", LOCKED)
+
+    def test_another_origin_branch_holding_a_dependency_at_the_base_does_not_occupy_it(self, scene: Scene) -> None:
+        scene.remote_lock_branch(
+            "feat/other", lock(package("regex", "0.30.0", REGISTRY), package("agents", "0.29.0", ROOT))
+        )
+        assert scene.check("0.30.0", LOCKED) == []
+
+    def test_another_origin_branch_holding_the_project_at_the_base_occupies_it(self, scene: Scene) -> None:
+        scene.remote_lock_branch(
+            "feat/other", lock(package("regex", "2026.9.10", REGISTRY), package("agents", "0.30.0", ROOT))
+        )
+        with pytest.raises(WorkspaceError, match=r"remote: origin/feat/other carries 0\.30\.0"):
+            scene.check("0.30.0", LOCKED)
+
+    def test_another_worktree_holding_a_dependency_at_the_base_does_not_occupy_it(self, scene: Scene) -> None:
+        other = add_worktree(scene.repository, "2026-02-03-001", "feat/other-worktree")
+        (other / "uv.lock").write_text(
+            lock(package("regex", "0.30.0", REGISTRY), package("agents", "0.29.0", ROOT)), encoding="utf-8"
+        )
+        assert scene.check("0.30.0", LOCKED) == []

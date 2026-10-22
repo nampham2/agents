@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 from workspace_context import _git
 from workspace_journal import list_input, object_input, string_input
 from workspace_lib import WorkspaceError, _is_timestamp, _non_empty_string, is_delivery_gated, now_iso
-from workspace_occupancy import check_base
+from workspace_occupancy import check_base, own_text
 
 DELIVERY_OPERATIONS = {"pull_request", "alpha", "release", "merge"}
 DELIVERY_FIELDS = {"pull_request", "pr_exemption", "version_line", "version_exemption", "merge"}
@@ -72,13 +72,14 @@ def _base_move(line: dict[str, Any], base: str, request: dict[str, Any], label: 
 
 
 def _read_version_file(root: Path, relative: str) -> str:
+    """The text of a version file that states this project's version; a `uv.lock` reads at its own entry."""
     candidate = Path(relative)
     if candidate.is_absolute() or ".." in candidate.parts:
         raise WorkspaceError(f"version file path must be relative to the worktree with no '..': {relative}")
     resolved = (root / candidate).resolve()
     if root.resolve() not in resolved.parents or not resolved.is_file():
         raise WorkspaceError(f"version file is missing in the worktree: {relative}")
-    return resolved.read_text(encoding="utf-8", errors="replace")
+    return own_text(resolved.read_text(encoding="utf-8", errors="replace"))
 
 
 def _remote_hostname(root: Path) -> str:
