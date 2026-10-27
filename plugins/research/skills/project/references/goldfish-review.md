@@ -21,8 +21,9 @@ and merge records (a no-remote worktree: before closure).
    severity. Apply fixes; commit them before closing a diff round.
 5. Ask the user only about `ESCALATE` items and Blockers or Majors still open.
 6. `operation: close` with `tokens` `{"reviews/goldfish_NN": token}`, `reports`, `findings`, and a
-   `confirmation` for contested or escalated Blockers or Majors and for `accepted-residual`.
-   After `reaudit-required`, `open` again: the one re-audit.
-7. A pull request merged with no diff round: open a diff round with `commit` set to the PR head,
+   `confirmation` for contested or escalated Blockers or Majors. After `reaudit-required`, `open`
+   again: the one re-audit, which closes as `accepted-residual` (needs a `confirmation`) if it
+   reports a Blocker or Major.
+7. A PR merged with no diff round: open a diff round with `commit` set to the PR head,
    then record the merge with `merged_head`.
 8. No fresh agent: `operation: waive` with `reason` and the user's `confirmation`.

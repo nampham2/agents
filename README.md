@@ -101,30 +101,35 @@ records the round and refuses the next step without a current one.
   round is the managed document `reviews/goldfish_NN.md`; `project.json` gains no field. The tool
   computes the version a round covers (a content digest of the spec or plan, the design without its
   status table, or a commit) and the outcome it reaches. A fix to a Blocker or Major needs one
-  re-audit; a Blocker or Major left after that needs the user's words (`accepted-residual`).
+  re-audit; a re-audit that reports any Blocker or Major closes only as `accepted-residual`, with
+  the user's words.
 - **Waiver.** With no fresh subagent the review stops, and the gate passes only through a `waive`
   round that holds the user's words. A waiver replaces the round, not the checks on branch, clean
   tree, pushed upstream or merged head.
 - **Diff checks.** A release needs a clean worktree on its recorded branch, a pushed upstream at
   `HEAD` when a pull request is recorded, and a round for that commit. A merge record takes
-  `merged_head`, the pull request head that was merged, and it must match the round. The tool never
-  fetches: push first.
+  `merged_head`, the pull request head that was merged: it must match a round, and the local branch
+  head while that branch exists (a commit that builds on the branch head also passes). A no-remote
+  worktree needs a round before its first closure and before every remove; if its branch is gone,
+  its latest passed round stands. The tool never fetches: push first.
 - **Live projects.** A gate applies to an event at or after `GOLDFISH_FROM`, which is
   `2026-10-27T12:13:54+01:00` in `workspace_lib.py`: the time the version bump began, a little
   before its commit. Earlier events count as passed and nothing re-checks them. Validation,
-  `resume` and `readiness` warn, never error, about an open or stale round and about a gate event
-  after the instant that has no round, which is what an older launcher leaves behind. A closure of
+  `resume` and `readiness` warn, never error, about an open round, a stale spec or planning round,
+  and a gate event after the instant that has no round, which is what an older launcher leaves
+  behind. A stale design or diff round shows only at its gate. A closure of
   a pull-request worktree with no merge recorded only warns; only a no-remote worktree's closure
   is a gate.
-- **Words.** The coordinator procedure is `references/goldfish-review.md` (290 words, at most 300,
+- **Words.** The coordinator procedure is `references/goldfish-review.md` (300 words, the cap,
   test-enforced). Reviewer prompts are in `references/goldfish-personas.md`, read only by the
   reviewer subagents. With the pointer sentences, the `goldfish` row of `automation-records.md`
-  and its name in the router, the instruction paths grow against 0.30.4: alignment by 360 words,
-  closure by 398, resume by 68, material change after resume by 70, and the records branch of the
-  default payload by 59 (the entry file by 1, to 899 of 900). The budgets and the 0.21.0 cap in
-  `test_lifecycle_payloads.py` rose by exactly those amounts, by the user's decision. Unrelated
-  `SKILL.md` wording was shortened to make room: "including alignment" came out of the `commands.md`
-  instruction, and "directly" and "through" went from two sentences.
+  (which carries the field shapes) and its name in the router, the instruction paths grow against
+  0.30.4: alignment by 402 words, closure by 471, resume by 100, material change after resume by
+  102, and the records branch of the default payload by 92 (the entry file by 1, to 899 of 900).
+  The budgets and the 0.21.0 cap in `test_lifecycle_payloads.py` rose by exactly those amounts, by
+  the user's decision. Three unrelated `SKILL.md` phrases were cut to make room: "including
+  alignment" from the `commands.md` instruction, "directly" from "Apply routine corrections", and
+  "through" from "Send a compact patch through stdin".
 
 Limits, stated: the tool proves that its own path ran, not that the reviewers did, and a
 hand-written round file passes a gate, as a hand-written confirmation marker does. The severity and

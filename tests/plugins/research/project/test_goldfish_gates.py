@@ -552,7 +552,7 @@ def test_a_closure_names_a_branch_that_exists(gated: None, tmp_path: Path) -> No
     entry = {**load_state(project)["worktrees"][0], "branch": "no-such-branch"}
     errors = delivery_gate_errors(project, load_state(project), entry, "closure", {})
     assert errors == [
-        f"goldfish gate 'diff': branch no-such-branch no longer exists in {entry['repository']} and no round has passed"
+        f"goldfish gate 'diff': branch no-such-branch no longer exists in {entry['repository']} and no round exists"
     ]
     assert delivery_gate_errors(project, load_state(project), {**entry, "repository": None}, "closure", {}) == []
 
@@ -593,6 +593,12 @@ def test_a_round_that_changed_the_spec_is_reported(project: Path) -> None:
     assert goldfish_findings(project) == [
         "Goldfish round 01 covers an earlier version of spec.md; the next confirmation needs a delta round"
     ]
+
+
+def test_a_confirmation_result_carries_the_findings(project: Path) -> None:
+    open_round(project, "design", ("combined",))  # an open round for another target
+    result = confirm(project, "requirements")
+    assert result["goldfish_findings"] == ["Goldfish round 01 (design) is open; close it or open a new round"]
 
 
 def test_a_round_result_carries_the_findings(project: Path) -> None:
@@ -711,7 +717,7 @@ def test_a_closure_whose_branch_is_gone_stands_on_the_last_passed_round(gated: N
     project, linked, repository = no_remote_worktree(tmp_path)
     git(repository, "worktree", "remove", "--force", str(linked))
     git(repository, "branch", "-D", BRANCH)
-    with pytest.raises(WorkspaceError, match=r"no longer exists in .* and no round has passed"):
+    with pytest.raises(WorkspaceError, match=r"no longer exists in .* and no round exists"):
         close_worktree(project, linked, "remove")
     assert load_state(project)["worktrees"][0]["status"] == "active"
     gold(
@@ -745,14 +751,22 @@ def test_a_merged_head_must_be_the_head_of_the_branch(gated: None, delivered: tu
 
 
 def test_hand_edited_records_do_not_crash_the_reporting_or_the_gates(gated: None, project: Path) -> None:
-    junk = {"tasks": None, "worktrees": ["x", 5, {"path": "/w", "merge": "x", "version_line": "x", "closure": 5}]}
-    assert goldfish_event_warnings(project, junk) == []
+    junk_worktrees = ["x", 5, {"path": "/w", "merge": "x", "version_line": "x", "closure": 5, "pull_request": 1}]
+    no_id = {**code(), "id": None}
+    del no_id["id"]
+    for tasks in (None, "x", [code(), no_id]):
+        junk = {"tasks": tasks, "worktrees": junk_worktrees}
+        assert isinstance(goldfish_event_warnings(project, junk), list)
     assert goldfish_event_warnings(project, {"tasks": "x", "worktrees": "x"}) == []
     assert design_gate_errors(project, {"tasks": None}, {"tasks": "x"}) == []
+    state = {"tasks": [code()]}
     assert delivery_gate_errors(project, {"tasks": ["x"]}, {"repository": "/r", "path": "/w"}, "release", {}) == []
-    state = load_state(project)
-    state["worktrees"] = "x"
-    (project / "project.json").write_text(json.dumps(state), encoding="utf-8")
+    assert delivery_gate_errors(project, state, {"repository": "/r", "path": "/w"}, "release", {}) == [
+        "goldfish gate 'diff': the worktree record has no branch or path"
+    ]
+    moved = load_state(project)
+    moved["worktrees"] = "x"
+    (project / "project.json").write_text(json.dumps(moved), encoding="utf-8")
     assert isinstance(workspace_lib.validate_project(project).errors, list)  # reports; does not raise
 
 
@@ -761,3 +775,52 @@ def test_resume_and_readiness_carry_a_goldfish_warning(gated: None, project: Pat
     warning = "Goldfish round 01 (planning) is open; close it or open a new round"
     assert warning in json.dumps(workflow(project, "readiness", {}))
     assert warning in json.dumps(workflow(project, "resume", {}))
+
+
+def test_a_worktree_kept_before_the_instant_can_be_removed_without_a_round(gated: None, tmp_path: Path) -> None:
+    import shutil
+
+    project, linked, repository = no_remote_worktree(tmp_path)
+    diff_round_for_branch(project, linked, repository)
+    close_worktree(project, linked, "keep")
+    shutil.rmtree(project / "reviews")  # no round remains: only the date of the closure can excuse the remove
+    state = load_state(project)
+    state["worktrees"][0]["closure"]["observed_at"] = "1999-01-01T00:00:00+00:00"  # before the instant
+    (project / "project.json").write_text(json.dumps(state), encoding="utf-8")
+    git(repository, "worktree", "remove", "--force", str(linked))
+    close_worktree(project, linked, "remove")
+    assert load_state(project)["worktrees"][0]["status"] == "removed"
+
+
+def test_a_merged_head_that_builds_on_the_branch_head_is_accepted(
+    gated: None, delivered: tuple[Path, Path, Path]
+) -> None:
+    project, linked, _ = delivered
+    released(project, linked)
+    git(linked, "checkout", "-q", "--detach")  # the host added a commit the local branch never saw
+    (linked / "host.txt").write_text("x\n", encoding="utf-8")
+    ahead = commit_all(linked, "added on the host")
+    with pytest.raises(WorkspaceError, match="goldfish gate 'diff'"):
+        merge_claim(project, linked, merged_head=ahead)  # builds on the branch, but nothing reviewed it
+    delta = ("comprehension", "combined")  # a new commit after a passed round is a delta round
+    pinned = open_round(project, "diff", delta, worktree=str(linked), commit=ahead)
+    close(project, pinned, reports=report(delta))
+    merge_claim(project, linked, merged_head=ahead)
+    assert load_state(project)["worktrees"][0]["merge"]["state"] == "merged"
+
+
+def test_a_repository_that_cannot_be_read_is_not_a_missing_branch(gated: None, tmp_path: Path) -> None:
+    project, _, _ = no_remote_worktree(tmp_path)
+    state = load_state(project)
+    entry = {**state["worktrees"][0], "repository": str(tmp_path / "nowhere")}
+    errors = delivery_gate_errors(project, state, entry, "closure", {})
+    assert errors == [f"goldfish gate 'diff': {tmp_path / 'nowhere'} is not a readable Git repository"]
+
+
+def test_a_gone_branch_with_a_round_that_was_never_accepted_says_so(gated: None, tmp_path: Path) -> None:
+    project, linked, repository = no_remote_worktree(tmp_path)
+    open_round(project, "diff", ("combined",), worktree=str(linked))  # left open
+    git(repository, "worktree", "remove", "--force", str(linked))
+    git(repository, "branch", "-D", BRANCH)
+    with pytest.raises(WorkspaceError, match=r"its latest round \(01, open\) is not accepted"):
+        close_worktree(project, linked, "remove")

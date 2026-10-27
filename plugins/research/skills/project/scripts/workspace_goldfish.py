@@ -560,24 +560,39 @@ def upstream_errors(entry: "dict[str, Any]", head: str) -> "list[str]":
     return []
 
 
+def _descends(repository: Path, ancestor: str, commit: str) -> bool:
+    """Whether `commit` is `ancestor` or builds on it; `merge-base --is-ancestor` exits 1 when it does not."""
+    return _query(repository, "merge-base", "--is-ancestor", ancestor, commit) is not None
+
+
 def delivery_gate_errors(
     project: Path, state: "dict[str, Any]", entry: "dict[str, Any]", event: str, request: "dict[str, Any]"
 ) -> "list[str]":
     """The diff gate at a release, a merge record, or the first closure of a worktree with no remote."""
     if not workspace_lib.is_goldfish_gated() or not has_code_task(state) or not entry.get("repository"):
         return []
+    if not entry.get("branch") or not entry.get("path"):
+        return [f"{DIFF_GATE}: the worktree record has no branch or path"]
     worktree = entry["path"]
     repository, ref = Path(entry["repository"]), f"refs/heads/{entry['branch']}"
     if event == "closure":
         if "pr_exemption" not in entry:
             return []
+        closed_at = _object(entry.get("closure")).get("observed_at")
+        if entry.get("status") == "kept" and not _at_or_after_instant(closed_at):
+            return []  # kept before the instant: that closure counts as passed
         head = _query(repository, "rev-parse", ref)
         if head is None:
+            if _query(repository, "rev-parse", "--git-dir") is None:
+                return [f"{DIFF_GATE}: {repository} is not a readable Git repository"]
             # The branch is gone (merged locally and deleted): the last round the worktree passed stands.
             latest = [item for item in round_documents(project) if item.key == ("diff", worktree)]
             if latest and latest[-1].outcome in PASSING:
                 return []
-            return [f"{DIFF_GATE}: branch {entry['branch']} no longer exists in {repository} and no round has passed"]
+            shown = "no round exists"
+            if latest:
+                shown = f"its latest round ({latest[-1].number:02d}, {latest[-1].outcome}) is not accepted"
+            return [f"{DIFF_GATE}: branch {entry['branch']} no longer exists in {repository} and {shown}"]
         return round_errors(project, "diff", worktree, head)
     if event == "merge":
         if request.get("merged_head") is None:
@@ -587,7 +602,9 @@ def delivery_gate_errors(
         except WorkspaceError as error:
             return [f"{DIFF_GATE}: {error}"]
         branch_head = _query(repository, "rev-parse", ref)
-        if branch_head is not None and branch_head != merged:
+        # The pull request head may be ahead of the local branch (a suggestion committed on the host), so a
+        # descendant of the branch head is accepted; it still needs a round of its own below.
+        if branch_head is not None and branch_head != merged and not _descends(repository, branch_head, merged):
             return [
                 f"{DIFF_GATE}: merged_head {merged[:12]} is not the head of branch {entry['branch']} "
                 f"({branch_head[:12]})"
