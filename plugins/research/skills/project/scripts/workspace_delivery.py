@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -193,8 +194,13 @@ def _alpha(
     return notes
 
 
+# A check the caller runs before a release or a merge changes the entry: it raises to refuse.
+Gate = Callable[[str, dict[str, Any]], None]
+
+
 def _release(
     entry: dict[str, Any], request: dict[str, Any], root: Path, workspace_root: Path, project: str,
+    gate: Gate | None = None,
 ) -> list[str]:
     """Record the plain release version. A project that never recorded an alpha line starts its line here."""
     if "version_exemption" in entry:
@@ -214,6 +220,8 @@ def _release(
             raise WorkspaceError(f"version file {item['path']} does not contain {version}")
     # The base was checked when it was first recorded, but main may have released it since.
     notes = check_base(root, entry, files, version, workspace_root=workspace_root, project=project)
+    if gate is not None:
+        gate("release", entry)
     release = {"version": version, "recorded_at": now_iso()}
     if line is None:
         entry["version_line"] = {
@@ -227,7 +235,9 @@ def _release(
     return notes
 
 
-def _merge(entry: dict[str, Any], request: dict[str, Any], confirmation: dict[str, str]) -> None:
+def _merge(
+    entry: dict[str, Any], request: dict[str, Any], confirmation: dict[str, str], gate: Gate | None = None
+) -> None:
     if "pull_request" not in entry:
         raise WorkspaceError("no pull_request is recorded; an exempt worktree has nothing to merge")
     state = request.get("merge_state")
@@ -244,6 +254,8 @@ def _merge(entry: dict[str, Any], request: dict[str, Any], confirmation: dict[st
         line = entry.get("version_line")
         if line is not None and line["release"] is None:
             raise WorkspaceError("record the release version before the merge")
+        if gate is not None:
+            gate("merge", entry)
     entry["merge"] = {
         "state": state, "method": method, "evidence": evidence, **confirmation, "recorded_at": now_iso(),
     }
@@ -251,7 +263,7 @@ def _merge(entry: dict[str, Any], request: dict[str, Any], confirmation: dict[st
 
 def delivery_operation(
     worktrees: list[dict[str, Any]], path: str, operation: str, request: dict[str, Any], confirmation: dict[str, str],
-    *, workspace_root: Path, project: str,
+    *, workspace_root: Path, project: str, gate: Gate | None = None,
 ) -> tuple[dict[str, Any], list[str]]:
     """Apply one delivery operation to the active entry at `path`; returns the entry and any notes.
 
@@ -268,9 +280,9 @@ def delivery_operation(
     elif operation == "alpha":
         notes = _alpha(entry, request, root, confirmation, workspace_root, project)
     elif operation == "release":
-        notes = _release(entry, request, root, workspace_root, project)
+        notes = _release(entry, request, root, workspace_root, project, gate)
     else:
-        _merge(entry, request, confirmation)
+        _merge(entry, request, confirmation, gate)
     return entry, notes
 
 

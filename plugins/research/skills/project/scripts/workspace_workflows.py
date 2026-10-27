@@ -27,7 +27,12 @@ from workspace_documents import (
     append_staged_section,
     reflection_lesson_sections,
 )
-from workspace_goldfish import goldfish_operation
+from workspace_goldfish import (
+    confirm_gate_errors,
+    delivery_gate_errors,
+    goldfish_findings,
+    goldfish_operation,
+)
 from workspace_journal import (
     READ_INPUTS,
     document_path,
@@ -94,7 +99,7 @@ FIELDS = {
     "worktree": {
         "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
         "host", "url", "number", "exempt", "files", "base", "base_moved", "alpha", "reason", "version", "merge_state",
-        "method", "evidence",
+        "method", "evidence", "merged_head",
     },
 }
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
@@ -364,9 +369,15 @@ def _worktree(
         if role == "target" and kind != "none":
             patch["working_directory"] = path
         return patch, {"worktree": entry, "observed": seen}
+    def gate(event: str, item: dict[str, Any]) -> None:
+        errors = delivery_gate_errors(workspace_root / state["project"], state, item, event, request)
+        if errors:
+            raise WorkspaceError(" | ".join(errors))
+
     if operation in DELIVERY_OPERATIONS:
         entry, notes = delivery_operation(
             worktrees, path, operation, request, confirmation, workspace_root=workspace_root, project=state["project"],
+            gate=gate,
         )
         return {"worktrees": worktrees}, {"worktree": entry, **({"notes": notes} if notes else {})}
     if operation != "close":
@@ -381,6 +392,8 @@ def _worktree(
     # history (`superseded` below) and only then is the new one recorded. A removed worktree is final.
     if entry is None or entry["status"] not in ("active", "kept") or entry["kind"] == "none":
         raise WorkspaceError(f"no active or kept repository worktree is recorded at {path}")
+    if entry["status"] == "active":
+        gate("closure", entry)
     if decision == "remove":
         missing = removal_findings(entry, gated=is_delivery_gated(state))
         if missing:
@@ -454,6 +467,9 @@ def _build(
         stale = stale_confirmations(read("spec"), read("planning"))
         if stale:
             result["stale_confirmations"] = stale
+        notes = goldfish_findings(project, state)
+        if notes:
+            result["goldfish_findings"] = notes
     elif action == "confirm":
         kind = string_input(request.get("kind"), "kind")
         # `architecture` is the name this kind had before the planning document was split from the
@@ -495,6 +511,9 @@ def _build(
                 )
         for field in ("review_id", "response", "source", "scope"):
             string_input(request.get(field), field)
+        gate_errors = confirm_gate_errors(project, tuple(tokens), read("spec"), read("planning"))
+        if gate_errors:
+            raise WorkspaceError(" | ".join(gate_errors))
         review_id = str(request["review_id"])
         for confirmed, token in tokens.items():
             name = "spec" if confirmed == "requirements" else "planning"
@@ -529,6 +548,9 @@ def _build(
                         + f"\n\nAgreed planning: [revision {review_id}]({planning_path(project).name})."
                     },
                 )
+        notes = goldfish_findings(project, state)
+        if notes:
+            result["goldfish_findings"] = notes
     elif action == "correct":
         old = _task(state, string_input(request.get("task"), "task"))
         if old["status"] not in ("DONE", "SKIPPED"):

@@ -14,15 +14,18 @@ import json
 import re
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeAlias
 
+import workspace_lib
 from workspace_context import _git, worktree_observation
 from workspace_journal import document_path, list_input, object_input, snapshot, string_input
 from workspace_lib import (
     DESIGN_DOCUMENT,
     DESIGN_HEADING,
     DESIGN_STATUS_SECTION,
+    PROPOSAL_MARKER,
     WorkspaceError,
     document_sha256,
     is_code_task,
@@ -469,3 +472,208 @@ def goldfish_operation(project: Path, state: "dict[str, Any]", request: "dict[st
     object_input(request, allowed, required, where=f"workflow goldfish {operation}")
     handler = {"open": open_round, "close": close_round, "waive": waive_round}[operation]
     return handler(project, state, request)
+
+
+# --- the gates -----------------------------------------------------------------------------------
+
+SUBJECT = {"spec": "spec.md", "planning": "the planning document", "design": DESIGN_DOCUMENT, "diff": "the diff"}
+ENTRY_HEADING = re.compile(r"^### (?P<stamp>\d{4}-\d{2}-\d{2}T\S+) \u2014 ", re.MULTILINE)
+
+
+def round_errors(project: Path, target: str, worktree: "str | None", version: str) -> "list[str]":
+    """Why no current round covers `version` of the target; empty when the latest round passes and matches.
+
+    The latest round for the target decides, so a later open, unaccepted or stale round closes the gate
+    even when an earlier round passed.
+    """
+    series = [item for item in round_documents(project) if item.key == (target, worktree)]
+    head = f"goldfish gate '{target}'"
+    shown = f"{SUBJECT[target]} version {version[:12]}"
+    if not series:
+        return [
+            f"{head}: no round covers {shown}; run a round (references/goldfish-review.md) "
+            "or record a waiver with 'workflow goldfish' operation waive"
+        ]
+    latest = series[-1]
+    if latest.outcome not in PASSING:
+        return [
+            f"{head}: the latest round ({latest.number:02d}, {latest.outcome}) is not accepted, so it does not cover "
+            f"{shown}; close it, run a new round or record a waiver"
+        ]
+    if latest.resolved != version:
+        return [
+            f"{head}: the latest round ({latest.number:02d}) covers version {str(latest.resolved)[:12]}, but "
+            f"{SUBJECT[target]} is now {version[:12]}; run a new round or record a waiver"
+        ]
+    return []
+
+
+def confirm_gate_errors(project: Path, kinds: "tuple[str, ...]", spec_text: str, planning_text: str) -> "list[str]":
+    """The spec and planning gates: a confirmation needs a current round for each document it confirms."""
+    if not workspace_lib.is_goldfish_gated():
+        return []
+    errors: "list[str]" = []
+    if "requirements" in kinds:
+        errors += round_errors(project, "spec", None, proposal_digest("requirements", spec_text))
+    if "planning" in kinds:
+        errors += round_errors(project, "planning", None, proposal_digest("planning", planning_text))
+    return errors
+
+
+def _code_started(state: "dict[str, Any]") -> bool:
+    return any(
+        is_code_task(task) and (task.get("status") in ("RUNNING", "DONE") or task.get("started_at"))
+        for task in state.get("tasks", [])
+    )
+
+
+def design_gate_errors(project: Path, previous: "dict[str, Any]", candidate: "dict[str, Any]") -> "list[str]":
+    """The design gate: the first code task to run needs a current round for the design document.
+
+    Each state is classified from its own data, so a task that becomes a code task by an outputs edit
+    while running fires the gate, and a started task that resumes (`BLOCKED` to `RUNNING`) does not.
+    """
+    if not workspace_lib.is_goldfish_gated() or _code_started(previous):
+        return []
+    running = any(
+        is_code_task(task) and task.get("status") in ("RUNNING", "DONE") for task in candidate.get("tasks", [])
+    )
+    if not running:
+        return []
+    path = project / DESIGN_DOCUMENT
+    if not path.is_file():
+        return [f"goldfish gate 'design': {DESIGN_DOCUMENT} is missing; write the design and run a round first"]
+    return round_errors(project, "design", None, design_digest(read_text(path)))
+
+
+def upstream_errors(entry: "dict[str, Any]", head: str) -> "list[str]":
+    """The release check on a pushed branch: its upstream tracking ref holds `head`. The tool never fetches."""
+    branch, path = entry["branch"], entry["path"]
+    name = repository_git(path, "rev-parse", "--abbrev-ref", "@{upstream}")
+    head_text = "goldfish gate 'diff'"
+    if name is None:
+        return [f"{head_text}: branch {branch} has no upstream; push it with -u first"]
+    if not name.endswith("/" + branch):
+        return [f"{head_text}: the upstream {name} does not track a branch named {branch}"]
+    if repository_git(path, "rev-parse", "@{upstream}") != head:
+        return [f"{head_text}: the upstream {name} differs from HEAD; push first (a push updates the tracking ref)"]
+    return []
+
+
+def delivery_gate_errors(
+    project: Path, state: "dict[str, Any]", entry: "dict[str, Any]", event: str, request: "dict[str, Any]"
+) -> "list[str]":
+    """The diff gate at a release, a merge record, or the first closure of a worktree with no remote."""
+    if not workspace_lib.is_goldfish_gated() or not has_code_task(state) or not entry.get("repository"):
+        return []
+    worktree = entry["path"]
+    if event == "closure":
+        if "pr_exemption" not in entry:
+            return []
+        head = repository_git(entry["repository"], "rev-parse", f"refs/heads/{entry['branch']}")
+        if head is None:
+            return [f"goldfish gate 'diff': branch {entry['branch']} does not exist in {entry['repository']}"]
+        return round_errors(project, "diff", worktree, head)
+    if event == "merge":
+        if request.get("merged_head") is None:
+            return ["goldfish gate 'diff': a merged record needs merged_head, the PR head commit that was merged"]
+        try:
+            merged = checked_commit(entry["repository"], request["merged_head"])
+        except WorkspaceError as error:
+            return [f"goldfish gate 'diff': {error}"]
+        return round_errors(project, "diff", worktree, merged)
+    try:
+        head = diff_version(entry)
+    except WorkspaceError as error:
+        return [f"goldfish gate 'diff': {error}"]
+    errors = upstream_errors(entry, head) if "pull_request" in entry else []
+    return errors + round_errors(project, "diff", worktree, head)
+
+
+# --- reporting -----------------------------------------------------------------------------------
+
+
+def _at_or_after_instant(value: object) -> bool:
+    """Whether a recorded time is at or after the Goldfish instant; a missing or unreadable time is not."""
+    if not isinstance(value, str):
+        return False
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return moment.tzinfo is not None and moment >= datetime.fromisoformat(workspace_lib.GOLDFISH_FROM)
+
+
+def goldfish_findings(project: Path, state: "dict[str, Any]") -> "list[str]":
+    """Warnings from the round documents alone, for the latest round of each target; no Git is read."""
+    latest: "dict[tuple[str, str | None], Round]" = {}
+    for item in round_documents(project):
+        latest[item.key] = item
+    found: "list[str]" = []
+    for (target, _), item in latest.items():
+        if item.outcome == "open":
+            found.append(f"Goldfish round {item.number:02d} ({target}) is open; close it or open a new round")
+        elif item.outcome == "reaudit-required":
+            found.append(f"Goldfish round {item.number:02d} ({target}) needs its re-audit; open a round")
+        elif target in ("spec", "planning"):
+            path = project / "spec.md" if target == "spec" else planning_path(project)
+            kind = "requirements" if target == "spec" else "planning"
+            if path.is_file() and item.resolved != proposal_digest(kind, read_text(path)):
+                found.append(
+                    f"Goldfish round {item.number:02d} covers an earlier version of {SUBJECT[target]}; "
+                    "the next confirmation needs a delta round"
+                )
+    return found
+
+
+def _worktree_event_warnings(entry: "dict[str, Any]", passed: "set[Any]") -> "list[str]":
+    """Release, merge and closure events of one worktree at or after the instant with no diff round."""
+    path = entry.get("path")
+    merge = entry.get("merge") or {}
+    events = [
+        ("release", ((entry.get("version_line") or {}).get("release") or {}).get("recorded_at")),
+        ("merge", merge.get("recorded_at") if merge.get("state") == "merged" else None),
+    ]
+    found = [
+        f"the {name} of {path} at {stamp} has no Goldfish diff round"
+        for name, stamp in events
+        if _at_or_after_instant(stamp) and not any(item[0] == "diff" and item[1] == path for item in passed)
+    ]
+    closed = (entry.get("closure") or {}).get("observed_at")
+    if "pull_request" in entry and merge.get("state") != "merged" and _at_or_after_instant(closed):
+        found.append(f"worktree {path} was closed at {closed} with no merge recorded")
+    return found
+
+
+def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str]":
+    """Gate events at or after the instant that no round covers: what an older launcher leaves behind."""
+    if not workspace_lib.is_goldfish_gated():
+        return []
+    rounds = round_documents(project)
+    passed = {(item.target, item.worktree, item.resolved) for item in rounds if item.outcome in PASSING}
+    found: "list[str]" = []
+    spec_path = project / "spec.md"
+    spec_text = read_text(spec_path) if spec_path.is_file() else ""
+    headings = [(match.start(), match.group("stamp")) for match in ENTRY_HEADING.finditer(spec_text)]
+    for marker in PROPOSAL_MARKER.finditer(spec_text):
+        stamp = next((value for position, value in reversed(headings) if position < marker.start()), None)
+        target = "spec" if marker.group("kind") == "requirements" else "planning"
+        if _at_or_after_instant(stamp) and not any(
+            item[0] == target and item[2] == marker.group("sha") for item in passed
+        ):
+            found.append(
+                f"the {target} confirmation {marker.group('review_id')} was recorded at {stamp} with no Goldfish "
+                "round for that version"
+            )
+    if has_code_task(state):
+        for task in state.get("tasks", []):
+            if is_code_task(task) and _at_or_after_instant(task.get("started_at")):
+                if not any(item[0] == "design" for item in passed):
+                    found.append(f"code task {task['id']} started at {task['started_at']} with no design round")
+        for entry in state.get("worktrees", []):
+            found += _worktree_event_warnings(entry, passed)
+    return found
+
+
+def goldfish_warnings(project: Path, state: "dict[str, Any]") -> "list[str]":
+    return goldfish_findings(project, state) + goldfish_event_warnings(project, state)
