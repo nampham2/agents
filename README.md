@@ -86,6 +86,50 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.31.0 Goldfish review gates
+
+The `project` skill adds an Elephant-Goldfish review, after the
+[Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model) (Apache-2.0). Fresh,
+read-only subagents (Goldfish) review one target; the coordinator triages their findings; the tool
+records the round and refuses the next step without a current one.
+
+- **Four gates.** `spec` before a requirements or alignment confirmation, `planning` before a
+  planning or alignment confirmation, `design` before the first code task runs, and `diff` before
+  a release record, before a merge record and before a no-remote worktree is closed. The design
+  and diff gates apply only to a project with a code task.
+- **Rounds.** `workflow <project-dir> goldfish` takes `operation` `open`, `close` or `waive`. A
+  round is the managed document `reviews/goldfish_NN.md`; `project.json` gains no field. The tool
+  computes the version a round covers (a content digest of the spec or plan, the design without its
+  status table, or a commit) and the outcome it reaches. A fix to a Blocker or Major needs one
+  re-audit; a Blocker or Major left after that needs the user's words (`accepted-residual`).
+- **Waiver.** With no fresh subagent the review stops, and the gate passes only through a `waive`
+  round that holds the user's words. A waiver replaces the round, not the checks on branch, clean
+  tree, pushed upstream or merged head.
+- **Diff checks.** A release needs a clean worktree on its recorded branch, a pushed upstream at
+  `HEAD` when a pull request is recorded, and a round for that commit. A merge record takes
+  `merged_head`, the pull request head that was merged, and it must match the round. The tool never
+  fetches: push first.
+- **Live projects.** A gate applies to an event at or after `GOLDFISH_FROM` (shipped as the instant
+  of this release); earlier events count as passed and nothing re-checks them. Validation, `resume`
+  and `readiness` warn, never error, about an open or stale round and about a gate event after the
+  instant that has no round, which is what an older launcher leaves behind.
+- **Words.** The coordinator procedure is `references/goldfish-review.md` (290 words, at most 300,
+  test-enforced). Reviewer prompts are in `references/goldfish-personas.md`, read only by the
+  reviewer subagents. With the pointers and the `goldfish` row of `automation-records.md`, the
+  alignment path grows by 342 words and the closure path by 347; the budgets and the 0.21.0 cap in
+  `test_lifecycle_payloads.py` rose by exactly that, by the user's decision, and the default
+  `SKILL.md` payload budget did not move.
+
+Limits, stated: the tool proves that its own path ran, not that the reviewers did, and a
+hand-written round file passes a gate, as a hand-written confirmation marker does. The tool cannot
+check that edits match findings, so a rewrite that comes with only Nit fixes is accepted without a
+re-audit. An older project that predates the delivery gates can still close a pull-request worktree
+with no merge record; validation warns.
+
+Compatibility: no field is added to `project.json`. A 0.30.x launcher reads a round document as
+plain Markdown and enforces no Goldfish gate, so refresh the plugin before opening a project from
+another host. Older projects open unchanged.
+
 ### 0.30.0 duplicate guard, optional alpha, stop reasons, planning and design documents
 
 Six changes to the `project` skill, shipped together on one branch.

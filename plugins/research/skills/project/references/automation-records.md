@@ -26,11 +26,12 @@ input with the same ID conflicts. Metadata operations never replay commands or e
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |
 | `receipt` | `task`, actual `receipt`: `kind`, `value`, `destination`, `timestamp`; `value` is an HTTP(S) URL or an id prefixed `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:` or `commit:`; exact duplicates are not appended. |
 | `review` | `reviewer`, `version`, `scope`, `findings`, actual `status`; optional `evidence` references and `required`. Allocates the next delivery cycle/file, preserving history. Use `pending` to reopen acceptance. |
+| `goldfish` | `operation`: `open` (`target`, `stages`; diff adds `worktree`, optional `commit`) returns `round` and `token`; `close` (`round`, `reports`, `findings`; pass the token in `tokens`) computes the outcome; `waive` (`target`, `reason`, `confirmation`). Writes `reviews/goldfish_NN.md` only; see [goldfish-review.md](goldfish-review.md). |
 | `finalize` | `reflection` (200+ characters, a heading, `## Retro`: what got in the way with pointers, unused references, one plugin change or `none`; refused without it after the cutoff), `continuation`; `tokens` include `memory-staging`, appended at close; validates and commits DONE, saves the handoff; returns `reflected_lessons` (`staged`, `skipped`), retro and control warnings. |
 | `maintenance` | `reason`, optional `tasks`, `continuation`; reopens DONE as PLANNING. |
 | `cancel` | `reason`, explicit `tasks` dispositions, `continuation`; commits CANCELLED without deleting work or claiming workers stopped. |
 | `assess` | `topic`, `disposition` (`apply`, `reject`, `defer`), `reason`, `application`; saves the lesson assessment with its actual topic token. |
-| `worktree` | `operation` `record` (`path`, `branch`, optional `repository`, `kind`, `role`) or `close` (`path`, `decision` `keep`/`accept_dirty`/`remove`), or a delivery record (`path` each): `pull_request`, `alpha`, `release`, `merge`; plus required `confirmation`; verifies against Git and repoints it; see [worktrees.md](worktrees.md). |
+| `worktree` | `operation` `record` (`path`, `branch`, optional `repository`, `kind`, `role`) or `close` (`path`, `decision` `keep`/`accept_dirty`/`remove`), or a delivery record (`path` each): `pull_request`, `alpha`, `release`, `merge` (also `merged_head`); plus required `confirmation`; verifies against Git and repoints it; see [worktrees.md](worktrees.md). |
 | `report` | Optional canonical report `sections` and boolean `graph`; generates requested Markdown scaffold/accounting and checks generated citations. |
 
 Continuation fields are strings: `next` (required on first checkpoint), `questions`, `pointers`,

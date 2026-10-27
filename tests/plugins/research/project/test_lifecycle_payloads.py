@@ -139,7 +139,8 @@ def test_default_instruction_payload_budget() -> None:
     assert len((entry + routine + router).split()) <= 1750
     for reference in ("automation-context", "automation-records", "automation-execution"):
         selected = (skill / f"references/{reference}.md").read_text()
-        assert len((entry + routine + router + selected).split()) <= 2350
+        allowance = GOLDFISH_RECORDS if reference == "automation-records" else 0
+        assert len((entry + routine + router + selected).split()) <= 2350 + allowance
 
 
 SKILL_DIR = REPO_ROOT / "plugins/research/skills/project"
@@ -161,10 +162,13 @@ RULES = 774
 # (references/goldfish-review.md, at most 300 words), where a gate event is handled, plus the
 # pointer sentences in the documents each scenario loads. By the user's decision of 2026-10-27 the
 # affected budgets and the 0.21.0 alignment cap rise by this measured cost and no more.
-GOLDFISH_ALIGNMENT = 301
-GOLDFISH_CLOSURE = 306
-GOLDFISH_RESUME = 9
-GOLDFISH_MATERIAL = 11
+# The `goldfish` row of references/automation-records.md and its name in the router are 41 of these words,
+# and the same 41 words raise the default payload budget of the records branch below.
+GOLDFISH_RECORDS = 41
+GOLDFISH_ALIGNMENT = 342
+GOLDFISH_CLOSURE = 347
+GOLDFISH_RESUME = 50
+GOLDFISH_MATERIAL = 52
 
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
     "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7031 + RULES + GOLDFISH_ALIGNMENT),
