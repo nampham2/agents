@@ -27,6 +27,7 @@ from workspace_documents import (
     append_staged_section,
     reflection_lesson_sections,
 )
+from workspace_goldfish import goldfish_operation
 from workspace_journal import (
     READ_INPUTS,
     document_path,
@@ -82,6 +83,9 @@ FIELDS = {
     "authorize": {"task", "authorization"},
     "receipt": {"task", "receipt"},
     "review": {"reviewer", "version", "scope", "findings", "status", "evidence", "required"},
+    "goldfish": {
+        "operation", "target", "worktree", "commit", "stages", "round", "reports", "findings", "confirmation", "reason",
+    },
     "finalize": {"reflection", "continuation"},
     "report": {"sections", "graph"},
     "maintenance": {"tasks", "reason", "continuation"},
@@ -122,8 +126,16 @@ WORKTREE_REQUIRED_BY = {
     "operation=release": frozenset({"version"}),
     "operation=merge": frozenset({"evidence", "merge_state", "method"}),
 }
-ALWAYS_REQUIRED = {"confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED}
-REQUIRED_BY = {"confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY}
+GOLDFISH_REQUIRED = frozenset({"operation"})
+GOLDFISH_REQUIRED_BY = {
+    "operation=open": frozenset({"stages", "target"}),
+    "operation=close": frozenset({"findings", "reports", "round"}),
+    "operation=waive": frozenset({"confirmation", "reason", "target"}),
+}
+ALWAYS_REQUIRED = {"confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED}
+REQUIRED_BY = {
+    "confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY, "goldfish": GOLDFISH_REQUIRED_BY,
+}
 
 
 def input_schema(action: str) -> dict[str, Any]:
@@ -591,6 +603,9 @@ def _build(
             }
         }
         result["review"] = patch["review"]
+    elif action == "goldfish":
+        written, result = goldfish_operation(project, state, request)
+        documents.update(written)
     elif action == "finalize":
         errors, warnings = worktree_closure_findings(state)
         if errors:

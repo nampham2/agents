@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 DOCUMENT = re.compile(
-    r"^(spec|planning|architecture|reflection|handoff|memory-staging|tasks/[A-Za-z0-9_-]+|reviews/review_[0-9]+|artifacts/report)$"
+    r"^(spec|planning|architecture|reflection|handoff|memory-staging|tasks/[A-Za-z0-9_-]+|reviews/review_[0-9]+|reviews/goldfish_(?:[0-9]{2}|[1-9][0-9]{2,})|artifacts/report)$"
 )
 IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
