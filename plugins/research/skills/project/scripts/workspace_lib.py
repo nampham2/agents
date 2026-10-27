@@ -374,10 +374,10 @@ RETRO_SECTION_MIN_CHARS = 120
 
 # The Goldfish review gates (0.31.0) apply to a gate event at or after this instant: a confirmation, the
 # first code task, a release, a merge, the closure of a worktree that has no remote. Earlier events count
-# as passed and nothing re-checks them. The placeholder keeps the gates off until the version commit
-# sets the real instant, as the delivery gates did. Read at call time so tests can move it.
+# as passed and nothing re-checks them. This is the instant of the 0.31.0 version commit. The far-future
+# placeholder is what the test suite sets to switch the gates off. Read at call time so tests can move it.
 GOLDFISH_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
-GOLDFISH_FROM = GOLDFISH_PLACEHOLDER
+GOLDFISH_FROM = "2026-10-27T12:13:54+01:00"
 
 
 def is_goldfish_gated() -> bool:

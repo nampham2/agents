@@ -95,6 +95,18 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         "requirements_sha256": snapshot(project / "spec.md")[1],
         "planning_sha256": snapshot(project / "planning.md")[1],
     }
+    # The Goldfish gates apply to a confirmation after the 0.31.0 instant: no round, no confirmation.
+    ungated = step("confirm-without-round", cli.flow(project, "confirm", "align-0", **confirmation), refused=True)
+    assert "goldfish gate 'spec'" in ungated.stderr and "goldfish gate 'planning'" in ungated.stderr
+    no_agent = {"source": "user reply in the test", "response": "no fresh subagent here; proceed"}
+
+    def waive(target: str, identity: str) -> None:
+        step(f"waive-{target}", cli.flow(
+            project, "goldfish", identity, operation="waive", target=target,
+            reason="the test host has no fresh subagent", confirmation=no_agent), refused=False)
+
+    waive("spec", "waive-spec-1")
+    waive("planning", "waive-planning-1")
     step("confirm-alignment", cli.flow(project, "confirm", "align-1", **confirmation), refused=False)
 
     # F1: rewriting the agreed design makes the confirmation stale, and the real gate says so.
@@ -106,7 +118,8 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
     stale = step("plan-with-stale-agreement", cli.run(
         "update", project, "-", "--expected-revision", 0, stdin=json.dumps(plan)), refused=True)
     assert "changed after its planning confirmation" in stale.stderr
-    # The repair the message names: agree to the current text again.
+    # The repair the message names: review the current text (here, a waiver), then agree to it again.
+    waive("planning", "waive-planning-2")
     reconfirm = dict(confirmation, planning_sha256=snapshot(project / "planning.md")[1],
                      requirements_sha256=snapshot(project / "spec.md")[1])
     step("reconfirm", cli.flow(project, "confirm", "align-2", **reconfirm), refused=False)
@@ -169,15 +182,15 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
 def test_a_current_project_runs_from_init_to_a_validated_close(tmp_path: Path, surface: str) -> None:
     steps = run_lifecycle(tmp_path, surface)
     assert [name for name, refused in steps if refused] == [
-        "plan-before-alignment", "plan-with-stale-agreement", "failing-check", "update-done-on-failed-record",
-        "close-with-undecided-worktree",
+        "plan-before-alignment", "confirm-without-round", "plan-with-stale-agreement", "failing-check",
+        "update-done-on-failed-record", "close-with-undecided-worktree",
     ]
 
 
 def test_both_launcher_surfaces_agree_step_for_step(tmp_path: Path) -> None:
     outcomes = [run_lifecycle(tmp_path / label, surface) for label, surface in zip("ab", SURFACES, strict=True)]
     assert outcomes[0] == outcomes[1]
-    assert len(outcomes[0]) == 20, "a shortened run would agree trivially"
+    assert len(outcomes[0]) == 24, "a shortened run would agree trivially"
 
 
 @pytest.mark.parametrize("surface", SURFACES)

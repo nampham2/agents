@@ -54,6 +54,19 @@ def far_future_delivery_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def far_future_goldfish_instant(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the Goldfish gates off for every test project; the tests of the gates move the instant back.
+
+    The shipped instant is the 0.31.0 version commit, long past by the time the suite runs, so every
+    confirmation and task start in every test would otherwise need a review round. raising=False for a
+    baseline build without the constant.
+    """
+    import workspace_lib
+
+    monkeypatch.setattr(workspace_lib, "GOLDFISH_FROM", "2099-01-01T00:00:00+00:00", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def far_future_retro_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the retro section gate off for every test project; its own tests move the cutoff back."""
     import workspace_lib
