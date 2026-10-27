@@ -126,7 +126,7 @@ class TestSchemaTable:
     def test_every_action_has_exactly_one_schema(self) -> None:
         assert set(ACTIONS) == workflows.FIELDS.keys() | journal.READ_INPUTS.keys()
         assert workflows.READ_ACTIONS == set(journal.READ_INPUTS), "read actions are derived from the table"
-        assert len(ACTIONS) == 27
+        assert len(ACTIONS) == 28
 
     @pytest.mark.parametrize("action", ACTIONS)
     def test_the_printed_schema_is_what_validation_enforces(self, project: Path, action: str) -> None:
@@ -170,7 +170,7 @@ class TestRequiredBy:
 
     @pytest.mark.parametrize("action", ACTIONS)
     def test_every_other_action_prints_no_variants(self, action: str) -> None:
-        if action not in ("worktree", "confirm"):
+        if action not in ("worktree", "confirm", "goldfish"):
             assert workflows.input_schema(action)["required_by"] == {}
 
     def test_the_table_matches_the_vocabulary_the_runtime_accepts(self, project: Path) -> None:

@@ -317,19 +317,23 @@ def _is_timestamp(value: object) -> bool:
 GATES_ENFORCED_FROM = "2026-10-02T12:27:00+00:00"
 
 
-def _created_on_or_after(state: dict[str, Any], cutoff_text: str) -> bool:
-    """Whether `state` was created on or after the cutoff instant; anything unjudgeable is no."""
-    created = state.get("created")
-    if not _non_empty_string(created):
+def at_or_after(value: object, cutoff_text: str) -> bool:
+    """Whether `value` is a timezone-aware ISO time at or after the cutoff; anything unjudgeable is no."""
+    if not _non_empty_string(value):
         return False
     try:
-        moment = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         cutoff = datetime.fromisoformat(cutoff_text.replace("Z", "+00:00"))
     except ValueError:
         return False
     if moment.tzinfo is None or cutoff.tzinfo is None:
         return False
     return moment >= cutoff
+
+
+def _created_on_or_after(state: dict[str, Any], cutoff_text: str) -> bool:
+    """Whether `state` was created on or after the cutoff instant; anything unjudgeable is no."""
+    return at_or_after(state.get("created"), cutoff_text)
 
 
 def is_new_project(state: dict[str, Any]) -> bool:
@@ -370,6 +374,20 @@ RETRO_SECTION_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
 RETRO_SECTION_FROM = "2026-10-15T17:25:51+00:00"
 RETRO_SECTION_HEADING = "Retro"
 RETRO_SECTION_MIN_CHARS = 120
+
+
+# The Goldfish review gates (0.31.0) apply to a gate event at or after this instant: a confirmation, the
+# first code task, a release, a merge, the closure of a worktree that has no remote. Earlier events count
+# as passed and nothing re-checks them. The instant was chosen at the start of the 0.31.0 version bump, shortly
+# before its commit, and is the same for every host that reads this file. The far-future placeholder is
+# what the test suite sets to switch the gates off. Read at call time so tests can move it.
+GOLDFISH_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
+GOLDFISH_FROM = "2026-10-27T12:13:54+01:00"
+
+
+def is_goldfish_gated() -> bool:
+    """Whether the Goldfish gates apply now: the clock is at or after `GOLDFISH_FROM`."""
+    return at_or_after(now_iso(), GOLDFISH_FROM)
 
 
 def is_retro_gated(state: dict[str, Any]) -> bool:
@@ -1043,7 +1061,7 @@ def briefing_section_warnings(briefing_markdown: str) -> "list[str]":
 # the expected state, so it is not checked; `DONE` and `CANCELLED` stay quiet so history remains valid
 # and reopenable. Projects begun before the split keep this document as a root `architecture.md`; it
 # is read as the planning document until a `planning.md` exists. The living design is a different
-# document, `artifacts/architecture.md`, and is never gated.
+# document, `artifacts/architecture.md`; its review by a Goldfish round is a gate, its content is not.
 PLANNING_FILENAME = "planning.md"
 LEGACY_PLANNING_FILENAME = "architecture.md"
 DESIGN_DOCUMENT = "artifacts/architecture.md"
@@ -1266,8 +1284,8 @@ def planning_warnings(project_dir: Path, status: object, state: "dict[str, Any] 
 
 
 # The design document, `artifacts/architecture.md`, is written by the first task of a project that
-# writes code and kept current by every code task after it. It is never gated, so these are warnings
-# for a project created on or after `PLANNING_SPLIT_FROM` and nothing else: a docs-only plan, a
+# writes code and kept current by every code task after it. A Goldfish round gates the first code task;
+# the checks on its shape are warnings for a project created on or after `PLANNING_SPLIT_FROM` and nothing else: a docs-only plan, a
 # closed project and an older project are quiet. A code task is a `local_write` task with a `target`
 # output that is not prose; the test is a heuristic that only drives warnings.
 PROSE_SUFFIXES = (".md", ".rst", ".txt")
@@ -1312,6 +1330,12 @@ def _design_section_text(text: str, title: str) -> "str | None":
             end = next((later.start() for later in headings[index + 1 :] if len(later.group("marks")) <= level), len(text))
             return text[heading.end() : end]
     return None
+
+
+def _goldfish_warnings(project_dir: Path, state: "dict[str, Any]") -> "list[str]":
+    from workspace_goldfish import goldfish_warnings
+
+    return goldfish_warnings(project_dir, state)
 
 
 def design_document_warnings(project_dir: Path, status: object, state: "dict[str, Any]") -> "list[str]":
@@ -2154,6 +2178,11 @@ def validate_v3_state(
         report.warnings.extend(design_document_warnings(project_dir, status, state))
         report.warnings.extend(verification_order_warnings(state.get("tasks")))
 
+    # A Goldfish round is open or stale, or a gate event was passed by an older launcher: said in every status,
+    # because a spec round is open while the project is still ALIGNING.
+    if check_files:
+        report.warnings.extend(_goldfish_warnings(project_dir, state))
+
     # The closing report is checked at close and for a project already past it, and at no other
     # point. `CANCELLED` counts: the step runs on that path too, reporting what was abandoned and
     # why. Unlike the section check above this cannot key off "has left ALIGNING", because a report
@@ -2469,6 +2498,9 @@ def validate_v4_state(
         report.warnings.extend(planning_warnings(project_dir, status, state))
         report.warnings.extend(design_document_warnings(project_dir, status, state))
         report.warnings.extend(verification_order_warnings(state.get("tasks")))
+
+    if check_files:
+        report.warnings.extend(_goldfish_warnings(project_dir, state))
 
     # Unlike the specification-section warnings, style does not depend on a record being complete,
     # and most records are written while ALIGNING, so this runs in every status.
@@ -5298,6 +5330,9 @@ def check_state_candidate(
     if check_files:
         report.errors.extend(alignment_gate_errors(project_dir, current, candidate))
         from workspace_evidence import newly_terminal_task_errors
+        from workspace_goldfish import design_gate_errors
+
+        report.errors.extend(design_gate_errors(project_dir, current, candidate))
 
         accept_errors, accept_warnings = newly_terminal_task_errors(project_dir, current, candidate)
         report.errors.extend(accept_errors)
@@ -5380,6 +5415,9 @@ def _commit_state_locked(
         raise WorkspaceError(immutable_changes[0])
     transition_errors = check_state_transition(current, candidate) + alignment_gate_errors(project_dir, current, candidate)
     from workspace_evidence import newly_terminal_task_errors
+    from workspace_goldfish import design_gate_errors
+
+    transition_errors += design_gate_errors(project_dir, current, candidate)
 
     transition_errors += newly_terminal_task_errors(project_dir, current, candidate)[0]
     if transition_errors:

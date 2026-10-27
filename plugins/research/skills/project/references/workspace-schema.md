@@ -389,8 +389,9 @@ do, with a warning, and a project created after `PLANNING_SPLIT_FROM` that keeps
 is told to rename it. Older markers read `kind=architecture` and still count as planning.
 
 `artifacts/architecture.md` is the living design of a project that writes code, written by its
-first task and never gated ([design-document.md](design-document.md)). Read it with
-`read <project-dir> architecture`; replace it whole with `edit <project-dir> architecture`. In a
+first task and Goldfish-reviewed before code starts ([design-document.md](design-document.md)).
+Read it with `read <project-dir> architecture`; replace it whole with
+`edit <project-dir> architecture`. In a
 legacy layout those two refuse and point to `planning`. For a project created after
 `PLANNING_SPLIT_FROM`, with a `PLANNING`, `EXECUTING` or `REVIEW` status and a code task, validation
 warns when it is missing, lacks a section its `Profiles:` line requires, or lacks an

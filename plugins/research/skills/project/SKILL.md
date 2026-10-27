@@ -62,7 +62,7 @@ research-project init <root> --title "<title>" --working-directory <target> --js
 
 `init` refuses a likely duplicate; ask the user. Report version-control warnings; never initialize
 or commit repositories implicitly.
-Read [commands.md](references/commands.md) before the first record update, including alignment.
+Read [commands.md](references/commands.md) before the first record update.
 
 ## Align requirements and planning
 
@@ -85,7 +85,8 @@ Clear requirements need confirmation, even with zero question rounds. Write thes
 ```
 
 Save spec sections, decisions, drafts and continuation with `workflow ... round`.
-Use `workflow ... confirm` for actual agreement against the proposal token.
+Use `workflow ... confirm` for actual agreement against the proposal token, after a current
+[Goldfish review](references/goldfish-review.md).
 
 Record explicit requirements/planning agreement and `Status: agreed` before planning; reuse current
 agreement on resume; reopen affected choices for missing records or material changes.
@@ -95,7 +96,7 @@ agreement on resume; reopen affected choices for missing records or material cha
 After agreement, enter `PLANNING`; derive milestones from `planning.md` with success
 criteria, verification, effects, `depends_on` and rooted outputs. A code project's first task is the
 design task ([design-document.md](references/design-document.md)). Only plan publication, pushes, or
-commits when requested. Send a compact patch through stdin:
+commits when requested. Send a compact stdin patch:
 
 ```sh
 research-project update <project-dir> - --expected-revision <revision> --json
@@ -105,7 +106,7 @@ The tool applies task defaults and derives `current_tasks`. Reconcile revision c
 
 ## Execute and verify
 
-Apply routine corrections directly when scope, dependencies, authorization and acceptance criteria
+Apply routine corrections when scope, dependencies, authorization and acceptance criteria
 stay valid. Settle affected workers first; record useful findings and rerun affected checks.
 For invalidated assignments, inputs or agreement, follow
 [execution-changes.md](references/execution-changes.md). `workflow ... correct` allocates correction

@@ -7,8 +7,9 @@ alignment; do not create implementation tasks to stand in for unresolved decisio
 
 `planning.md` is the agreement: what is built, why, how much and in what order. The technical
 design is another document, `artifacts/architecture.md`, written after agreement by the first task
-and never gated ([design-document.md](design-document.md)). A project begun before the split keeps
-its agreement in a root `architecture.md`; the tools read that file as `planning.md`.
+and Goldfish-reviewed before code starts ([design-document.md](design-document.md)). A project
+begun before the split keeps its agreement in a root `architecture.md`; the tools read that file
+as `planning.md`.
 
 ## Prepare a concrete proposal
 

@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 DOCUMENT = re.compile(
-    r"^(spec|planning|architecture|reflection|handoff|memory-staging|tasks/[A-Za-z0-9_-]+|reviews/review_[0-9]+|artifacts/report)$"
+    r"^(spec|planning|architecture|reflection|handoff|memory-staging|tasks/[A-Za-z0-9_-]+|reviews/review_[0-9]+|reviews/goldfish_(?:[0-9]{2}|[1-9][0-9]{2,})|artifacts/report)$"
 )
 IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
@@ -324,6 +324,13 @@ def _run_operation(
                     report = check_state_candidate(project, candidate, expected_revision=expected, check_files=False)
                     if report.errors:
                         raise WorkspaceError("; ".join(report.errors))
+                    from workspace_goldfish import design_gate_errors
+
+                    # The commit paths run this gate too, but only after the documents are written; the
+                    # preflight refuses before anything is journaled.
+                    gated = design_gate_errors(project, state, candidate)
+                    if gated:
+                        raise WorkspaceError("; ".join(gated))
                 journal = {
                     "kind": "metadata",
                     "id": operation_id,

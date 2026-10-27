@@ -139,13 +139,14 @@ def test_default_instruction_payload_budget() -> None:
     assert len((entry + routine + router).split()) <= 1750
     for reference in ("automation-context", "automation-records", "automation-execution"):
         selected = (skill / f"references/{reference}.md").read_text()
-        assert len((entry + routine + router + selected).split()) <= 2350
+        allowance = GOLDFISH_RECORDS if reference == "automation-records" else 0
+        assert len((entry + routine + router + selected).split()) <= 2350 + allowance
 
 
 SKILL_DIR = REPO_ROOT / "plugins/research/skills/project"
 CORE = ("SKILL", "commands")
 ALIGNMENT = ("durable-context", "writing-rules", "grill", "planning-review", "memory-operations", "automation",
-             "automation-records", "handoff-writing")
+             "automation-records", "handoff-writing", "goldfish-review")
 RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operations", "automation",
           "automation-context", "automation-records", "handoff-writing")
 
@@ -157,17 +158,29 @@ RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operati
 # Words that references/writing-rules.md adds to every scenario that writes records (0.23.0). Each
 # budget below is its old value plus this, and no more: a measured cost, not a round allowance.
 RULES = 774
+# Words the Goldfish review (0.31.0) adds to each scenario, measured: the coordinator procedure
+# (references/goldfish-review.md, at most 300 words), where a gate event is handled, plus the
+# pointer sentences in the documents each scenario loads. By the user's decision of 2026-10-27 the
+# affected budgets and the 0.21.0 alignment cap rise by this measured cost and no more.
+# The `goldfish` row of references/automation-records.md, its name in the router and one word in SKILL.md
+# are 92 of these words, and the same 92 raise the default payload budget of the records branch below.
+GOLDFISH_RECORDS = 92
+GOLDFISH_ALIGNMENT = 402
+GOLDFISH_CLOSURE = 471
+GOLDFISH_RESUME = 100
+GOLDFISH_MATERIAL = 102
 
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
-    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7031 + RULES),
-    "alignment-plain": ((*CORE, *ALIGNMENT), 6550 + RULES),
-    "resume": ((*CORE, *RESUME), 5000 + RULES),
-    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5200 + RULES),
-    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7800 + RULES),
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7031 + RULES + GOLDFISH_ALIGNMENT),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6550 + RULES + GOLDFISH_ALIGNMENT),
+    "resume": ((*CORE, *RESUME), 5000 + RULES + GOLDFISH_RESUME),
+    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5200 + RULES + GOLDFISH_RESUME),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7800 + RULES + GOLDFISH_ALIGNMENT),
     "material-change-after-resume": (
-        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 9000 + RULES),
+        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 9000 + RULES + GOLDFISH_MATERIAL),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
-                 "automation-records", "handoff-writing", "worktrees", "pull-requests"), 5016 + RULES),
+                 "automation-records", "handoff-writing", "worktrees", "pull-requests", "goldfish-review"),
+                5016 + RULES + GOLDFISH_CLOSURE),
 }
 
 # The closure budget rose from 4450 to 5016 (plus RULES) in 0.24.0 by the user's decision of 2026-10-05:
@@ -177,7 +190,9 @@ SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
 # Words in the same repository-target alignment set as measured at commit 4b3a68f (version 0.21.0),
 # before the compact path existed. The budget above must stay below it: a simpler procedure, not
 # instructions moved outside the count. (Until 0.23.0 the margin was 10 percent.)
-ORIGINAL_ALIGNMENT_WORDS = 7813
+# Raised on 2026-10-27 by the measured cost of the Goldfish review (GOLDFISH_ALIGNMENT), by the
+# user's decision; the name keeps the original size it was measured against.
+ORIGINAL_ALIGNMENT_WORDS = 7813 + GOLDFISH_ALIGNMENT
 
 # Documents a loaded document links to but that only some work needs, and what triggers the read.
 # A link to anything not in the scenario and not listed here is routing drift: either the scenario
@@ -187,6 +202,8 @@ CONDITIONAL = {
     "automation-execution": "only for worker events, verify batches and lesson triage",
     "design-document": "only when writing or updating the design task's artifacts/architecture.md",
     "execution-changes": "only when execution invalidates assignments, inputs or agreement",
+    "goldfish-personas": "only for reviewer subagents; the coordinator hands the file to them",
+    "goldfish-review": "only at a gate: a confirmation, the first code task, a release or a merge",
     "grill": "only when a change reopens requirements",
     "handoff-verifiers": "only when a handoff gives the successor a verifier",
     "legacy-executor": "only for old executor ownership or storage",
@@ -277,3 +294,8 @@ def test_durable_context_points_to_the_writing_rules_in_one_sentence() -> None:
     text = document("durable-context").read_text(encoding="utf-8")
     assert "Write each record as [writing-rules.md](writing-rules.md) says." in text
     assert "writing-rules" in linked_references("durable-context")
+
+
+def test_the_goldfish_procedure_stays_within_300_words() -> None:
+    """The coordinator reads this at every gate; by the user's decision (2026-10-27) it is at most 300 words."""
+    assert len(document("goldfish-review").read_text(encoding="utf-8").split()) <= 300

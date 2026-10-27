@@ -86,6 +86,65 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.31.0 Goldfish review gates
+
+The `project` skill adds an Elephant-Goldfish review, after the
+[Elephant-Goldfish Model](https://github.com/google/elephant-goldfish-model) (Apache-2.0). Fresh,
+read-only subagents (Goldfish) review one target; the coordinator triages their findings; the tool
+records the round and refuses the next step without a current one.
+
+- **Four gates.** `spec` before a requirements or alignment confirmation, `planning` before a
+  planning or alignment confirmation, `design` before the first code task runs, and `diff` before
+  a release record, before a merge record and before a no-remote worktree is closed. The design
+  and diff gates apply only to a project with a code task.
+- **Rounds.** `workflow <project-dir> goldfish` takes `operation` `open`, `close` or `waive`. A
+  round is the managed document `reviews/goldfish_NN.md`; `project.json` gains no field. The tool
+  computes the version a round covers (a content digest of the spec or plan, the design without its
+  status table, or a commit) and the outcome it reaches. A fix to a Blocker or Major needs one
+  re-audit; a re-audit that reports any Blocker or Major closes only as `accepted-residual`, with
+  the user's words.
+- **Waiver.** With no fresh subagent the review stops, and the gate passes only through a `waive`
+  round that holds the user's words. A waiver replaces the round, not the checks on branch, clean
+  tree, pushed upstream or merged head.
+- **Diff checks.** A release needs a clean worktree on its recorded branch, a pushed upstream at
+  `HEAD` when a pull request is recorded, and a round for that commit. A merge record takes
+  `merged_head`, the pull request head that was merged: it must match a round, and the local branch
+  head while that branch exists (a commit that builds on the branch head also passes). A no-remote
+  worktree needs a round before its first closure and before every remove; if its branch is gone,
+  its latest passed round stands. The tool never fetches: push first.
+- **Live projects.** A gate applies to an event at or after `GOLDFISH_FROM`, which is
+  `2026-10-27T12:13:54+01:00` in `workspace_lib.py`: the time the version bump began, a little
+  before its commit. Earlier events count as passed and nothing re-checks them. Validation,
+  `resume` and `readiness` warn, never error, about an open round, a stale spec or planning round,
+  and a gate event after the instant that has no round, which is what an older launcher leaves
+  behind. A stale design or diff round shows only at its gate. A closure of
+  a pull-request worktree with no merge recorded only warns; only a no-remote worktree's closure
+  is a gate.
+- **Words.** The coordinator procedure is `references/goldfish-review.md` (300 words, the cap,
+  test-enforced). Reviewer prompts are in `references/goldfish-personas.md`, read only by the
+  reviewer subagents. With the pointer sentences, the `goldfish` row of `automation-records.md`
+  (which carries the field shapes) and its name in the router, the instruction paths grow against
+  0.30.4: alignment by 402 words, closure by 471, resume by 100, material change after resume by
+  102, and the records branch of the default payload by 92 (the entry file by 1, to 899 of 900).
+  The budgets and the 0.21.0 cap in `test_lifecycle_payloads.py` rose by exactly those amounts, by
+  the user's decision. Three unrelated `SKILL.md` phrases were cut to make room: "including
+  alignment" from the `commands.md` instruction, "directly" from "Apply routine corrections", and
+  "through" from "Send a compact patch through stdin".
+
+Limits, stated: the tool proves that its own path ran, not that the reviewers did, and a
+hand-written round file passes a gate, as a hand-written confirmation marker does. The severity and
+triage labels are the coordinator's: nothing can tell a Blocker relabelled as a Nit from an honest
+Nit, and a rewrite that comes with only Nit fixes is accepted without a re-audit. The warnings for a
+release, a merge or a code task started after the instant look for a passing round, not for the
+version that shipped, because those records store no commit. A project from before the task stamps
+that blocked a code task which had run, with no evidence, asks for a design round once when it
+resumes. An older project that predates the delivery gates can still close a pull-request worktree
+with no merge record; validation warns.
+
+Compatibility: no field is added to `project.json`. A 0.30.x launcher reads a round document as
+plain Markdown and enforces no Goldfish gate, so refresh the plugin before opening a project from
+another host. Older projects open unchanged.
+
 ### 0.30.0 duplicate guard, optional alpha, stop reasons, planning and design documents
 
 Six changes to the `project` skill, shipped together on one branch.

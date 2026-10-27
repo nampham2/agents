@@ -29,6 +29,14 @@ TASK = {
 }
 
 
+# The lifecycle owes a design round before its code task runs and a diff round before the worktree closes.
+CODE_TASK = {
+    **TASK, "effect": {"kind": "local_write", "description": "write the module"},
+    "outputs": [{"root": "target", "path": "src/app.py", "required": True}],
+}
+DESIGN = "# Design\n\n## 1. Purpose\n\nA parser.\n\n## 13. Implementation status\n\n| T01 | todo |\n"
+
+
 class Cli:
     def __init__(self, surface: str) -> None:
         base = REPO_ROOT / "plugins/research" / surface
@@ -60,6 +68,17 @@ def state_of(project: Path) -> dict[str, Any]:
     return json.loads((project / "project.json").read_text(encoding="utf-8"))  # type: ignore[no-any-return]
 
 
+def review(cli: Cli, project: Path, target: str, identity: str, **fields: Any) -> None:
+    """Open and close a clean one-reviewer round through the launcher, as a coordinator does."""
+    opened = json.loads(cli.ok("workflow", project, "goldfish", "-", stdin=json.dumps({
+        "id": f"{identity}-open", "expected_revision": state_of(project)["revision"], "operation": "open",
+        "target": target, "stages": ["combined"], **fields})).stdout)
+    cli.ok("workflow", project, "goldfish", "-", stdin=json.dumps({
+        "id": f"{identity}-close", "expected_revision": state_of(project)["revision"], "operation": "close",
+        "round": opened["round"], "tokens": {opened["document"]: opened["token"]},
+        "reports": [{"stage": "combined", "summary": "read the target"}], "findings": []}))
+
+
 def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
     """Drive one current project to DONE; return each step with whether it was refused."""
     cli = Cli(surface)
@@ -78,7 +97,7 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         steps.append((name, refused))
         return completed
 
-    plan = {"status": "PLANNING", "tasks": [TASK]}
+    plan = {"status": "PLANNING", "tasks": [CODE_TASK]}
     # F1 gate: a current project cannot plan before it is aligned.
     unaligned = step("plan-before-alignment", cli.run(
         "update", project, "-", "--expected-revision", 0, stdin=json.dumps(plan)), refused=True)
@@ -95,6 +114,18 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         "requirements_sha256": snapshot(project / "spec.md")[1],
         "planning_sha256": snapshot(project / "planning.md")[1],
     }
+    # The Goldfish gates apply to a confirmation after the 0.31.0 instant: no round, no confirmation.
+    ungated = step("confirm-without-round", cli.flow(project, "confirm", "align-0", **confirmation), refused=True)
+    assert "goldfish gate 'spec'" in ungated.stderr and "goldfish gate 'planning'" in ungated.stderr
+    no_agent = {"source": "user reply in the test", "response": "no fresh subagent here; proceed"}
+
+    def waive(target: str, identity: str) -> None:
+        step(f"waive-{target}", cli.flow(
+            project, "goldfish", identity, operation="waive", target=target,
+            reason="the test host has no fresh subagent", confirmation=no_agent), refused=False)
+
+    waive("spec", "waive-spec-1")
+    waive("planning", "waive-planning-1")
     step("confirm-alignment", cli.flow(project, "confirm", "align-1", **confirmation), refused=False)
 
     # F1: rewriting the agreed design makes the confirmation stale, and the real gate says so.
@@ -106,7 +137,8 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
     stale = step("plan-with-stale-agreement", cli.run(
         "update", project, "-", "--expected-revision", 0, stdin=json.dumps(plan)), refused=True)
     assert "changed after its planning confirmation" in stale.stderr
-    # The repair the message names: agree to the current text again.
+    # The repair the message names: review the current text (here, a waiver), then agree to it again.
+    waive("planning", "waive-planning-2")
     reconfirm = dict(confirmation, planning_sha256=snapshot(project / "planning.md")[1],
                      requirements_sha256=snapshot(project / "spec.md")[1])
     step("reconfirm", cli.flow(project, "confirm", "align-2", **reconfirm), refused=False)
@@ -128,8 +160,16 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         project, "worktree", "wt-alpha", operation="alpha", path=str(worktree), exempt=True,
         reason="the repository has no version file", confirmation=user), refused=False)
 
-    step("start", cli.run("task", project, "start", "T01", "--expected-revision", state_of(project)["revision"]),
-         refused=False)
+    (project / "artifacts").mkdir(exist_ok=True)
+    (project / "artifacts" / "architecture.md").write_text(DESIGN, encoding="utf-8")
+    start = ("task", project, "start", "T01")
+    unreviewed = step("start-without-design-round", cli.run(
+        *start, "--expected-revision", state_of(project)["revision"]), refused=True)
+    assert "goldfish gate 'design'" in unreviewed.stderr and state_of(project)["tasks"][0]["status"] == "TODO"
+    review(cli, project, "design", "design-1")
+    step("start", cli.run(*start, "--expected-revision", state_of(project)["revision"]), refused=False)
+    (worktree / "src").mkdir()
+    (worktree / "src" / "app.py").write_text("print('ok')\n", encoding="utf-8")
 
     # F2: the real recorder keeps a failing command's exit code, and `update` may not accept it.
     failing = step("failing-check", cli.run(
@@ -154,9 +194,15 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         "close", project, "--expected-revision", state_of(project)["revision"]), refused=True)
     assert "no closure decision" in blocked.stderr and "worktree" in blocked.stderr
     assert state_of(project)["status"] != "DONE"
-    step("keep-worktree", cli.flow(project, "worktree", "wt-keep", operation="close", path=str(worktree),
-                                   decision="keep", confirmation={"source": "user", "response": "keep it"}),
-         refused=False)
+    keep = {"operation": "close", "path": str(worktree), "decision": "keep",
+            "confirmation": {"source": "user", "response": "keep it"}}
+    # The repository has no remote, so closing the worktree is a diff gate: the branch needs a round first.
+    git(worktree, "add", "-A")
+    git(worktree, "commit", "-q", "-m", "the module")
+    unreviewed_diff = step("keep-without-diff-round", cli.flow(project, "worktree", "wt-keep-0", **keep), refused=True)
+    assert "goldfish gate 'diff'" in unreviewed_diff.stderr and state_of(project)["worktrees"][0]["status"] == "active"
+    review(cli, project, "diff", "diff-1", worktree=str(worktree))
+    step("keep-worktree", cli.flow(project, "worktree", "wt-keep", **keep), refused=False)
     step("finalize", cli.flow(project, "finalize", "final-1", reflection=REFLECTION,
                               continuation={"next": "none"}), refused=False)
     assert state_of(project)["status"] == "DONE"
@@ -169,15 +215,15 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
 def test_a_current_project_runs_from_init_to_a_validated_close(tmp_path: Path, surface: str) -> None:
     steps = run_lifecycle(tmp_path, surface)
     assert [name for name, refused in steps if refused] == [
-        "plan-before-alignment", "plan-with-stale-agreement", "failing-check", "update-done-on-failed-record",
-        "close-with-undecided-worktree",
+        "plan-before-alignment", "confirm-without-round", "plan-with-stale-agreement", "start-without-design-round",
+        "failing-check", "update-done-on-failed-record", "close-with-undecided-worktree", "keep-without-diff-round",
     ]
 
 
 def test_both_launcher_surfaces_agree_step_for_step(tmp_path: Path) -> None:
     outcomes = [run_lifecycle(tmp_path / label, surface) for label, surface in zip("ab", SURFACES, strict=True)]
     assert outcomes[0] == outcomes[1]
-    assert len(outcomes[0]) == 20, "a shortened run would agree trivially"
+    assert len(outcomes[0]) == 26, "a shortened run would agree trivially"
 
 
 @pytest.mark.parametrize("surface", SURFACES)
