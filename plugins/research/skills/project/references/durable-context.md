@@ -48,7 +48,8 @@ and recovery records.
 
 ### Delivery-review checkpoints
 
-Use delivery review only when the user, acceptance criteria or repository workflow require it, via
+A Goldfish round ([goldfish-review.md](goldfish-review.md)) is not delivery review. Use delivery
+review only when the user, acceptance criteria or repository workflow require it, via
 [`workflow review`](automation-records.md) with reviewer, scope/version, findings, outcome and
 evidence; it allocates `reviews/review_NN.md` and aligns review state. File existence or passing
 tests do not establish acceptance; preserve earlier cycles. Requirements/planning agreement stays in

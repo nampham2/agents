@@ -20,7 +20,8 @@ Do this once, when all the work is done. The delivery order is fixed: release, m
 record the merge, then close/remove.
 
 1. Sweep the threads.
-2. Commit the plain release version `X.Y.Z` into each version file and push. Record
+2. Commit the plain release version `X.Y.Z` into each version file and push, then run the diff
+   Goldfish round ([goldfish-review.md](goldfish-review.md)). Record
    `"operation":"release"` with `version` (see [versioning.md](versioning.md)). If the base
    release moved on the main branch, ask the user, then add `"base_moved":true` and a `reason`.
    The tool refuses a moved base that is occupied.

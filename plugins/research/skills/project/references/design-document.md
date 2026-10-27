@@ -2,9 +2,11 @@
 
 `artifacts/architecture.md` is the living technical design of a project that writes code. The
 first task of such a project writes it, after reading the code and sources the plan relies on; every
-later code task keeps it current. It is never gated: `edit <project-dir> architecture` is guarded by
-the content token, `read <project-dir> architecture` reads it, and the user may review it at any
-time. A legacy project keeps its agreement in a root `architecture.md`; use the id `planning` there.
+later code task keeps it current. A Goldfish round ([goldfish-review.md](goldfish-review.md)) must
+review it before the first code task starts; later code tasks edit it without a new round.
+`edit <project-dir> architecture` is guarded by the content token, `read <project-dir>
+architecture` reads it, and the user may review it at any time. A legacy project keeps its
+agreement in a root `architecture.md`; use the id `planning` there.
 
 Write for a reader who has not seen the project. Each section is present, or its heading is
 followed by `Not applicable: <reason>`. Validation warns, and never blocks, for a project created
