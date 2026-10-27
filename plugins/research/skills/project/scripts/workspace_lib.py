@@ -317,19 +317,23 @@ def _is_timestamp(value: object) -> bool:
 GATES_ENFORCED_FROM = "2026-10-02T12:27:00+00:00"
 
 
-def _created_on_or_after(state: dict[str, Any], cutoff_text: str) -> bool:
-    """Whether `state` was created on or after the cutoff instant; anything unjudgeable is no."""
-    created = state.get("created")
-    if not _non_empty_string(created):
+def at_or_after(value: object, cutoff_text: str) -> bool:
+    """Whether `value` is a timezone-aware ISO time at or after the cutoff; anything unjudgeable is no."""
+    if not _non_empty_string(value):
         return False
     try:
-        moment = datetime.fromisoformat(created.replace("Z", "+00:00"))
+        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
         cutoff = datetime.fromisoformat(cutoff_text.replace("Z", "+00:00"))
     except ValueError:
         return False
     if moment.tzinfo is None or cutoff.tzinfo is None:
         return False
     return moment >= cutoff
+
+
+def _created_on_or_after(state: dict[str, Any], cutoff_text: str) -> bool:
+    """Whether `state` was created on or after the cutoff instant; anything unjudgeable is no."""
+    return at_or_after(state.get("created"), cutoff_text)
 
 
 def is_new_project(state: dict[str, Any]) -> bool:
@@ -374,15 +378,16 @@ RETRO_SECTION_MIN_CHARS = 120
 
 # The Goldfish review gates (0.31.0) apply to a gate event at or after this instant: a confirmation, the
 # first code task, a release, a merge, the closure of a worktree that has no remote. Earlier events count
-# as passed and nothing re-checks them. This is the instant of the 0.31.0 version commit. The far-future
-# placeholder is what the test suite sets to switch the gates off. Read at call time so tests can move it.
+# as passed and nothing re-checks them. The instant was chosen at the start of the 0.31.0 version bump, shortly
+# before its commit, and is the same for every host that reads this file. The far-future placeholder is
+# what the test suite sets to switch the gates off. Read at call time so tests can move it.
 GOLDFISH_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
 GOLDFISH_FROM = "2026-10-27T12:13:54+01:00"
 
 
 def is_goldfish_gated() -> bool:
     """Whether the Goldfish gates apply now: the clock is at or after `GOLDFISH_FROM`."""
-    return datetime.fromisoformat(now_iso()) >= datetime.fromisoformat(GOLDFISH_FROM)
+    return at_or_after(now_iso(), GOLDFISH_FROM)
 
 
 def is_retro_gated(state: dict[str, Any]) -> bool:

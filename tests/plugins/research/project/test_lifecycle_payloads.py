@@ -162,13 +162,13 @@ RULES = 774
 # (references/goldfish-review.md, at most 300 words), where a gate event is handled, plus the
 # pointer sentences in the documents each scenario loads. By the user's decision of 2026-10-27 the
 # affected budgets and the 0.21.0 alignment cap rise by this measured cost and no more.
-# The `goldfish` row of references/automation-records.md and its name in the router are 41 of these words,
-# and the same 41 words raise the default payload budget of the records branch below.
-GOLDFISH_RECORDS = 41
-GOLDFISH_ALIGNMENT = 342
-GOLDFISH_CLOSURE = 347
-GOLDFISH_RESUME = 50
-GOLDFISH_MATERIAL = 52
+# The `goldfish` row of references/automation-records.md, its name in the router and one word in SKILL.md
+# are 59 of these words, and the same 59 raise the default payload budget of the records branch below.
+GOLDFISH_RECORDS = 59
+GOLDFISH_ALIGNMENT = 360
+GOLDFISH_CLOSURE = 398
+GOLDFISH_RESUME = 68
+GOLDFISH_MATERIAL = 70
 
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
     "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7031 + RULES + GOLDFISH_ALIGNMENT),

@@ -109,21 +109,31 @@ records the round and refuses the next step without a current one.
   `HEAD` when a pull request is recorded, and a round for that commit. A merge record takes
   `merged_head`, the pull request head that was merged, and it must match the round. The tool never
   fetches: push first.
-- **Live projects.** A gate applies to an event at or after `GOLDFISH_FROM` (shipped as the instant
-  of this release); earlier events count as passed and nothing re-checks them. Validation, `resume`
-  and `readiness` warn, never error, about an open or stale round and about a gate event after the
-  instant that has no round, which is what an older launcher leaves behind.
+- **Live projects.** A gate applies to an event at or after `GOLDFISH_FROM`, which is
+  `2026-10-27T12:13:54+01:00` in `workspace_lib.py`: the time the version bump began, a little
+  before its commit. Earlier events count as passed and nothing re-checks them. Validation,
+  `resume` and `readiness` warn, never error, about an open or stale round and about a gate event
+  after the instant that has no round, which is what an older launcher leaves behind. A closure of
+  a pull-request worktree with no merge recorded only warns; only a no-remote worktree's closure
+  is a gate.
 - **Words.** The coordinator procedure is `references/goldfish-review.md` (290 words, at most 300,
   test-enforced). Reviewer prompts are in `references/goldfish-personas.md`, read only by the
-  reviewer subagents. With the pointers and the `goldfish` row of `automation-records.md`, the
-  alignment path grows by 342 words and the closure path by 347; the budgets and the 0.21.0 cap in
-  `test_lifecycle_payloads.py` rose by exactly that, by the user's decision, and the default
-  `SKILL.md` payload budget did not move.
+  reviewer subagents. With the pointer sentences, the `goldfish` row of `automation-records.md`
+  and its name in the router, the instruction paths grow against 0.30.4: alignment by 360 words,
+  closure by 398, resume by 68, material change after resume by 70, and the records branch of the
+  default payload by 59 (the entry file by 1, to 899 of 900). The budgets and the 0.21.0 cap in
+  `test_lifecycle_payloads.py` rose by exactly those amounts, by the user's decision. Unrelated
+  `SKILL.md` wording was shortened to make room: "including alignment" came out of the `commands.md`
+  instruction, and "directly" and "through" went from two sentences.
 
 Limits, stated: the tool proves that its own path ran, not that the reviewers did, and a
-hand-written round file passes a gate, as a hand-written confirmation marker does. The tool cannot
-check that edits match findings, so a rewrite that comes with only Nit fixes is accepted without a
-re-audit. An older project that predates the delivery gates can still close a pull-request worktree
+hand-written round file passes a gate, as a hand-written confirmation marker does. The severity and
+triage labels are the coordinator's: nothing can tell a Blocker relabelled as a Nit from an honest
+Nit, and a rewrite that comes with only Nit fixes is accepted without a re-audit. The warnings for a
+release, a merge or a code task started after the instant look for a passing round, not for the
+version that shipped, because those records store no commit. A project from before the task stamps
+that blocked a code task which had run, with no evidence, asks for a design round once when it
+resumes. An older project that predates the delivery gates can still close a pull-request worktree
 with no merge record; validation warns.
 
 Compatibility: no field is added to `project.json`. A 0.30.x launcher reads a round document as

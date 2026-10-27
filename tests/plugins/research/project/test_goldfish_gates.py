@@ -175,6 +175,7 @@ def test_the_shipped_instant_is_a_real_one_in_the_past() -> None:
     shipped = datetime.fromisoformat(match.group(1))
     assert match.group(1) != workspace_lib.GOLDFISH_PLACEHOLDER
     assert shipped.tzinfo is not None and shipped <= datetime.now().astimezone()
+    assert shipped >= datetime.fromisoformat("2026-10-27T00:00:00+00:00"), "the 0.31.0 release is after this date"
 
 
 def test_the_instant_is_read_when_the_gate_runs(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -212,6 +213,10 @@ def prose(task_id: str = "T01", status: str = "TODO") -> dict[str, Any]:
         (state_of(code(status="DONE")), state_of(code(status="DONE"), code("T02", "RUNNING")), False),
         (
             state_of(code(status="BLOCKED", started_at="2026-10-27T10:00:00+00:00")),
+            state_of(code(status="RUNNING")), False,
+        ),
+        (
+            state_of(code(status="BLOCKED", evidence=[{"root": "workspace", "path": "evidence.md", "anchor": "x"}])),
             state_of(code(status="RUNNING")), False,
         ),
         (state_of(code()), state_of(code(status="BLOCKED")), False),
@@ -546,7 +551,9 @@ def test_a_closure_names_a_branch_that_exists(gated: None, tmp_path: Path) -> No
     project, _, _ = no_remote_worktree(tmp_path)
     entry = {**load_state(project)["worktrees"][0], "branch": "no-such-branch"}
     errors = delivery_gate_errors(project, load_state(project), entry, "closure", {})
-    assert errors == [f"goldfish gate 'diff': branch no-such-branch does not exist in {entry['repository']}"]
+    assert errors == [
+        f"goldfish gate 'diff': branch no-such-branch no longer exists in {entry['repository']} and no round has passed"
+    ]
     assert delivery_gate_errors(project, load_state(project), {**entry, "repository": None}, "closure", {}) == []
 
 
@@ -554,44 +561,38 @@ def test_a_closure_names_a_branch_that_exists(gated: None, tmp_path: Path) -> No
 
 
 def test_the_findings_name_an_open_round_and_a_pending_re_audit(project: Path) -> None:
-    state = load_state(project)
-    assert goldfish_findings(project, state) == []
+    assert goldfish_findings(project) == []
     opened = open_round(project, "planning", ("combined",))
-    assert goldfish_findings(project, state) == ["Goldfish round 01 (planning) is open; close it or open a new round"]
+    assert goldfish_findings(project) == ["Goldfish round 01 (planning) is open; close it or open a new round"]
     edit_planning(project)
     close(project, opened, [finding("F1", "Major", "FIX")], reports=report(("combined",)))
-    assert goldfish_findings(project, state) == ["Goldfish round 01 (planning) needs its re-audit; open a round"]
+    assert goldfish_findings(project) == ["Goldfish round 01 (planning) needs its re-audit; open a round"]
 
 
 def test_the_findings_report_a_spec_or_plan_that_changed_after_its_round(project: Path) -> None:
     accept(project, "spec")
     accept(project, "planning")
     accept(project, "design")  # a design that changes with every code task is not reported
-    state = load_state(project)
-    assert goldfish_findings(project, state) == []
+    assert goldfish_findings(project) == []
     edit_planning(project)
     (project / "artifacts" / "architecture.md").write_text("# Design\n\nchanged\n", encoding="utf-8")
-    assert goldfish_findings(project, state) == [
+    assert goldfish_findings(project) == [
         "Goldfish round 02 covers an earlier version of the planning document; "
         "the next confirmation needs a delta round"
     ]
     (project / "planning.md").unlink()
-    assert goldfish_findings(project, state) == []
+    assert goldfish_findings(project) == []
 
 
 def test_a_round_that_changed_the_spec_is_reported(project: Path) -> None:
     accept(project, "spec")
     path = project / "spec.md"
-    path.write_text(path.read_text(encoding="utf-8") + "\nMore.\n", encoding="utf-8")
-    text = path.read_text(encoding="utf-8").replace("Content for In scope.", "Different content for In scope.")
-    path.write_text(text, encoding="utf-8")
-    assert goldfish_findings(project, load_state(project))[0].endswith("the next confirmation needs a delta round")
-
-
-def test_a_confirmation_result_carries_the_findings(project: Path) -> None:
-    open_round(project, "design", ("combined",))  # an open round for another target
-    result = confirm(project, "requirements")
-    assert result["goldfish_findings"] == ["Goldfish round 01 (design) is open; close it or open a new round"]
+    text = path.read_text(encoding="utf-8")
+    assert "Content for In scope." in text
+    path.write_text(text.replace("Content for In scope.", "Different content for In scope."), encoding="utf-8")
+    assert goldfish_findings(project) == [
+        "Goldfish round 01 covers an earlier version of spec.md; the next confirmation needs a delta round"
+    ]
 
 
 def test_a_round_result_carries_the_findings(project: Path) -> None:
@@ -664,11 +665,13 @@ def test_release_merge_and_closure_events_with_no_round_are_reported(gated: None
         f"the release of /w at {later} has no Goldfish diff round",
         f"the merge of /w at {later} has no Goldfish diff round",
     ]
-    declined = {**entry, "merge": {"state": "declined", "recorded_at": later}, "version_line": None}
-    assert goldfish_event_warnings(project, {"tasks": [code()], "worktrees": [declined]}) == [
+    unmerged = {"path": "/w", "pull_request": {"number": 1}, "closure": {"observed_at": later}}
+    assert goldfish_event_warnings(project, {"tasks": [code()], "worktrees": [unmerged]}) == [
         f"worktree /w was closed at {later} with no merge recorded"
     ]
-    early = {**declined, "closure": {"observed_at": "1999-01-01T00:00:00+00:00"}}
+    declined = {**unmerged, "merge": {"state": "declined", "recorded_at": later}}
+    assert goldfish_event_warnings(project, {"tasks": [code()], "worktrees": [declined]}) == []
+    early = {**unmerged, "closure": {"observed_at": "1999-01-01T00:00:00+00:00"}}
     assert goldfish_event_warnings(project, {"tasks": [code()], "worktrees": [early]}) == []
     assert goldfish_event_warnings(project, {"tasks": [prose()], "worktrees": [entry]}) == []
 
@@ -689,3 +692,72 @@ def test_validation_carries_the_warnings_and_never_an_error(gated: None, project
     revision = json.loads((project / "project.json").read_text(encoding="utf-8"))["revision"]
     assert revision == load_state(project)["revision"]
     assert len(rounds(project)) == 1
+
+
+# --- what the reviews of the diff found -------------------------------------------------------------
+
+
+def test_the_instant_comparison_includes_the_boundary() -> None:
+    at = "2026-01-01T00:00:00+00:00"
+    assert workspace_lib.at_or_after(at, at) is True
+    assert workspace_lib.at_or_after("2025-12-31T23:59:59+00:00", at) is False
+    assert workspace_lib.at_or_after("2026-01-01T00:00:00", at) is False  # naive
+    assert workspace_lib.at_or_after("not a time", at) is False
+    assert workspace_lib.at_or_after(None, at) is False
+    assert workspace_lib.at_or_after("2026-01-01T00:00:00Z", at) is True
+
+
+def test_a_closure_whose_branch_is_gone_stands_on_the_last_passed_round(gated: None, tmp_path: Path) -> None:
+    project, linked, repository = no_remote_worktree(tmp_path)
+    git(repository, "worktree", "remove", "--force", str(linked))
+    git(repository, "branch", "-D", BRANCH)
+    with pytest.raises(WorkspaceError, match=r"no longer exists in .* and no round has passed"):
+        close_worktree(project, linked, "remove")
+    assert load_state(project)["worktrees"][0]["status"] == "active"
+    gold(
+        project, operation="waive", target="diff", worktree=str(linked), commit=git(repository, "rev-parse", "main"),
+        reason="the branch was merged locally and deleted", confirmation=CONFIRMATION,
+    )
+    close_worktree(project, linked, "remove")
+    assert load_state(project)["worktrees"][0]["status"] == "removed"
+
+
+def test_a_kept_worktree_that_gained_commits_needs_a_new_round_to_be_removed(gated: None, tmp_path: Path) -> None:
+    project, linked, repository = no_remote_worktree(tmp_path)
+    diff_round_for_branch(project, linked, repository)
+    close_worktree(project, linked, "keep")
+    (linked / "more.txt").write_text("x\n", encoding="utf-8")
+    commit_all(linked, "work after the closure")
+    git(repository, "worktree", "remove", "--force", str(linked))
+    with pytest.raises(WorkspaceError, match=r"covers version [0-9a-f]{12}, but the diff is now"):
+        close_worktree(project, linked, "remove")
+    assert load_state(project)["worktrees"][0]["status"] == "kept"
+
+
+def test_a_merged_head_must_be_the_head_of_the_branch(gated: None, delivered: tuple[Path, Path, Path]) -> None:
+    project, linked, _ = delivered
+    reviewed = released(project, linked)
+    (linked / "later.txt").write_text("x\n", encoding="utf-8")
+    commit_all(linked, "committed after the release")
+    with pytest.raises(WorkspaceError, match=f"merged_head {reviewed[:12]} is not the head of branch {BRANCH}"):
+        merge_claim(project, linked, merged_head=reviewed)
+    assert "merge" not in load_state(project)["worktrees"][0]
+
+
+def test_hand_edited_records_do_not_crash_the_reporting_or_the_gates(gated: None, project: Path) -> None:
+    junk = {"tasks": None, "worktrees": ["x", 5, {"path": "/w", "merge": "x", "version_line": "x", "closure": 5}]}
+    assert goldfish_event_warnings(project, junk) == []
+    assert goldfish_event_warnings(project, {"tasks": "x", "worktrees": "x"}) == []
+    assert design_gate_errors(project, {"tasks": None}, {"tasks": "x"}) == []
+    assert delivery_gate_errors(project, {"tasks": ["x"]}, {"repository": "/r", "path": "/w"}, "release", {}) == []
+    state = load_state(project)
+    state["worktrees"] = "x"
+    (project / "project.json").write_text(json.dumps(state), encoding="utf-8")
+    assert isinstance(workspace_lib.validate_project(project).errors, list)  # reports; does not raise
+
+
+def test_resume_and_readiness_carry_a_goldfish_warning(gated: None, project: Path) -> None:
+    open_round(project, "planning", ("combined",))
+    warning = "Goldfish round 01 (planning) is open; close it or open a new round"
+    assert warning in json.dumps(workflow(project, "readiness", {}))
+    assert warning in json.dumps(workflow(project, "resume", {}))

@@ -30,8 +30,8 @@ living technical design with diagrams, contracts, algorithms, failure modes and 
 status row per task, and each code task keeps it current. A Goldfish round reviews it before the
 first code task; see [design-document.md](references/design-document.md). A project begun before
 the split keeps its agreement in a root `architecture.md`, which the tools read as the planning
-document. A plugin
-older than 0.30.0 fails on a project that has the new `planning` document id; refresh the plugin.
+document. A plugin older than 0.30.0 fails on a project that has the new `planning` document id;
+refresh the plugin.
 
 The lifecycle minimizes repeated context and bookkeeping. Investigation-heavy or independent
 work can use fresh native agents; small, related work stays together when context reuse is cheaper.

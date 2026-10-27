@@ -28,6 +28,8 @@ from workspace_documents import (
     reflection_lesson_sections,
 )
 from workspace_goldfish import (
+    OPERATION_FIELDS,
+    OPERATION_REQUIRED,
     confirm_gate_errors,
     delivery_gate_errors,
     goldfish_findings,
@@ -88,9 +90,7 @@ FIELDS = {
     "authorize": {"task", "authorization"},
     "receipt": {"task", "receipt"},
     "review": {"reviewer", "version", "scope", "findings", "status", "evidence", "required"},
-    "goldfish": {
-        "operation", "target", "worktree", "commit", "stages", "round", "reports", "findings", "confirmation", "reason",
-    },
+    "goldfish": set().union(*OPERATION_FIELDS.values()),
     "finalize": {"reflection", "continuation"},
     "report": {"sections", "graph"},
     "maintenance": {"tasks", "reason", "continuation"},
@@ -132,11 +132,7 @@ WORKTREE_REQUIRED_BY = {
     "operation=merge": frozenset({"evidence", "merge_state", "method"}),
 }
 GOLDFISH_REQUIRED = frozenset({"operation"})
-GOLDFISH_REQUIRED_BY = {
-    "operation=open": frozenset({"stages", "target"}),
-    "operation=close": frozenset({"findings", "reports", "round"}),
-    "operation=waive": frozenset({"confirmation", "reason", "target"}),
-}
+GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in OPERATION_REQUIRED.items()}
 ALWAYS_REQUIRED = {"confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED}
 REQUIRED_BY = {
     "confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY, "goldfish": GOLDFISH_REQUIRED_BY,
@@ -392,7 +388,7 @@ def _worktree(
     # history (`superseded` below) and only then is the new one recorded. A removed worktree is final.
     if entry is None or entry["status"] not in ("active", "kept") or entry["kind"] == "none":
         raise WorkspaceError(f"no active or kept repository worktree is recorded at {path}")
-    if entry["status"] == "active":
+    if entry["status"] == "active" or decision == "remove":
         gate("closure", entry)
     if decision == "remove":
         missing = removal_findings(entry, gated=is_delivery_gated(state))
@@ -467,7 +463,7 @@ def _build(
         stale = stale_confirmations(read("spec"), read("planning"))
         if stale:
             result["stale_confirmations"] = stale
-        notes = goldfish_findings(project, state)
+        notes = goldfish_findings(project)
         if notes:
             result["goldfish_findings"] = notes
     elif action == "confirm":
@@ -548,7 +544,7 @@ def _build(
                         + f"\n\nAgreed planning: [revision {review_id}]({planning_path(project).name})."
                     },
                 )
-        notes = goldfish_findings(project, state)
+        notes = goldfish_findings(project)
         if notes:
             result["goldfish_findings"] = notes
     elif action == "correct":

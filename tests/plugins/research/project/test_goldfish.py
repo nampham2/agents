@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 import workspace_goldfish as goldfish
+import workspace_occupancy
 from workspace_goldfish import Round
 from workspace_journal import snapshot
 from workspace_lib import WorkspaceError
@@ -128,7 +129,7 @@ def a_round(**fields: Any) -> Round:
 def test_a_marker_round_trips() -> None:
     original = a_round()
     assert goldfish.parse_round(3, goldfish.render_marker(original) + "\n\nbody") == original
-    assert original.name == "reviews/goldfish_03"
+    assert goldfish.round_name(original.number) == "reviews/goldfish_03"
     assert original.key == ("diff", "/w")
 
 
@@ -552,13 +553,13 @@ def test_git_that_cannot_be_consulted_is_an_error(
 
 
 @pytest.mark.parametrize("failure", [OSError("no git"), subprocess.TimeoutExpired("git", 5)])
-def test_a_git_failure_names_the_command(failure: Exception, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_git_failure_is_an_error_not_a_refusal(failure: Exception, monkeypatch: pytest.MonkeyPatch) -> None:
     def broken(*arguments: Any) -> str:
         raise failure
 
-    monkeypatch.setattr(goldfish, "_git", broken)
-    with pytest.raises(WorkspaceError, match="git cat-file -e abc failed in /repo"):
-        goldfish.repository_git("/repo", "cat-file", "-e", "abc")
+    monkeypatch.setattr(workspace_occupancy, "_git", broken)
+    with pytest.raises(WorkspaceError, match="Git could not be consulted"):
+        goldfish.checked_commit("/repo", "a" * 40)
 
 
 def test_a_worktree_that_is_not_a_repository_checkout_is_refused(project: Path) -> None:
@@ -628,3 +629,52 @@ def test_a_retry_with_the_same_id_returns_the_same_round(project: Path) -> None:
     again = workflow(project, "goldfish", request)
     assert again["round"] == first["round"] == 1
     assert len(rounds(project)) == 1
+
+
+# --- hand-edited and hostile input ----------------------------------------------------------------
+
+
+@pytest.mark.parametrize("stages", [[["combined"]], [{"a": 1}], [5], "combined", [None]])
+def test_stages_that_are_not_names_are_refused_not_crashes(project: Path, stages: Any) -> None:
+    with pytest.raises(WorkspaceError):
+        gold(project, operation="open", target="planning", stages=stages)
+
+
+def test_a_deeply_nested_marker_is_not_a_round_and_not_a_crash(project: Path) -> None:
+    nested = "[" * 5000 + "]" * 5000
+    assert goldfish.parse_round(1, f'<!-- research-goldfish {{"a":{nested}}} -->\n') is None
+
+
+def test_a_directory_at_a_round_path_is_not_a_round(project: Path) -> None:
+    (project / "reviews").mkdir(exist_ok=True)
+    (project / "reviews" / "goldfish_01.md").mkdir()
+    assert rounds(project) == []
+    assert open_round(project)["round"] == 2  # the directory still holds its number
+
+
+def test_round_numbers_pass_ninety_nine(project: Path) -> None:
+    reviews = project / "reviews"
+    reviews.mkdir(exist_ok=True)
+    ninety_nine = Round(99, "planning", None, False, "a" * 64, "a" * 64, "accepted", ("combined",), None, None)
+    marker = goldfish.render_marker(ninety_nine)
+    (reviews / "goldfish_99.md").write_text(marker + "\n", encoding="utf-8")
+    opened = open_round(project)
+    assert opened["round"] == 100 and opened["document"] == "reviews/goldfish_100"
+    assert (reviews / "goldfish_100.md").is_file()
+    assert close(project, opened)["round"] == 100
+
+
+def test_a_sub_heading_that_mentions_the_status_title_is_not_the_status_section() -> None:
+    text = (
+        "# D\n\n## 3. Modules\n\nbody\n\n### Implementation status of modules\n\nkeep this\n\n"
+        "## 13. Implementation status\n\n| T01 | todo |\n"
+    )
+    digest = goldfish.design_digest(text)
+    assert digest != goldfish.design_digest(text.replace("keep this", "changed"))
+    assert digest == goldfish.design_digest(text.replace("| T01 | todo |", "| T01 | done |"))
+
+
+@pytest.mark.parametrize("tasks", [None, "x", ["x"], [{"outputs": "no"}], [None]])
+def test_a_task_list_that_was_hand_edited_does_not_crash_the_helpers(tasks: Any) -> None:
+    assert goldfish.has_code_task({"tasks": tasks}) is False
+    assert goldfish._code_started({"tasks": tasks}) is False

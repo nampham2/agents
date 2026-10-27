@@ -173,16 +173,6 @@ class TestRequiredBy:
         if action not in ("worktree", "confirm", "goldfish"):
             assert workflows.input_schema(action)["required_by"] == {}
 
-    def test_goldfish_variants_are_its_operations(self) -> None:
-        from workspace_goldfish import OPERATION_REQUIRED, OPERATIONS
-
-        variants = workflows.input_schema("goldfish")["required_by"]
-        assert {name.split("=", 1)[1] for name in variants} == set(OPERATIONS)
-        for operation in OPERATIONS:
-            assert set(variants[f"operation={operation}"]) == (
-                OPERATION_REQUIRED[operation] | {"operation", "id", "expected_revision"}
-            )
-
     def test_the_table_matches_the_vocabulary_the_runtime_accepts(self, project: Path) -> None:
         # The variant names are the discriminator values, so a renamed operation or kind cannot
         # linger in the printed schema while the runtime accepts something else.
