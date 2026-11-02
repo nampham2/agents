@@ -16,12 +16,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 from workspace_context import _git
+from workspace_fields import NESTED_INPUTS, field_errors
 from workspace_journal import list_input, object_input, string_input
 from workspace_lib import WorkspaceError, _is_timestamp, _non_empty_string, is_delivery_gated, needs_merge, now_iso
 from workspace_occupancy import check_base, own_text
 
 DELIVERY_OPERATIONS = {"pull_request", "alpha", "release", "merge"}
-DELIVERY_FIELDS = {"pull_request", "pr_exemption", "version_line", "version_exemption", "merge"}
 HOSTS = {"github", "gitlab"}
 STYLES = {"pep440", "semver"}
 METHODS = {"squash", "merge", "rebase"}
@@ -313,15 +313,59 @@ def delivery_operation(
     return entry, notes
 
 
+CONFIRMATION = NESTED_INPUTS["confirmation"][0]
+
+# The sentence the operation code raises for a key; the combined refusal repeats it for callers who search for it.
+KEY_HINTS = {
+    "files": "files are required for the first alpha or release record",
+    "reason": "reason must be non-empty text",
+    "evidence": "evidence must be non-empty text",
+    "method": "a merged record needs method squash, merge or rebase",
+}
+
+
+def required_for(operation: object, request: dict[str, Any], entry: dict[str, Any] | None) -> frozenset[str]:
+    """The keys a worktree request must carry beyond `operation`, `path` and `confirmation`.
+
+    The printed `--schema` table over-reports on purpose; this is what the request is refused for. `entry` is
+    the recorded worktree at the request's path, or None when the path is unknown: then the one key that depends
+    on the entry (`files`) is not enforced here and the later lookup refuses the path.
+    """
+    if operation == "record":
+        return frozenset() if request.get("kind") == "none" else frozenset({"branch"})
+    if operation == "close":
+        return frozenset({"decision"})
+    if operation == "pull_request":
+        return frozenset() if "exempt" in request else frozenset({"host", "url", "number"})
+    has_line = entry is not None and "version_line" in entry
+    if operation == "alpha":
+        if request.get("exempt") is True:
+            return frozenset({"reason"})
+        keys = {"base", "alpha", "reason"}
+        if entry is not None and not has_line:
+            keys.add("files")
+        return frozenset(keys)
+    if operation == "release":
+        keys = {"version"}
+        if entry is not None and (not has_line or request.get("replaces_exemption") is True):
+            keys.add("files")
+        return frozenset(keys)
+    if operation == "merge":
+        state = request.get("merge_state")
+        return frozenset({"merge_state", "method", "evidence"} if state == "merged" else {"merge_state"})
+    return frozenset()
+
+
 def _object_errors(
     value: object, label: str, fields: set[str], allowed_extra: frozenset[str] = frozenset()
 ) -> list[str]:
     """Missing and unexpected fields of a closed object. `allowed_extra` names optional keys."""
-    if not isinstance(value, dict):
+    found = field_errors(value, fields | allowed_extra, fields)
+    if found.not_object:
         return [f"{label}: must be an object"]
-    problems = [f"{label}: missing {name}" for name in sorted(fields - value.keys())]
-    problems += [f"{label}: unexpected field {name}" for name in sorted(value.keys() - fields - allowed_extra)]
-    return problems
+    return [f"{label}: missing {name}" for name in found.missing] + [
+        f"{label}: unexpected field {name}" for name in found.unknown
+    ]
 
 
 def _line_errors(line: object, label: str) -> list[str]:
@@ -439,7 +483,7 @@ def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
                 problems.append(f"{label}.pull_request: needs host github or gitlab, a URL, a number and a timestamp")
     for name, reason in (("pr_exemption", True), ("version_exemption", False)):
         if name in entry:
-            fields = {"reason", "source", "response"} if reason else {"source", "response"}
+            fields = {"reason", *CONFIRMATION} if reason else set(CONFIRMATION)
             if not reason and isinstance(entry[name], dict) and "reason" in entry[name]:
                 fields = {"reason", "source", "response"}  # records before 0.30.0 carry no reason
             found = _object_errors(entry[name], f"{label}.{name}", fields)

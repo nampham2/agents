@@ -188,20 +188,39 @@ class TestRequiredBy:
 class TestConfirmationRefusal:
     def test_a_missing_confirmation_names_the_field_the_schema_prints(self, project: Path) -> None:
         assert {"confirmation", "operation", "path"} <= set(workflows.input_schema("worktree")["required"])
-        payload = {"id": "worktree-target", "expected_revision": 0, "operation": "record", "path": str(project)}
+        payload = {
+            "id": "worktree-target", "expected_revision": 0, "operation": "record", "path": str(project),
+            "branch": "feat/x",
+        }
         with pytest.raises(WorkspaceError, match=r"^confirmation: expected a JSON object, got NoneType$"):
             workflows.workflow(project, "worktree", payload)
 
     def test_an_empty_confirmation_names_its_two_fields(self, project: Path) -> None:
         payload = {
             "id": "worktree-target", "expected_revision": 0, "operation": "record", "path": str(project),
-            "confirmation": {},
+            "branch": "feat/x", "confirmation": {},
         }
         with pytest.raises(WorkspaceError) as caught:
             workflows.workflow(project, "worktree", payload)
         message = str(caught.value)
         assert message.startswith("confirmation: missing required field(s)")
         assert "'response', 'source'" in message
+
+
+class TestCombinedRefusal:
+    def test_one_request_with_three_kinds_of_error_gets_one_message(self, project: Path) -> None:
+        payload = {
+            "id": "worktree-target", "expected_revision": 0, "operation": "record", "path": str(project),
+            "bogus": 1, "confirmation": {},
+        }
+        with pytest.raises(WorkspaceError) as caught:
+            workflows.workflow(project, "worktree", payload)
+        groups = str(caught.value).split("\n")
+        assert len(groups) == 3, groups
+        assert "unknown field(s) ['bogus']" in groups[0]
+        assert "missing required field(s) ['branch']" in groups[1]
+        assert groups[2].startswith("confirmation: missing required field(s)")
+        assert "'response', 'source'" in groups[2]
 
 
 class TestCommandLine:
@@ -233,3 +252,111 @@ class TestCommandLine:
             [str(surface / "research-project"), "record-evidence", "--help"], capture_output=True, text=True
         )
         assert "usage: research-project record-evidence" in usage.stdout
+
+
+class TestKeySetsLiveInOneModule:
+    def test_no_reader_holds_a_literal_copy_of_a_shared_key_set(self) -> None:
+        import ast
+
+        import workspace_fields as fields
+
+        shared = {fields.CONTINUATION_FIELDS, fields.FINDING_FIELDS, fields.FINDING_REQUIRED, fields.DELIVERY_FIELDS}
+        shared |= set(fields.OPERATION_FIELDS.values()) | set(fields.OPERATION_REQUIRED.values())
+        for allowed, required in fields.NESTED_INPUTS.values():
+            shared |= {allowed, required}
+        shared.discard(frozenset())
+
+        copies = []
+        for path in sorted(SKILL_SCRIPTS.glob("*.py")):
+            if path.name == "workspace_fields.py":
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                members: list[ast.expr] = []
+                if isinstance(node, ast.Set):
+                    members = node.elts
+                elif isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("set", "frozenset") and node.args:
+                    arg = node.args[0]
+                    if isinstance(arg, ast.Set | ast.List | ast.Tuple):
+                        members = arg.elts
+                names = [item.value for item in members if isinstance(item, ast.Constant)]
+                if members and len(names) == len(members) and frozenset(names) in shared:
+                    copies.append(f"{path.name}:{getattr(node, 'lineno', 0)}")
+        assert not copies, f"key sets copied outside workspace_fields: {copies}"
+
+
+class TestRequiredFor:
+    @pytest.mark.parametrize(
+        ("operation", "request_keys", "entry", "expected"),
+        [
+            ("record", {}, None, {"branch"}),
+            ("record", {"kind": "none"}, None, set()),
+            ("close", {}, None, {"decision"}),
+            ("pull_request", {}, None, {"host", "url", "number"}),
+            ("pull_request", {"exempt": "local_only"}, None, set()),
+            ("alpha", {"exempt": True}, None, {"reason"}),
+            ("alpha", {}, None, {"base", "alpha", "reason"}),
+            ("alpha", {}, {}, {"base", "alpha", "reason", "files"}),
+            ("alpha", {}, {"version_line": {}}, {"base", "alpha", "reason"}),
+            ("release", {}, None, {"version"}),
+            ("release", {}, {}, {"version", "files"}),
+            ("release", {}, {"version_line": {}}, {"version"}),
+            ("release", {"replaces_exemption": True}, {"version_line": {}}, {"version", "files"}),
+            ("merge", {"merge_state": "declined"}, None, {"merge_state"}),
+            ("merge", {"merge_state": "merged"}, None, {"merge_state", "method", "evidence"}),
+            ("merge", {}, None, {"merge_state"}),
+            ("nonsense", {}, None, set()),
+        ],
+    )
+    def test_each_variant_enforces_its_own_keys(
+        self, operation: str, request_keys: dict[str, Any], entry: Any, expected: set[str]
+    ) -> None:
+        from workspace_delivery import required_for
+
+        assert required_for(operation, request_keys, entry) == expected
+
+
+class TestFieldErrors:
+    def test_a_non_object_and_a_clean_object(self) -> None:
+        from workspace_fields import field_errors
+
+        assert field_errors([], {"a"}).not_object == "list"
+        assert not field_errors({"a": 1}, {"a"}, {"a"})
+        found = field_errors({"b": 1}, {"a"}, {"a"})
+        assert (found.unknown, found.missing) == (["b"], ["a"])
+
+    def test_a_list_item_and_a_non_list_are_labelled(self) -> None:
+        shape = (("items[]", "triage_item"),)
+        with pytest.raises(WorkspaceError) as caught:
+            journal.object_input({"items": [1, {"section": "s"}]}, {"items"}, nested=shape)
+        assert str(caught.value).split("\n")[0] == "items[0]: expected a JSON object, got int"
+        assert "items[1]: missing required field(s) ['disposition', 'reason']" in str(caught.value)
+        with pytest.raises(WorkspaceError, match=r"^items: expected a JSON object, got str$"):
+            journal.object_input({"items": "x"}, {"items"}, nested=shape)
+
+    def test_a_non_object_request_with_nested_shapes(self) -> None:
+        with pytest.raises(WorkspaceError, match=r"^expected a JSON object, got list$"):
+            journal.object_input([], {"a"}, nested=(("confirmation", "confirmation"),))
+
+
+class TestOperationCodeKeepsItsOwnRefusals:
+    """The workflow entry refuses a missing key first; the operation code still refuses it when called directly."""
+
+    def test_the_first_record_needs_files(self) -> None:
+        import workspace_delivery as delivery
+
+        with pytest.raises(WorkspaceError, match="files are required for the first alpha or release record"):
+            delivery._files({}, None)
+
+    def test_a_merged_record_needs_a_method(self) -> None:
+        import workspace_delivery as delivery
+
+        entry = {"pr_exemption": {"reason": "local_only", "source": "s", "response": "r"}}
+        with pytest.raises(WorkspaceError, match="method squash, merge or rebase"):
+            delivery._merge(entry, {"merge_state": "merged"}, {"source": "s", "response": "r"})
+
+
+class TestVariantKeysWithoutState:
+    def test_an_unreadable_project_leaves_the_entry_dependent_key_unenforced(self, tmp_path: Path) -> None:
+        (tmp_path / "project.json").write_text(json.dumps({"schema_version": 1}))
+        request = {"operation": "alpha", "path": str(tmp_path)}
+        assert workflows._variant_required(tmp_path, "worktree", request) == {"base", "alpha", "reason"}

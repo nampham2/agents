@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from workspace_fields import NESTED_INPUTS, FieldErrors, field_errors
 from workspace_lib import (
     DirectoryLock,
     WorkspaceConflict,
@@ -42,26 +43,67 @@ class OperationError(WorkspaceError):
         self.result = result
 
 
+def _group_messages(
+    errors: FieldErrors, allowed: Any, required: Any, prefix: str, hints: dict[str, str] | None = None
+) -> list[str]:
+    """One sentence per kind of key error, in the order a caller fixes them: shape, unknown, missing."""
+    if errors.not_object:
+        return [f"{prefix}expected a JSON object, got {errors.not_object}"]
+    groups = []
+    if errors.unknown:
+        groups.append(f"{prefix}unknown field(s) {errors.unknown}; allowed: {sorted(allowed)}")
+    if errors.missing:
+        said = "; ".join(hints[key] for key in errors.missing if hints and key in hints)
+        groups.append(
+            f"{prefix}missing required field(s) {errors.missing}; required: {sorted(required)}"
+            + (f" ({said})" if said else "")
+        )
+    return groups
+
+
+def _nested_items(key: str, value: Any) -> list[tuple[str, Any]]:
+    """The labelled objects behind one nested key; a list key names each item `key[i]`."""
+    if key.endswith("[]"):
+        base = key[:-2]
+        if not isinstance(value, list):
+            return [(base, value)]
+        return [(f"{base}[{index}]", item) for index, item in enumerate(value)]
+    return [(key, value)]
+
+
 def object_input(
     value: Any,
     allowed: set[str] | frozenset[str],
     required: set[str] | frozenset[str] = frozenset(),
     where: str | None = None,
+    nested: tuple[tuple[str, str], ...] | None = None,
+    nested_required: frozenset[str] = frozenset(),
+    hints: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Validate closed object fields before traversal, naming the field and the action that failed.
 
-    `where` is the action or object being read (`workflow resume`). The message used to be one
-    sentence for a non-object, an unknown key and a missing key, and it never named the offender.
+    `where` is the action or object being read (`workflow resume`). With `nested`, every nested
+    object present in the request is checked too, whatever the top-level result, and one refusal
+    names every group: unknown fields, missing fields, then each nested object by its label. Without
+    it the first group found is the refusal, as before.
     """
     prefix = f"{where}: " if where else ""
-    if not isinstance(value, dict):
-        raise WorkspaceError(f"{prefix}expected a JSON object, got {type(value).__name__}")
-    unknown = sorted(value.keys() - allowed)
-    if unknown:
-        raise WorkspaceError(f"{prefix}unknown field(s) {unknown}; allowed: {sorted(allowed)}")
-    missing = sorted(required - value.keys())
-    if missing:
-        raise WorkspaceError(f"{prefix}missing required field(s) {missing}; required: {sorted(required)}")
+    errors = field_errors(value, allowed, required)
+    if nested is None:
+        groups = _group_messages(errors, allowed, required, prefix)[:1]
+    else:
+        groups = _group_messages(errors, allowed, required, prefix, hints)
+        if isinstance(value, dict):
+            for key, shape in nested:
+                base = key[:-2] if key.endswith("[]") else key
+                if base not in value and base not in nested_required:
+                    continue
+                shape_allowed, shape_required = NESTED_INPUTS[shape]
+                for label, item in _nested_items(key, value.get(base)):
+                    found = field_errors(item, shape_allowed, shape_required)
+                    groups += _group_messages(found, shape_allowed, shape_required, f"{label}: ")
+    if groups:
+        raise WorkspaceError("\n".join(groups))
     return value
 
 

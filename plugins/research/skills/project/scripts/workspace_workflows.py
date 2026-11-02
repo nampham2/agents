@@ -19,7 +19,14 @@ from workspace_context import (
     worktree_observation,
     worktree_registered,
 )
-from workspace_delivery import DELIVERY_OPERATIONS, abandoned_note, delivery_operation, removal_findings
+from workspace_delivery import (
+    DELIVERY_OPERATIONS,
+    KEY_HINTS,
+    abandoned_note,
+    delivery_operation,
+    removal_findings,
+    required_for,
+)
 from workspace_documents import (
     LEGACY_PLANNING_HINT,
     _replace_sections,
@@ -27,6 +34,7 @@ from workspace_documents import (
     append_staged_section,
     reflection_lesson_sections,
 )
+from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
 from workspace_goldfish import (
     OPERATION_FIELDS,
     OPERATION_REQUIRED,
@@ -286,7 +294,7 @@ def worker_events(project: Path) -> list[dict[str, Any]]:
 def _confirmation(value: object) -> dict[str, str]:
     # `confirmation` is printed by `--schema` as required, so its refusal has to name it; without
     # `where` a caller saw "expected a JSON object, got NoneType" with no field to fill.
-    confirmation = object_input(value, {"source", "response"}, {"source", "response"}, where="confirmation")
+    confirmation = object_input(value, *NESTED_INPUTS["confirmation"], where="confirmation")
     return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 
@@ -594,12 +602,10 @@ def _build(
     elif action in ("authorize", "receipt"):
         task = _task(state, string_input(request.get("task"), "task"))
         if action == "authorize":
-            value = object_input(
-                request.get("authorization"), {"required", "status", "scope", "source", "authorized_at"}
-            )
+            value = object_input(request.get("authorization"), *NESTED_INPUTS["authorization"], where="authorization")
             change = {"authorization": value}
         else:
-            value = object_input(request.get("receipt"), {"kind", "value", "destination", "timestamp"})
+            value = object_input(request.get("receipt"), *NESTED_INPUTS["receipt"], where="receipt")
             change = {"receipts": task["receipts"] + ([] if value in task["receipts"] else [value])}
         patch = {"tasks": [{"id": task["id"], **change}]}
     elif action == "review":
@@ -742,12 +748,41 @@ def workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, A
         raise WorkspaceError(f"workflow filesystem failure: {error}") from error
 
 
+def _variant_required(project: Path, action: str, request: Any) -> frozenset[str]:
+    """The keys the request's own discriminator demands, so one refusal can name them with the rest.
+
+    Only the unconditional part of a variant is enforced here: the operation code keeps the checks that
+    read project state (an existing alpha line, a recorded entry) and raises their own message.
+    """
+    if not isinstance(request, dict) or action != "worktree":
+        return frozenset()
+    entry = None
+    path = request.get("path")
+    if isinstance(path, str) and Path(path).is_absolute():
+        try:
+            worktrees = _load_state(project).get("worktrees", [])
+        except WorkspaceError:
+            worktrees = []
+        resolved = str(Path(path).resolve())
+        entry = next((item for item in worktrees if item.get("path") == resolved), None)
+    return required_for(request.get("operation"), request, entry)
+
+
 def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, Any]:
     project = project.resolve()
     if action not in FIELDS and action not in READ_INPUTS:
         raise WorkspaceError(f"unknown workflow action: {action}")
     if action in FIELDS:
-        object_input(request, COMMON | FIELDS[action], WRITE_REQUIRED, where=f"workflow {action}")
+        required = WRITE_REQUIRED | _variant_required(project, action, request)
+        object_input(
+            request,
+            COMMON | FIELDS[action],
+            required,
+            where=f"workflow {action}",
+            nested=ACTION_NESTED.get(action),
+            nested_required=NESTED_REQUIRED.get(action, frozenset()),
+            hints=KEY_HINTS if action == "worktree" else None,
+        )
         return run_operation(project, action, request, lambda state: _build(project, action, request, state))
     if action == "verify":
         from workspace_checks import verify

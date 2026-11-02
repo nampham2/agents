@@ -18,6 +18,7 @@ from typing import Any, TypeAlias
 
 import workspace_lib
 from workspace_context import worktree_observation
+from workspace_fields import FINDING_FIELDS, FINDING_REQUIRED, NESTED_INPUTS, OPERATION_FIELDS, OPERATION_REQUIRED
 from workspace_journal import document_path, list_input, object_input, snapshot, string_input
 from workspace_lib import (
     DESIGN_DOCUMENT,
@@ -47,20 +48,6 @@ COMMIT = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 MARKER_KEYS = frozenset(
     {"target", "worktree", "pinned", "reviewed", "resolved", "outcome", "stages", "reaudit_of", "delta_of"}
 )
-FINDING_FIELDS = frozenset(
-    {"id", "reviewer", "severity", "scope", "summary", "triage", "evidence", "resolution", "artifact"}
-)
-FINDING_REQUIRED = frozenset({"id", "reviewer", "severity", "scope", "summary", "triage"})
-OPERATION_FIELDS = {
-    "open": frozenset({"operation", "target", "worktree", "commit", "stages"}),
-    "close": frozenset({"operation", "round", "reports", "findings", "confirmation"}),
-    "waive": frozenset({"operation", "target", "worktree", "commit", "reason", "confirmation"}),
-}
-OPERATION_REQUIRED = {
-    "open": frozenset({"target", "stages"}),
-    "close": frozenset({"round", "reports", "findings"}),
-    "waive": frozenset({"target", "reason", "confirmation"}),
-}
 UNIVERSAL = frozenset({"id", "expected_revision", "tokens"})
 # What an operation hands back: the documents to write, and the result to return.
 Written: TypeAlias = "tuple[dict[str, str], dict[str, Any]]"
@@ -275,7 +262,7 @@ def _target_fields(state: "dict[str, Any]", request: "dict[str, Any]") -> "tuple
 
 
 def _confirmation(value: object) -> "dict[str, str]":
-    confirmation = object_input(value, {"source", "response"}, {"source", "response"}, where="confirmation")
+    confirmation = object_input(value, *NESTED_INPUTS["confirmation"], where="confirmation")
     return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 

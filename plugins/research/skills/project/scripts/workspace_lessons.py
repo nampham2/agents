@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from workspace_documents import _headings, _section_span
+from workspace_fields import NESTED_INPUTS
 from workspace_journal import (
     OperationError,
     document_path,
@@ -76,11 +77,7 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                 promotions = list_input(journal["promotions"], 20)
                 list_input(journal["receipts"], len(promotions))
                 for promotion in promotions:
-                    object_input(
-                        promotion,
-                        {"topic", "body", "description", "kind", "scope", "expected_sha256", "entry_id"},
-                        {"topic", "body", "expected_sha256", "entry_id"},
-                    )
+                    object_input(promotion, *NESTED_INPUTS["triage_promotion_journal"])
                     for value in promotion.values():
                         string_input(value)
             else:
@@ -104,11 +101,7 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                     promotions = []
                     seen = set()
                     for index, item in enumerate(items):
-                        object_input(
-                            item,
-                            {"section", "disposition", "reason", "promotion"},
-                            {"section", "disposition", "reason"},
-                        )
+                        object_input(item, *NESTED_INPUTS["triage_item"])
                         section = string_input(item["section"], "section")
                         reason = string_input(item["reason"], "reason")
                         if section in seen:
@@ -121,11 +114,7 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                         if disposition not in ("promote", "reflection", "discard"):
                             raise WorkspaceError("triage disposition must be promote, reflection or discard")
                         if disposition == "promote":
-                            promotion = object_input(
-                                item.get("promotion"),
-                                {"topic", "body", "description", "kind", "scope", "expected_sha256"},
-                                {"topic", "body", "expected_sha256"},
-                            )
+                            promotion = object_input(item.get("promotion"), *NESTED_INPUTS["triage_promotion"])
                             for value in promotion.values():
                                 string_input(value)
                             promotions.append({**promotion, "entry_id": f"{state['project']}-{request['id']}-{index}"})

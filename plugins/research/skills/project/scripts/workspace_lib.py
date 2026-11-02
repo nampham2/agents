@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from workspace_fields import DELIVERY_FIELDS, NESTED_INPUTS, field_errors
 from workspace_style import (
     LIMIT_STEP,
     LIMIT_TEXT,
@@ -109,7 +110,7 @@ WORKTREE_FIELDS = {
     "closure",
 }
 # Delivery records written by `workflow worktree` operations; see workspace_delivery.py.
-WORKTREE_OPTIONAL_FIELDS = {"pull_request", "pr_exemption", "version_line", "version_exemption", "merge"}
+WORKTREE_OPTIONAL_FIELDS = set(DELIVERY_FIELDS)
 WORKTREE_KINDS = {"created", "existing", "none"}
 WORKTREE_ROLES = {"target", "additional"}
 WORKTREE_STATUSES = {"active", "kept", "removed"}
@@ -680,8 +681,8 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
             self.acquired = False
 
 
-def _unexpected_fields(value: dict[str, Any], allowed: set[str], label: str, report: ValidationReport) -> None:
-    extras = sorted(set(value) - allowed)
+def _unexpected_fields(value: dict[str, Any], allowed: set[str] | frozenset[str], label: str, report: ValidationReport) -> None:
+    extras = field_errors(value, allowed).unknown
     if extras:
         report.errors.append(
             f"{label}: unexpected fields: {', '.join(extras)}; allowed: {', '.join(sorted(allowed))} "
@@ -689,8 +690,8 @@ def _unexpected_fields(value: dict[str, Any], allowed: set[str], label: str, rep
         )
 
 
-def _missing_fields(value: dict[str, Any], required: set[str], label: str, report: ValidationReport) -> None:
-    missing = sorted(required - set(value))
+def _missing_fields(value: dict[str, Any], required: set[str] | frozenset[str], label: str, report: ValidationReport) -> None:
+    missing = field_errors(value, frozenset(), required).missing
     if missing:
         report.errors.append(f"{label}: missing fields: {', '.join(missing)}")
 
@@ -858,7 +859,7 @@ def _validate_authorization(
     if not isinstance(value, dict):
         report.errors.append(f"{label}: authorization must be an object")
         return
-    fields = {"required", "status", "scope", "source", "authorized_at"}
+    fields = NESTED_INPUTS["authorization"][0]
     _missing_fields(value, fields, label, report)
     _unexpected_fields(value, fields, label, report)
     required = value.get("required")
@@ -893,7 +894,7 @@ def _validate_receipt(value: object, label: str, report: ValidationReport) -> No
     if not isinstance(value, dict):
         report.errors.append(f"{label}: receipt must be an object")
         return
-    fields = {"kind", "value", "destination", "timestamp"}
+    fields = NESTED_INPUTS["receipt"][0]
     _missing_fields(value, fields, label, report)
     _unexpected_fields(value, fields, label, report)
     for field_name in ("kind", "value", "destination"):
@@ -1909,8 +1910,8 @@ def _validate_worktrees(
         if not isinstance(confirmation, dict):
             report.errors.append(f"{label}: confirmation must be an object with source and response")
         else:
-            _missing_fields(confirmation, {"source", "response"}, f"{label}.confirmation", report)
-            _unexpected_fields(confirmation, {"source", "response"}, f"{label}.confirmation", report)
+            _missing_fields(confirmation, NESTED_INPUTS["confirmation"][1], f"{label}.confirmation", report)
+            _unexpected_fields(confirmation, NESTED_INPUTS["confirmation"][0], f"{label}.confirmation", report)
             for field_name in ("source", "response"):
                 if not _non_empty_string(confirmation.get(field_name)):
                     report.errors.append(f"{label}.confirmation: {field_name} must be a non-empty string")

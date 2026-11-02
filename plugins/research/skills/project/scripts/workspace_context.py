@@ -13,6 +13,7 @@ from typing import Any
 from memory_search import memory_health
 from workspace_documents import ENTRY_MARKER_PATTERN, _section_span
 from workspace_evidence import evidence_entries
+from workspace_fields import CONTINUATION_FIELDS
 from workspace_journal import (
     contained,
     document_path,
@@ -33,10 +34,6 @@ from workspace_session import (
 )
 
 CHECKPOINT = re.compile(r"\A<!-- research-checkpoint-v1\n(.*?)\n-->\n", re.DOTALL)
-CONTINUATION_FIELDS = {
-    "next", "questions", "pointers", "partial", "ownership", "effects", "lessons", "do_not", "session",
-    "stop_reason",
-}
 # `key.title()` would print "Do_Not"; the one field whose heading is not its name.
 CONTINUATION_HEADINGS = {"do_not": "Do not", "stop_reason": "Stop reason"}
 SESSION_FIELDS = {"host", "id", "cwd"}
