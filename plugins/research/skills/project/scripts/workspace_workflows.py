@@ -95,7 +95,7 @@ FIELDS = {
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
     "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
-    "authorize": {"task", "authorization"},
+    "authorize": {"task", "authorization", "continuation"},
     "receipt": {"task", "receipt"},
     "review": {"reviewer", "version", "scope", "findings", "status", "evidence", "required"},
     "goldfish": set().union(*OPERATION_FIELDS.values()),
@@ -107,7 +107,7 @@ FIELDS = {
     "worktree": {
         "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
         "host", "url", "number", "exempt", "files", "base", "base_moved", "alpha", "reason", "version", "merge_state",
-        "method", "evidence", "merged_head",
+        "method", "evidence", "merged_head", "replaces_exemption",
     },
 }
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
@@ -135,9 +135,13 @@ WORKTREE_REQUIRED_BY = {
     "operation=record": frozenset({"branch"}),
     "operation=close": frozenset({"decision"}),
     "operation=pull_request": frozenset({"host", "number", "url"}),
+    "operation=pull_request,exempt=no_remote": frozenset({"exempt"}),
+    "operation=pull_request,exempt=local_only": frozenset({"exempt"}),
     "operation=alpha": frozenset({"alpha", "base", "files", "reason"}),
+    "operation=alpha,exempt=true": frozenset({"exempt", "reason"}),
     "operation=release": frozenset({"version"}),
-    "operation=merge": frozenset({"evidence", "merge_state", "method"}),
+    "operation=release,replaces_exemption=true": frozenset({"files", "replaces_exemption", "version"}),
+    "operation=merge": frozenset({"evidence", "merge_state", "merged_head", "method"}),
 }
 GOLDFISH_REQUIRED = frozenset({"operation"})
 GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in OPERATION_REQUIRED.items()}
@@ -161,11 +165,16 @@ def input_schema(action: str) -> dict[str, Any]:
         allowed, required = READ_INPUTS[action]
         variants = {}
         note = "read action: the keys below are the whole request"
+    nested = {
+        key: {"allowed": sorted(NESTED_INPUTS[shape][0]), "required": sorted(NESTED_INPUTS[shape][1])}
+        for key, shape in ACTION_NESTED.get(action, ())
+    }
     return {
         "action": action,
         "allowed": sorted(allowed),
         "required": sorted(required),
         "required_by": variants,
+        "nested": nested,
         "note": note,
     }
 

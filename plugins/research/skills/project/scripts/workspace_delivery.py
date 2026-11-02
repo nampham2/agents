@@ -321,6 +321,11 @@ KEY_HINTS = {
     "reason": "reason must be non-empty text",
     "evidence": "evidence must be non-empty text",
     "method": "a merged record needs method squash, merge or rebase",
+    "alpha": "an alpha record needs base, alpha, reason and files, or exempt true with a reason",
+    "base": "an alpha record needs base, alpha, reason and files, or exempt true with a reason",
+    "host": "a pull_request record needs host, url and number, or exempt no_remote or local_only",
+    "url": "a pull_request record needs host, url and number, or exempt no_remote or local_only",
+    "number": "a pull_request record needs host, url and number, or exempt no_remote or local_only",
 }
 
 

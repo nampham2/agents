@@ -53,7 +53,7 @@ def _group_messages(
     if errors.unknown:
         groups.append(f"{prefix}unknown field(s) {errors.unknown}; allowed: {sorted(allowed)}")
     if errors.missing:
-        said = "; ".join(hints[key] for key in errors.missing if hints and key in hints)
+        said = "; ".join(dict.fromkeys(hints[key] for key in errors.missing if hints and key in hints))
         groups.append(
             f"{prefix}missing required field(s) {errors.missing}; required: {sorted(required)}"
             + (f" ({said})" if said else "")

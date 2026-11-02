@@ -18,6 +18,7 @@ import pytest
 import workspace_journal as journal
 import workspace_workflows as workflows
 from workspace_delivery import DELIVERY_OPERATIONS
+from workspace_fields import ACTION_NESTED, NESTED_INPUTS
 from workspace_lib import WorkspaceError, allocate_project
 
 from tests.conftest import REPO_ROOT
@@ -33,9 +34,13 @@ WORKTREE_VARIANTS = {
     "operation=record": {"branch"},
     "operation=close": {"decision"},
     "operation=pull_request": {"host", "number", "url"},
+    "operation=pull_request,exempt=no_remote": {"exempt"},
+    "operation=pull_request,exempt=local_only": {"exempt"},
     "operation=alpha": {"alpha", "base", "files", "reason"},
+    "operation=alpha,exempt=true": {"exempt", "reason"},
     "operation=release": {"version"},
-    "operation=merge": {"evidence", "merge_state", "method"},
+    "operation=release,replaces_exemption=true": {"files", "replaces_exemption", "version"},
+    "operation=merge": {"evidence", "merge_state", "merged_head", "method"},
 }
 CONFIRM_VARIANTS = {
     "kind=requirements": {"proposal_sha256"},
@@ -176,13 +181,47 @@ class TestRequiredBy:
     def test_the_table_matches_the_vocabulary_the_runtime_accepts(self, project: Path) -> None:
         # The variant names are the discriminator values, so a renamed operation or kind cannot
         # linger in the printed schema while the runtime accepts something else.
-        operations = {name.split("=", 1)[1] for name in WORKTREE_VARIANTS}
+        operations = {name.split("=", 1)[1].split(",")[0] for name in WORKTREE_VARIANTS}
         assert operations == DELIVERY_OPERATIONS | {"record", "close"}
         for name in CONFIRM_VARIANTS:
             kind = name.split("=", 1)[1]
             with pytest.raises(WorkspaceError) as caught:
                 workflows.workflow(project, "confirm", {"id": f"probe-{kind}", "expected_revision": 0, "kind": kind})
             assert "confirmation kind must be" not in str(caught.value), kind
+
+
+class TestNestedMap:
+    """`--schema` prints each nested object an action reads, from the module the checker reads."""
+
+    @pytest.mark.parametrize("action", ACTIONS)
+    def test_the_nested_map_is_the_key_set_module(self, action: str) -> None:
+        expected = {
+            key: {"allowed": sorted(NESTED_INPUTS[shape][0]), "required": sorted(NESTED_INPUTS[shape][1])}
+            for key, shape in ACTION_NESTED.get(action, ())
+        }
+        assert workflows.input_schema(action)["nested"] == expected
+
+    def test_the_actions_with_a_nested_object_print_it(self) -> None:
+        assert set(workflows.input_schema("worktree")["nested"]) == {"confirmation", "continuation"}
+        assert workflows.input_schema("receipt")["nested"]["receipt"]["required"] == [
+            "destination", "kind", "timestamp", "value",
+        ]
+        assert workflows.input_schema("resume")["nested"] == {}
+
+    def test_authorize_accepts_a_continuation(self) -> None:
+        schema = workflows.input_schema("authorize")
+        assert "continuation" in schema["allowed"] and set(schema["nested"]) == {"authorization", "continuation"}
+
+    def test_the_pull_request_refusal_names_the_exemption_once(self, project: Path) -> None:
+        payload = {
+            "id": "worktree-pr", "expected_revision": 0, "operation": "pull_request", "path": str(project),
+            "confirmation": {"source": "s", "response": "r"},
+        }
+        with pytest.raises(WorkspaceError) as caught:
+            workflows.workflow(project, "worktree", payload)
+        message = str(caught.value)
+        assert "['host', 'number', 'url']" in message
+        assert message.count("exempt no_remote or local_only") == 1
 
 
 class TestConfirmationRefusal:
