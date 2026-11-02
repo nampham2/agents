@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from workspace_context import _git
 from workspace_journal import list_input, object_input, string_input
-from workspace_lib import WorkspaceError, _is_timestamp, _non_empty_string, is_delivery_gated, now_iso
+from workspace_lib import WorkspaceError, _is_timestamp, _non_empty_string, is_delivery_gated, needs_merge, now_iso
 from workspace_occupancy import check_base, own_text
 
 DELIVERY_OPERATIONS = {"pull_request", "alpha", "release", "merge"}
@@ -27,6 +27,9 @@ STYLES = {"pep440", "semver"}
 METHODS = {"squash", "merge", "rebase"}
 MERGE_STATES = {"merged", "declined"}
 PLAIN_VERSION = re.compile(r"^\d+\.\d+\.\d+$")
+PR_EXEMPTION_REASONS = {"no_remote", "local_only"}
+# The full commit name the merge gate accepts: 40 hex digits, or 64 for a SHA-256 repository.
+COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 MAXIMUM_FILES = 10
 
 
@@ -101,8 +104,13 @@ def _pull_request(entry: dict[str, Any], request: dict[str, Any], root: Path, co
     if "pull_request" in entry or "pr_exemption" in entry:
         raise WorkspaceError("the worktree already has a pull_request or a pr_exemption")
     if "exempt" in request:
-        if request["exempt"] != "no_remote":
-            raise WorkspaceError("exempt must be no_remote")
+        exempt = request["exempt"]
+        if exempt == "local_only":
+            # The user's words are the guard: the tool does not test that the branch is never pushed.
+            entry["pr_exemption"] = {"reason": "local_only", **confirmation}
+            return
+        if exempt != "no_remote":
+            raise WorkspaceError("exempt must be no_remote or local_only")
         remotes = _git(root, "remote")
         if remotes is None:
             raise WorkspaceError("Git could not be consulted for the worktree; retry when it is available")
@@ -238,13 +246,18 @@ def _release(
 def _merge(
     entry: dict[str, Any], request: dict[str, Any], confirmation: dict[str, str], gate: Gate | None = None
 ) -> None:
-    if "pull_request" not in entry:
-        raise WorkspaceError("no pull_request is recorded; an exempt worktree has nothing to merge")
+    if not needs_merge(entry):
+        raise WorkspaceError(
+            "no pull_request or local_only exemption is recorded; "
+            "an exempt worktree with no_remote has nothing to merge"
+        )
     state = request.get("merge_state")
     if state not in MERGE_STATES:
         raise WorkspaceError("merge_state must be merged or declined")
-    if entry.get("merge", {}).get("state") == "merged":
+    recorded = entry.get("merge")
+    if isinstance(recorded, dict) and recorded.get("state") == "merged":
         raise WorkspaceError("the merge is already recorded; a merge is final")
+    merged_head = _merged_head(request, state)
     method = evidence = None
     if state == "merged":
         method = request.get("method")
@@ -259,6 +272,20 @@ def _merge(
     entry["merge"] = {
         "state": state, "method": method, "evidence": evidence, **confirmation, "recorded_at": now_iso(),
     }
+    if merged_head is not None:
+        entry["merge"]["merged_head"] = merged_head
+
+
+def _merged_head(request: dict[str, Any], state: str) -> str | None:
+    """The head commit a merged record names, or None. None counts as absent, as the merge gate counts it."""
+    value = request.get("merged_head")
+    if value is None:
+        return None
+    if state != "merged":
+        raise WorkspaceError("merged_head belongs to a merged record, not a declined one")
+    if not isinstance(value, str) or not COMMIT_PATTERN.match(value):
+        raise WorkspaceError("merged_head must be a full lowercase hex commit (40 or 64 digits)")
+    return value
 
 
 def delivery_operation(
@@ -286,11 +313,14 @@ def delivery_operation(
     return entry, notes
 
 
-def _object_errors(value: object, label: str, fields: set[str]) -> list[str]:
+def _object_errors(
+    value: object, label: str, fields: set[str], allowed_extra: frozenset[str] = frozenset()
+) -> list[str]:
+    """Missing and unexpected fields of a closed object. `allowed_extra` names optional keys."""
     if not isinstance(value, dict):
         return [f"{label}: must be an object"]
     problems = [f"{label}: missing {name}" for name in sorted(fields - value.keys())]
-    problems += [f"{label}: unexpected field {name}" for name in sorted(value.keys() - fields)]
+    problems += [f"{label}: unexpected field {name}" for name in sorted(value.keys() - fields - allowed_extra)]
     return problems
 
 
@@ -415,7 +445,7 @@ def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
             found = _object_errors(entry[name], f"{label}.{name}", fields)
             problems += found
             if not found and (not all(_non_empty_string(entry[name][key]) for key in fields)
-                              or (reason and entry[name]["reason"] != "no_remote")):
+                              or (reason and entry[name]["reason"] not in PR_EXEMPTION_REASONS)):
                 problems.append(f"{label}.{name}: needs the user's quoted source and response")
     if "pull_request" in entry and "pr_exemption" in entry:
         problems.append(f"{label}: pull_request and pr_exemption exclude each other")
@@ -425,15 +455,22 @@ def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
             problems.append(f"{label}: version_line and version_exemption exclude each other")
     if "merge" in entry:
         fields = {"state", "method", "evidence", "source", "response", "recorded_at"}
-        found = _object_errors(entry["merge"], f"{label}.merge", fields)
+        found = _object_errors(entry["merge"], f"{label}.merge", fields, frozenset({"merged_head"}))
         problems += found
         if not found:
             merge = entry["merge"]
             if merge["state"] not in MERGE_STATES or not _is_timestamp(merge["recorded_at"]) \
                     or not _non_empty_string(merge["source"]) or not _non_empty_string(merge["response"]):
                 problems.append(f"{label}.merge: needs state merged or declined, a timestamp and the user's words")
-            if "pull_request" not in entry:
-                problems.append(f"{label}.merge: needs a pull_request")
+            if not needs_merge(entry):
+                problems.append(f"{label}.merge: needs a pull_request or a local_only exemption")
+            head = merge.get("merged_head")
+            if "merged_head" in merge and (
+                merge["state"] != "merged" or not isinstance(head, str) or not COMMIT_PATTERN.match(head)
+            ):
+                problems.append(
+                    f"{label}.merge: merged_head belongs to a merged record and is a full lowercase hex commit"
+                )
             if merge["state"] == "merged":
                 line = entry.get("version_line")
                 if merge["method"] not in METHODS or not _non_empty_string(merge["evidence"]):
@@ -453,10 +490,34 @@ def start_findings(state: dict[str, Any]) -> list[str]:
             continue
         if "pull_request" not in item and "pr_exemption" not in item:
             findings.append(
-                f"worktree {item['path']} has no merge request; open a draft MR after the user approves it, then "
-                "record `workflow <project-dir> worktree` operation pull_request"
+                f"worktree {item['path']} has no merge request; open a draft MR after the user approves it and record "
+                "`workflow <project-dir> worktree` operation pull_request, or record operation pull_request with "
+                "exempt local_only when the user says the project is never pushed"
             )
     return findings
+
+
+def abandoned_note(entry: dict[str, Any]) -> str | None:
+    """What removing a worktree whose local merge was declined throws away: the commits of its branch.
+
+    Only a `local_only` worktree with a declined merge has such a note. The count comes from the repository,
+    not from the removed directory; when Git cannot be read the note says the count is unknown.
+    """
+    merge = entry.get("merge")
+    declined = isinstance(merge, dict) and merge.get("state") == "declined"
+    if "pull_request" in entry or not needs_merge(entry) or not declined:
+        return None
+    repository, branch, base = entry.get("repository"), entry.get("branch"), entry.get("base_commit")
+    if not (isinstance(repository, str) and repository and isinstance(branch, str) and branch and base):
+        return None
+    count = _git(Path(repository), "rev-list", "--count", f"{base}..{branch}")
+    if count is None or not count.strip().isdigit():
+        return (
+            f"the merge was declined and the number of commits of {branch} that are abandoned is unknown: "
+            "Git could not be read"
+        )
+    number = int(count)
+    return f"the merge was declined: {number} {'commit' if number == 1 else 'commits'} of {branch} are abandoned"
 
 
 def removal_findings(entry: dict[str, Any], *, gated: bool) -> list[str]:
@@ -478,8 +539,15 @@ def removal_findings(entry: dict[str, Any], *, gated: bool) -> list[str]:
                 f"worktree {path} has no release record; record operation release with the plain version, or a "
                 "version_exemption"
             )
-    if "pull_request" in entry and entry.get("merge", {}).get("state") != "merged":
+    merge = entry.get("merge")
+    state = merge.get("state") if isinstance(merge, dict) else None
+    if "pull_request" in entry and state != "merged":
         findings.append(f"worktree {path} is not merged; record operation merge, merged, before removing it")
+    elif needs_merge(entry) and state not in MERGE_STATES:
+        # A declined local merge abandons the work, so it ends the worktree as a merge does.
+        findings.append(
+            f"worktree {path} has no merge decision; record operation merge, merged or declined, before removing it"
+        )
     return findings
 
 
@@ -494,10 +562,10 @@ def closure_findings(state: dict[str, Any]) -> list[str]:
         path = item["path"]
         if "pull_request" not in item and "pr_exemption" not in item:
             findings.append(f"worktree {path} has no pull_request or pr_exemption")
-        elif "pull_request" in item and "merge" not in item:
+        elif needs_merge(item) and "merge" not in item:
             findings.append(
-                f"worktree {path} has no merge decision; ask the user to merge the MR (naming the method), "
-                "then record operation merge, merged or declined"
+                f"worktree {path} has no merge decision; ask the user to merge, naming the method, "
+                "and record operation merge, merged or declined"
             )
         line = item.get("version_line")
         if "version_exemption" not in item and (not isinstance(line, dict) or line.get("release") is None):

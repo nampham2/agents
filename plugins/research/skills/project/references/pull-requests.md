@@ -16,7 +16,7 @@ closes a repository project. An MR means a GitHub pull request or a GitLab merge
 
 ## Release and merge
 
-Do this once, when all the work is done. The delivery order is fixed: release, merge on the host,
+The delivery order is fixed: release, merge on the host,
 record the merge, then close/remove.
 
 1. Sweep the threads.
@@ -24,23 +24,25 @@ record the merge, then close/remove.
    Goldfish round ([goldfish-review.md](goldfish-review.md)). Record
    `"operation":"release"` with `version` (see [versioning.md](versioning.md)). If the base
    release moved on the main branch, ask the user, then add `"base_moved":true` and a `reason`.
-   The tool refuses a moved base that is occupied.
-3. Ask the user to merge each MR and name the method: `squash`, `merge` or `rebase`.
+   
+3. Ask the user to merge each MR and name the method: `squash`, `merge` or `rebase`. A `local_only`
+   worktree merges locally; `evidence` is the commit main points to.
 4. After a yes, merge on the host. Record `"operation":"merge"` with `"merge_state":"merged"`,
-   `method`, `evidence` (the merge commit or URL), `merged_head` (the PR head commit that was
+   `method`, `evidence` (the merge commit or URL), `merged_head` (the reviewed head that was
    merged, as full hex) and the user's words. The tool checks `merged_head` against the diff round,
    and against the local branch head while that branch exists (a commit that builds on it passes).
 5. After a no, record `"merge_state":"declined"` with the user's words. The worktree stays.
 
-An alpha version never merges to the main branch. A worktree with no MR needs no merge.
+An alpha version never merges to the main branch.
 
 ## Clean up
 
 1. Ask only after the merge is recorded.
 2. For each recorded worktree show `git status --short --branch` (`workflow ... readiness` lists
    findings). Ask whether to commit now (only when asked) and whether to keep or remove it.
-3. A worktree with no remote needs a current diff Goldfish round before its first closure and
-   before every remove; with its branch gone, its latest passed round stands. Record the answer:
+3. An exempt worktree needs a current diff Goldfish round before its first closure and before every
+   remove; a declined local merge needs none, and its removal names the abandoned commits; with its
+   branch gone, its latest passed round stands. Record the answer:
 
    ```json
    {"id":"worktree-close","expected_revision":N,"tokens":{"handoff":"<sha>"},

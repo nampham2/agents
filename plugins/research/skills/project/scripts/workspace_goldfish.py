@@ -568,7 +568,7 @@ def _descends(repository: Path, ancestor: str, commit: str) -> bool:
 def delivery_gate_errors(
     project: Path, state: "dict[str, Any]", entry: "dict[str, Any]", event: str, request: "dict[str, Any]"
 ) -> "list[str]":
-    """The diff gate at a release, a merge record, or the first closure of a worktree with no remote."""
+    """The diff gate at a release, a merge record, or the first closure of a worktree with a pr_exemption."""
     if not workspace_lib.is_goldfish_gated() or not has_code_task(state) or not entry.get("repository"):
         return []
     if not entry.get("branch") or not entry.get("path"):
@@ -578,6 +578,8 @@ def delivery_gate_errors(
     if event == "closure":
         if "pr_exemption" not in entry:
             return []
+        if _object(entry.get("merge")).get("state") == "declined":
+            return []  # a declined local merge abandons the work: no round is owed for code that is not delivered
         closed_at = _object(entry.get("closure")).get("observed_at")
         if entry.get("status") == "kept" and not _at_or_after_instant(closed_at):
             return []  # kept before the instant: that closure counts as passed
@@ -596,13 +598,13 @@ def delivery_gate_errors(
         return round_errors(project, "diff", worktree, head)
     if event == "merge":
         if request.get("merged_head") is None:
-            return [f"{DIFF_GATE}: a merged record needs merged_head, the PR head commit that was merged"]
+            return [f"{DIFF_GATE}: a merged record needs merged_head, the head that was merged"]
         try:
             merged = checked_commit(entry["repository"], request["merged_head"])
         except WorkspaceError as error:
             return [f"{DIFF_GATE}: {error}"]
         branch_head = _query(repository, "rev-parse", ref)
-        # The pull request head may be ahead of the local branch (a suggestion committed on the host), so a
+        # The merged head may be ahead of the local branch (a suggestion committed on the host), so a
         # descendant of the branch head is accepted; it still needs a round of its own below.
         if branch_head is not None and branch_head != merged and not _descends(repository, branch_head, merged):
             return [
@@ -671,7 +673,7 @@ def _worktree_event_warnings(entry: "dict[str, Any]", passed: "set[Any]") -> "li
         if _at_or_after_instant(stamp) and not any(item[0] == "diff" and item[1] == path for item in passed)
     ]
     closed = _object(entry.get("closure")).get("observed_at")
-    if "pull_request" in entry and not merge and _at_or_after_instant(closed):
+    if workspace_lib.needs_merge(entry) and not merge and _at_or_after_instant(closed):
         found.append(f"worktree {path} was closed at {closed} with no merge recorded")
     return found
 

@@ -365,6 +365,17 @@ def is_delivery_gated(state: dict[str, Any]) -> bool:
     return _created_on_or_after(state, DELIVERY_GATES_FROM)
 
 
+def needs_merge(entry: object) -> bool:
+    """Whether a worktree entry delivers by a merge: a pull request, or a `local_only` exemption.
+
+    The gates that read it run before the state validator, so it never raises on malformed JSON.
+    """
+    if not isinstance(entry, dict):
+        return False
+    exemption = entry.get("pr_exemption")
+    return "pull_request" in entry or (isinstance(exemption, dict) and exemption.get("reason") == "local_only")
+
+
 # Projects created on or after this instant close only with a `## Retro` section in the reflection:
 # what the skill or the tool got in the way of, references loaded and not needed, one concrete change
 # to the plugin or `none`. Shape only, as the 200-character rule is. The release task sets the instant

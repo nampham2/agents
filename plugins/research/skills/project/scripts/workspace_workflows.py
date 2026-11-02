@@ -19,7 +19,7 @@ from workspace_context import (
     worktree_observation,
     worktree_registered,
 )
-from workspace_delivery import DELIVERY_OPERATIONS, delivery_operation, removal_findings
+from workspace_delivery import DELIVERY_OPERATIONS, abandoned_note, delivery_operation, removal_findings
 from workspace_documents import (
     LEGACY_PLANNING_HINT,
     _replace_sections,
@@ -428,6 +428,9 @@ def _worktree(
     outcome: dict[str, Any] = {"worktree": entry, "observed": seen}
     if superseded is not None:
         outcome["superseded"] = superseded
+    note = abandoned_note(entry) if decision == "remove" else None
+    if note is not None:
+        outcome["notes"] = [note]
     return patch, outcome
 
 

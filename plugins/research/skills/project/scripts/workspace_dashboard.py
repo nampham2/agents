@@ -28,6 +28,7 @@ from workspace_lib import (
     find_workspace_roots,
     is_canonical_project_id,
     load_json,
+    needs_merge,
     now_iso,
     planning_path,
     read_text,
@@ -114,6 +115,11 @@ def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def _local_label(tree: dict[str, Any]) -> str:
+    """`local only` for a worktree that delivers by a local merge; anything else shows nothing."""
+    return "local only" if "pull_request" not in tree and needs_merge(tree) else ""
+
+
 def _worktrees(state: dict[str, Any]) -> list[dict[str, Any]]:
     rows = []
     for tree in state.get("worktrees") or []:
@@ -125,7 +131,7 @@ def _worktrees(state: dict[str, Any]) -> list[dict[str, Any]]:
                 "branch": _text(tree.get("branch")),
                 "path": _text(tree.get("path")),
                 "status": _text(tree.get("status")),
-                "mr": _text(request.get("url")) if isinstance(request, dict) else "",
+                "mr": _text(request.get("url")) if isinstance(request, dict) else _local_label(tree),
             }
         )
     return rows
