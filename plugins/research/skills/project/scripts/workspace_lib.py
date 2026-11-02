@@ -849,6 +849,26 @@ def _validate_effect(value: object, label: str, report: ValidationReport) -> str
     return kind
 
 
+def authorization_findings(task: dict[str, Any], task_status: str | None) -> list[str]:
+    """The one rule for a task that needs authorization it does not hold: RUNNING and DONE need `explicit`."""
+    authorization = task.get("authorization")
+    if not isinstance(authorization, dict) or authorization.get("required") is not True:
+        return []
+    if isinstance(task_status, str) and task_status in {"RUNNING", "DONE"} and authorization.get("status") != "explicit":
+        return [f"{task_status} task requires explicit authorization"]
+    return []
+
+
+def receipt_findings(task: dict[str, Any]) -> list[str]:
+    """The one rule for a finished external effect: it needs a durable receipt."""
+    effect = task.get("effect")
+    kind = effect.get("kind") if isinstance(effect, dict) else None
+    receipts = task.get("receipts")
+    if kind == "external" and not (isinstance(receipts, list) and receipts):
+        return ["completed external effect requires a durable receipt"]
+    return []
+
+
 def _validate_authorization(
     value: object,
     label: str,
@@ -886,8 +906,8 @@ def _validate_authorization(
             report.errors.append(f"{label}: explicit authorization requires a timezone-aware authorized_at")
     elif any(value.get(field_name) is not None for field_name in ("source", "authorized_at")):
         report.errors.append(f"{label}: source and authorized_at must be null unless status is explicit")
-    if isinstance(task_status, str) and task_status in {"RUNNING", "DONE"} and required and status != "explicit":
-        report.errors.append(f"{label}: {task_status} task requires explicit authorization")
+    for finding in authorization_findings({"authorization": value}, task_status):
+        report.errors.append(f"{label}: {finding}")
 
 
 def _validate_receipt(value: object, label: str, report: ValidationReport) -> None:
@@ -2139,8 +2159,9 @@ def validate_v3_state(
             receipts = []
         for index, receipt in enumerate(receipts, start=1):
             _validate_receipt(receipt, f"{label} receipt #{index}", report)
-        if task_status == "DONE" and effect_kind == "external" and not receipts:
-            report.errors.append(f"{label}: completed external effect requires a durable receipt")
+        if task_status == "DONE":
+            for finding in receipt_findings({"effect": {"kind": effect_kind}, "receipts": receipts}):
+                report.errors.append(f"{label}: {finding}")
 
         skip_reason = task.get("skip_reason")
         block_reason = task.get("block_reason")
@@ -2465,8 +2486,9 @@ def validate_v4_state(
             receipts = []
         for index, receipt in enumerate(receipts, start=1):
             _validate_receipt(receipt, f"{label} receipt #{index}", report)
-        if task_status == "DONE" and effect_kind == "external" and not receipts:
-            report.errors.append(f"{label}: completed external effect requires a durable receipt")
+        if task_status == "DONE":
+            for finding in receipt_findings({"effect": {"kind": effect_kind}, "receipts": receipts}):
+                report.errors.append(f"{label}: {finding}")
 
         skip_reason = task.get("skip_reason")
         block_reason = task.get("block_reason")

@@ -1135,3 +1135,118 @@ def test_a_finished_project_that_is_still_executing_is_pointed_at_finalize(proje
     review = {"cycle": 0, "required": True, "status": "pending", "evidence": []}
     update_project_data(project, {"review": review}, expected_revision=state["revision"])
     assert "required delivery review" in workflow(project, "resume", {})["closure_hint"]
+
+
+PUBLISH = {"kind": "external", "description": "Publish"}
+GATE_LINE = "worktree /target has no merge request; open a draft MR"
+EXPLICIT = {
+    "required": True,
+    "status": "explicit",
+    "scope": "Act",
+    "source": "user message",
+    "authorized_at": "2026-11-02T10:00:00+00:00",
+}
+
+
+def successor_plan(project: Path, kind: str, *, authorized: bool = False) -> None:
+    """T01 is plain; T02 depends on it, writes to the target and carries an effect that needs authorization."""
+    planned(project)
+    second: dict[str, Any] = {
+        "id": "T02",
+        "effect": {"kind": kind, "description": "Act outside the project"},
+        "outputs": [{"root": "target", "path": "out.txt", "required": False}],
+        "authorization": EXPLICIT if authorized else {"required": True, "status": "pending"},
+    }
+    update_project_data(project, {"tasks": [second]}, expected_revision=1)
+
+
+def verified_record(project: Path, task_id: str) -> str:
+    result = workflow(
+        project,
+        "verify",
+        {
+            "id": f"check-{task_id.lower()}",
+            "checks": [{"task": task_id, "argv": [sys.executable, "-c", "print('ok')"]}],
+        },
+    )
+    return result["attempts"][0]["result"]["record_id"]
+
+
+@pytest.fixture
+def gate_line() -> Any:
+    with patch("workspace_delivery.start_findings", return_value=[GATE_LINE]):
+        yield
+
+
+def refusal(call: Any) -> str:
+    with pytest.raises(lib.WorkspaceError) as caught:
+        call()
+    return str(caught.value)
+
+
+class TestOnePreconditionMessage:
+    """c7: every unmet precondition of start and finish is named in one refusal, before anything is written."""
+
+    def test_start_names_authorize_receipt_and_the_gate_once(self, project: Path, gate_line: None) -> None:
+        successor_plan(project, "external")
+        task_operation(project, "start", "T01", expected_revision=2)
+        record = verified_record(project, "T01")
+        task_operation(project, "finish", "T01", expected_revision=3, evidence_record_ids=[record])
+        before = _load_state(project)
+        message = refusal(lambda: task_operation(project, "start", "T02", expected_revision=before["revision"]))
+        assert "authorize" in message and "receipt" in message and GATE_LINE in message
+        assert message.count("T02: RUNNING task requires explicit authorization") == 1
+        assert _load_state(project) == before
+
+    def test_finish_start_next_names_the_same_three_for_the_successor(self, project: Path, gate_line: None) -> None:
+        successor_plan(project, "external")
+        task_operation(project, "start", "T01", expected_revision=2)
+        record = verified_record(project, "T01")
+        before = _load_state(project)
+        message = refusal(lambda: task_operation(
+            project, "finish", "T01", expected_revision=before["revision"], evidence_record_ids=[record],
+            start_next="T02",
+        ))
+        assert "authorize" in message and "receipt" in message and GATE_LINE in message
+        assert _load_state(project) == before
+
+    def test_plain_finish_of_an_external_task_names_receipt_and_evidence_together(self, project: Path) -> None:
+        planned(project)
+        update_project_data(
+            project,
+            {"tasks": [{"id": "T01", "effect": PUBLISH, "authorization": EXPLICIT}]},
+            expected_revision=1,
+        )
+        task_operation(project, "start", "T01", expected_revision=2)
+        message = refusal(lambda: task_operation(project, "finish", "T01", expected_revision=3))
+        assert "at least one explicit evidence record" in message and "durable receipt" in message
+
+    def test_a_destructive_successor_gets_no_receipt_line(self, project: Path, gate_line: None) -> None:
+        successor_plan(project, "destructive")
+        task_operation(project, "start", "T01", expected_revision=2)
+        record = verified_record(project, "T01")
+        message = refusal(lambda: task_operation(
+            project, "finish", "T01", expected_revision=3, evidence_record_ids=[record], start_next="T02",
+        ))
+        assert "authorize" in message and "receipt" not in message
+
+    def test_backfill_takes_the_same_path(self, project: Path, gate_line: None) -> None:
+        successor_plan(project, "external")
+        record = verified_record(project, "T02")
+        before = _load_state(project)
+        message = refusal(lambda: task_operation(
+            project, "finish", "T02", expected_revision=before["revision"], evidence_record_ids=[record],
+            backfill=True, note="work happened earlier",
+        ))
+        assert "authorize" in message and "receipt" in message and GATE_LINE in message
+        assert _load_state(project) == before
+
+    def test_each_rule_exists_once(self) -> None:
+        scripts = REPO_ROOT / "plugins/research/skills/project/scripts"
+        text = "\n".join(path.read_text(encoding="utf-8") for path in sorted(scripts.glob("*.py")))
+        for phrase in (
+            "task requires explicit authorization",
+            "completed external effect requires a durable receipt",
+            "finishing a task requires at least one explicit evidence record",
+        ):
+            assert text.count(phrase) == 1, phrase

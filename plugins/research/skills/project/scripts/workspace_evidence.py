@@ -110,6 +110,13 @@ def evidence_entries(
     }
 
 
+def evidence_findings(record_ids: list[str], observation_ids: list[str]) -> list[str]:
+    """The one rule for finishing: at least one explicit evidence record, of either kind."""
+    if record_ids or observation_ids:
+        return []
+    return ["finishing a task requires at least one explicit evidence record"]
+
+
 def selected_evidence_references(
     project_dir: Path,
     task_id: str,
@@ -123,8 +130,8 @@ def selected_evidence_references(
     other kind's records by name, so an agent's own account is never finished on by accident and a
     process result is never relabelled as one.
     """
-    if not record_ids:
-        raise WorkspaceError("finishing a task requires at least one explicit evidence record")
+    if findings := evidence_findings(record_ids, []):
+        raise WorkspaceError(findings[0])
     if len(record_ids) != len(set(record_ids)):
         raise WorkspaceError("duplicate evidence record ID")
     all_rows = _entry_rows(read_text(project_dir.resolve() / "evidence.md"))

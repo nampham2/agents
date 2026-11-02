@@ -8,13 +8,15 @@ from pathlib import Path
 from typing import Any
 
 from workspace_documents import append_record, edit_document
-from workspace_evidence import evidence_entries, selected_evidence_references
+from workspace_evidence import evidence_entries, evidence_findings, selected_evidence_references
 from workspace_lib import (
     WorkspaceConflict,
     WorkspaceError,
+    authorization_findings,
     commit_state,
     now_iso,
     reason_reference_warnings,
+    receipt_findings,
     staged_lesson_lines,
     task_stamps_enabled,
     validate_project,
@@ -78,15 +80,44 @@ def _result(
     return result
 
 
-def _refuse_without_delivery_records(state: dict[str, Any], task: dict[str, Any]) -> None:
-    """A task that writes to the target needs its merge request first (gated projects)."""
-    if not any(output["root"] == "target" for output in task["outputs"]):
-        return
-    from workspace_delivery import start_findings
+def _start_findings(state: dict[str, Any], task: dict[str, Any]) -> list[str]:
+    """Everything that stops this task from starting, each rule once and the next step named."""
+    findings = []
+    held = authorization_findings(task, "RUNNING")
+    if held:
+        findings.append(
+            f"{task['id']}: {held[0]}; record `workflow <project-dir> authorize` with the user's words"
+        )
+        if task["effect"]["kind"] == "external":
+            # Advisory: receipts are recorded while the task runs and are required at DONE.
+            findings.append(f"{task['id']} will need `workflow <project-dir> receipt` before it can finish")
+    if any(output["root"] == "target" for output in task["outputs"]):
+        from workspace_delivery import start_findings
 
-    findings = start_findings(state)
+        findings.extend(f"{task['id']} writes to the target: {finding}" for finding in start_findings(state))
+    return findings
+
+
+def task_preconditions(
+    state: dict[str, Any],
+    task: dict[str, Any],
+    action: str,
+    successor: dict[str, Any] | None,
+    record_ids: list[str],
+    observation_ids: list[str],
+) -> list[str]:
+    """Every unmet precondition of `task start` or `task finish`, gathered so one message names them all."""
+    if action == "start":
+        return _start_findings(state, task)
+    findings = [*evidence_findings(record_ids, observation_ids), *receipt_findings(task)]
+    if successor is not None:
+        findings.extend(_start_findings(state, successor))
+    return findings
+
+
+def _refuse_unmet(task_id: str, action: str, findings: list[str]) -> None:
     if findings:
-        raise WorkspaceError(f"task {task['id']} writes to the target: " + "; ".join(findings))
+        raise WorkspaceError(f"task {task_id} cannot {action}: " + "; ".join(findings))
 
 
 def task_operation(
@@ -123,7 +154,7 @@ def task_operation(
     locked_guard = None
     stamps = task_stamps_enabled(state)
     if action == "start":
-        _refuse_without_delivery_records(state, selected)
+        _refuse_unmet(task_id, "start", task_preconditions(state, selected, "start", None, [], []))
         selected.update(status="RUNNING", block_reason=None, skip_reason=None)
         # The first start only: a task restarted after BLOCKED keeps the moment work began.
         if stamps and stamp_start and "started_at" not in selected:
@@ -133,6 +164,14 @@ def task_operation(
     elif action == "finish":
         record_ids = evidence_record_ids or []
         observation_ids = observation_record_ids or []
+        successor = None
+        if start_next is not None:
+            if start_next == task_id:
+                raise WorkspaceError("--start-next must name a different task")
+            successor = _task(state, start_next)
+        _refuse_unmet(
+            task_id, "finish", task_preconditions(state, selected, "finish", successor, record_ids, observation_ids)
+        )
         references, observed = _finish_references(project_dir, task_id, record_ids, observation_ids)
         if observed and not record_ids:
             # Intent first, like a backfill: the record must say this finish rests on the agent's own
@@ -152,11 +191,7 @@ def task_operation(
         for reference in [*references, *observed]:
             if reference not in selected["evidence"]:
                 selected["evidence"].append(reference)
-        if start_next is not None:
-            if start_next == task_id:
-                raise WorkspaceError("--start-next must name a different task")
-            successor = _task(state, start_next)
-            _refuse_without_delivery_records(state, successor)
+        if successor is not None:
             successor.update(status="RUNNING", block_reason=None, skip_reason=None)
             if stamps and "started_at" not in successor:
                 successor["started_at"] = now_iso()
@@ -165,7 +200,7 @@ def task_operation(
             # so without this the successor would be RUNNING inside a PLANNING project.
             if state["status"] in ("PLANNING", "BLOCKED", "REVIEW"):
                 state["status"] = "EXECUTING"
-            changed.append(start_next)
+            changed.append(successor["id"])
 
         def guard(current: dict[str, Any]) -> None:
             del current
@@ -211,9 +246,7 @@ def task_operation(
 def _finish_references(
     project_dir: Path, task_id: str, record_ids: list[str], observation_ids: list[str]
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Command and observation references for a finish, requiring at least one record across both."""
-    if not record_ids and not observation_ids:
-        raise WorkspaceError("finishing a task requires at least one explicit evidence record")
+    """Command and observation references for a finish; `task_preconditions` has already required a record."""
     # Each kind is looked up only when it has records: a command-only finish reads the evidence file
     # exactly once, as it did before observations existed.
     commands = selected_evidence_references(project_dir, task_id, record_ids) if record_ids else []
@@ -270,6 +303,15 @@ def _backfill_finish(
             f"--backfill is for a task that was never started; {task_id} is {status}. "
             "Use a plain task finish for a RUNNING task."
         )
+    # One message for every unmet precondition of both halves, before anything is written.
+    selected = _task(state, task_id)
+    successor = _task(state, start_next) if start_next is not None and start_next != task_id else None
+    _refuse_unmet(task_id, "backfill", [
+        *task_preconditions(state, selected, "start", None, [], []),
+        *task_preconditions(
+            state, selected, "finish", successor, evidence_record_ids or [], observation_record_ids or []
+        ),
+    ])
     # Refused before anything is written: a record that is missing, failing or another task's.
     _finish_references(project_dir, task_id, evidence_record_ids or [], observation_record_ids or [])
     # No started_at for a backfill: both of its commits happen now, and a start stamp would claim a

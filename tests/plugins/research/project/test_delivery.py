@@ -878,7 +878,7 @@ class TestGates:
         result = workflow(project, "verify", {"id": "check", "checks": [{"task": "T01", "argv": ["true"]}]})
         record_id = result["attempts"][0]["result"]["record_id"]
         before = load_state(project)
-        with pytest.raises(WorkspaceError, match="task T02 writes to the target"):
+        with pytest.raises(WorkspaceError, match="T02 writes to the target"):
             task_operation(
                 project,
                 "finish",
