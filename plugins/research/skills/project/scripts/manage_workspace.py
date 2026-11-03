@@ -198,7 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     task.add_argument("task_id")
     task.add_argument("--expected-revision", type=int, required=True)
     task.add_argument("--reason")
-    task.add_argument("--evidence", action="append", default=[], dest="evidence_records")
+    task.add_argument("--evidence", nargs="+", action="extend", default=[], dest="evidence_records")
     task.add_argument(
         "--observation",
         action="append",

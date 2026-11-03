@@ -1250,3 +1250,28 @@ class TestOnePreconditionMessage:
             "finishing a task requires at least one explicit evidence record",
         ):
             assert text.count(phrase) == 1, phrase
+
+
+class TestFinishTakesSeveralEvidenceIds:
+    """c12: `task finish --evidence a b` and the repeated `--evidence a --evidence b` both record both ids."""
+
+    def records(self, project: Path) -> list[str]:
+        planned(project)
+        task_operation(project, "start", "T01", expected_revision=1)
+        ids = []
+        for name in ("one", "two"):
+            checks = [{"task": "T01", "argv": [sys.executable, "-c", "print('verified')"]}]
+            result = workflow(project, "verify", {"id": f"check-{name}", "checks": checks})
+            ids.append(result["attempts"][0]["result"]["record_id"])
+        return ids
+
+    @pytest.mark.parametrize("repeated", [False, True])
+    def test_both_forms_finish_with_both_records(self, project: Path, repeated: bool) -> None:
+        first, second = self.records(project)
+        flags = ["--evidence", first, "--evidence", second] if repeated else ["--evidence", first, second]
+        revision = str(_load_state(project)["revision"])
+        code, _, stderr = invoke(["task", str(project), "finish", "T01", *flags, "--expected-revision", revision])
+        assert code == 0, stderr
+        finished = next(item for item in _load_state(project)["tasks"] if item["id"] == "T01")
+        assert finished["status"] == "DONE"
+        assert len(finished["evidence"]) == 2
