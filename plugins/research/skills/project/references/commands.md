@@ -76,9 +76,10 @@ different content conflicts.
 
 `record-evidence <project-dir> --task T01 --json -- <command>` records actual exit code and output
 tail; failure returns nonzero. `--tail-lines` adjusts stored output; `--timeout <seconds>` abandons
-a hung command; `--cwd <absolute-dir>` runs elsewhere; `--dry-run` reports warnings without running.
+a hung command; `--cwd <absolute-dir>` runs elsewhere; `--dry-run` runs nothing.
 The command sees `$RESEARCH_PROJECT_DIR`; relative paths to `research-*` tools are
-refused. Warnings (task not `RUNNING`, heredoc or unguarded pipe in `bash -c`) never block.
+refused. Warnings (task not `RUNNING`, heredoc, `$(` in `bash -c`) never block; an unguarded
+`bash -c` pipe is refused unless `set -o pipefail` or a script file.
 References have `root`, `path`, `anchor` (or null).
 
 `task ... start` resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`, preserving review state
@@ -92,11 +93,11 @@ research-project task <project-dir> finish T01 --evidence <record-id> \
 
 `block` and `skip` require `--reason`; `finish --backfill --note <why>` is start plus finish (two
 commits) for work done before `start`. `read <project-dir> evidence --entries --task T01` lists
-selectable checks; `--entry <record-id>` returns one complete entry.
+checks; `--entry <record-id>` returns it.
 
-A failed `close` reports what was saved: keep drafts, reload before retrying, and use the reported
-recovery for committed index or validation errors, never another close. `workflow finalize` also
-saves the final handoff.
+A failed `close` reports what was saved; keep drafts, reload before retrying, and use reported
+recovery, never another close. `workflow finalize` also
+saves the handoff.
 
 External effects: `workflow authorize` (`status: explicit`, actual `scope`, user `source`, real
 `authorized_at`; an effect change does not update it), `task start`, the effect through

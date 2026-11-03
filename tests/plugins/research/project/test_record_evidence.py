@@ -846,12 +846,7 @@ class ShellScriptSiteTests(_ProjectFixture):
         self.assertIn("argument 'spec.md' (inline shell script)", message)
 
     def test_a_wrapper_shares_one_script_site_between_the_warnings_and_the_refusal(self) -> None:
-        result = record_evidence_result(
-            self.project_dir, "T01", ["docker", "exec", "x", "bash", "-c", "echo a | cat"], dry_run=True
-        )
-        found = [warning for warning in result.warnings if "task T01" not in warning]
-        self.assertEqual(len(found), 1)
-        self.assertIn("pipefail", found[0])
+        self.assertIn("pipefail", self._refused(["docker", "exec", "x", "bash", "-c", "echo a | cat"]))
         self.assertIn("would not name the project or workspace", self._refused(
             ["docker", "exec", "x", "bash", "-c", "research-validate ."]
         ))
@@ -962,7 +957,7 @@ class CwdAndDryRunTests(_ProjectFixture):
         before = self.evidence.read_text(encoding="utf-8")
         with patch.object(workspace_lib.subprocess, "run", side_effect=AssertionError("must not run")):
             result = record_evidence_result(
-                self.project_dir, "T01", ["bash", "-c", "ls | wc -l"], dry_run=True, cwd=self.elsewhere
+                self.project_dir, "T01", ["bash", "-c", "echo $(ls)"], dry_run=True, cwd=self.elsewhere
             )
         self.assertEqual(self.evidence.read_text(encoding="utf-8"), before)
         payload = result.as_dict()
@@ -970,7 +965,7 @@ class CwdAndDryRunTests(_ProjectFixture):
             (payload["recorded"], payload["dry_run"], payload["exit_code"], payload["passed"]),
             (False, True, None, None),
         )
-        self.assertEqual(payload["command"], ["bash", "-c", "ls | wc -l"])
+        self.assertEqual(payload["command"], ["bash", "-c", "echo $(ls)"])
         self.assertEqual(payload["working_directory"], str(self.elsewhere))
         self.assertTrue(payload["warnings"], "the warnings are the point of a dry run")
 
@@ -1015,7 +1010,7 @@ class CwdAndDryRunTests(_ProjectFixture):
 
 
 class CommandWarningTests(_ProjectFixture):
-    """Warnings, never refusals: each shape is sometimes intended, and the record must still be made."""
+    """Warnings for the shapes that are sometimes intended; an unguarded pipe is refused, see its test."""
 
     def _warnings(self, command: list[str]) -> list[str]:
         return record_evidence_result(self.project_dir, "T01", command, dry_run=True).warnings
@@ -1033,10 +1028,44 @@ class CommandWarningTests(_ProjectFixture):
         self.assertEqual(len(found), 1)
         self.assertIn("'$('", found[0])
 
-    def test_an_unguarded_pipe_is_warned_about_and_pipefail_or_or_silences_it(self) -> None:
-        self.assertIn("pipefail", self._shell_warnings("pytest | tail -5")[0])
-        self.assertEqual(self._shell_warnings("set -o pipefail; pytest | tail -5"), [])
-        self.assertEqual(self._shell_warnings("a || b"), [])
+    def _refusal(self, command: list[str]) -> str:
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence_result(self.project_dir, "T01", command, dry_run=True)
+        return str(caught.exception)
+
+    def test_an_unguarded_pipe_is_refused_before_it_runs_and_pipefail_or_or_passes(self) -> None:
+        for script in ("pytest | tail -5", "pytest|tail -5", "pytest | tail -5; true"):
+            with self.subTest(script=script):
+                self.assertIn("pipefail", self._refusal(["bash", "-c", script]))
+        for script in (
+            "set -o pipefail; pytest | tail -5", "set -eo pipefail\npytest | tail -5", "a || b",
+            "echo 'a | b'", 'echo "a | b"', "echo a \\| b",
+        ):
+            with self.subTest(script=script):
+                self.assertEqual(self._shell_warnings(script), [])
+
+    def test_every_inline_shell_refuses_an_unguarded_pipe_and_the_option_form_passes(self) -> None:
+        for shell in ("sh", "zsh", "dash"):
+            with self.subTest(shell=shell):
+                self.assertIn("pipefail", self._refusal([shell, "-c", "pytest | tail -5"]))
+        option = self._warnings(["bash", "-o", "pipefail", "-c", "pytest | tail -5"])
+        self.assertEqual([w for w in option if "task T01" not in w], [])
+
+    def test_pipefail_in_a_comment_still_refuses(self) -> None:
+        self.assertIn("pipefail", self._refusal(["bash", "-c", "# set -o pipefail\npytest | tail -5"]))
+
+    def test_an_unbalanced_quote_falls_back_to_the_pipe_check(self) -> None:
+        self.assertIn("pipefail", self._refusal(["bash", "-c", "echo 'x | tail -5"]))
+        self.assertEqual(self._shell_warnings("echo 'x'; set -o pipefail; echo 'a | b"), [])
+
+    def test_the_refusal_names_both_ways_out_and_a_script_file_by_absolute_path_runs(self) -> None:
+        message = self._refusal(["bash", "-c", "pytest | tail -5"])
+        self.assertIn("set -o pipefail", message)
+        self.assertIn("script file", message)
+        check = self.project_dir / "check.sh"
+        check.write_text("pytest | tail -5\n", encoding="utf-8")
+        result = record_evidence_result(self.project_dir, "T01", ["bash", str(check)], dry_run=True)
+        self.assertEqual([w for w in result.warnings if "task T01" not in w], [])
 
     def test_other_interpreters_flag_spellings_and_non_inline_commands_are_left_alone(self) -> None:
         for command in (
@@ -1047,7 +1076,7 @@ class CommandWarningTests(_ProjectFixture):
         ):
             with self.subTest(command=command):
                 self.assertEqual([w for w in self._warnings(command) if "task T01" not in w], [])
-        self.assertTrue(self._shell_warnings("ls | wc") and self._warnings(["sh", "-lc", "cat <<X\nX"]))
+        self.assertTrue(self._warnings(["sh", "-lc", "cat <<X\nX"]))
 
     def test_a_task_that_is_not_running_is_warned_about_with_its_verification_and_still_recorded(self) -> None:
         result = record_evidence_result(self.project_dir, "T01", [sys.executable, "-c", "pass"])

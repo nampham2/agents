@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -4275,6 +4276,40 @@ def _refusal_message(
     return "\n".join(lines)
 
 
+# Quoted text, escapes and comments, which a pipe or a pipefail inside them does not count. An escape
+# is matched first so an escaped quote does not open a string; a comment starts at a word boundary.
+_SCRIPT_SEGMENT = re.compile(r"\\.|'[^']*'|\"(?:\\.|[^\"\\])*\"|(?<![^\s;&|()])#[^\n]*", re.DOTALL)
+_PIPEFAIL = re.compile(r"\bset\s+(?:-\w+\s+)*-\w*o\s+pipefail\b")
+
+
+def _script_code(script: str) -> str:
+    """The script with quoted text, escapes and comments blanked. An unbalanced quote leaves the plain text."""
+    code = _SCRIPT_SEGMENT.sub(lambda match: " " * len(match.group(0)), script)
+    return script if "'" in code or '"' in code else code
+
+
+def _refuse_unguarded_pipe(command: Sequence[str]) -> None:
+    """Refuse an inline script that pipes without pipefail, before anything runs.
+
+    The recorded exit code of a pipeline is its last stage's, so an earlier failure would be recorded as
+    a pass. A pipefail given to the interpreter (`bash -o pipefail -c`) counts as well. A script file is
+    not scanned: that is the way out the refusal names.
+    """
+    script = _inline_shell_script(command)
+    if script is None:
+        return
+    code = _script_code(script)
+    interpreter = any(first == "-o" and second == "pipefail" for first, second in itertools.pairwise(command))
+    if not _UNGUARDED_PIPE.search(code) or _PIPEFAIL.search(code) or interpreter:
+        return
+    raise WorkspaceError(
+        "record-evidence refuses an inline script that pipes without pipefail: the recorded exit code is the "
+        "last stage's, so an earlier failure would be recorded as a pass. Nothing was run.\n"
+        "Either add 'set -o pipefail' before the pipe, or write the check to a script file and run that file "
+        "by absolute path, which is not scanned."
+    )
+
+
 def _command_warnings(command: Sequence[str]) -> "list[str]":
     """Shapes of an inline shell script that have recorded a result unrelated to what was meant.
 
@@ -4295,11 +4330,6 @@ def _command_warnings(command: Sequence[str]) -> "list[str]":
         found.append(
             "the inline script contains '$(': the inner shell evaluates it, not the caller. Confirm the "
             "quoting gives the value you expect, or write the check to a file."
-        )
-    if _UNGUARDED_PIPE.search(script) and "pipefail" not in script:
-        found.append(
-            "the inline script pipes without 'set -o pipefail': the recorded exit code is the last "
-            "stage's, so an earlier failure is recorded as a pass."
         )
     return found
 
@@ -4491,6 +4521,7 @@ def record_evidence_result(
                 f"work this evidence covers. Its verification: {task.get('verification')}",
             )
 
+    _refuse_unguarded_pipe(command)
     misrooted = _misrooted_command_arguments(command, project_dir, Path(working_directory))
     if misrooted:
         raise WorkspaceError(
