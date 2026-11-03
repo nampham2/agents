@@ -7,8 +7,8 @@ typed JSON on stdin. `init --json` supplies initial tokens; `update --dry-run` p
 
 `context <project-dir>` returns revision, roots and the `tokens` map that guarded writes take.
 `--validate` adds active summaries, ready IDs, review/executor status and validation findings.
-`--limit` sets summary count (1–20). `--task T01 --task-only` returns task/dependencies; `--worker`
-changes its role, granting no authority.
+`--task T01 --task-only` returns task/dependencies; `--worker` changes its role, granting no
+authority.
 
 `read <project-dir> spec --section "<exact heading>"` selects an exact heading; `--outline` returns
 headings and the SHA-256 token. Default reads exclude Decision history; select it explicitly.
@@ -17,7 +17,7 @@ evidence; omit both for all. `read <project-dir> planning` or `handoff` reads th
 cap at 4,000 characters; continue with `--offset <next_offset>`.
 
 `list-projects <root> --query "<text>" [--status EXECUTING]` matches every word in
-identity/title/target (10 matches; page with `--limit`, `--offset`).
+identity/title/target.
 
 ## Update
 
@@ -44,8 +44,6 @@ Objects merge; lists/scalars replace. Tasks merge by ID; omissions stay unchange
 Project fields: `title`, `status`, `review`, `cancellation_reason`, `predecessor`, `tasks`.
 Include `block_reason` for `BLOCKED`, `skip_reason` for `SKIPPED`; clear them with null when
 leaving. Use full `commit` only for other fields.
-After a post-commit index failure, run the printed `rebuild-index` recovery; do not repeat the
-update.
 
 ## Documents and records
 
@@ -67,10 +65,8 @@ research-project append <project-dir> finding --task T01 --body-file -
 research-project append <project-dir> friction --kind gate-refusal --pointer <ref> --body-file -
 ```
 
-Append friction when an instruction, reference or gate got in the way; kinds:
-`unclear-instruction`, `missing-information`, `gate-refusal`, `wasted-command`,
-`reference-not-useful`, `user-correction`, `tool-defect`. `--entry-id` makes retries idempotent;
-different content conflicts.
+Append friction when an instruction, reference or gate got in the way. `--entry-id` makes retries
+idempotent; different content conflicts.
 
 ## Evidence and effects
 
@@ -81,6 +77,9 @@ The command sees `$RESEARCH_PROJECT_DIR`; relative paths to `research-*` tools a
 refused. Warnings (task not `RUNNING`, heredoc, `$(` in `bash -c`) never block; an unguarded
 `bash -c` pipe is refused unless `set -o pipefail` or a script file. `pre-commit` rewrites record
 `Outcome: rewrite`.
+
+In zsh, `GID` and `path` are protected names and `$var` does not word-split; use arrays. BSD
+`sed -i ''` needs the empty suffix; `grep -e` guards patterns that start with a dash.
 
 `task ... start` resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`, preserving review state
 and dependency/authorization guards. Reopen invalidated review acceptance as `pending`.

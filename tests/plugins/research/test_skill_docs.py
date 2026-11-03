@@ -294,5 +294,24 @@ class BrokenFixtureTests(unittest.TestCase):
         self.assertEqual([], self._write(body))
 
 
+class ShellPortabilityNoteTests(unittest.TestCase):
+    """c6: the routine commands document names the zsh and BSD pitfalls agents keep hitting."""
+
+    def setUp(self) -> None:
+        path = PLUGINS_DIR / "research" / "skills" / "project" / "references" / "commands.md"
+        self.text = path.read_text(encoding="utf-8")
+
+    def test_the_protected_zsh_names_are_listed(self) -> None:
+        self.assertIn("`GID`", self.text)
+        self.assertIn("`path`", self.text)
+
+    def test_zsh_word_splitting_is_named(self) -> None:
+        self.assertRegex(self.text, r"(?i)zsh[^\n]*word-split|word-split[^\n]*zsh")
+
+    def test_the_bsd_sed_suffix_and_grep_dash_pattern_are_named(self) -> None:
+        self.assertIn("sed -i ''", self.text)
+        self.assertIn("grep -e", self.text)
+
+
 if __name__ == "__main__":
     unittest.main()
