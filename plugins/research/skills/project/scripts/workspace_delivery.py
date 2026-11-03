@@ -364,7 +364,7 @@ def delivery_operation(
     entry = next((item for item in worktrees if item["path"] == path), None)
     if entry is None or entry["status"] != "active" or entry["kind"] == "none":
         raise WorkspaceError(f"no active repository worktree is recorded at {path}")
-    hint = gone_worktree_hint(entry)
+    hint = None if operation == "merge" and request.get("merge_state") == "declined" else gone_worktree_hint(entry)
     if hint is not None:
         raise WorkspaceError(hint)
     root = Path(path)

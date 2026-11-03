@@ -1097,3 +1097,26 @@ class TestGoneWorktreeHint:
         assert gone_worktree_hint(entry(repository=str(repository), path=str(linked))) is None
         assert gone_worktree_hint(self._gone(tmp_path, repository, branch=None)) is None
         assert gone_worktree_hint({**self._gone(tmp_path, repository), "repository": None}) is None
+
+    def test_a_declined_merge_is_recorded_on_a_gone_directory_but_a_merged_one_is_refused(
+        self, tmp_path: Path, repository: Path
+    ) -> None:
+        from workspace_delivery import delivery_operation
+        from workspace_lib import WorkspaceError
+
+        exemption = {"reason": "local_only", "source": "user reply", "response": "no push"}
+        item = self._gone(tmp_path, repository, pr_exemption=exemption)
+
+        recorded, _ = delivery_operation(
+            [item], item["path"], "merge", {"merge_state": "declined"}, self.CONFIRMATION,
+            workspace_root=tmp_path, project="p",
+        )
+        assert recorded["merge"]["state"] == "declined"
+
+        again = self._gone(tmp_path, repository, pr_exemption=exemption)
+        with pytest.raises(WorkspaceError, match="no longer exists"):
+            delivery_operation(
+                [again], again["path"], "merge",
+                {"merge_state": "merged", "method": "merge", "evidence": "c" * 40}, self.CONFIRMATION,
+                workspace_root=tmp_path, project="p",
+            )
