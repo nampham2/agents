@@ -72,7 +72,7 @@ idempotent; different content conflicts.
 
 `record-evidence <project-dir> --task T01 --json -- <command>` records actual exit code and output
 tail; failure returns nonzero. `--timeout <seconds>` abandons a hung command; `--cwd <absolute-dir>`
-runs elsewhere; `--dry-run` warns only.
+runs elsewhere; `--dry-run` runs nothing, only warns.
 The command sees `$RESEARCH_PROJECT_DIR`; relative paths to `research-*` tools are
 refused. Warnings (task not `RUNNING`, heredoc, `$(` in `bash -c`) never block; an unguarded
 `bash -c` pipe (any shell) is refused unless `set -o pipefail` or a script file. A `pre-commit`

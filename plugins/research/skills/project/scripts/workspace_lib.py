@@ -4328,11 +4328,15 @@ _PRECOMMIT_WORD = re.compile(r"(?<![\w./-])pre-commit(?![\w-])")
 
 
 def command_runs_precommit(command: Sequence[str]) -> bool:
-    """True when one of the first three argv words is pre-commit (`uv run pre-commit`), or a script has it as a word.
+    """True when argv runs pre-commit, directly or behind `uv run`, `uvx` or `pipx run`, or a script has it as a word.
 
-    Not detected, by design: `python -m pre_commit`, `make lint`, and a `git commit` that runs the hook.
+    Options are skipped, so `uv run --frozen pre-commit` counts and `cat pre-commit` does not. Not detected, by
+    design: `python -m pre_commit`, `make lint`, and a `git commit` that runs the hook.
     """
-    if any(Path(word).name == "pre-commit" for word in command[:3]):
+    words = [word for word in command if not word.startswith("-")]
+    if words and Path(words[0]).name in ("uv", "uvx", "pipx"):
+        words = [word for word in words[1:] if word not in ("run", "tool")]
+    if words and Path(words[0]).name == "pre-commit":
         return True
     return any(_PRECOMMIT_WORD.search(_script_code(script)) for script in _inline_shell_scripts(command))
 
