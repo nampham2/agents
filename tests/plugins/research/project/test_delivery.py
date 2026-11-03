@@ -632,6 +632,38 @@ class TestReleaseWithoutAlpha:
         write_versions(linked, "0.24.0", None)
         refuse(recorded, linked, "no release record applies", "release", version="0.24.0", files=FILES)
 
+    def test_a_release_replaces_an_exemption_when_said_so(self, recorded: Path, linked: Path) -> None:
+        exempt(recorded, linked)
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "no release record applies", "release", version="0.24.0", files=FILES)
+        op(recorded, linked, "release", version="0.24.0", files=FILES, replaces_exemption=True)
+        entry = entry_of(recorded)
+        assert "version_exemption" not in entry
+        assert entry["version_line"]["release"]["version"] == "0.24.0"
+        replaced = entry["version_exemption_replaced"]
+        assert replaced["reason"] == "docs-only project; no version change"
+        assert (replaced["source"], replaced["response"]) == ("user reply", "approve")
+        assert (replaced["replaced_source"], replaced["replaced_response"]) == ("user reply", "approve")
+        assert delivery_errors(entry, "worktree #1") == []
+
+    def test_replaces_exemption_needs_an_exemption_to_replace(self, recorded: Path, linked: Path) -> None:
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "needs a version_exemption to replace", "release",
+               version="0.24.0", files=FILES, replaces_exemption=True)
+        assert "version_exemption_replaced" not in entry_of(recorded)
+
+    def test_replaces_exemption_is_true_or_false(self, recorded: Path, linked: Path) -> None:
+        exempt(recorded, linked)
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "replaces_exemption must be true or false", "release",
+               version="0.24.0", files=FILES, replaces_exemption="yes")
+
+    def test_an_exemption_after_a_replaced_one_is_refused(self, recorded: Path, linked: Path) -> None:
+        exempt(recorded, linked)
+        write_versions(linked, "0.24.0", None)
+        op(recorded, linked, "release", version="0.24.0", files=FILES, replaces_exemption=True)
+        refuse(recorded, linked, "already has", "alpha", exempt=True, reason="again")
+
     def test_a_release_checks_that_the_base_is_still_free(self, recorded: Path, linked: Path, repository: Path) -> None:
         git(repository, "tag", "v0.25.0")
         write_versions(linked, "0.24.0", None)
@@ -683,6 +715,22 @@ class TestReleaseOnlyShape:
             {**LINE, "alpha": None, "release": RELEASE_RECORD},
         ):
             assert any("no alpha needs an empty history and a release" in problem for problem in self.errors(line))
+
+    def test_a_replaced_exemption_is_a_closed_record(self) -> None:
+        replaced = {
+            "reason": "docs only", "source": "user", "response": "no version",
+            "replaced_at": RELEASE_RECORD["recorded_at"], "replaced_source": "user reply",
+            "replaced_response": "approve",
+        }
+        line = {**LINE, "release": RELEASE_RECORD}
+        record = {**entry(), "version_line": line, "version_exemption_replaced": replaced}
+        assert delivery_errors(record, "worktree #1") == []
+        for key in ("reason", "replaced_source", "replaced_response"):
+            broken = {**replaced, key: ""}
+            found = delivery_errors({**entry(), "version_exemption_replaced": broken}, "worktree #1")
+            assert any("version_exemption_replaced: needs" in problem for problem in found), key
+        extra = {**replaced, "other": "x"}
+        assert delivery_errors({**entry(), "version_exemption_replaced": extra}, "worktree #1") != []
 
     def test_an_exemption_may_carry_a_reason_or_not(self) -> None:
         plain = {"source": "user", "response": "no version"}

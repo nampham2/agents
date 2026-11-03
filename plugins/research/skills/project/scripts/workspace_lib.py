@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from workspace_fields import DELIVERY_FIELDS, NESTED_INPUTS, field_errors
+from workspace_fields import NESTED_INPUTS, WORKTREE_OPTIONAL_FIELDS, field_errors
 from workspace_style import (
     LIMIT_STEP,
     LIMIT_TEXT,
@@ -109,8 +109,6 @@ WORKTREE_FIELDS = {
     "confirmation",
     "closure",
 }
-# Delivery records written by `workflow worktree` operations; see workspace_delivery.py.
-WORKTREE_OPTIONAL_FIELDS = set(DELIVERY_FIELDS)
 WORKTREE_KINDS = {"created", "existing", "none"}
 WORKTREE_ROLES = {"target", "additional"}
 WORKTREE_STATUSES = {"active", "kept", "removed"}

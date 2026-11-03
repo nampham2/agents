@@ -16,7 +16,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from workspace_context import _git
-from workspace_fields import NESTED_INPUTS, field_errors
+from workspace_fields import EXEMPTION_REPLACED_FIELDS, NESTED_INPUTS, field_errors
 from workspace_journal import list_input, object_input, string_input
 from workspace_lib import WorkspaceError, _is_timestamp, _non_empty_string, is_delivery_gated, needs_merge, now_iso
 from workspace_occupancy import check_base, own_text
@@ -206,13 +206,40 @@ def _alpha(
 Gate = Callable[[str, dict[str, Any]], None]
 
 
+# The reason a version exemption recorded before 0.30.0 carries: that version kept no reason.
+PRE_030_REASON = "recorded before 0.30.0 with no reason"
+
+
+def _replace_exemption(entry: dict[str, Any], confirmation: dict[str, str], stamp: str) -> None:
+    """Move the version exemption into `version_exemption_replaced`, beside the release confirmation."""
+    old = entry.pop("version_exemption")
+    entry["version_exemption_replaced"] = {
+        "reason": old.get("reason", PRE_030_REASON),
+        "source": old["source"],
+        "response": old["response"],
+        "replaced_at": stamp,
+        "replaced_source": confirmation["source"],
+        "replaced_response": confirmation["response"],
+    }
+
+
 def _release(
     entry: dict[str, Any], request: dict[str, Any], root: Path, workspace_root: Path, project: str,
-    gate: Gate | None = None,
+    confirmation: dict[str, str], gate: Gate | None = None,
 ) -> list[str]:
-    """Record the plain release version. A project that never recorded an alpha line starts its line here."""
-    if "version_exemption" in entry:
-        raise WorkspaceError("the worktree has a version_exemption; no release record applies")
+    """Record the plain release version. A project that never recorded an alpha line starts its line here.
+
+    `replaces_exemption` true turns a version exemption into the release and keeps the exemption's record.
+    """
+    replaces = request.get("replaces_exemption", False)
+    if not isinstance(replaces, bool):
+        raise WorkspaceError("replaces_exemption must be true or false")
+    if "version_exemption" in entry and not replaces:
+        raise WorkspaceError(
+            "the worktree has a version_exemption; no release record applies without replaces_exemption true"
+        )
+    if replaces and "version_exemption" not in entry:
+        raise WorkspaceError("replaces_exemption needs a version_exemption to replace; the worktree has none")
     line = entry.get("version_line")
     version = string_input(request.get("version"), "version")
     if not PLAIN_VERSION.match(version):
@@ -231,6 +258,8 @@ def _release(
     if gate is not None:
         gate("release", entry)
     release = {"version": version, "recorded_at": now_iso()}
+    if replaces:
+        _replace_exemption(entry, confirmation, release["recorded_at"])
     if line is None:
         entry["version_line"] = {
             "files": files, "base": version, "alpha": None, "history": [], "release": release, "base_moves": [],
@@ -307,7 +336,7 @@ def delivery_operation(
     elif operation == "alpha":
         notes = _alpha(entry, request, root, confirmation, workspace_root, project)
     elif operation == "release":
-        notes = _release(entry, request, root, workspace_root, project, gate)
+        notes = _release(entry, request, root, workspace_root, project, confirmation, gate)
     else:
         _merge(entry, request, confirmation, gate)
     return entry, notes
@@ -498,6 +527,18 @@ def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
                 problems.append(f"{label}.{name}: needs the user's quoted source and response")
     if "pull_request" in entry and "pr_exemption" in entry:
         problems.append(f"{label}: pull_request and pr_exemption exclude each other")
+    if "version_exemption_replaced" in entry:
+        replaced = entry["version_exemption_replaced"]
+        label_replaced = f"{label}.version_exemption_replaced"
+        found = _object_errors(replaced, label_replaced, set(EXEMPTION_REPLACED_FIELDS))
+        problems += found
+        if not found and (not _is_timestamp(replaced["replaced_at"])
+                          or not all(_non_empty_string(replaced[key]) for key in EXEMPTION_REPLACED_FIELDS
+                                     if key != "replaced_at")):
+            problems.append(
+                f"{label_replaced}: needs the exemption's reason, source and response, the release time and the "
+                "release confirmation"
+            )
     if "version_line" in entry:
         problems += _line_errors(entry["version_line"], f"{label}.version_line")
         if "version_exemption" in entry:

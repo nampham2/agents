@@ -299,7 +299,9 @@ class TestKeySetsLiveInOneModule:
 
         import workspace_fields as fields
 
-        shared = {fields.CONTINUATION_FIELDS, fields.FINDING_FIELDS, fields.FINDING_REQUIRED, fields.DELIVERY_FIELDS}
+        shared = {
+            fields.CONTINUATION_FIELDS, fields.FINDING_FIELDS, fields.FINDING_REQUIRED, fields.WORKTREE_OPTIONAL_FIELDS,
+        }
         shared |= set(fields.OPERATION_FIELDS.values()) | set(fields.OPERATION_REQUIRED.values())
         for allowed, required in fields.NESTED_INPUTS.values():
             shared |= {allowed, required}

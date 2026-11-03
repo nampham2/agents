@@ -308,6 +308,11 @@ class TestGatedVariants:
         head = git(linked, "rev-parse", "HEAD")
         opened = open_round(project, "diff", ("combined",), worktree=str(linked))
         close(project, opened, reports=report(("combined",)))
+        exempt = worktree_request(
+            project, "operation=alpha,exempt=true",
+            {"path": str(linked), "exempt": True, "reason": "docs-only project; no version change"},
+        )
+        assert workflow(project, "worktree", exempt)
         release = worktree_request(
             project, "operation=release,replaces_exemption=true",
             {"path": str(linked), "version": "0.24.0", "files": FILES, "replaces_exemption": True},
@@ -338,6 +343,13 @@ class TestGatedVariants:
         commit_all(linked, "release 0.24.0")
         opened = open_round(project, "diff", ("combined",), worktree=str(linked))
         close(project, opened, reports=report(("combined",)))
+        workflow(
+            project, "worktree",
+            worktree_request(
+                project, "operation=alpha,exempt=true",
+                {"path": str(linked), "exempt": True, "reason": "docs-only project; no version change"},
+            ),
+        )
         workflow(
             project, "worktree",
             worktree_request(

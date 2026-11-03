@@ -37,7 +37,13 @@ _PROMOTION_REQUIRED = frozenset({"topic", "body", "expected_sha256"})
 _AUTHORIZATION = frozenset({"required", "status", "scope", "source", "authorized_at"})
 
 # The optional delivery records of a worktree entry.
-DELIVERY_FIELDS = frozenset({"pull_request", "pr_exemption", "version_line", "version_exemption", "merge"})
+WORKTREE_OPTIONAL_FIELDS = frozenset({
+    "pull_request", "pr_exemption", "version_line", "version_exemption", "merge", "version_exemption_replaced",
+})
+# The keys of the record a release leaves when it replaces a version exemption: the old exemption, then the release.
+EXEMPTION_REPLACED_FIELDS = frozenset({
+    "reason", "source", "response", "replaced_at", "replaced_source", "replaced_response",
+})
 
 # A shape name maps to (allowed, required).
 NESTED_INPUTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {

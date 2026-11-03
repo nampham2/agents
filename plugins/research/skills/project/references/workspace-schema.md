@@ -269,7 +269,10 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
   one: such an item only has to rise. Each file holds `X.Y.ZaN` (`pep440`) or `X.Y.Z-alpha.N`
   (`semver`). `release` equals `base` and no file keeps an alpha spelling.
   `version_exemption` (`reason`, `source`, `response`; records before 0.30.0 have no `reason`)
-  replaces the line for a repository with no version or a change that needs none.
+  replaces the line for a repository with no version or a change that needs none. A `release`
+  with `replaces_exemption` true moves it to `version_exemption_replaced` (`reason`, `source`,
+  `response` from the exemption; `replaced_at`, `replaced_source`, `replaced_response` from the
+  release); the entry then holds the release line and no `version_exemption`.
 - Occupied base: when a base first appears or moves, the tool reads local Git refs and the
   workspace and refuses a base that is at or below the newest version released on main (version
   files at `origin/HEAD`, `origin/main` or `origin/master`, and version tags), or that another
