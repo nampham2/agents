@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from memory_search import memory_health
+from workspace_ci import ci_checks
 from workspace_context import (
     checkpoint_freshness,
     fingerprint,
@@ -19,7 +20,14 @@ from workspace_context import (
     worktree_observation,
     worktree_registered,
 )
-from workspace_delivery import DELIVERY_OPERATIONS, delivery_operation, removal_findings
+from workspace_delivery import (
+    DELIVERY_OPERATIONS,
+    KEY_HINTS,
+    abandoned_note,
+    delivery_operation,
+    removal_findings,
+    required_for,
+)
 from workspace_documents import (
     LEGACY_PLANNING_HINT,
     _replace_sections,
@@ -27,6 +35,7 @@ from workspace_documents import (
     append_staged_section,
     reflection_lesson_sections,
 )
+from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
 from workspace_goldfish import (
     OPERATION_FIELDS,
     OPERATION_REQUIRED,
@@ -59,6 +68,7 @@ from workspace_lib import (
     is_delivery_gated,
     is_legacy_planning_layout,
     is_retro_gated,
+    load_json,
     memory_staging_warnings,
     now_iso,
     planning_path,
@@ -87,7 +97,7 @@ FIELDS = {
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
     "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
-    "authorize": {"task", "authorization"},
+    "authorize": {"task", "authorization", "continuation"},
     "receipt": {"task", "receipt"},
     "review": {"reviewer", "version", "scope", "findings", "status", "evidence", "required"},
     "goldfish": set().union(*OPERATION_FIELDS.values()),
@@ -99,7 +109,7 @@ FIELDS = {
     "worktree": {
         "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
         "host", "url", "number", "exempt", "files", "base", "base_moved", "alpha", "reason", "version", "merge_state",
-        "method", "evidence", "merged_head",
+        "method", "evidence", "merged_head", "replaces_exemption",
     },
 }
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
@@ -127,9 +137,13 @@ WORKTREE_REQUIRED_BY = {
     "operation=record": frozenset({"branch"}),
     "operation=close": frozenset({"decision"}),
     "operation=pull_request": frozenset({"host", "number", "url"}),
+    "operation=pull_request,exempt=no_remote": frozenset({"exempt"}),
+    "operation=pull_request,exempt=local_only": frozenset({"exempt"}),
     "operation=alpha": frozenset({"alpha", "base", "files", "reason"}),
+    "operation=alpha,exempt=true": frozenset({"exempt", "reason"}),
     "operation=release": frozenset({"version"}),
-    "operation=merge": frozenset({"evidence", "merge_state", "method"}),
+    "operation=release,replaces_exemption=true": frozenset({"files", "replaces_exemption", "version"}),
+    "operation=merge": frozenset({"evidence", "merge_state", "merged_head", "method"}),
 }
 GOLDFISH_REQUIRED = frozenset({"operation"})
 GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in OPERATION_REQUIRED.items()}
@@ -153,11 +167,16 @@ def input_schema(action: str) -> dict[str, Any]:
         allowed, required = READ_INPUTS[action]
         variants = {}
         note = "read action: the keys below are the whole request"
+    nested = {
+        key: {"allowed": sorted(NESTED_INPUTS[shape][0]), "required": sorted(NESTED_INPUTS[shape][1])}
+        for key, shape in ACTION_NESTED.get(action, ())
+    }
     return {
         "action": action,
         "allowed": sorted(allowed),
         "required": sorted(required),
         "required_by": variants,
+        "nested": nested,
         "note": note,
     }
 
@@ -246,7 +265,51 @@ def impact(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def readiness(project: Path) -> dict[str, Any]:
+def readiness_worktrees(state: dict[str, Any], *, gated: bool) -> list[dict[str, Any]]:
+    """Active or kept repository worktrees with whether they exist and which delivery records removal lacks.
+
+    Only well-formed entries are read: readiness reports on a project whose state may be malformed.
+    `exists` is None when Git could not be consulted.
+    """
+    items = state.get("worktrees")
+    listed: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not (isinstance(item, dict) and isinstance(item.get("path"), str)):
+            continue
+        if item.get("status") not in ("active", "kept") or item.get("kind") in (None, "none"):
+            continue
+        seen = worktree_observation(Path(item["path"]))
+        listed.append({
+            "path": item["path"],
+            "exists": seen["exists"] if seen["available"] else None,
+            "missing": removal_findings(item, gated=gated),
+        })
+    return listed
+
+
+def readiness_checks(state: dict[str, Any], required: Any) -> dict[str, Any]:
+    """Required check names against the CI jobs of the active target worktree's recorded path."""
+    if required is not None and not (isinstance(required, list) and all(isinstance(n, str) and n for n in required)):
+        raise WorkspaceError("required_checks must be an array of non-empty strings")
+    items = state.get("worktrees")
+    entry = next(
+        (
+            item
+            for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict) and item.get("role") == "target" and item.get("status") == "active"
+            and item.get("kind") not in (None, "none") and isinstance(item.get("path"), str)
+        ),
+        None,
+    )
+    if entry is None:
+        return ci_checks(None, required, reason="no active target worktree entry; no CI file was read")
+    root = Path(entry["path"])
+    if not root.is_dir():
+        return ci_checks(None, required, reason=f"worktree {root} no longer exists; no CI file was read")
+    return ci_checks(root, required)
+
+
+def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str, Any]:
     """Group existing closure findings without introducing a second gate."""
     report = validate_project(project, close=True, check_index=True)
     groups: dict[str, list[dict[str, str]]] = {}
@@ -263,7 +326,16 @@ def readiness(project: Path) -> dict[str, Any]:
                 "project",
             )
             groups.setdefault(group, []).append({"level": level, "finding": finding})
-    return {"valid": report.valid, "groups": groups}
+    try:
+        state = load_json(project / "project.json")
+    except WorkspaceError:
+        state = {}
+    return {
+        "valid": report.valid,
+        "groups": groups,
+        "worktrees": readiness_worktrees(state, gated=is_delivery_gated(state)),
+        "checks": readiness_checks(state, (request or {}).get("required_checks")),
+    }
 
 
 def worker_events(project: Path) -> list[dict[str, Any]]:
@@ -286,7 +358,7 @@ def worker_events(project: Path) -> list[dict[str, Any]]:
 def _confirmation(value: object) -> dict[str, str]:
     # `confirmation` is printed by `--schema` as required, so its refusal has to name it; without
     # `where` a caller saw "expected a JSON object, got NoneType" with no field to fill.
-    confirmation = object_input(value, {"source", "response"}, {"source", "response"}, where="confirmation")
+    confirmation = object_input(value, *NESTED_INPUTS["confirmation"], where="confirmation")
     return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 
@@ -428,6 +500,9 @@ def _worktree(
     outcome: dict[str, Any] = {"worktree": entry, "observed": seen}
     if superseded is not None:
         outcome["superseded"] = superseded
+    note = abandoned_note(entry) if decision == "remove" else None
+    if note is not None:
+        outcome["notes"] = [note]
     return patch, outcome
 
 
@@ -591,12 +666,10 @@ def _build(
     elif action in ("authorize", "receipt"):
         task = _task(state, string_input(request.get("task"), "task"))
         if action == "authorize":
-            value = object_input(
-                request.get("authorization"), {"required", "status", "scope", "source", "authorized_at"}
-            )
+            value = object_input(request.get("authorization"), *NESTED_INPUTS["authorization"], where="authorization")
             change = {"authorization": value}
         else:
-            value = object_input(request.get("receipt"), {"kind", "value", "destination", "timestamp"})
+            value = object_input(request.get("receipt"), *NESTED_INPUTS["receipt"], where="receipt")
             change = {"receipts": task["receipts"] + ([] if value in task["receipts"] else [value])}
         patch = {"tasks": [{"id": task["id"], **change}]}
     elif action == "review":
@@ -739,12 +812,41 @@ def workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, A
         raise WorkspaceError(f"workflow filesystem failure: {error}") from error
 
 
+def _variant_required(project: Path, action: str, request: Any) -> frozenset[str]:
+    """The keys the request's own discriminator demands, so one refusal can name them with the rest.
+
+    Only the unconditional part of a variant is enforced here: the operation code keeps the checks that
+    read project state (an existing alpha line, a recorded entry) and raises their own message.
+    """
+    if not isinstance(request, dict) or action != "worktree":
+        return frozenset()
+    entry = None
+    path = request.get("path")
+    if isinstance(path, str) and Path(path).is_absolute():
+        try:
+            worktrees = _load_state(project).get("worktrees", [])
+        except WorkspaceError:
+            worktrees = []
+        resolved = str(Path(path).resolve())
+        entry = next((item for item in worktrees if item.get("path") == resolved), None)
+    return required_for(request.get("operation"), request, entry)
+
+
 def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, Any]:
     project = project.resolve()
     if action not in FIELDS and action not in READ_INPUTS:
         raise WorkspaceError(f"unknown workflow action: {action}")
     if action in FIELDS:
-        object_input(request, COMMON | FIELDS[action], WRITE_REQUIRED, where=f"workflow {action}")
+        required = WRITE_REQUIRED | _variant_required(project, action, request)
+        object_input(
+            request,
+            COMMON | FIELDS[action],
+            required,
+            where=f"workflow {action}",
+            nested=ACTION_NESTED.get(action),
+            nested_required=NESTED_REQUIRED.get(action, frozenset()),
+            hints=KEY_HINTS if action == "worktree" else None,
+        )
         return run_operation(project, action, request, lambda state: _build(project, action, request, state))
     if action == "verify":
         from workspace_checks import verify
@@ -780,6 +882,6 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
     if action == "freshness":
         return checkpoint_freshness(project)
     if action == "readiness":
-        return readiness(project)
+        return readiness(project, request)
     # Every other action returned above, and the unknown ones were refused at the top.
     return memory_health(project.parent, _load_state(project)["title"])

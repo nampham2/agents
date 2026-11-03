@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from workspace_documents import _headings, _section_span
+from workspace_fields import NESTED_INPUTS
 from workspace_journal import (
     OperationError,
     document_path,
@@ -20,6 +21,8 @@ from workspace_journal import (
     string_input,
 )
 from workspace_lib import (
+    MEMORY_DIRECTORY,
+    MEMORY_SLUG_PATTERN,
     DirectoryLock,
     WorkspaceConflict,
     WorkspaceError,
@@ -28,6 +31,7 @@ from workspace_lib import (
     document_conflict_message,
     document_sha256,
     load_json,
+    memory_entry_digests,
     rebuild_index,
 )
 from workspace_session import _load_state
@@ -65,6 +69,7 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                         "items",
                         "project",
                         "result",
+                        "skipped_duplicates",
                     },
                     {"documents", "promotions", "receipts", "project"},
                 )
@@ -76,11 +81,7 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                 promotions = list_input(journal["promotions"], 20)
                 list_input(journal["receipts"], len(promotions))
                 for promotion in promotions:
-                    object_input(
-                        promotion,
-                        {"topic", "body", "description", "kind", "scope", "expected_sha256", "entry_id"},
-                        {"topic", "body", "expected_sha256", "entry_id"},
-                    )
+                    object_input(promotion, *NESTED_INPUTS["triage_promotion_journal"])
                     for value in promotion.values():
                         string_input(value)
             else:
@@ -102,13 +103,11 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                         )
                     spans = []
                     promotions = []
+                    skipped: list[dict[str, str]] = []
+                    digests: dict[str, dict[str, str]] = {}
                     seen = set()
                     for index, item in enumerate(items):
-                        object_input(
-                            item,
-                            {"section", "disposition", "reason", "promotion"},
-                            {"section", "disposition", "reason"},
-                        )
+                        object_input(item, *NESTED_INPUTS["triage_item"])
                         section = string_input(item["section"], "section")
                         reason = string_input(item["reason"], "reason")
                         if section in seen:
@@ -121,14 +120,26 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                         if disposition not in ("promote", "reflection", "discard"):
                             raise WorkspaceError("triage disposition must be promote, reflection or discard")
                         if disposition == "promote":
-                            promotion = object_input(
-                                item.get("promotion"),
-                                {"topic", "body", "description", "kind", "scope", "expected_sha256"},
-                                {"topic", "body", "expected_sha256"},
-                            )
+                            promotion = object_input(item.get("promotion"), *NESTED_INPUTS["triage_promotion"])
                             for value in promotion.values():
                                 string_input(value)
-                            promotions.append({**promotion, "entry_id": f"{state['project']}-{request['id']}-{index}"})
+                            topic = promotion["topic"]
+                            if topic not in digests:
+                                topic_file = project.parent / MEMORY_DIRECTORY / f"{topic}.md"
+                                if not MEMORY_SLUG_PATTERN.match(topic):
+                                    raise WorkspaceError(f"topic slug must be lowercase-hyphenated: {topic!r}")
+                                digests[topic] = (
+                                    memory_entry_digests(topic_file.read_text(encoding="utf-8"))
+                                    if topic_file.is_file()
+                                    else {}
+                                )
+                            digest = document_sha256(promotion["body"])
+                            if digest in digests[topic]:
+                                skipped.append({"section": section, "topic": topic, "matched": digests[topic][digest]})
+                            else:
+                                entry_id = f"{state['project']}-{request['id']}-{index}"
+                                digests[topic][digest] = f"item {index + 1}"
+                                promotions.append({**promotion, "entry_id": entry_id})
                         elif "promotion" in item:
                             raise WorkspaceError("promotion details require promote disposition")
                         if disposition == "reflection":
@@ -155,6 +166,7 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
                         "receipts": [],
                         "items": items,
                         "project": state["project"],
+                        "skipped_duplicates": skipped,
                     }
                     atomic_write_json(path, journal)
             for promotion in journal["promotions"][len(journal["receipts"]) :]:
@@ -181,7 +193,8 @@ def triage(project: Path, request: dict[str, Any]) -> dict[str, Any]:
             journal["complete"] = True
             journal["result"] = result
             atomic_write_json(path, journal)
-            return {**result, "operation_id": request["id"], "complete": True}
+            skipped_duplicates = journal.get("skipped_duplicates", [])
+            return {**result, "operation_id": request["id"], "complete": True, "skipped_duplicates": skipped_duplicates}
     except (OSError, WorkspaceError) as error:
         raise OperationError(
             str(error),

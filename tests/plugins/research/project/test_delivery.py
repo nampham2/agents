@@ -6,7 +6,8 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 import workspace_lib
@@ -631,6 +632,38 @@ class TestReleaseWithoutAlpha:
         write_versions(linked, "0.24.0", None)
         refuse(recorded, linked, "no release record applies", "release", version="0.24.0", files=FILES)
 
+    def test_a_release_replaces_an_exemption_when_said_so(self, recorded: Path, linked: Path) -> None:
+        exempt(recorded, linked)
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "no release record applies", "release", version="0.24.0", files=FILES)
+        op(recorded, linked, "release", version="0.24.0", files=FILES, replaces_exemption=True)
+        entry = entry_of(recorded)
+        assert "version_exemption" not in entry
+        assert entry["version_line"]["release"]["version"] == "0.24.0"
+        replaced = entry["version_exemption_replaced"]
+        assert replaced["reason"] == "docs-only project; no version change"
+        assert (replaced["source"], replaced["response"]) == ("user reply", "approve")
+        assert (replaced["replaced_source"], replaced["replaced_response"]) == ("user reply", "approve")
+        assert delivery_errors(entry, "worktree #1") == []
+
+    def test_replaces_exemption_needs_an_exemption_to_replace(self, recorded: Path, linked: Path) -> None:
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "needs a version_exemption to replace", "release",
+               version="0.24.0", files=FILES, replaces_exemption=True)
+        assert "version_exemption_replaced" not in entry_of(recorded)
+
+    def test_replaces_exemption_is_true_or_false(self, recorded: Path, linked: Path) -> None:
+        exempt(recorded, linked)
+        write_versions(linked, "0.24.0", None)
+        refuse(recorded, linked, "replaces_exemption must be true or false", "release",
+               version="0.24.0", files=FILES, replaces_exemption="yes")
+
+    def test_an_exemption_after_a_replaced_one_is_refused(self, recorded: Path, linked: Path) -> None:
+        exempt(recorded, linked)
+        write_versions(linked, "0.24.0", None)
+        op(recorded, linked, "release", version="0.24.0", files=FILES, replaces_exemption=True)
+        refuse(recorded, linked, "already has", "alpha", exempt=True, reason="again")
+
     def test_a_release_checks_that_the_base_is_still_free(self, recorded: Path, linked: Path, repository: Path) -> None:
         git(repository, "tag", "v0.25.0")
         write_versions(linked, "0.24.0", None)
@@ -682,6 +715,22 @@ class TestReleaseOnlyShape:
             {**LINE, "alpha": None, "release": RELEASE_RECORD},
         ):
             assert any("no alpha needs an empty history and a release" in problem for problem in self.errors(line))
+
+    def test_a_replaced_exemption_is_a_closed_record(self) -> None:
+        replaced = {
+            "reason": "docs only", "source": "user", "response": "no version",
+            "replaced_at": RELEASE_RECORD["recorded_at"], "replaced_source": "user reply",
+            "replaced_response": "approve",
+        }
+        line = {**LINE, "release": RELEASE_RECORD}
+        record = {**entry(), "version_line": line, "version_exemption_replaced": replaced}
+        assert delivery_errors(record, "worktree #1") == []
+        for key in ("reason", "replaced_source", "replaced_response"):
+            broken = {**replaced, key: ""}
+            found = delivery_errors({**entry(), "version_exemption_replaced": broken}, "worktree #1")
+            assert any("version_exemption_replaced: needs" in problem for problem in found), key
+        extra = {**replaced, "other": "x"}
+        assert delivery_errors({**entry(), "version_exemption_replaced": extra}, "worktree #1") != []
 
     def test_an_exemption_may_carry_a_reason_or_not(self) -> None:
         plain = {"source": "user", "response": "no version"}
@@ -839,7 +888,10 @@ class TestGates:
         second = task("T02", depends_on=["T01"])
         second["outputs"] = [{"root": "target", "path": "y.txt", "required": False}]
         second["effect"] = {"kind": "local_write", "description": "Edit y"}
-        update_project_data(project, {"tasks": [first, second]}, expected_revision=1)
+        # A plan made before the c3 gate existed: the start gate is tested on its own here, and
+        # test_planning_gate.py covers the planning refusal.
+        with patch("workspace_delivery.mr_gate_errors", return_value=([], [])):
+            update_project_data(project, {"tasks": [first, second]}, expected_revision=1)
 
     def planned_project(self, tmp_path: Path, repository: Path, linked: Path, *, first_writes: bool = True) -> Path:
         git(repository, "remote", "add", "origin", "https://github.com/o/r.git")
@@ -878,7 +930,7 @@ class TestGates:
         result = workflow(project, "verify", {"id": "check", "checks": [{"task": "T01", "argv": ["true"]}]})
         record_id = result["attempts"][0]["result"]["record_id"]
         before = load_state(project)
-        with pytest.raises(WorkspaceError, match="task T02 writes to the target"):
+        with pytest.raises(WorkspaceError, match="T02 writes to the target"):
             task_operation(
                 project,
                 "finish",
@@ -1000,3 +1052,134 @@ class TestUvLockIsReadAtTheProjectsOwnEntry:
         write_lock(linked, own="0.24.0a1", dependency="0.24.0a1")
         op(recorded, linked, "alpha", base="0.24.0", alpha=1, reason="x", files=LOCKED)
         assert entry_of(recorded)["version_line"]["alpha"] == 1
+
+
+class TestLocalOnly:
+    """c13: a worktree that is never pushed delivers with a pr_exemption of reason local_only."""
+
+    HEAD = "a" * 40
+    LOCAL: ClassVar[dict[str, str]] = {"reason": "local_only", "source": "user", "response": "no push to github"}
+
+    def local(self, project: Path, linked: Path) -> dict[str, Any]:
+        return op(project, linked, "pull_request", exempt="local_only")
+
+    def test_it_is_recorded_although_the_repository_has_a_remote(self, recorded: Path, linked: Path) -> None:
+        self.local(recorded, linked)
+        item = entry_of(recorded)["pr_exemption"]
+        assert (item["reason"], item["source"]) == ("local_only", "user reply")
+
+    def test_it_is_refused_when_a_pull_request_exists(self, recorded: Path, linked: Path) -> None:
+        op(recorded, linked, "pull_request", host="github", url=URL, number=7)
+        refuse(recorded, linked, "already has", "pull_request", exempt="local_only")
+
+    @pytest.mark.parametrize("value", ["other", None, False, ""])
+    def test_other_exempt_values_are_refused(self, recorded: Path, linked: Path, value: Any) -> None:
+        refuse(recorded, linked, "exempt must be no_remote or local_only", "pull_request", exempt=value)
+
+    def test_no_remote_keeps_its_rule(self, recorded: Path, linked: Path) -> None:
+        refuse(recorded, linked, "has a remote", "pull_request", exempt="no_remote")
+
+    def test_the_validator_accepts_the_reason_and_a_merge_record(self) -> None:
+        local = {**entry(), "pr_exemption": self.LOCAL}
+        assert delivery_errors(local, "w") == []
+        assert delivery_errors({**local, "merge": MERGE}, "w") == []
+        assert delivery_errors({**local, "merge": {**MERGE, "merged_head": self.HEAD}}, "w") == []
+        assert delivery_errors({**local, "merge": {**MERGE, "merged_head": "b" * 64}}, "w") == []
+        declined = {**MERGE, "state": "declined", "method": None, "evidence": None}
+        assert delivery_errors({**local, "merge": declined}, "w") == []
+
+    @pytest.mark.parametrize("head", ["abc", "A" * 40, "a" * 41, 5, None, ""])
+    def test_the_validator_refuses_a_malformed_merged_head(self, head: Any) -> None:
+        local = {**entry(), "pr_exemption": self.LOCAL}
+        assert any("merged_head" in p for p in delivery_errors({**local, "merge": {**MERGE, "merged_head": head}}, "w"))
+
+    def test_the_validator_refuses_merged_head_on_a_declined_record(self) -> None:
+        declined = {**MERGE, "state": "declined", "method": None, "evidence": None, "merged_head": self.HEAD}
+        local = {**entry(), "pr_exemption": self.LOCAL, "merge": declined}
+        assert any("merged_head" in p for p in delivery_errors(local, "w"))
+
+    def test_a_no_remote_exemption_cannot_hold_a_merge(self) -> None:
+        exempt_record = {"reason": "no_remote", "source": "user", "response": "none"}
+        problems = delivery_errors({**entry(), "pr_exemption": exempt_record, "merge": MERGE}, "w")
+        assert any("needs a pull_request or a local_only exemption" in p for p in problems)
+
+    def test_a_merge_is_recorded_for_a_local_only_worktree(self, recorded: Path, linked: Path) -> None:
+        self.local(recorded, linked)
+        op(recorded, linked, "merge", merge_state="merged", method="merge", evidence="abc1234", merged_head=self.HEAD)
+        merge = entry_of(recorded)["merge"]
+        assert (merge["state"], merge["method"], merge["merged_head"]) == ("merged", "merge", self.HEAD)
+
+    def test_merged_head_none_is_absent(self, recorded: Path, linked: Path) -> None:
+        self.local(recorded, linked)
+        op(recorded, linked, "merge", merge_state="merged", method="merge", evidence="abc1234", merged_head=None)
+        assert "merged_head" not in entry_of(recorded)["merge"]
+
+    @pytest.mark.parametrize("head", ["abc", "A" * 40, "a" * 41, 5])
+    def test_a_malformed_merged_head_is_refused_before_storing(self, recorded: Path, linked: Path, head: Any) -> None:
+        self.local(recorded, linked)
+        refuse(recorded, linked, "merged_head must be a full lowercase hex commit", "merge",
+               merge_state="merged", method="merge", evidence="abc1234", merged_head=head)
+
+    def test_merged_head_is_refused_on_a_declined_record(self, recorded: Path, linked: Path) -> None:
+        self.local(recorded, linked)
+        refuse(recorded, linked, "merged_head", "merge", merge_state="declined", merged_head=self.HEAD)
+        op(recorded, linked, "merge", merge_state="declined")
+        assert entry_of(recorded)["merge"]["state"] == "declined"
+
+    def test_a_no_remote_worktree_has_nothing_to_merge(self, tmp_path: Path, repository: Path, linked: Path) -> None:
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        op(project, linked, "pull_request", exempt="no_remote")
+        refuse(project, linked, "no pull_request or local_only exemption is recorded", "merge", merge_state="declined")
+
+    def test_needs_merge_never_raises(self) -> None:
+        from workspace_lib import needs_merge
+
+        assert needs_merge({"pull_request": {}}) and needs_merge({"pr_exemption": {"reason": "local_only"}})
+        assert not needs_merge({"pr_exemption": {"reason": "no_remote"}})
+        malformed = ("x", None, [], 5, {"pr_exemption": "x"}, {"pr_exemption": ["local_only"]}, {"pr_exemption": None})
+        assert not any(needs_merge(value) for value in malformed)
+
+    def test_closure_needs_a_merge_decision(self, recorded: Path, linked: Path, gated: None) -> None:
+        self.local(recorded, linked)
+        exempt(recorded, linked)
+        assert any("no merge decision" in f for f in closure_findings(load_state(recorded)))
+        op(recorded, linked, "merge", merge_state="declined")
+        assert closure_findings(load_state(recorded)) == []
+
+    def test_closure_survives_a_malformed_exemption(self, recorded: Path, linked: Path, gated: None) -> None:
+        state = load_state(recorded)
+        state["worktrees"][0]["pr_exemption"] = "x"
+        closure_findings(state)
+
+    def test_removal_accepts_a_merge_decision_for_local_only_and_only_merged_for_a_pull_request(self) -> None:
+        from workspace_delivery import removal_findings
+
+        local = {**entry(), "pr_exemption": self.LOCAL, "version_exemption": {"source": "s", "response": "r"}}
+        assert any("merge" in f for f in removal_findings(local, gated=True))
+        declined = {**MERGE, "state": "declined", "method": None, "evidence": None}
+        assert removal_findings({**local, "merge": declined}, gated=True) == []
+        assert removal_findings({**local, "merge": MERGE}, gated=True) == []
+        pull = {**entry(), "pull_request": PR, "version_exemption": {"source": "s", "response": "r"}}
+        assert any("is not merged" in f for f in removal_findings({**pull, "merge": declined}, gated=True))
+
+    def test_removal_survives_a_malformed_merge_record(self) -> None:
+        from workspace_delivery import removal_findings
+
+        for owner in ({"pull_request": PR}, {"pr_exemption": self.LOCAL}):
+            assert removal_findings({**entry(), **owner, "merge": "x"}, gated=False)
+
+    def test_the_start_message_names_the_exemption(self, recorded: Path, gated: None) -> None:
+        findings = start_findings(load_state(recorded))
+        assert any("exempt local_only" in f for f in findings)
+
+    def test_the_abandoned_note_handles_every_case(self, tmp_path: Path) -> None:
+        from workspace_delivery import abandoned_note
+
+        declined = {**MERGE, "state": "declined", "method": None, "evidence": None}
+        local = {**entry(), "pr_exemption": self.LOCAL, "merge": declined}
+        assert abandoned_note({**local, "merge": MERGE}) is None
+        assert abandoned_note({**entry(), "pull_request": PR, "merge": declined}) is None
+        assert abandoned_note({**local, "repository": None}) is None
+        unknown = abandoned_note({**local, "repository": str(tmp_path / "nowhere")})
+        assert unknown is not None and "unknown" in unknown

@@ -44,4 +44,6 @@ A repository project needs one of these before `finalize`:
   a release-only line. The tool checks that the base is still free.
 - An exemption. Ask the user. If they agree, record `"operation":"alpha"` with `"exempt":true`, a
   `reason` and their words. Use it for a repository with no version file or a change that needs no
-  new version. An exemption and a release record exclude each other.
+  new version. An exemption and a release record exclude each other, except that a release with
+  `"replaces_exemption":true`, `version`, `files` and the user's words replaces the exemption; the
+  exemption moves to `version_exemption_replaced` with the release confirmation beside it.

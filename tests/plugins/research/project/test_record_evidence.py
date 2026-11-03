@@ -23,13 +23,16 @@ from unittest.mock import patch
 
 import manage_workspace
 import workspace_lib
+from workspace_evidence import evidence_entries
 from workspace_lib import (
     EVIDENCE_HEADING_MAX_CHARS,
     WorkspaceError,
     allocate_project,
+    command_runs_precommit,
     record_evidence,
     record_evidence_result,
 )
+from workspace_operations import _had_failed_attempt
 
 from tests.conftest import MANAGER
 
@@ -846,12 +849,7 @@ class ShellScriptSiteTests(_ProjectFixture):
         self.assertIn("argument 'spec.md' (inline shell script)", message)
 
     def test_a_wrapper_shares_one_script_site_between_the_warnings_and_the_refusal(self) -> None:
-        result = record_evidence_result(
-            self.project_dir, "T01", ["docker", "exec", "x", "bash", "-c", "echo a | cat"], dry_run=True
-        )
-        found = [warning for warning in result.warnings if "task T01" not in warning]
-        self.assertEqual(len(found), 1)
-        self.assertIn("pipefail", found[0])
+        self.assertIn("pipefail", self._refused(["docker", "exec", "x", "bash", "-c", "echo a | cat"]))
         self.assertIn("would not name the project or workspace", self._refused(
             ["docker", "exec", "x", "bash", "-c", "research-validate ."]
         ))
@@ -962,7 +960,7 @@ class CwdAndDryRunTests(_ProjectFixture):
         before = self.evidence.read_text(encoding="utf-8")
         with patch.object(workspace_lib.subprocess, "run", side_effect=AssertionError("must not run")):
             result = record_evidence_result(
-                self.project_dir, "T01", ["bash", "-c", "ls | wc -l"], dry_run=True, cwd=self.elsewhere
+                self.project_dir, "T01", ["bash", "-c", "echo $(ls)"], dry_run=True, cwd=self.elsewhere
             )
         self.assertEqual(self.evidence.read_text(encoding="utf-8"), before)
         payload = result.as_dict()
@@ -970,7 +968,7 @@ class CwdAndDryRunTests(_ProjectFixture):
             (payload["recorded"], payload["dry_run"], payload["exit_code"], payload["passed"]),
             (False, True, None, None),
         )
-        self.assertEqual(payload["command"], ["bash", "-c", "ls | wc -l"])
+        self.assertEqual(payload["command"], ["bash", "-c", "echo $(ls)"])
         self.assertEqual(payload["working_directory"], str(self.elsewhere))
         self.assertTrue(payload["warnings"], "the warnings are the point of a dry run")
 
@@ -1015,7 +1013,7 @@ class CwdAndDryRunTests(_ProjectFixture):
 
 
 class CommandWarningTests(_ProjectFixture):
-    """Warnings, never refusals: each shape is sometimes intended, and the record must still be made."""
+    """Warnings for the shapes that are sometimes intended; an unguarded pipe is refused, see its test."""
 
     def _warnings(self, command: list[str]) -> list[str]:
         return record_evidence_result(self.project_dir, "T01", command, dry_run=True).warnings
@@ -1033,10 +1031,50 @@ class CommandWarningTests(_ProjectFixture):
         self.assertEqual(len(found), 1)
         self.assertIn("'$('", found[0])
 
-    def test_an_unguarded_pipe_is_warned_about_and_pipefail_or_or_silences_it(self) -> None:
-        self.assertIn("pipefail", self._shell_warnings("pytest | tail -5")[0])
-        self.assertEqual(self._shell_warnings("set -o pipefail; pytest | tail -5"), [])
-        self.assertEqual(self._shell_warnings("a || b"), [])
+    def _refusal(self, command: list[str]) -> str:
+        with self.assertRaises(WorkspaceError) as caught:
+            record_evidence_result(self.project_dir, "T01", command, dry_run=True)
+        return str(caught.exception)
+
+    def test_an_unguarded_pipe_is_refused_before_it_runs_and_pipefail_or_or_passes(self) -> None:
+        for script in ("pytest | tail -5", "pytest|tail -5", "pytest | tail -5; true"):
+            with self.subTest(script=script):
+                self.assertIn("pipefail", self._refusal(["bash", "-c", script]))
+        for script in (
+            "set -o pipefail; pytest | tail -5", "set -eo pipefail\npytest | tail -5", "a || b",
+            "echo 'a | b'", 'echo "a | b"', "echo a \\| b",
+        ):
+            with self.subTest(script=script):
+                self.assertEqual(self._shell_warnings(script), [])
+
+    def test_every_inline_shell_refuses_an_unguarded_pipe_and_the_option_form_passes(self) -> None:
+        for shell in ("sh", "zsh", "dash"):
+            with self.subTest(shell=shell):
+                self.assertIn("pipefail", self._refusal([shell, "-c", "pytest | tail -5"]))
+        option = self._warnings(["bash", "-o", "pipefail", "-c", "pytest | tail -5"])
+        self.assertEqual([w for w in option if "task T01" not in w], [])
+
+    def test_a_later_inline_script_is_scanned_and_pipefail_may_follow_other_options(self) -> None:
+        self.assertIn("pipefail", self._refusal(["bash", "-c", "true", "bash", "-c", "pytest | tail -5"]))
+        for script in ("set -o errexit -o pipefail; a | b", "set -u -o nounset -o pipefail\na | b"):
+            with self.subTest(script=script):
+                self.assertEqual(self._shell_warnings(script), [])
+
+    def test_pipefail_in_a_comment_still_refuses(self) -> None:
+        self.assertIn("pipefail", self._refusal(["bash", "-c", "# set -o pipefail\npytest | tail -5"]))
+
+    def test_an_unbalanced_quote_falls_back_to_the_pipe_check(self) -> None:
+        self.assertIn("pipefail", self._refusal(["bash", "-c", "echo 'x | tail -5"]))
+        self.assertEqual(self._shell_warnings("echo 'x'; set -o pipefail; echo 'a | b"), [])
+
+    def test_the_refusal_names_both_ways_out_and_a_script_file_by_absolute_path_runs(self) -> None:
+        message = self._refusal(["bash", "-c", "pytest | tail -5"])
+        self.assertIn("set -o pipefail", message)
+        self.assertIn("script file", message)
+        check = self.project_dir / "check.sh"
+        check.write_text("pytest | tail -5\n", encoding="utf-8")
+        result = record_evidence_result(self.project_dir, "T01", ["bash", str(check)], dry_run=True)
+        self.assertEqual([w for w in result.warnings if "task T01" not in w], [])
 
     def test_other_interpreters_flag_spellings_and_non_inline_commands_are_left_alone(self) -> None:
         for command in (
@@ -1047,7 +1085,7 @@ class CommandWarningTests(_ProjectFixture):
         ):
             with self.subTest(command=command):
                 self.assertEqual([w for w in self._warnings(command) if "task T01" not in w], [])
-        self.assertTrue(self._shell_warnings("ls | wc") and self._warnings(["sh", "-lc", "cat <<X\nX"]))
+        self.assertTrue(self._warnings(["sh", "-lc", "cat <<X\nX"]))
 
     def test_a_task_that_is_not_running_is_warned_about_with_its_verification_and_still_recorded(self) -> None:
         result = record_evidence_result(self.project_dir, "T01", [sys.executable, "-c", "pass"])
@@ -1133,3 +1171,99 @@ class SecretReadGuardTests(_ProjectFixture):
     def test_a_secret_read_inside_command_substitution_is_refused(self) -> None:
         message = self._refused(["bash", "-c", "out=$(security find-generic-password -w); echo ${#out}"])
         self.assertIn("security find-generic-password", message)
+
+
+class PreCommitRewriteTests(_ProjectFixture):
+    """c9: a `pre-commit` run that rewrote files is recorded as outcome `rewrite`, still a failure."""
+
+    PHRASE = "files were modified by this hook"
+
+    def _fake_hook(self, *, phrase: bool, exit_code: int = 1) -> str:
+        """An executable named pre-commit, so the basename rule applies without a real hook installed."""
+        hook = self.target / "pre-commit"
+        message = f"echo '{self.PHRASE}' >&2\n" if phrase else "echo 'trailing whitespace' >&2\n"
+        hook.write_text(f"#!/bin/sh\n{message}exit {exit_code}\n", encoding="utf-8")
+        hook.chmod(0o755)
+        return str(hook)
+
+    def test_a_rewriting_hook_is_recorded_as_rewrite_and_stays_a_failure(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=True)])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(result.outcome, "rewrite")
+        self.assertTrue(any("run the check again" in warning for warning in result.warnings))
+        text = self.evidence.read_text(encoding="utf-8")
+        self.assertIn("- Outcome: rewrite\n", text)
+        self.assertLess(text.index("- Outcome: rewrite\n"), text.index("```"))
+
+    def test_the_rewrite_outcome_reaches_the_json_result_and_the_entry_rows(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=True)])
+
+        payload = result.as_dict()
+        self.assertEqual(payload["outcome"], "rewrite")
+        self.assertFalse(payload["passed"])
+        rows = evidence_entries(self.project_dir, task_id="T01")["entries"]
+        self.assertEqual([row["outcome"] for row in rows], ["rewrite"])
+        self.assertEqual(rows[0]["passed"], False)
+
+    def test_a_plain_failure_gets_no_outcome(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=False)])
+
+        self.assertIsNone(result.outcome)
+        self.assertNotIn("outcome", result.as_dict())
+        self.assertEqual(evidence_entries(self.project_dir, task_id="T01")["entries"][0]["outcome"], None)
+        self.assertNotIn("- Outcome:", self.evidence.read_text(encoding="utf-8"))
+
+    def test_the_phrase_from_a_command_that_is_not_pre_commit_gets_no_outcome(self) -> None:
+        command = [sys.executable, "-c", f"import sys; print({self.PHRASE!r}, file=sys.stderr); sys.exit(1)"]
+        result = record_evidence_result(self.project_dir, "T01", command)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIsNone(result.outcome)
+
+    def test_a_pre_commit_run_that_passes_gets_no_outcome(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=True, exit_code=0)])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIsNone(result.outcome)
+
+    def test_a_rewrite_counts_as_a_failed_attempt(self) -> None:
+        record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=True)])
+
+        self.assertTrue(_had_failed_attempt(self.project_dir, "T01"))
+
+    def test_the_cli_json_reports_the_rewrite_outcome(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = _call_manage(
+                ["record-evidence", str(self.project_dir), "--task", "T01", "--json", "--",
+                 self._fake_hook(phrase=True)]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(stdout.getvalue())["outcome"], "rewrite")
+
+    def test_the_cli_prints_the_run_again_summary_on_stderr(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            _call_manage(
+                ["record-evidence", str(self.project_dir), "--task", "T01", "--", self._fake_hook(phrase=True)]
+            )
+
+        self.assertIn("run the check again", stderr.getvalue())
+
+    def test_pre_commit_is_matched_by_basename_in_argv_or_an_unquoted_word_of_a_script(self) -> None:
+        self.assertTrue(command_runs_precommit(["/usr/local/bin/pre-commit", "run", "--all-files"]))
+        self.assertTrue(command_runs_precommit(["bash", "-c", "cd x && pre-commit run"]))
+        self.assertFalse(command_runs_precommit(["bash", "-c", "echo 'pre-commit'"]))
+        self.assertFalse(command_runs_precommit(["bash", "-c", "# pre-commit\nuv run pytest"]))
+        self.assertTrue(command_runs_precommit(["uv", "run", "pre-commit", "run", "--all-files"]))
+        self.assertTrue(command_runs_precommit(["uvx", "pre-commit", "run"]))
+        self.assertTrue(command_runs_precommit(["uv", "run", "--frozen", "pre-commit", "run"]))
+        self.assertTrue(command_runs_precommit(["pipx", "run", "pre-commit"]))
+        self.assertFalse(command_runs_precommit(["uv", "run", "pytest", "-q"]))
+        self.assertFalse(command_runs_precommit(["cat", "pre-commit"]))
+        self.assertFalse(command_runs_precommit(["ls", ".git/hooks/pre-commit"]))
+        self.assertFalse(command_runs_precommit([]))
+        self.assertFalse(command_runs_precommit(["git", "commit", "-m", "pre-commit hook"]))
+        self.assertFalse(command_runs_precommit(["python3", "-m", "pre_commit"]))

@@ -15,7 +15,7 @@ writing; it returns changed fields and canonical validation findings.
 | `preview` | `patch`, `expected_revision`; equivalent to update dry-run. |
 | `impact` | `tasks` (initial IDs), optional rooted `paths`; transitive dependents, evidence, review and declared path overlaps. |
 | `fingerprint` | `references`: array of `{root,path,sha256?}`; selected local file hashes and comparison results. |
-| `readiness` | `{}`; existing closure findings grouped by task, output, receipt, review, reflection, memory and index. |
+| `readiness` | Optional `required_checks`; existing closure findings grouped by task, output, receipt, review, reflection, memory and index, plus `worktrees` (`path`, `exists`, `missing`) and `checks` (`missing`, `unreportable`). |
 | `memory-health` | `{}`; `absent`, `no_matches`, `available` or `failed`, with bounded diagnostics/candidates. |
 | `recover` | `id`, optional boolean `apply`; inspect a journal, or explicitly resume metadata/index persistence only. |
 

@@ -7,7 +7,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -621,7 +621,10 @@ class TestGuards:
         metadata = checkpoint_data(project)
         assert metadata is not None
         assert metadata["worktrees"] == [
-            {"path": str(linked.resolve()), "branch": "npham/2026-01-01-001-x", "status": "active", "dirty": 0}
+            {
+                "path": str(linked.resolve()), "branch": "npham/2026-01-01-001-x", "status": "active", "dirty": 0,
+                "exists": True,
+            }
         ]
         bundle = workflow(project, "resume", {})
         assert bundle["worktree"]["recorded"]["path"] == str(linked.resolve())
@@ -635,7 +638,8 @@ class TestGuards:
         with patch.object(workspace_context, "_git", side_effect=OSError("gone")):
             from workspace_context import worktree_summaries
 
-            assert worktree_summaries(load_state(project))[0]["dirty"] is None
+            summary = worktree_summaries(load_state(project))[0]
+            assert summary["dirty"] is None and summary["exists"] is None
 
     def test_readiness_and_finalize_guard_closure(self, tmp_path: Path, repository: Path, linked: Path) -> None:
         from workspace_lib import WorkspaceError
@@ -925,3 +929,194 @@ class TestAcceptedDirtyIsScopedToWhatTheUserSaw:
         close(recorded, linked, "accept_dirty")
         (linked / "late.txt").write_text("x\n", encoding="utf-8")
         assert any("beyond the accepted" in error for error in validate_project(recorded, close=True).errors)
+
+
+class TestReadinessListsDeliveryRecords:
+    """c8: `readiness` names, per worktree, whether it exists and which delivery records removal still lacks."""
+
+    def test_an_active_entry_is_listed_with_path_exists_and_missing(
+        self, tmp_path: Path, repository: Path, linked: Path
+    ) -> None:
+        from workspace_delivery import removal_findings
+        from workspace_lib import is_delivery_gated
+        from workspace_workflows import workflow
+
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        state = load_state(project)
+
+        result = workflow(project, "readiness", {})
+
+        expected = removal_findings(state["worktrees"][0], gated=is_delivery_gated(state))
+        assert result["worktrees"] == [{"path": str(linked), "exists": True, "missing": expected}]
+        assert set(result) == {"valid", "groups", "worktrees", "checks"}
+
+    def test_a_directory_that_is_gone_reports_exists_false(
+        self, tmp_path: Path, repository: Path, linked: Path
+    ) -> None:
+        from workspace_workflows import workflow
+
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        git(repository, "worktree", "remove", "--force", str(linked))
+
+        assert [item["exists"] for item in workflow(project, "readiness", {})["worktrees"]] == [False]
+
+    def test_a_kept_entry_is_still_listed(self, tmp_path: Path, repository: Path, linked: Path) -> None:
+        from workspace_workflows import workflow
+
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        close(project, linked, "keep")
+
+        assert [item["path"] for item in workflow(project, "readiness", {})["worktrees"]] == [str(linked)]
+
+    def test_removed_none_and_malformed_entries_are_not_listed(self) -> None:
+        from workspace_workflows import readiness_worktrees
+
+        state = {
+            "worktrees": [
+                entry(path="/a"),
+                entry(path="/b", status="kept", closure=closure()),
+                entry(path="/c", status="removed", closure=closure(decision="remove")),
+                entry(path="/d", kind="none", repository=None, branch=None, base_commit=None),
+                "not an object",
+                {"path": 7, "kind": "created", "status": "active"},
+                {"kind": "created", "status": "active"},
+            ]
+        }
+        with patch("workspace_workflows.worktree_observation", return_value={"available": True, "exists": True}):
+            assert [item["path"] for item in readiness_worktrees(state, gated=False)] == ["/a", "/b"]
+
+    def test_a_state_without_a_worktree_list_gives_an_empty_list(self) -> None:
+        from workspace_workflows import readiness_worktrees
+
+        assert readiness_worktrees({}, gated=False) == []
+        assert readiness_worktrees({"worktrees": "x"}, gated=False) == []
+
+    def test_unreadable_project_state_still_reports_and_lists_no_worktrees(
+        self, tmp_path: Path, repository: Path
+    ) -> None:
+        from workspace_workflows import workflow
+
+        project = make_project(tmp_path, repository)
+        (project / "project.json").write_text("{not json", encoding="utf-8")
+
+        result = workflow(project, "readiness", {})
+
+        assert result["valid"] is False and result["worktrees"] == []
+
+    def test_unavailable_git_reports_exists_none(self) -> None:
+        from workspace_workflows import readiness_worktrees
+
+        with patch("workspace_workflows.worktree_observation", return_value={"available": False, "exists": False}):
+            assert [item["exists"] for item in readiness_worktrees({"worktrees": [entry()]}, gated=False)] == [None]
+
+    def test_the_checkpoint_summary_carries_exists_and_none_for_kind_none_and_removed(
+        self, tmp_path: Path, repository: Path, linked: Path
+    ) -> None:
+        from workspace_context import worktree_summaries
+
+        project = make_project(tmp_path, repository)
+        record(project, linked)
+        state = load_state(project)
+        assert worktree_summaries(state)[0]["exists"] is True
+        state["worktrees"] = [
+            entry(path="/c", status="removed", closure=closure(decision="remove")),
+            entry(path="/d", kind="none", repository=None, branch=None, base_commit=None),
+        ]
+        assert [summary["exists"] for summary in worktree_summaries(state)] == [None, None]
+
+
+class TestGoneWorktreeHint:
+    """c8: a delivery record on a directory that no longer exists names the command that brings it back."""
+
+    CONFIRMATION: ClassVar[dict[str, str]] = {"source": "user reply", "response": "yes"}
+
+    def _gone(self, tmp_path: Path, repository: Path, **overrides: Any) -> dict[str, Any]:
+        head = git(repository, "rev-parse", "HEAD") if repository.exists() else "c" * 40
+        item = entry(repository=str(repository), path=str(tmp_path / "gone"), branch="feature", base_commit=head)
+        item.update(overrides)
+        return item
+
+    def _operation(self, tmp_path: Path, item: dict[str, Any]) -> str:
+        from workspace_delivery import delivery_operation
+        from workspace_lib import WorkspaceError
+
+        with pytest.raises(WorkspaceError) as caught:
+            delivery_operation(
+                [item], item["path"], "pull_request", {"exempt": "local_only"}, self.CONFIRMATION,
+                workspace_root=tmp_path, project="p",
+            )
+        return str(caught.value)
+
+    def test_a_present_branch_gets_worktree_add(self, tmp_path: Path, repository: Path) -> None:
+        git(repository, "branch", "feature")
+        item = self._gone(tmp_path, repository)
+
+        message = self._operation(tmp_path, item)
+
+        assert f"git -C {repository} worktree add {item['path']} feature" in message
+
+    def test_an_absent_branch_gets_the_detached_form_at_base_commit_and_no_release(
+        self, tmp_path: Path, repository: Path
+    ) -> None:
+        item = self._gone(tmp_path, repository)
+
+        message = self._operation(tmp_path, item)
+
+        assert f"worktree add --detach {item['path']} {item['base_commit']}" in message
+        assert "not a release" in message
+
+    def test_a_merged_head_is_preferred_to_the_base_commit(self, tmp_path: Path, repository: Path) -> None:
+        item = self._gone(tmp_path, repository, merge={"state": "merged", "merged_head": "b" * 40})
+
+        assert f"--detach {item['path']} {'b' * 40}" in self._operation(tmp_path, item)
+
+    def test_unavailable_git_or_a_gone_repository_gives_the_retry_message(
+        self, tmp_path: Path, repository: Path
+    ) -> None:
+        item = self._gone(tmp_path, repository)
+        with patch("workspace_delivery._git", side_effect=OSError("no git")):
+            assert "retry when it is available" in self._operation(tmp_path, item)
+        missing = self._gone(tmp_path, tmp_path / "nowhere")
+        assert "retry when it is available" in self._operation(tmp_path, missing)
+
+    def test_a_gone_branch_with_no_commit_to_name_gets_no_hint(self, tmp_path: Path, repository: Path) -> None:
+        from workspace_delivery import gone_worktree_hint
+
+        assert gone_worktree_hint(self._gone(tmp_path, repository, base_commit=None)) is None
+        merged = self._gone(tmp_path, repository, base_commit="", merge={"state": "declined"})
+        assert gone_worktree_hint(merged) is None
+
+    def test_an_existing_directory_and_an_entry_without_a_branch_get_no_hint(
+        self, tmp_path: Path, repository: Path, linked: Path
+    ) -> None:
+        from workspace_delivery import gone_worktree_hint
+
+        assert gone_worktree_hint(entry(repository=str(repository), path=str(linked))) is None
+        assert gone_worktree_hint(self._gone(tmp_path, repository, branch=None)) is None
+        assert gone_worktree_hint({**self._gone(tmp_path, repository), "repository": None}) is None
+
+    def test_a_declined_merge_is_recorded_on_a_gone_directory_but_a_merged_one_is_refused(
+        self, tmp_path: Path, repository: Path
+    ) -> None:
+        from workspace_delivery import delivery_operation
+        from workspace_lib import WorkspaceError
+
+        exemption = {"reason": "local_only", "source": "user reply", "response": "no push"}
+        item = self._gone(tmp_path, repository, pr_exemption=exemption)
+
+        recorded, _ = delivery_operation(
+            [item], item["path"], "merge", {"merge_state": "declined"}, self.CONFIRMATION,
+            workspace_root=tmp_path, project="p",
+        )
+        assert recorded["merge"]["state"] == "declined"
+
+        again = self._gone(tmp_path, repository, pr_exemption=exemption)
+        with pytest.raises(WorkspaceError, match="no longer exists"):
+            delivery_operation(
+                [again], again["path"], "merge",
+                {"merge_state": "merged", "method": "merge", "evidence": "c" * 40}, self.CONFIRMATION,
+                workspace_root=tmp_path, project="p",
+            )

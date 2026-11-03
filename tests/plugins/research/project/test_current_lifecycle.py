@@ -142,8 +142,6 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
     reconfirm = dict(confirmation, planning_sha256=snapshot(project / "planning.md")[1],
                      requirements_sha256=snapshot(project / "spec.md")[1])
     step("reconfirm", cli.flow(project, "confirm", "align-2", **reconfirm), refused=False)
-    step("plan", cli.run("update", project, "-", "--expected-revision", 0, stdin=json.dumps(plan)), refused=False)
-
     worktree = (repository.parent / f"{repository.name}.worktrees" / "p1").resolve()
     git(repository, "worktree", "add", "-q", "-b", "feat/p1-current", str(worktree))
     step("record-worktree", cli.flow(
@@ -159,6 +157,10 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
     step("record-alpha-exemption", cli.flow(
         project, "worktree", "wt-alpha", operation="alpha", path=str(worktree), exempt=True,
         reason="the repository has no version file", confirmation=user), refused=False)
+    # The plan writes to the target, so it comes after the MR record (here an exemption): the c3 gate.
+    step("plan", cli.run(
+        "update", project, "-", "--expected-revision", state_of(project)["revision"], stdin=json.dumps(plan)
+    ), refused=False)
 
     (project / "artifacts").mkdir(exist_ok=True)
     (project / "artifacts" / "architecture.md").write_text(DESIGN, encoding="utf-8")

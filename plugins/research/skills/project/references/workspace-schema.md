@@ -254,9 +254,10 @@ and `base_commit` are null). `role` is `target` for the one entry that owns `wor
 Delivery records are optional fields of an entry, written only by the `pull_request`, `alpha`,
 `release` and `merge` operations of `workflow <project-dir> worktree`:
 
-- `pull_request`: `host` (`github` or `gitlab`), `url`, `number`, `recorded_at`. The URL host
-  equals the host of the `origin` remote. `pr_exemption` (`reason` `no_remote`, `source`,
-  `response`) replaces it for a repository with no remote.
+- `pull_request`: `host` (`github` or `gitlab`), `url`, `number`, `recorded_at`. The URL host equals
+  the host of the `origin` remote. `pr_exemption` (`reason` `no_remote` or `local_only`, `source`,
+  `response`) replaces it: `no_remote` for a repository with no remote, `local_only` for a project
+  that is never pushed.
 - `version_line`: `files` (`path`, `style` `pep440` or `semver`), `base` (plain `X.Y.Z`), `alpha`,
   `history` (`alpha`, `base`, `recorded_at`, `reason`), `release` (null or `version`, `recorded_at`)
   and `base_moves` (`from`, `to`, `reason`, `recorded_at`). A release on a worktree with no alpha
@@ -268,7 +269,10 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
   one: such an item only has to rise. Each file holds `X.Y.ZaN` (`pep440`) or `X.Y.Z-alpha.N`
   (`semver`). `release` equals `base` and no file keeps an alpha spelling.
   `version_exemption` (`reason`, `source`, `response`; records before 0.30.0 have no `reason`)
-  replaces the line for a repository with no version or a change that needs none.
+  replaces the line for a repository with no version or a change that needs none. A `release`
+  with `replaces_exemption` true moves it to `version_exemption_replaced` (`reason`, `source`,
+  `response` from the exemption; `replaced_at`, `replaced_source`, `replaced_response` from the
+  release); the entry then holds the release line and no `version_exemption`.
 - Occupied base: when a base first appears or moves, the tool reads local Git refs and the
   workspace and refuses a base that is at or below the newest version released on main (version
   files at `origin/HEAD`, `origin/main` or `origin/master`, and version tags), or that another
@@ -279,14 +283,17 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
   main and remote sources and says so in `notes`; `notes` also reports origin refs last fetched
   over a day ago. An `origin` with no default branch ref refuses, because main cannot be read.
 - `merge`: `state` (`merged` or `declined`), `method` (`squash`, `merge`, `rebase`; null if
-  declined), `evidence`, `source`, `response`, `recorded_at`. `merged` needs the release when a
+  declined), `evidence`, `source`, `response`, `recorded_at`, and an optional `merged_head` (a full
+  lowercase hex commit, 40 or 64 digits, only on a merged record). A `pull_request` or a
+  `local_only` `pr_exemption` can hold a merge record. `merged` needs the release when a
   `version_line` exists. A merged record is final. `close` with `remove` needs a merged record when
-  a `pull_request` exists.
+  a `pull_request` exists, and a merged or declined record when a `local_only` exemption exists.
 
 `DELIVERY_GATES_FROM` in `workspace_lib.py` turns on two gates for projects created at or after it.
 `task start` refuses a task with `target` outputs while the active target worktree lacks an MR or
 exemption; an alpha line is optional. `finalize`, `close` and an update to DONE refuse a worktree
-with no MR or exemption, no merge decision for its MR, or no release record or version exemption.
+with no MR or exemption, no merge decision for its MR or `local_only` exemption, or no release
+record or version exemption.
 
 ## Effects and authorization
 

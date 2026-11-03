@@ -16,7 +16,7 @@ closes a repository project. An MR means a GitHub pull request or a GitLab merge
 
 ## Release and merge
 
-Do this once, when all the work is done. The delivery order is fixed: release, merge on the host,
+The delivery order is fixed: release, merge on the host,
 record the merge, then close/remove.
 
 1. Sweep the threads.
@@ -24,23 +24,26 @@ record the merge, then close/remove.
    Goldfish round ([goldfish-review.md](goldfish-review.md)). Record
    `"operation":"release"` with `version` (see [versioning.md](versioning.md)). If the base
    release moved on the main branch, ask the user, then add `"base_moved":true` and a `reason`.
-   The tool refuses a moved base that is occupied.
-3. Ask the user to merge each MR and name the method: `squash`, `merge` or `rebase`.
-4. After a yes, merge on the host. Record `"operation":"merge"` with `"merge_state":"merged"`,
-   `method`, `evidence` (the merge commit or URL), `merged_head` (the PR head commit that was
-   merged, as full hex) and the user's words. The tool checks `merged_head` against the diff round,
-   and against the local branch head while that branch exists (a commit that builds on it passes).
+3. Run `readiness` with `required_checks` (host-required); fix each `checks.missing` name first.
+   Ask the user to merge each MR by `squash`, `merge` or `rebase`.
+4. After a yes, merge on the host; a `local_only` worktree merges in the main checkout and its
+   `evidence` is the commit main then points to. Record `"operation":"merge"` with
+   `"merge_state":"merged"`, `method`, `evidence` (the merge commit or URL), `merged_head` (the
+   reviewed head that was merged, full hex) and the user's words. The tool checks `merged_head`
+   against the diff round, and against the local branch head while that branch exists.
 5. After a no, record `"merge_state":"declined"` with the user's words. The worktree stays.
 
-An alpha version never merges to the main branch. A worktree with no MR needs no merge.
+An alpha version never merges to the main branch.
 
 ## Clean up
 
 1. Ask only after the merge is recorded.
-2. For each recorded worktree show `git status --short --branch` (`workflow ... readiness` lists
-   findings). Ask whether to commit now (only when asked) and whether to keep or remove it.
-3. A worktree with no remote needs a current diff Goldfish round before its first closure and
-   before every remove; with its branch gone, its latest passed round stands. Record the answer:
+2. Run `workflow ... readiness`; record each worktree's `missing` delivery records first. A
+   gone directory is refused with its `git worktree add` fix. Show `git status --short --branch`;
+   ask whether to commit now (only when asked), keep or remove.
+3. A `no_remote` or `local_only` worktree needs a current diff Goldfish round before its first
+   closure and before every remove; a declined local merge needs none, and its removal names the
+   abandoned commits; with its branch gone, its latest passed round stands. Record the answer:
 
    ```json
    {"id":"worktree-close","expected_revision":N,"tokens":{"handoff":"<sha>"},
@@ -54,15 +57,15 @@ An alpha version never merges to the main branch. A worktree with no MR needs no
    entry can be decided again; include the `spec` token. A removed entry is final.
 4. `finalize` refuses an undecided or dirty worktree and, after the gate cutoff, a missing MR,
    merge decision or version record. Without Git, mark the worktree `UNVERIFIED`.
-5. If a project is cancelled with an open MR, ask the user whether to close the MR.
+5. If a project is cancelled with an open MR, ask whether to close it.
 
 ## Commit the project
 
-Do this after `finalize` and a report of the result.
+Do this after `finalize` and its report.
 
 1. Run `git -C <workspace-root> status --short`. If a path outside the project folder changed,
-   stop and ask the user. If the workspace root is no repository, say so and stop.
-2. Show the file list and a commit message. Wait for the user's yes.
+   or the workspace root is no repository, stop and say so.
+2. Show the file list and message; wait for the user's yes.
 3. Run `git -C <workspace-root> add -- <project-dir>`, then `git -C <workspace-root> commit -m
    "<message>" -- <project-dir>`. Do not push unless the user asks.
 4. Report the commit hash. Do not edit the closed project afterwards.

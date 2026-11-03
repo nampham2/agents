@@ -18,6 +18,7 @@ from typing import Any, TypeAlias
 
 import workspace_lib
 from workspace_context import worktree_observation
+from workspace_fields import FINDING_FIELDS, FINDING_REQUIRED, NESTED_INPUTS, OPERATION_FIELDS, OPERATION_REQUIRED
 from workspace_journal import document_path, list_input, object_input, snapshot, string_input
 from workspace_lib import (
     DESIGN_DOCUMENT,
@@ -47,20 +48,6 @@ COMMIT = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
 MARKER_KEYS = frozenset(
     {"target", "worktree", "pinned", "reviewed", "resolved", "outcome", "stages", "reaudit_of", "delta_of"}
 )
-FINDING_FIELDS = frozenset(
-    {"id", "reviewer", "severity", "scope", "summary", "triage", "evidence", "resolution", "artifact"}
-)
-FINDING_REQUIRED = frozenset({"id", "reviewer", "severity", "scope", "summary", "triage"})
-OPERATION_FIELDS = {
-    "open": frozenset({"operation", "target", "worktree", "commit", "stages"}),
-    "close": frozenset({"operation", "round", "reports", "findings", "confirmation"}),
-    "waive": frozenset({"operation", "target", "worktree", "commit", "reason", "confirmation"}),
-}
-OPERATION_REQUIRED = {
-    "open": frozenset({"target", "stages"}),
-    "close": frozenset({"round", "reports", "findings"}),
-    "waive": frozenset({"target", "reason", "confirmation"}),
-}
 UNIVERSAL = frozenset({"id", "expected_revision", "tokens"})
 # What an operation hands back: the documents to write, and the result to return.
 Written: TypeAlias = "tuple[dict[str, str], dict[str, Any]]"
@@ -275,7 +262,7 @@ def _target_fields(state: "dict[str, Any]", request: "dict[str, Any]") -> "tuple
 
 
 def _confirmation(value: object) -> "dict[str, str]":
-    confirmation = object_input(value, {"source", "response"}, {"source", "response"}, where="confirmation")
+    confirmation = object_input(value, *NESTED_INPUTS["confirmation"], where="confirmation")
     return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 
@@ -568,7 +555,7 @@ def _descends(repository: Path, ancestor: str, commit: str) -> bool:
 def delivery_gate_errors(
     project: Path, state: "dict[str, Any]", entry: "dict[str, Any]", event: str, request: "dict[str, Any]"
 ) -> "list[str]":
-    """The diff gate at a release, a merge record, or the first closure of a worktree with no remote."""
+    """The diff gate at a release, a merge record, or the first closure of a worktree with a pr_exemption."""
     if not workspace_lib.is_goldfish_gated() or not has_code_task(state) or not entry.get("repository"):
         return []
     if not entry.get("branch") or not entry.get("path"):
@@ -578,6 +565,8 @@ def delivery_gate_errors(
     if event == "closure":
         if "pr_exemption" not in entry:
             return []
+        if _object(entry.get("merge")).get("state") == "declined":
+            return []  # a declined local merge abandons the work: no round is owed for code that is not delivered
         closed_at = _object(entry.get("closure")).get("observed_at")
         if entry.get("status") == "kept" and not _at_or_after_instant(closed_at):
             return []  # kept before the instant: that closure counts as passed
@@ -596,13 +585,13 @@ def delivery_gate_errors(
         return round_errors(project, "diff", worktree, head)
     if event == "merge":
         if request.get("merged_head") is None:
-            return [f"{DIFF_GATE}: a merged record needs merged_head, the PR head commit that was merged"]
+            return [f"{DIFF_GATE}: a merged record needs merged_head, the head that was merged"]
         try:
             merged = checked_commit(entry["repository"], request["merged_head"])
         except WorkspaceError as error:
             return [f"{DIFF_GATE}: {error}"]
         branch_head = _query(repository, "rev-parse", ref)
-        # The pull request head may be ahead of the local branch (a suggestion committed on the host), so a
+        # The merged head may be ahead of the local branch (a suggestion committed on the host), so a
         # descendant of the branch head is accepted; it still needs a round of its own below.
         if branch_head is not None and branch_head != merged and not _descends(repository, branch_head, merged):
             return [
@@ -671,7 +660,7 @@ def _worktree_event_warnings(entry: "dict[str, Any]", passed: "set[Any]") -> "li
         if _at_or_after_instant(stamp) and not any(item[0] == "diff" and item[1] == path for item in passed)
     ]
     closed = _object(entry.get("closure")).get("observed_at")
-    if "pull_request" in entry and not merge and _at_or_after_instant(closed):
+    if workspace_lib.needs_merge(entry) and not merge and _at_or_after_instant(closed):
         found.append(f"worktree {path} was closed at {closed} with no merge recorded")
     return found
 

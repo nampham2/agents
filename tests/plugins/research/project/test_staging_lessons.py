@@ -348,3 +348,89 @@ class TestLessonHint:
             workspace_operations, "evidence_entries", return_value={"entries": [{"passed": True}], "next_offset": None}
         ):
             assert workspace_operations._had_failed_attempt(project, "T01") is False
+
+
+class TestTriageSkipsDuplicates:
+    """c11: a promotion whose body a topic already holds under another entry id is skipped, not appended."""
+
+    BODY = "A lesson already recorded."
+
+    def promotion(self, topic: str = "dup-topic", body: str = BODY) -> dict[str, Any]:
+        return {
+            "topic": topic, "body": body, "description": "Dup", "scope": "any", "kind": "method",
+            "expected_sha256": self.expected,
+        }
+
+    expected = "missing"
+
+    def triage(self, project: Path, titles: list[str], bodies: list[str], operation: str = "dup") -> dict[str, Any]:
+        from tests.plugins.research.project.test_lifecycle_commands import done, request
+
+        done(project)
+        for title, body in zip(titles, bodies, strict=True):
+            stage_lesson(project, title, body)
+        items = [
+            {"section": t, "disposition": "promote", "reason": "r", "promotion": self.promotion(body=b)}
+            for t, b in zip(titles, bodies, strict=True)
+        ]
+        payload = request(project, operation, items=items)
+        payload["tokens"] = {k: v for k, v in payload["tokens"].items() if k in ("memory-staging", "reflection")}
+        self.payload = payload
+        return workflow(project, "triage", payload)
+
+    def seed(self, project: Path, body: str) -> Path:
+        path = lib.amend_memory_topic(
+            project.parent, "dup-topic", body=body, description="Dup", kind="method", scope="any",
+            sources=["2026-01-01-001"], entry_id="earlier-entry",
+        )
+        return path
+
+    def test_a_body_the_topic_holds_under_another_id_is_skipped_and_still_resolved(self, project: Path) -> None:
+        topic = self.seed(project, self.BODY)
+        before = topic.read_text(encoding="utf-8")
+        result = self.triage(project, ["Again"], [self.BODY])
+        assert result["skipped_duplicates"] == [{"section": "Again", "topic": "dup-topic", "matched": "earlier-entry"}]
+        assert result["receipts"] == []
+        assert topic.read_text(encoding="utf-8") == before
+        assert "## Again" not in staging(project)
+        journal = json.loads((project / ".operations" / "dup.json").read_text(encoding="utf-8"))
+        assert journal["promotions"] == [] and journal["skipped_duplicates"] == result["skipped_duplicates"]
+
+    def test_a_retry_returns_the_same_skips(self, project: Path) -> None:
+        self.seed(project, self.BODY)
+        first = self.triage(project, ["Again"], [self.BODY])
+        assert workflow(project, "triage", self.payload)["skipped_duplicates"] == first["skipped_duplicates"]
+
+    def test_two_identical_bodies_in_one_triage_promote_once(self, project: Path) -> None:
+        result = self.triage(project, ["One", "Two"], [self.BODY, self.BODY])
+        assert result["skipped_duplicates"] == [{"section": "Two", "topic": "dup-topic", "matched": "item 1"}]
+        assert len(result["receipts"]) == 1
+        text = (project.parent / "memory" / "dup-topic.md").read_text(encoding="utf-8")
+        assert text.count(self.BODY) == 1
+
+    def test_a_new_body_and_an_unmarked_topic_are_not_skipped(self, project: Path) -> None:
+        topic = lib.amend_memory_topic(
+            project.parent, "dup-topic", body=self.BODY, description="Dup", kind="method", scope="any",
+            sources=["2026-01-01-001"],
+        )
+        memory = topic.parent
+        assert lib.memory_entry_digests(topic.read_text(encoding="utf-8")) == {}
+        self.expected = lib.document_sha256((memory / "dup-topic.md").read_text(encoding="utf-8"))
+        result = self.triage(project, ["Fresh"], [self.BODY])
+        assert result["skipped_duplicates"] == [] and len(result["receipts"]) == 1
+
+    def test_a_malformed_topic_slug_is_refused(self, project: Path) -> None:
+        from tests.plugins.research.project.test_lifecycle_commands import done, request
+
+        done(project)
+        stage_lesson(project, "Bad", "Body.")
+        promotion = self.promotion(topic="Bad Slug")
+        item = {"section": "Bad", "disposition": "promote", "reason": "r", "promotion": promotion}
+        payload = request(project, "bad", items=[item])
+        payload["tokens"] = {k: v for k, v in payload["tokens"].items() if k in ("memory-staging", "reflection")}
+        with pytest.raises(WorkspaceError, match="lowercase-hyphenated"):
+            workflow(project, "triage", payload)
+
+    def test_the_marker_pattern_reads_id_and_digest(self) -> None:
+        marker = lib.memory_entry_marker("abc", "body")
+        assert lib.memory_entry_digests(f"x\n{marker}\ny") == {lib.document_sha256("body"): "abc"}

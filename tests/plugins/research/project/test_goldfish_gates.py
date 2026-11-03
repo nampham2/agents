@@ -824,3 +824,78 @@ def test_a_gone_branch_with_a_round_that_was_never_accepted_says_so(gated: None,
     git(repository, "branch", "-D", BRANCH)
     with pytest.raises(WorkspaceError, match=r"its latest round \(01, open\) is not accepted"):
         close_worktree(project, linked, "remove")
+
+
+# --- c13: a local_only exemption keeps the diff gate and loses the upstream check ----------------
+
+
+def local_only(project: Path, linked: Path) -> None:
+    op(project, linked, "pull_request", exempt="local_only")
+
+
+def test_a_local_only_release_needs_a_round_but_no_upstream(gated: None, delivered: tuple[Path, Path, Path]) -> None:
+    project, linked, _ = delivered
+    local_only(project, linked)
+    write_versions(linked, "0.24.0", None)
+    commit_all(linked, "release 0.24.0")  # never pushed: no upstream exists
+    refuse_release(project, linked, "goldfish gate 'diff': no round covers the diff version")
+    diff_round(project, linked)
+    op(project, linked, "release", version="0.24.0", files=FILES)
+    assert load_state(project)["worktrees"][0]["version_line"]["release"]["version"] == "0.24.0"
+
+
+def test_a_local_merge_record_names_the_head_that_was_merged(gated: None, delivered: tuple[Path, Path, Path]) -> None:
+    project, linked, _ = delivered
+    local_only(project, linked)
+    head = prepare_release(project, linked)
+    diff_round(project, linked)
+    op(project, linked, "release", version="0.24.0", files=FILES)
+    with pytest.raises(WorkspaceError, match="needs merged_head, the head that was merged"):
+        merge_claim(project, linked)
+    merge_claim(project, linked, merged_head=head)
+    merge = load_state(project)["worktrees"][0]["merge"]
+    assert (merge["state"], merge["merged_head"]) == ("merged", head)
+    close_worktree(project, linked, "keep")  # the same round covers the closure while the branch exists
+    assert load_state(project)["worktrees"][0]["status"] == "kept"
+
+
+def test_a_declined_local_merge_closes_without_a_round(gated: None, delivered: tuple[Path, Path, Path]) -> None:
+    project, linked, _ = delivered
+    local_only(project, linked)
+    op(project, linked, "merge", merge_state="declined")
+    close_worktree(project, linked, "keep")
+    assert load_state(project)["worktrees"][0]["status"] == "kept"
+
+
+def test_a_local_worktree_with_no_merge_decision_is_still_gated_at_closure(
+    gated: None, delivered: tuple[Path, Path, Path]
+) -> None:
+    project, linked, _ = delivered
+    local_only(project, linked)
+    with pytest.raises(WorkspaceError, match="goldfish gate 'diff': no round covers"):
+        close_worktree(project, linked, "keep")
+
+
+def test_the_closure_gate_survives_a_malformed_merge_record(gated: None, delivered: tuple[Path, Path, Path]) -> None:
+    project, linked, _ = delivered
+    local_only(project, linked)
+    state = load_state(project)
+    state["worktrees"][0]["merge"] = "x"
+    assert goldfish.delivery_gate_errors(project, state, state["worktrees"][0], "closure", {})
+
+
+def test_removing_a_declined_local_worktree_reports_the_abandoned_commits(
+    gated: None, delivered: tuple[Path, Path, Path]
+) -> None:
+    from tests.plugins.research.project.test_delivery import exempt
+
+    project, linked, repository = delivered
+    local_only(project, linked)
+    exempt(project, linked)
+    (linked / "work.txt").write_text("x\n", encoding="utf-8")
+    commit_all(linked, "work that is abandoned")
+    op(project, linked, "merge", merge_state="declined")
+    git(repository, "worktree", "remove", "--force", str(linked))
+    result = close_worktree(project, linked, "remove")
+    assert any("1 commit" in note and "abandoned" in note for note in result["notes"])
+    assert load_state(project)["worktrees"][0]["status"] == "removed"

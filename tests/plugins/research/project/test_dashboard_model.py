@@ -722,3 +722,17 @@ def test_a_recorded_session_without_an_id_is_ignored(tmp_path: Path, recorded: d
 def test_a_recorded_session_with_a_non_text_directory_has_none(tmp_path: Path) -> None:
     projects = [row(ID, recorded_session={"id": "x", "cwd": 5})]
     assert dash.attach_sessions(projects, dash.SessionIndex(tmp_path))[0]["sessions"][0]["cwd"] == ""
+
+
+def test_a_local_only_exemption_shows_a_label_and_other_exemptions_show_nothing(tmp_path: Path) -> None:
+    directory = write_project(tmp_path)
+    state = json.loads((directory / "project.json").read_text())
+    state["worktrees"] = [
+        {"branch": "a", "path": "/a", "status": "active", "pr_exemption": {"reason": "local_only"}},
+        {"branch": "b", "path": "/b", "status": "active", "pr_exemption": {"reason": "no_remote"}},
+        {"branch": "c", "path": "/c", "status": "active", "pr_exemption": "x"},
+        {"branch": "d", "path": "/d", "status": "active", "pull_request": "x"},
+    ]
+    (directory / "project.json").write_text(json.dumps(state), encoding="utf-8")
+    rows = dash.build_project(directory)["worktrees"]
+    assert [row["mr"] for row in rows] == ["local only", "", "", ""]

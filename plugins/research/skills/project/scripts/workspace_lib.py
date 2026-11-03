@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
+from workspace_fields import NESTED_INPUTS, WORKTREE_OPTIONAL_FIELDS, field_errors
 from workspace_style import (
     LIMIT_STEP,
     LIMIT_TEXT,
@@ -108,8 +110,6 @@ WORKTREE_FIELDS = {
     "confirmation",
     "closure",
 }
-# Delivery records written by `workflow worktree` operations; see workspace_delivery.py.
-WORKTREE_OPTIONAL_FIELDS = {"pull_request", "pr_exemption", "version_line", "version_exemption", "merge"}
 WORKTREE_KINDS = {"created", "existing", "none"}
 WORKTREE_ROLES = {"target", "additional"}
 WORKTREE_STATUSES = {"active", "kept", "removed"}
@@ -363,6 +363,17 @@ DELIVERY_GATES_FROM = "2026-10-05T14:56:34+00:00"
 def is_delivery_gated(state: dict[str, Any]) -> bool:
     """Whether `state` was created on or after `DELIVERY_GATES_FROM`; unjudgeable means no."""
     return _created_on_or_after(state, DELIVERY_GATES_FROM)
+
+
+def needs_merge(entry: object) -> bool:
+    """Whether a worktree entry delivers by a merge: a pull request, or a `local_only` exemption.
+
+    The gates that read it run before the state validator, so it never raises on malformed JSON.
+    """
+    if not isinstance(entry, dict):
+        return False
+    exemption = entry.get("pr_exemption")
+    return "pull_request" in entry or (isinstance(exemption, dict) and exemption.get("reason") == "local_only")
 
 
 # Projects created on or after this instant close only with a `## Retro` section in the reflection:
@@ -669,8 +680,8 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
             self.acquired = False
 
 
-def _unexpected_fields(value: dict[str, Any], allowed: set[str], label: str, report: ValidationReport) -> None:
-    extras = sorted(set(value) - allowed)
+def _unexpected_fields(value: dict[str, Any], allowed: set[str] | frozenset[str], label: str, report: ValidationReport) -> None:
+    extras = field_errors(value, allowed).unknown
     if extras:
         report.errors.append(
             f"{label}: unexpected fields: {', '.join(extras)}; allowed: {', '.join(sorted(allowed))} "
@@ -678,8 +689,8 @@ def _unexpected_fields(value: dict[str, Any], allowed: set[str], label: str, rep
         )
 
 
-def _missing_fields(value: dict[str, Any], required: set[str], label: str, report: ValidationReport) -> None:
-    missing = sorted(required - set(value))
+def _missing_fields(value: dict[str, Any], required: set[str] | frozenset[str], label: str, report: ValidationReport) -> None:
+    missing = field_errors(value, frozenset(), required).missing
     if missing:
         report.errors.append(f"{label}: missing fields: {', '.join(missing)}")
 
@@ -837,6 +848,26 @@ def _validate_effect(value: object, label: str, report: ValidationReport) -> str
     return kind
 
 
+def authorization_findings(task: dict[str, Any], task_status: str | None) -> list[str]:
+    """The one rule for a task that needs authorization it does not hold: RUNNING and DONE need `explicit`."""
+    authorization = task.get("authorization")
+    if not isinstance(authorization, dict) or authorization.get("required") is not True:
+        return []
+    if isinstance(task_status, str) and task_status in {"RUNNING", "DONE"} and authorization.get("status") != "explicit":
+        return [f"{task_status} task requires explicit authorization"]
+    return []
+
+
+def receipt_findings(task: dict[str, Any]) -> list[str]:
+    """The one rule for a finished external effect: it needs a durable receipt."""
+    effect = task.get("effect")
+    kind = effect.get("kind") if isinstance(effect, dict) else None
+    receipts = task.get("receipts")
+    if kind == "external" and not (isinstance(receipts, list) and receipts):
+        return ["completed external effect requires a durable receipt"]
+    return []
+
+
 def _validate_authorization(
     value: object,
     label: str,
@@ -847,7 +878,7 @@ def _validate_authorization(
     if not isinstance(value, dict):
         report.errors.append(f"{label}: authorization must be an object")
         return
-    fields = {"required", "status", "scope", "source", "authorized_at"}
+    fields = NESTED_INPUTS["authorization"][0]
     _missing_fields(value, fields, label, report)
     _unexpected_fields(value, fields, label, report)
     required = value.get("required")
@@ -874,15 +905,15 @@ def _validate_authorization(
             report.errors.append(f"{label}: explicit authorization requires a timezone-aware authorized_at")
     elif any(value.get(field_name) is not None for field_name in ("source", "authorized_at")):
         report.errors.append(f"{label}: source and authorized_at must be null unless status is explicit")
-    if isinstance(task_status, str) and task_status in {"RUNNING", "DONE"} and required and status != "explicit":
-        report.errors.append(f"{label}: {task_status} task requires explicit authorization")
+    for finding in authorization_findings({"authorization": value}, task_status):
+        report.errors.append(f"{label}: {finding}")
 
 
 def _validate_receipt(value: object, label: str, report: ValidationReport) -> None:
     if not isinstance(value, dict):
         report.errors.append(f"{label}: receipt must be an object")
         return
-    fields = {"kind", "value", "destination", "timestamp"}
+    fields = NESTED_INPUTS["receipt"][0]
     _missing_fields(value, fields, label, report)
     _unexpected_fields(value, fields, label, report)
     for field_name in ("kind", "value", "destination"):
@@ -1898,8 +1929,8 @@ def _validate_worktrees(
         if not isinstance(confirmation, dict):
             report.errors.append(f"{label}: confirmation must be an object with source and response")
         else:
-            _missing_fields(confirmation, {"source", "response"}, f"{label}.confirmation", report)
-            _unexpected_fields(confirmation, {"source", "response"}, f"{label}.confirmation", report)
+            _missing_fields(confirmation, NESTED_INPUTS["confirmation"][1], f"{label}.confirmation", report)
+            _unexpected_fields(confirmation, NESTED_INPUTS["confirmation"][0], f"{label}.confirmation", report)
             for field_name in ("source", "response"):
                 if not _non_empty_string(confirmation.get(field_name)):
                     report.errors.append(f"{label}.confirmation: {field_name} must be a non-empty string")
@@ -2127,8 +2158,9 @@ def validate_v3_state(
             receipts = []
         for index, receipt in enumerate(receipts, start=1):
             _validate_receipt(receipt, f"{label} receipt #{index}", report)
-        if task_status == "DONE" and effect_kind == "external" and not receipts:
-            report.errors.append(f"{label}: completed external effect requires a durable receipt")
+        if task_status == "DONE":
+            for finding in receipt_findings({"effect": {"kind": effect_kind}, "receipts": receipts}):
+                report.errors.append(f"{label}: {finding}")
 
         skip_reason = task.get("skip_reason")
         block_reason = task.get("block_reason")
@@ -2453,8 +2485,9 @@ def validate_v4_state(
             receipts = []
         for index, receipt in enumerate(receipts, start=1):
             _validate_receipt(receipt, f"{label} receipt #{index}", report)
-        if task_status == "DONE" and effect_kind == "external" and not receipts:
-            report.errors.append(f"{label}: completed external effect requires a durable receipt")
+        if task_status == "DONE":
+            for finding in receipt_findings({"effect": {"kind": effect_kind}, "receipts": receipts}):
+                report.errors.append(f"{label}: {finding}")
 
         skip_reason = task.get("skip_reason")
         block_reason = task.get("block_reason")
@@ -3265,6 +3298,14 @@ def memory_topic_body(content: str) -> str:
     return ""
 
 
+MEMORY_ENTRY_MARKER = re.compile(r"<!-- memory-entry: (?P<id>\S+) (?P<digest>[0-9a-f]{64}) -->")
+
+
+def memory_entry_digests(text: str) -> dict[str, str]:
+    """Body digest to entry id for every marker in a topic file; unmarked entries are invisible."""
+    return {match["digest"]: match["id"] for match in MEMORY_ENTRY_MARKER.finditer(text)}
+
+
 def memory_entry_marker(entry_id: str, body: str) -> str:
     """The comment that makes an amendment idempotent: same id and same body is the same entry."""
     return f"<!-- memory-entry: {entry_id} {document_sha256(body)} -->"
@@ -3940,6 +3981,9 @@ class EvidenceResult:
     # c3: a deliberately failing check recorded with `--control`. The entry carries the marker and a
     # finish may cite it; it never turns the exit code into a pass.
     control: bool = False
+    # c9: `rewrite` when a pre-commit run changed files and failed on that account. Set only then, so
+    # every other journal entry and JSON result keeps its shape.
+    outcome: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -3956,6 +4000,8 @@ class EvidenceResult:
         }
         if self.hint:
             payload["hint"] = self.hint
+        if self.outcome:
+            payload["outcome"] = self.outcome
         if self.dry_run:
             payload.update(recorded=False, dry_run=True, exit_code=None, passed=None, record_id=None,
                            reference=None, command=list(self.command))
@@ -4243,6 +4289,58 @@ def _refusal_message(
     return "\n".join(lines)
 
 
+# Quoted text, escapes and comments, which a pipe or a pipefail inside them does not count. An escape
+# is matched first so an escaped quote does not open a string; a comment starts at a word boundary.
+_SCRIPT_SEGMENT = re.compile(r"\\.|'[^']*'|\"(?:\\.|[^\"\\])*\"|(?<![^\s;&|()])#[^\n]*", re.DOTALL)
+_PIPEFAIL = re.compile(r"\bset\s+(?:-[A-Za-z]+(?:\s+(?!-)\w+)?\s+)*-\w*o\s+pipefail\b")
+
+
+def _script_code(script: str) -> str:
+    """The script with quoted text, escapes and comments blanked. An unbalanced quote leaves the plain text."""
+    code = _SCRIPT_SEGMENT.sub(lambda match: " " * len(match.group(0)), script)
+    return script if "'" in code or '"' in code else code
+
+
+def _refuse_unguarded_pipe(command: Sequence[str]) -> None:
+    """Refuse an inline script that pipes without pipefail, before anything runs.
+
+    The recorded exit code of a pipeline is its last stage's, so an earlier failure would be recorded as
+    a pass. A pipefail given to the interpreter (`bash -o pipefail -c`) counts as well. A script file is
+    not scanned: that is the way out the refusal names.
+    """
+    interpreter = any(first == "-o" and second == "pipefail" for first, second in itertools.pairwise(command))
+    for script in _inline_shell_scripts(command):
+        code = _script_code(script)
+        if _UNGUARDED_PIPE.search(code) and not _PIPEFAIL.search(code) and not interpreter:
+            break
+    else:
+        return
+    raise WorkspaceError(
+        "record-evidence refuses an inline script that pipes without pipefail: the recorded exit code is the "
+        "last stage's, so an earlier failure would be recorded as a pass. Nothing was run.\n"
+        "Either add 'set -o pipefail' before the pipe, or write the check to a script file and run that file "
+        "by absolute path, which is not scanned."
+    )
+
+
+PRECOMMIT_REWRITE_PHRASE = "files were modified by this hook"
+_PRECOMMIT_WORD = re.compile(r"(?<![\w./-])pre-commit(?![\w-])")
+
+
+def command_runs_precommit(command: Sequence[str]) -> bool:
+    """True when argv runs pre-commit, directly or behind `uv run`, `uvx` or `pipx run`, or a script has it as a word.
+
+    Options are skipped, so `uv run --frozen pre-commit` counts and `cat pre-commit` does not. Not detected, by
+    design: `python -m pre_commit`, `make lint`, and a `git commit` that runs the hook.
+    """
+    words = [word for word in command if not word.startswith("-")]
+    if words and Path(words[0]).name in ("uv", "uvx", "pipx"):
+        words = [word for word in words[1:] if word not in ("run", "tool")]
+    if words and Path(words[0]).name == "pre-commit":
+        return True
+    return any(_PRECOMMIT_WORD.search(_script_code(script)) for script in _inline_shell_scripts(command))
+
+
 def _command_warnings(command: Sequence[str]) -> "list[str]":
     """Shapes of an inline shell script that have recorded a result unrelated to what was meant.
 
@@ -4263,11 +4361,6 @@ def _command_warnings(command: Sequence[str]) -> "list[str]":
         found.append(
             "the inline script contains '$(': the inner shell evaluates it, not the caller. Confirm the "
             "quoting gives the value you expect, or write the check to a file."
-        )
-    if _UNGUARDED_PIPE.search(script) and "pipefail" not in script:
-        found.append(
-            "the inline script pipes without 'set -o pipefail': the recorded exit code is the last "
-            "stage's, so an earlier failure is recorded as a pass."
         )
     return found
 
@@ -4459,6 +4552,7 @@ def record_evidence_result(
                 f"work this evidence covers. Its verification: {task.get('verification')}",
             )
 
+    _refuse_unguarded_pipe(command)
     misrooted = _misrooted_command_arguments(command, project_dir, Path(working_directory))
     if misrooted:
         raise WorkspaceError(
@@ -4537,6 +4631,19 @@ def record_evidence_result(
             "fail on the input the control describes."
         )
     outcome = "passed" if completed.returncode == 0 else "FAILED"
+    # c9: the full output is scanned here, before the tail is cut. A rewrite keeps the exit code and
+    # `passed`, so a finish cannot cite it; the warning is the summary a reader sees first.
+    rewrite = (
+        completed.returncode != 0
+        and command_runs_precommit(command)
+        and PRECOMMIT_REWRITE_PHRASE in completed.stdout + completed.stderr
+    )
+    if rewrite:
+        warnings.append(
+            "pre-commit rewrote files in this run: the recorded outcome is rewrite and the result stays FAILED, "
+            "because a rewrite can hide another hook's failure; run the check again until it passes without "
+            "rewriting."
+        )
     joined = shlex.join(command)
     heading = _evidence_heading_command(joined)
     record_id = f"ev-{uuid.uuid4().hex}"
@@ -4551,6 +4658,7 @@ def record_evidence_result(
         f"- Working directory: {working_directory}",
         f"- Exit code: {completed.returncode} ({outcome})",
         *(["- Control: true"] if control else []),
+        *(["- Outcome: rewrite"] if rewrite else []),
         "- Output decoding: UTF-8; undecodable bytes escaped as \\xNN",
         "",
     ]
@@ -4573,6 +4681,7 @@ def record_evidence_result(
         reference={"root": "workspace", "path": "evidence.md", "anchor": anchor},
         warnings=warnings,
         control=control,
+        outcome="rewrite" if rewrite else None,
         hint=_launch_hint(
             completed.returncode, completed.stdout + completed.stderr, working_directory, project_dir
         ),
@@ -5298,6 +5407,17 @@ def check_candidate(
     return check_state_candidate(project_dir, candidate, expected_revision=expected_revision)
 
 
+def transition_gate_errors(
+    project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """The design gate and the MR gate, as (errors, warnings); the one place the three call sites list them."""
+    from workspace_delivery import mr_gate_errors
+    from workspace_goldfish import design_gate_errors
+
+    errors, warnings = mr_gate_errors(project_dir, previous, candidate)
+    return design_gate_errors(project_dir, previous, candidate) + errors, warnings
+
+
 def check_state_candidate(
     project_dir: Path, candidate: dict[str, Any], *, expected_revision: int | None = None,
     check_files: bool = True,
@@ -5330,9 +5450,10 @@ def check_state_candidate(
     if check_files:
         report.errors.extend(alignment_gate_errors(project_dir, current, candidate))
         from workspace_evidence import newly_terminal_task_errors
-        from workspace_goldfish import design_gate_errors
 
-        report.errors.extend(design_gate_errors(project_dir, current, candidate))
+        gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate)
+        report.errors.extend(gate_errors)
+        report.warnings.extend(gate_warnings)
 
         accept_errors, accept_warnings = newly_terminal_task_errors(project_dir, current, candidate)
         report.errors.extend(accept_errors)
@@ -5378,12 +5499,16 @@ def commit_state(
     expected_revision: int,
     lock_timeout: float = 5.0,
     locked_guard: "Callable[[dict[str, Any]], None] | None" = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Commit an in-memory candidate through the canonical guarded transaction."""
+    """Commit an in-memory candidate through the canonical guarded transaction.
+
+    `warnings`, when given, receives the gate warnings of the commit (Git unavailable while judging).
+    """
     project_dir = project_dir.resolve()
     candidate = copy.deepcopy(candidate_state)
     with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
-        candidate = _commit_state_locked(project_dir, candidate, expected_revision, locked_guard)
+        candidate = _commit_state_locked(project_dir, candidate, expected_revision, locked_guard, warnings)
     # The commit already landed; a failed index rebuild must not read as a failed commit, or the
     # retry reloads and reports a revision conflict against the write that actually succeeded.
     _rebuild_index_after_commit(project_dir.parent, f"revision {candidate['revision']} is committed", lock_timeout)
@@ -5393,6 +5518,7 @@ def commit_state(
 def _commit_state_locked(
     project_dir: Path, candidate: dict[str, Any], expected_revision: int,
     locked_guard: Callable[[dict[str, Any]], None] | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Commit under an already-held project lock; the caller rebuilds indexes afterward."""
     current = load_json(project_dir / "project.json")
@@ -5415,9 +5541,11 @@ def _commit_state_locked(
         raise WorkspaceError(immutable_changes[0])
     transition_errors = check_state_transition(current, candidate) + alignment_gate_errors(project_dir, current, candidate)
     from workspace_evidence import newly_terminal_task_errors
-    from workspace_goldfish import design_gate_errors
 
-    transition_errors += design_gate_errors(project_dir, current, candidate)
+    gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate)
+    transition_errors += gate_errors
+    if warnings is not None:
+        warnings.extend(gate_warnings)
 
     transition_errors += newly_terminal_task_errors(project_dir, current, candidate)[0]
     if transition_errors:

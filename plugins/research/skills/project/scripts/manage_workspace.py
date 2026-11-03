@@ -198,7 +198,7 @@ def _build_parser() -> argparse.ArgumentParser:
     task.add_argument("task_id")
     task.add_argument("--expected-revision", type=int, required=True)
     task.add_argument("--reason")
-    task.add_argument("--evidence", action="append", default=[], dest="evidence_records")
+    task.add_argument("--evidence", nargs="+", action="extend", default=[], dest="evidence_records")
     task.add_argument(
         "--observation",
         action="append",
@@ -635,18 +635,21 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
             print(json.dumps(result, indent=2))
             return 0 if result["valid"] else 1
         before_tasks = _load_state(args.project_directory)["tasks"]
+        gate_warnings: list[str] = []
         if str(args.patch_json) == "-":
             patch = _read_json_object(args.patch_json)
             state = update_project_data(
                 args.project_directory, patch,
                 expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
+                warnings=gate_warnings,
             )
         else:
             state = update_project(
                 args.project_directory, args.patch_json,
                 expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
+                warnings=gate_warnings,
             )
-        warnings = verification_order_warnings(state["tasks"]) + reason_reference_warnings(
+        warnings = gate_warnings + verification_order_warnings(state["tasks"]) + reason_reference_warnings(
             before_tasks, state["tasks"], args.project_directory.resolve().parent
         )
         if args.json:
