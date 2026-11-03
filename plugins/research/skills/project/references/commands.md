@@ -1,7 +1,7 @@
 # Routine commands
 
 Use [named automation](automation.md) for composed work: `workflow <project-dir> <action> -` takes
-typed JSON on stdin. `init --json` supplies initial tokens; `update --dry-run` previews a patch.
+typed JSON on stdin.
 
 ## Retrieve
 
@@ -75,8 +75,8 @@ tail; failure returns nonzero. `--timeout <seconds>` abandons a hung command; `-
 runs elsewhere; `--dry-run` warns only.
 The command sees `$RESEARCH_PROJECT_DIR`; relative paths to `research-*` tools are
 refused. Warnings (task not `RUNNING`, heredoc, `$(` in `bash -c`) never block; an unguarded
-`bash -c` pipe is refused unless `set -o pipefail` or a script file. `pre-commit` rewrites record
-`Outcome: rewrite`.
+`bash -c` pipe (any shell) is refused unless `set -o pipefail` or a script file. A `pre-commit`
+rewrite records `Outcome: rewrite` and stays failed; rerun it.
 
 In zsh, `GID` and `path` are protected names and `$var` does not word-split; use arrays. BSD
 `sed -i ''` needs the empty suffix; `grep -e` guards patterns that start with a dash.
