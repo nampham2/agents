@@ -3973,6 +3973,9 @@ class EvidenceResult:
     # c3: a deliberately failing check recorded with `--control`. The entry carries the marker and a
     # finish may cite it; it never turns the exit code into a pass.
     control: bool = False
+    # c9: `rewrite` when a pre-commit run changed files and failed on that account. Set only then, so
+    # every other journal entry and JSON result keeps its shape.
+    outcome: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -3989,6 +3992,8 @@ class EvidenceResult:
         }
         if self.hint:
             payload["hint"] = self.hint
+        if self.outcome:
+            payload["outcome"] = self.outcome
         if self.dry_run:
             payload.update(recorded=False, dry_run=True, exit_code=None, passed=None, record_id=None,
                            reference=None, command=list(self.command))
@@ -4310,6 +4315,20 @@ def _refuse_unguarded_pipe(command: Sequence[str]) -> None:
     )
 
 
+PRECOMMIT_REWRITE_PHRASE = "files were modified by this hook"
+_PRECOMMIT_WORD = re.compile(r"(?<![\w./-])pre-commit(?![\w-])")
+
+
+def command_runs_precommit(command: Sequence[str]) -> bool:
+    """True when argv runs a program named pre-commit, or an inline script has it as an unquoted word.
+
+    Not detected, by design: `python -m pre_commit`, `make lint`, and a `git commit` that runs the hook.
+    """
+    if command and Path(command[0]).name == "pre-commit":
+        return True
+    return any(_PRECOMMIT_WORD.search(_script_code(script)) for script in _inline_shell_scripts(command))
+
+
 def _command_warnings(command: Sequence[str]) -> "list[str]":
     """Shapes of an inline shell script that have recorded a result unrelated to what was meant.
 
@@ -4600,6 +4619,19 @@ def record_evidence_result(
             "fail on the input the control describes."
         )
     outcome = "passed" if completed.returncode == 0 else "FAILED"
+    # c9: the full output is scanned here, before the tail is cut. A rewrite keeps the exit code and
+    # `passed`, so a finish cannot cite it; the warning is the summary a reader sees first.
+    rewrite = (
+        completed.returncode != 0
+        and command_runs_precommit(command)
+        and PRECOMMIT_REWRITE_PHRASE in completed.stdout + completed.stderr
+    )
+    if rewrite:
+        warnings.append(
+            "pre-commit rewrote files in this run: the recorded outcome is rewrite and the result stays FAILED, "
+            "because a rewrite can hide another hook's failure; run the check again until it passes without "
+            "rewriting."
+        )
     joined = shlex.join(command)
     heading = _evidence_heading_command(joined)
     record_id = f"ev-{uuid.uuid4().hex}"
@@ -4614,6 +4646,7 @@ def record_evidence_result(
         f"- Working directory: {working_directory}",
         f"- Exit code: {completed.returncode} ({outcome})",
         *(["- Control: true"] if control else []),
+        *(["- Outcome: rewrite"] if rewrite else []),
         "- Output decoding: UTF-8; undecodable bytes escaped as \\xNN",
         "",
     ]
@@ -4636,6 +4669,7 @@ def record_evidence_result(
         reference={"root": "workspace", "path": "evidence.md", "anchor": anchor},
         warnings=warnings,
         control=control,
+        outcome="rewrite" if rewrite else None,
         hint=_launch_hint(
             completed.returncode, completed.stdout + completed.stderr, working_directory, project_dir
         ),

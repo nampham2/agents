@@ -79,8 +79,8 @@ tail; failure returns nonzero. `--tail-lines` adjusts stored output; `--timeout 
 a hung command; `--cwd <absolute-dir>` runs elsewhere; `--dry-run` runs nothing.
 The command sees `$RESEARCH_PROJECT_DIR`; relative paths to `research-*` tools are
 refused. Warnings (task not `RUNNING`, heredoc, `$(` in `bash -c`) never block; an unguarded
-`bash -c` pipe is refused unless `set -o pipefail` or a script file.
-References have `root`, `path`, `anchor` (or null).
+`bash -c` pipe is refused unless `set -o pipefail` or a script file. `pre-commit` rewrites record
+`Outcome: rewrite`.
 
 `task ... start` resumes `EXECUTING` from `PLANNING`, `BLOCKED` or `REVIEW`, preserving review state
 and dependency/authorization guards. Reopen invalidated review acceptance as `pending`.

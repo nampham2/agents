@@ -23,13 +23,16 @@ from unittest.mock import patch
 
 import manage_workspace
 import workspace_lib
+from workspace_evidence import evidence_entries
 from workspace_lib import (
     EVIDENCE_HEADING_MAX_CHARS,
     WorkspaceError,
     allocate_project,
+    command_runs_precommit,
     record_evidence,
     record_evidence_result,
 )
+from workspace_operations import _had_failed_attempt
 
 from tests.conftest import MANAGER
 
@@ -1162,3 +1165,91 @@ class SecretReadGuardTests(_ProjectFixture):
     def test_a_secret_read_inside_command_substitution_is_refused(self) -> None:
         message = self._refused(["bash", "-c", "out=$(security find-generic-password -w); echo ${#out}"])
         self.assertIn("security find-generic-password", message)
+
+
+class PreCommitRewriteTests(_ProjectFixture):
+    """c9: a `pre-commit` run that rewrote files is recorded as outcome `rewrite`, still a failure."""
+
+    PHRASE = "files were modified by this hook"
+
+    def _fake_hook(self, *, phrase: bool, exit_code: int = 1) -> str:
+        """An executable named pre-commit, so the basename rule applies without a real hook installed."""
+        hook = self.target / "pre-commit"
+        message = f"echo '{self.PHRASE}' >&2\n" if phrase else "echo 'trailing whitespace' >&2\n"
+        hook.write_text(f"#!/bin/sh\n{message}exit {exit_code}\n", encoding="utf-8")
+        hook.chmod(0o755)
+        return str(hook)
+
+    def test_a_rewriting_hook_is_recorded_as_rewrite_and_stays_a_failure(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=True)])
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(result.outcome, "rewrite")
+        self.assertTrue(any("run the check again" in warning for warning in result.warnings))
+        text = self.evidence.read_text(encoding="utf-8")
+        self.assertIn("- Outcome: rewrite\n", text)
+        self.assertLess(text.index("- Outcome: rewrite\n"), text.index("```"))
+
+    def test_the_rewrite_outcome_reaches_the_json_result_and_the_entry_rows(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=True)])
+
+        payload = result.as_dict()
+        self.assertEqual(payload["outcome"], "rewrite")
+        self.assertFalse(payload["passed"])
+        rows = evidence_entries(self.project_dir, task_id="T01")["entries"]
+        self.assertEqual([row["outcome"] for row in rows], ["rewrite"])
+        self.assertEqual(rows[0]["passed"], False)
+
+    def test_a_plain_failure_gets_no_outcome(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=False)])
+
+        self.assertIsNone(result.outcome)
+        self.assertNotIn("outcome", result.as_dict())
+        self.assertEqual(evidence_entries(self.project_dir, task_id="T01")["entries"][0]["outcome"], None)
+        self.assertNotIn("- Outcome:", self.evidence.read_text(encoding="utf-8"))
+
+    def test_the_phrase_from_a_command_that_is_not_pre_commit_gets_no_outcome(self) -> None:
+        command = [sys.executable, "-c", f"import sys; print({self.PHRASE!r}, file=sys.stderr); sys.exit(1)"]
+        result = record_evidence_result(self.project_dir, "T01", command)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIsNone(result.outcome)
+
+    def test_a_pre_commit_run_that_passes_gets_no_outcome(self) -> None:
+        result = record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=True, exit_code=0)])
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIsNone(result.outcome)
+
+    def test_a_rewrite_counts_as_a_failed_attempt(self) -> None:
+        record_evidence_result(self.project_dir, "T01", [self._fake_hook(phrase=True)])
+
+        self.assertTrue(_had_failed_attempt(self.project_dir, "T01"))
+
+    def test_the_cli_json_reports_the_rewrite_outcome(self) -> None:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            code = _call_manage(
+                ["record-evidence", str(self.project_dir), "--task", "T01", "--json", "--",
+                 self._fake_hook(phrase=True)]
+            )
+
+        self.assertEqual(code, 1)
+        self.assertEqual(json.loads(stdout.getvalue())["outcome"], "rewrite")
+
+    def test_the_cli_prints_the_run_again_summary_on_stderr(self) -> None:
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            _call_manage(
+                ["record-evidence", str(self.project_dir), "--task", "T01", "--", self._fake_hook(phrase=True)]
+            )
+
+        self.assertIn("run the check again", stderr.getvalue())
+
+    def test_pre_commit_is_matched_by_basename_in_argv_or_an_unquoted_word_of_a_script(self) -> None:
+        self.assertTrue(command_runs_precommit(["/usr/local/bin/pre-commit", "run", "--all-files"]))
+        self.assertTrue(command_runs_precommit(["bash", "-c", "cd x && pre-commit run"]))
+        self.assertFalse(command_runs_precommit(["bash", "-c", "echo 'pre-commit'"]))
+        self.assertFalse(command_runs_precommit(["bash", "-c", "# pre-commit\nuv run pytest"]))
+        self.assertFalse(command_runs_precommit(["git", "commit", "-m", "pre-commit hook"]))
+        self.assertFalse(command_runs_precommit(["python3", "-m", "pre_commit"]))

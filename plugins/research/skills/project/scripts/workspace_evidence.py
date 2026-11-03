@@ -23,6 +23,8 @@ RECORDED = re.compile(r"^- Recorded: (?P<stamp>.+)$", re.MULTILINE)
 EXIT_CODE = re.compile(r"^- Exit code: (?P<code>-?\d+) \((?P<label>passed|FAILED)\)$", re.MULTILINE)
 # c3: a command recorded with `--control`, expected to fail on the input it exercises.
 CONTROL = re.compile(r"^- Control: true$", re.MULTILINE)
+# c9: a pre-commit run that rewrote files; the exit code and `passed` still say it failed.
+OUTCOME = re.compile(r"^- Outcome: (?P<outcome>rewrite)$", re.MULTILINE)
 OBSERVATION = re.compile(rf"^- Observation: (?P<label>passed|FAILED) \({re.escape(OBSERVATION_LABEL)}\)$", re.MULTILINE)
 
 
@@ -41,6 +43,7 @@ def _entry_rows(text: str) -> list[dict[str, Any]]:
         observations = OBSERVATION.findall(preamble)
         stamps = RECORDED.findall(preamble)
         control = CONTROL.search(preamble) is not None
+        outcomes = OUTCOME.findall(preamble)
         # Exactly one verdict line, of exactly one kind: an entry that claims both an exit code and an
         # observation is ambiguous about what kind of evidence it is, so it selects as neither.
         selectable = len(ids) == len(anchors) == 1 and len(exits) + len(observations) == 1
@@ -60,6 +63,7 @@ def _entry_rows(text: str) -> list[dict[str, Any]]:
             "recorded": stamps[0] if len(stamps) == 1 else None,
             "kind": "observation" if observations else "command",
             "control": control,
+            "outcome": outcomes[0] if len(outcomes) == 1 else None,
             "exit_code": exit_code,
             "passed": passed,
             "anchor": anchors[0] if len(anchors) == 1 else None,
