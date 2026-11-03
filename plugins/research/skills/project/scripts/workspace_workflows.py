@@ -67,6 +67,7 @@ from workspace_lib import (
     is_delivery_gated,
     is_legacy_planning_layout,
     is_retro_gated,
+    load_json,
     memory_staging_warnings,
     now_iso,
     planning_path,
@@ -263,6 +264,28 @@ def impact(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def readiness_worktrees(state: dict[str, Any], *, gated: bool) -> list[dict[str, Any]]:
+    """Active or kept repository worktrees with whether they exist and which delivery records removal lacks.
+
+    Only well-formed entries are read: readiness reports on a project whose state may be malformed.
+    `exists` is None when Git could not be consulted.
+    """
+    items = state.get("worktrees")
+    listed: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not (isinstance(item, dict) and isinstance(item.get("path"), str)):
+            continue
+        if item.get("status") not in ("active", "kept") or item.get("kind") in (None, "none"):
+            continue
+        seen = worktree_observation(Path(item["path"]))
+        listed.append({
+            "path": item["path"],
+            "exists": seen["exists"] if seen["available"] else None,
+            "missing": removal_findings(item, gated=gated),
+        })
+    return listed
+
+
 def readiness(project: Path) -> dict[str, Any]:
     """Group existing closure findings without introducing a second gate."""
     report = validate_project(project, close=True, check_index=True)
@@ -280,7 +303,15 @@ def readiness(project: Path) -> dict[str, Any]:
                 "project",
             )
             groups.setdefault(group, []).append({"level": level, "finding": finding})
-    return {"valid": report.valid, "groups": groups}
+    try:
+        state = load_json(project / "project.json")
+    except WorkspaceError:
+        state = {}
+    return {
+        "valid": report.valid,
+        "groups": groups,
+        "worktrees": readiness_worktrees(state, gated=is_delivery_gated(state)),
+    }
 
 
 def worker_events(project: Path) -> list[dict[str, Any]]:

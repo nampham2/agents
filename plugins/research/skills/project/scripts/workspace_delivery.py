@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import re
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -317,6 +318,40 @@ def _merged_head(request: dict[str, Any], state: str) -> str | None:
     return value
 
 
+def gone_worktree_hint(entry: dict[str, Any]) -> str | None:
+    """What to run when the recorded directory no longer exists, or None when there is nothing to say.
+
+    Only an entry with a string repository and branch gets a hint. The branch is probed in the
+    repository, not in the missing directory: a squash merge deletes it, and then the worktree can only
+    come back detached. Git unavailable or the repository gone gives the retry message.
+    """
+    path, repository, branch = entry.get("path"), entry.get("repository"), entry.get("branch")
+    if not (isinstance(path, str) and isinstance(repository, str) and isinstance(branch, str)):
+        return None
+    if not (repository and branch) or Path(path).exists():
+        return None
+    try:
+        readable = _git(Path(repository), "rev-parse", "--git-dir") is not None
+        present = readable and _git(Path(repository), "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    except (OSError, subprocess.TimeoutExpired):
+        readable = False
+    if not readable:
+        return "Git could not be consulted for the worktree; retry when it is available"
+    gone = f"worktree {path} no longer exists; "
+    if present:
+        return f"{gone}bring it back with: git -C {repository} worktree add {path} {branch}"
+    merge = entry.get("merge")
+    head = merge.get("merged_head") if isinstance(merge, dict) else None
+    commit = head if isinstance(head, str) and head else entry.get("base_commit")
+    if not isinstance(commit, str) or not commit:
+        return None
+    return (
+        f"{gone}branch {branch} is gone from {repository} (as after a squash merge); bring it back detached "
+        f"with: git -C {repository} worktree add --detach {path} {commit}. A detached worktree can carry an "
+        "exemption or a merge record, not a release: the version diff needs the recorded branch."
+    )
+
+
 def delivery_operation(
     worktrees: list[dict[str, Any]], path: str, operation: str, request: dict[str, Any], confirmation: dict[str, str],
     *, workspace_root: Path, project: str, gate: Gate | None = None,
@@ -329,6 +364,9 @@ def delivery_operation(
     entry = next((item for item in worktrees if item["path"] == path), None)
     if entry is None or entry["status"] != "active" or entry["kind"] == "none":
         raise WorkspaceError(f"no active repository worktree is recorded at {path}")
+    hint = gone_worktree_hint(entry)
+    if hint is not None:
+        raise WorkspaceError(hint)
     root = Path(path)
     notes: list[str] = []
     if operation == "pull_request":

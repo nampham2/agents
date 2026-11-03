@@ -289,9 +289,11 @@ def worktree_summaries(state: dict[str, Any]) -> list[dict[str, Any]]:
     summaries = []
     for item in state.get("worktrees", []):
         summary: dict[str, Any] = {"path": item["path"], "branch": item["branch"], "status": item["status"]}
+        summary["exists"] = None
         if item["kind"] != "none" and item["status"] != "removed":
             seen = worktree_observation(Path(item["path"]))
             summary["dirty"] = len(seen["dirty"]) if seen["available"] and seen["exists"] else None
+            summary["exists"] = seen["exists"] if seen["available"] else None
         summaries.append(summary)
     return summaries
 

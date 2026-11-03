@@ -38,8 +38,9 @@ An alpha version never merges to the main branch.
 ## Clean up
 
 1. Ask only after the merge is recorded.
-2. For each recorded worktree show `git status --short --branch` (`workflow ... readiness` lists
-   findings). Ask whether to commit now (only when asked) and whether to keep or remove it.
+2. Run `workflow ... readiness`; record each worktree's `missing` delivery records first. A
+   gone directory is refused with its `git worktree add` fix. Show `git status --short --branch`;
+   ask whether to commit now (only when asked), keep or remove.
 3. An exempt worktree needs a current diff Goldfish round before its first closure and before every
    remove; a declined local merge needs none, and its removal names the abandoned commits; with its
    branch gone, its latest passed round stands. Record the answer:
