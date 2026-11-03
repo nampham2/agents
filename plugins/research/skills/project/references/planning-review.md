@@ -99,7 +99,8 @@ chat transcript, with these sections (`Template: v1`):
 4. Work breakdown: milestones with `depends_on`, outputs and their roots, effects and verification
    per milestone, and the dependency diagram. Name the design profiles
    ([design-document.md](design-document.md)) when any task writes code. A task that writes to the
-   target needs the draft MR or a `local_only` exemption recorded first.
+   target needs the draft MR or an exemption recorded first, or an earlier external task that opens
+   it.
 5. Effort per workstream and overall: implementer, reuse, confidence, exclusions, sources of
    uncertainty.
 6. Edge cases and recovery at planning depth: case, expected behavior, owner and verification.

@@ -303,7 +303,10 @@ def readiness_checks(state: dict[str, Any], required: Any) -> dict[str, Any]:
     )
     if entry is None:
         return ci_checks(None, required, reason="no active target worktree entry; no CI file was read")
-    return ci_checks(Path(entry["path"]), required)
+    root = Path(entry["path"])
+    if not root.is_dir():
+        return ci_checks(None, required, reason=f"worktree {root} no longer exists; no CI file was read")
+    return ci_checks(root, required)
 
 
 def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str, Any]:

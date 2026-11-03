@@ -71,8 +71,8 @@ idempotent; different content conflicts.
 ## Evidence and effects
 
 `record-evidence <project-dir> --task T01 --json -- <command>` records actual exit code and output
-tail; failure returns nonzero. `--tail-lines` adjusts stored output; `--timeout <seconds>` abandons
-a hung command; `--cwd <absolute-dir>` runs elsewhere; `--dry-run` runs nothing.
+tail; failure returns nonzero. `--timeout <seconds>` abandons a hung command; `--cwd <absolute-dir>`
+runs elsewhere; `--dry-run` warns only.
 The command sees `$RESEARCH_PROJECT_DIR`; relative paths to `research-*` tools are
 refused. Warnings (task not `RUNNING`, heredoc, `$(` in `bash -c`) never block; an unguarded
 `bash -c` pipe is refused unless `set -o pipefail` or a script file. `pre-commit` rewrites record
@@ -90,13 +90,13 @@ research-project task <project-dir> finish T01 --evidence <id> <id> \
   --start-next T02 --expected-revision N
 ```
 
-`block` and `skip` require `--reason`; `finish --backfill --note <why>` is start plus finish (two
-commits) for work done before `start`. `read <project-dir> evidence --entries --task T01` lists
-checks; `--entry <record-id>` returns it.
+`block` and `skip` require `--reason`; `finish --backfill --note <why>` is start plus finish for
+work done before `start`. `read <project-dir> evidence --entries --task T01` lists checks;
+`--entry <record-id>` returns it.
 
 A failed `close` reports what was saved; keep drafts, reload before retrying, and use reported
-recovery, never another close. `workflow finalize` also
-saves the handoff.
+recovery (`rebuild-index` after an index failure), never repeat the update or close.
+`workflow finalize` saves the handoff.
 
 External effects: `workflow authorize` (`status: explicit`, actual `scope`, user `source`, real
 `authorized_at`; an effect change does not update it), `task start`, the effect through

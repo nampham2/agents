@@ -1054,6 +1054,12 @@ class CommandWarningTests(_ProjectFixture):
         option = self._warnings(["bash", "-o", "pipefail", "-c", "pytest | tail -5"])
         self.assertEqual([w for w in option if "task T01" not in w], [])
 
+    def test_a_later_inline_script_is_scanned_and_pipefail_may_follow_other_options(self) -> None:
+        self.assertIn("pipefail", self._refusal(["bash", "-c", "true", "bash", "-c", "pytest | tail -5"]))
+        for script in ("set -o errexit -o pipefail; a | b", "set -u -o nounset -o pipefail\na | b"):
+            with self.subTest(script=script):
+                self.assertEqual(self._shell_warnings(script), [])
+
     def test_pipefail_in_a_comment_still_refuses(self) -> None:
         self.assertIn("pipefail", self._refusal(["bash", "-c", "# set -o pipefail\npytest | tail -5"]))
 
@@ -1251,5 +1257,8 @@ class PreCommitRewriteTests(_ProjectFixture):
         self.assertTrue(command_runs_precommit(["bash", "-c", "cd x && pre-commit run"]))
         self.assertFalse(command_runs_precommit(["bash", "-c", "echo 'pre-commit'"]))
         self.assertFalse(command_runs_precommit(["bash", "-c", "# pre-commit\nuv run pytest"]))
+        self.assertTrue(command_runs_precommit(["uv", "run", "pre-commit", "run", "--all-files"]))
+        self.assertTrue(command_runs_precommit(["uvx", "pre-commit", "run"]))
+        self.assertFalse(command_runs_precommit(["uv", "run", "pytest", "-q"]))
         self.assertFalse(command_runs_precommit(["git", "commit", "-m", "pre-commit hook"]))
         self.assertFalse(command_runs_precommit(["python3", "-m", "pre_commit"]))

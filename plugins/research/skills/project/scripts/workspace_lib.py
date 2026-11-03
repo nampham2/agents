@@ -4292,7 +4292,7 @@ def _refusal_message(
 # Quoted text, escapes and comments, which a pipe or a pipefail inside them does not count. An escape
 # is matched first so an escaped quote does not open a string; a comment starts at a word boundary.
 _SCRIPT_SEGMENT = re.compile(r"\\.|'[^']*'|\"(?:\\.|[^\"\\])*\"|(?<![^\s;&|()])#[^\n]*", re.DOTALL)
-_PIPEFAIL = re.compile(r"\bset\s+(?:-\w+\s+)*-\w*o\s+pipefail\b")
+_PIPEFAIL = re.compile(r"\bset\s+(?:-[A-Za-z]+(?:\s+(?!-)\w+)?\s+)*-\w*o\s+pipefail\b")
 
 
 def _script_code(script: str) -> str:
@@ -4308,12 +4308,12 @@ def _refuse_unguarded_pipe(command: Sequence[str]) -> None:
     a pass. A pipefail given to the interpreter (`bash -o pipefail -c`) counts as well. A script file is
     not scanned: that is the way out the refusal names.
     """
-    script = _inline_shell_script(command)
-    if script is None:
-        return
-    code = _script_code(script)
     interpreter = any(first == "-o" and second == "pipefail" for first, second in itertools.pairwise(command))
-    if not _UNGUARDED_PIPE.search(code) or _PIPEFAIL.search(code) or interpreter:
+    for script in _inline_shell_scripts(command):
+        code = _script_code(script)
+        if _UNGUARDED_PIPE.search(code) and not _PIPEFAIL.search(code) and not interpreter:
+            break
+    else:
         return
     raise WorkspaceError(
         "record-evidence refuses an inline script that pipes without pipefail: the recorded exit code is the "
@@ -4328,11 +4328,11 @@ _PRECOMMIT_WORD = re.compile(r"(?<![\w./-])pre-commit(?![\w-])")
 
 
 def command_runs_precommit(command: Sequence[str]) -> bool:
-    """True when argv runs a program named pre-commit, or an inline script has it as an unquoted word.
+    """True when one of the first three argv words is pre-commit (`uv run pre-commit`), or a script has it as a word.
 
     Not detected, by design: `python -m pre_commit`, `make lint`, and a `git commit` that runs the hook.
     """
-    if command and Path(command[0]).name == "pre-commit":
+    if any(Path(word).name == "pre-commit" for word in command[:3]):
         return True
     return any(_PRECOMMIT_WORD.search(_script_code(script)) for script in _inline_shell_scripts(command))
 

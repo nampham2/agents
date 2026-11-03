@@ -8,11 +8,11 @@ commands only after the user confirms them in their own words.
 ## Before the first write
 
 1. `task ... start` and `workflow ... resume` return `worktree`. A warning means the target is a
-   repository (or linked worktree) with no record; 
+   repository (or linked worktree) with no record.
 2. Propose, do not assume. Path: `<repo-parent>/<repo-name>.worktrees/<project-id>`. Branch:
    `<prefix>/<project-id>-<slug>`, with the prefix the repository's local branches already use,
    else `project/`, and `<slug>` from the title. Also propose the empty seed commit, the push, the
-   draft MR and one approval to post replies and resolve threads on that MR. 
+   draft MR and one approval to post replies and resolve threads on that MR. Keep the user's words.
 3. Create it with `git -C <repo> worktree add -b <branch> <path>`. `git status --short --branch` in
    the main checkout must read the same before and after.
 4. Run `git commit --allow-empty`, `git push -u origin <branch>`, then `gh pr create --draft`

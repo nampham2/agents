@@ -141,3 +141,12 @@ class TestReadinessChecks:
         for items in ("x", ["x"], [{"role": "target", "status": "active", "kind": "none", "path": "/a"}]):
             assert readiness_checks({"worktrees": items}, ["x"])["root"] is None
         assert readiness_checks({}, None)["root"] is None
+
+    def test_a_gone_directory_says_so_instead_of_reporting_no_ci_file(self, tmp_path: Path) -> None:
+        from workspace_workflows import readiness_checks
+
+        gone = tmp_path / "gone"
+        entry = {"role": "target", "status": "active", "kind": "created", "path": str(gone)}
+        result = readiness_checks({"worktrees": [entry]}, ["x"])
+        assert result["root"] is None and result["missing"] == []
+        assert any("no longer exists" in note for note in result["notes"])
