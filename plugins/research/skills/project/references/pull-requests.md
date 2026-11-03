@@ -24,9 +24,9 @@ record the merge, then close/remove.
    Goldfish round ([goldfish-review.md](goldfish-review.md)). Record
    `"operation":"release"` with `version` (see [versioning.md](versioning.md)). If the base
    release moved on the main branch, ask the user, then add `"base_moved":true` and a `reason`.
-   
-3. Ask the user to merge each MR and name the method: `squash`, `merge` or `rebase`. A `local_only`
-   worktree merges locally; `evidence` is the commit main points to.
+3. Run `readiness` with `required_checks`; fix each `checks.missing` name first. Ask the user to
+   merge each MR by `squash`, `merge` or `rebase`. A `local_only` worktree merges locally;
+   `evidence` is the commit main points to.
 4. After a yes, merge on the host. Record `"operation":"merge"` with `"merge_state":"merged"`,
    `method`, `evidence` (the merge commit or URL), `merged_head` (the reviewed head that was
    merged, as full hex) and the user's words. The tool checks `merged_head` against the diff round,
@@ -57,15 +57,15 @@ An alpha version never merges to the main branch.
    entry can be decided again; include the `spec` token. A removed entry is final.
 4. `finalize` refuses an undecided or dirty worktree and, after the gate cutoff, a missing MR,
    merge decision or version record. Without Git, mark the worktree `UNVERIFIED`.
-5. If a project is cancelled with an open MR, ask the user whether to close the MR.
+5. If a project is cancelled with an open MR, ask whether to close it.
 
 ## Commit the project
 
-Do this after `finalize` and a report of the result.
+Do this after `finalize` and its report.
 
 1. Run `git -C <workspace-root> status --short`. If a path outside the project folder changed,
-   stop and ask the user. If the workspace root is no repository, say so and stop.
-2. Show the file list and a commit message. Wait for the user's yes.
+   or the workspace root is no repository, stop and say so.
+2. Show the file list and message; wait for the user's yes.
 3. Run `git -C <workspace-root> add -- <project-dir>`, then `git -C <workspace-root> commit -m
    "<message>" -- <project-dir>`. Do not push unless the user asks.
 4. Report the commit hash. Do not edit the closed project afterwards.

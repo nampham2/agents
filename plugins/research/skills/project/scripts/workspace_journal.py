@@ -146,7 +146,7 @@ READ_INPUTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "fingerprint": (frozenset({"references"}), frozenset({"references"})),
     "recover": (frozenset({"id", "apply"}), frozenset({"id"})),
     "freshness": (frozenset(), frozenset()),
-    "readiness": (frozenset(), frozenset()),
+    "readiness": (frozenset({"required_checks"}), frozenset()),
     "memory-health": (frozenset(), frozenset()),
 }
 

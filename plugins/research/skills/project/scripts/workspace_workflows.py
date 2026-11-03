@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from memory_search import memory_health
+from workspace_ci import ci_checks
 from workspace_context import (
     checkpoint_freshness,
     fingerprint,
@@ -286,7 +287,26 @@ def readiness_worktrees(state: dict[str, Any], *, gated: bool) -> list[dict[str,
     return listed
 
 
-def readiness(project: Path) -> dict[str, Any]:
+def readiness_checks(state: dict[str, Any], required: Any) -> dict[str, Any]:
+    """Required check names against the CI jobs of the active target worktree's recorded path."""
+    if required is not None and not (isinstance(required, list) and all(isinstance(n, str) and n for n in required)):
+        raise WorkspaceError("required_checks must be an array of non-empty strings")
+    items = state.get("worktrees")
+    entry = next(
+        (
+            item
+            for item in (items if isinstance(items, list) else [])
+            if isinstance(item, dict) and item.get("role") == "target" and item.get("status") == "active"
+            and item.get("kind") not in (None, "none") and isinstance(item.get("path"), str)
+        ),
+        None,
+    )
+    if entry is None:
+        return ci_checks(None, required, reason="no active target worktree entry; no CI file was read")
+    return ci_checks(Path(entry["path"]), required)
+
+
+def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str, Any]:
     """Group existing closure findings without introducing a second gate."""
     report = validate_project(project, close=True, check_index=True)
     groups: dict[str, list[dict[str, str]]] = {}
@@ -311,6 +331,7 @@ def readiness(project: Path) -> dict[str, Any]:
         "valid": report.valid,
         "groups": groups,
         "worktrees": readiness_worktrees(state, gated=is_delivery_gated(state)),
+        "checks": readiness_checks(state, (request or {}).get("required_checks")),
     }
 
 
@@ -858,6 +879,6 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
     if action == "freshness":
         return checkpoint_freshness(project)
     if action == "readiness":
-        return readiness(project)
+        return readiness(project, request)
     # Every other action returned above, and the unknown ones were refused at the top.
     return memory_health(project.parent, _load_state(project)["title"])
