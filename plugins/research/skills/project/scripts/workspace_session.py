@@ -499,6 +499,7 @@ def update_project(
     *,
     expected_revision: int,
     lock_timeout: float = 5.0,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Apply only named changes, then use the existing transaction and all its guards."""
     project_dir = project_dir.resolve()
@@ -508,6 +509,7 @@ def update_project(
         changes,
         expected_revision=expected_revision,
         lock_timeout=lock_timeout,
+        warnings=warnings,
     )
 
 
@@ -517,12 +519,14 @@ def update_project_data(
     *,
     expected_revision: int,
     lock_timeout: float = 5.0,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Apply a mapping patch without requiring the caller to create a temporary file."""
     project_dir = project_dir.resolve()
     state = prepare_update(_load_state(project_dir), patch)
     return commit_state(
         project_dir, state, expected_revision=expected_revision, lock_timeout=lock_timeout,
+        warnings=warnings,
     )
 
 

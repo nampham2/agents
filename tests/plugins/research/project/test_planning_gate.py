@@ -43,7 +43,10 @@ from workspace_lib import (
     validate_v3_state,
     validate_v4_state,
 )
-from workspace_session import validated_project_context
+from workspace_session import update_project_data, validated_project_context
+
+from tests.plugins.research.project.test_delivery import op
+from tests.plugins.research.project.test_worktrees import add_worktree, make_project, make_repository, record
 
 AGREED = "# Planning A1\n\n**Status:** agreed (confirmed 2026-09-22 by the user)\n\n## Modules\n\nOne module.\n"
 DRAFT = "# Planning A1\n\nStatus: draft\n\n## Modules\n\nOne module.\n"
@@ -361,3 +364,185 @@ def test_a_new_checkpoint_records_the_planning_source(project: Path) -> None:
     sources = recorded["sources"]
     assert set(sources) == {"spec", "planning"}
     assert sources["planning"] == document_sha256(AGREED)
+
+
+@pytest.fixture
+def repository(tmp_path: Path) -> Path:
+    return make_repository(tmp_path)
+
+
+@pytest.fixture
+def linked(repository: Path) -> Path:
+    return add_worktree(repository)
+
+
+@pytest.fixture
+def gated(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(workspace_lib, "DELIVERY_GATES_FROM", "2000-01-01T00:00:00+00:00")
+
+
+class TestMergeRequestGate:
+    """c3: a plan that puts a target-output task before an MR or an exemption record is refused."""
+
+    @staticmethod
+    def writer(task_id: str = "T01", depends_on: list[str] | None = None) -> dict[str, Any]:
+        from tests.plugins.research.project.test_workflow_automation import task
+
+        item = task(task_id, depends_on=depends_on)
+        item["outputs"] = [{"root": "target", "path": f"{task_id}.txt", "required": False}]
+        item["effect"] = {"kind": "local_write", "description": "Edit a file"}
+        return item
+
+    @staticmethod
+    def planning(project: Path) -> int:
+        from tests.plugins.research.project.test_lifecycle_commands import fill_spec
+
+        fill_spec(project)
+        update_project_data(project, {"status": "PLANNING"}, expected_revision=0)
+        return 1
+
+    def refuse_everywhere(self, project: Path, patch: dict[str, Any]) -> None:
+        from workspace_workflows import preview, workflow
+
+        revision = json.loads((project / "project.json").read_text(encoding="utf-8"))["revision"]
+        before = (project / "project.json").read_text(encoding="utf-8")
+        with pytest.raises(WorkspaceError, match=r"no merge request.*T01"):
+            update_project_data(project, patch, expected_revision=revision)
+        result = preview(project, patch, revision)
+        assert result["valid"] is False
+        assert any("no merge request" in error and "T01" in error for error in result["errors"])
+        from workspace_journal import snapshot
+
+        names = [name for name in ("handoff", "spec") if (project / f"{name}.md").exists()]
+        tokens = {name: snapshot(project / f"{name}.md")[1] for name in names}
+        with pytest.raises(WorkspaceError, match=r"no merge request.*T01"):
+            workflow(
+                project, "reconcile",
+                {"id": "reconcile-gate", "expected_revision": revision, "tokens": tokens, "patch": patch,
+                 "decision": "Plan the task", "continuation": {"next": "Plan the task"}},
+            )
+        assert (project / "project.json").read_text(encoding="utf-8") == before
+
+    def test_a_target_task_without_an_mr_is_refused_at_all_three_sites(
+        self, tmp_path: Path, repository: Path, linked: Path, gated: None
+    ) -> None:
+        project = make_project(tmp_path, repository)
+        revision = self.planning(project)
+        record(project, linked)
+        self.refuse_everywhere(project, {"tasks": [self.writer()]})
+        assert revision == 1
+
+    def test_a_recorded_exemption_or_mr_lets_the_plan_through(
+        self, tmp_path: Path, repository: Path, linked: Path, gated: None
+    ) -> None:
+        project = make_project(tmp_path, repository)
+        self.planning(project)
+        record(project, linked)
+        op(project, linked, "pull_request", exempt="local_only")
+        revision = json.loads((project / "project.json").read_text(encoding="utf-8"))["revision"]
+        update_project_data(project, {"tasks": [self.writer()]}, expected_revision=revision)
+
+    def test_an_external_ancestor_satisfies_the_gate(
+        self, tmp_path: Path, repository: Path, linked: Path, gated: None
+    ) -> None:
+        project = make_project(tmp_path, repository)
+        self.planning(project)
+        record(project, linked)
+        opener = self.writer("T01")
+        opener["outputs"] = [{"root": "external", "path": "https://github.com/o/r/pull/7", "required": False}]
+        opener["effect"] = {"kind": "external", "description": "Open the draft MR"}
+        update_project_data(
+            project, {"tasks": [opener, self.writer("T02", depends_on=["T01"])]},
+            expected_revision=json.loads((project / "project.json").read_text(encoding="utf-8"))["revision"],
+        )
+
+    def test_a_task_that_is_not_re_planned_is_not_judged(
+        self, tmp_path: Path, repository: Path, linked: Path, gated: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        project = make_project(tmp_path, repository)
+        self.planning(project)
+        record(project, linked)
+        with monkeypatch.context() as ungated:
+            ungated.setattr(workspace_lib, "DELIVERY_GATES_FROM", "2099-01-01T00:00:00+00:00")
+            update_project_data(project, {"tasks": [self.writer()]}, expected_revision=2)
+        revision = json.loads((project / "project.json").read_text(encoding="utf-8"))["revision"]
+        update_project_data(project, {"tasks": [{"id": "T01", "name": "Renamed"}]}, expected_revision=revision)
+
+    def test_a_none_target_and_an_ungated_project_pass(self, tmp_path: Path, repository: Path, linked: Path) -> None:
+        project = make_project(tmp_path, repository)
+        self.planning(project)
+        record(project, linked)
+        update_project_data(project, {"tasks": [self.writer()]}, expected_revision=2)
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        other = make_project(tmp_path / "second", plain)
+        self.planning(other)
+        record(other, plain, kind="none")
+
+    def test_a_none_target_passes_when_gated(self, tmp_path: Path, gated: None) -> None:
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        project = make_project(tmp_path, plain)
+        self.planning(project)
+        record(project, plain, kind="none")
+        update_project_data(project, {"tasks": [self.writer()]}, expected_revision=2)
+
+    def test_git_unavailable_warns_instead_of_refusing(self, tmp_path: Path, repository: Path, gated: None) -> None:
+        from workspace_lib import commit_state
+        from workspace_session import prepare_update
+        from workspace_workflows import preview
+
+        project = make_project(tmp_path, repository)
+        self.planning(project)
+        patch_dict = {"tasks": [self.writer()]}
+        with patch("workspace_context.worktree_observation", return_value={"available": False}):
+            result = preview(project, patch_dict, 1)
+            assert result["valid"] and any("Git could not be consulted" in item for item in result["warnings"])
+            warnings: list[str] = []
+            state = json.loads((project / "project.json").read_text(encoding="utf-8"))
+            commit_state(project, prepare_update(state, patch_dict), expected_revision=1, warnings=warnings)
+            from workspace_journal import snapshot
+            from workspace_workflows import workflow
+
+            names = [name for name in ("handoff", "spec") if (project / f"{name}.md").exists()]
+            reconciled = workflow(
+                project, "reconcile",
+                {"id": "reconcile-warn", "expected_revision": 2,
+                 "tokens": {name: snapshot(project / f"{name}.md")[1] for name in names},
+                 "patch": {"tasks": [self.writer("T02")]}, "decision": "Plan T02",
+                 "continuation": {"next": "Plan T02"}},
+            )
+        assert any("Git could not be consulted" in item for item in warnings)
+        assert any("Git could not be consulted" in item for item in reconciled["warnings"])
+
+    def test_malformed_state_is_the_validators_to_report(self, tmp_path: Path, gated: None) -> None:
+        from workspace_delivery import mr_gate_errors
+
+        plain = tmp_path / "plain"
+        plain.mkdir()
+        writer = self.writer()
+        base: dict[str, Any] = {
+            "created": "2026-11-01T00:00:00+00:00", "working_directory": str(plain), "tasks": [writer],
+        }
+        previous: dict[str, Any] = {"tasks": []}
+        assert mr_gate_errors(tmp_path, previous, {**base, "worktrees": "x"}) == ([], [])
+        assert mr_gate_errors(tmp_path, previous, {**base, "worktrees": [3]}) == ([], [])
+        assert mr_gate_errors(tmp_path, previous, {**base, "working_directory": 3}) == ([], [])
+        assert mr_gate_errors(tmp_path, previous, {**base, "tasks": "x"}) == ([], [])
+        assert mr_gate_errors(tmp_path, previous, base) == ([], [])  # not a repository: nothing to protect
+
+    def test_the_ancestor_walk_survives_cycles_and_bad_references(
+        self, tmp_path: Path, repository: Path, gated: None
+    ) -> None:
+        from workspace_delivery import mr_gate_errors
+
+        first = {**self.writer("T01"), "depends_on": ["T02", "T01", 7, "T09"], "outputs": [{"root": "target"}, 5]}
+        second = {**self.writer("T02", ["T01"]), "effect": "bad"}
+        third = {**self.writer("T03"), "depends_on": "T01"}
+        state: dict[str, Any] = {
+            "created": "2026-11-01T00:00:00+00:00", "working_directory": str(repository),
+            "tasks": [first, second, third],
+        }
+        errors, warnings = mr_gate_errors(tmp_path, {"tasks": []}, state)
+        assert warnings == [] and len(errors) == 1
+        assert all(task in errors[0] for task in ("T01", "T02", "T03"))

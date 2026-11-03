@@ -624,3 +624,90 @@ def closure_findings(state: dict[str, Any]) -> list[str]:
                 "a reason and their words"
             )
     return findings
+
+
+def no_merge_request_message(where: str, task_ids: list[str]) -> str:
+    """The one sentence that says target tasks are planned before any MR or exemption is recorded."""
+    return (
+        f"worktree {where} has no merge request; task(s) {', '.join(task_ids)} write to the target. Open a draft "
+        "MR, or record pr_exemption local_only; or depend on a task that does (effect external, output root "
+        "external)."
+    )
+
+
+def _objects(value: object) -> list[dict[str, Any]]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
+
+
+def _writes_target(task: dict[str, Any]) -> bool:
+    return any(output.get("root") == "target" for output in _objects(task.get("outputs")))
+
+
+def _opens_merge_request(task: dict[str, Any]) -> bool:
+    effect = task.get("effect")
+    external = isinstance(effect, dict) and effect.get("kind") == "external"
+    return external and any(output.get("root") == "external" for output in _objects(task.get("outputs")))
+
+
+def _has_external_ancestor(by_id: dict[str, dict[str, Any]], task: dict[str, Any]) -> bool:
+    """Depth first over `depends_on`; unknown ids, non-list values and cycles end the walk."""
+    seen: set[str] = set()
+    pending = [task]
+    while pending:
+        depends_on = pending.pop().get("depends_on")
+        for identifier in depends_on if isinstance(depends_on, list) else []:
+            ancestor = by_id.get(identifier) if isinstance(identifier, str) else None
+            if ancestor is None or identifier in seen:
+                continue
+            if _opens_merge_request(ancestor):
+                return True
+            seen.add(identifier)
+            pending.append(ancestor)
+    return False
+
+
+def mr_gate_errors(
+    project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """The MR gate at planning time: a changed target-output task needs an MR record, an exemption or an MR ancestor.
+
+    It runs before the state validator, so every read is guarded and malformed JSON is the validator's to
+    report. Only tasks that are new, or whose outputs or `depends_on` changed, are judged; an `authorize`
+    patch changes neither. Git unavailable gives a warning, never a refusal.
+    """
+    from workspace_context import worktree_status
+
+    if not is_delivery_gated(candidate):
+        return [], []
+    before = {item.get("id"): item for item in _objects(previous.get("tasks"))}
+    tasks = _objects(candidate.get("tasks"))
+    judged = [
+        task
+        for task in tasks
+        if _writes_target(task)
+        and isinstance(task.get("id"), str)
+        and (
+            task["id"] not in before
+            or any(task.get(key) != before[task["id"]].get(key) for key in ("outputs", "depends_on"))
+        )
+    ]
+    worktrees = candidate.get("worktrees", [])
+    if not judged or not isinstance(candidate.get("working_directory"), str) or not isinstance(worktrees, list):
+        return [], []
+    if not all(isinstance(item, dict) and "role" in item and "status" in item for item in worktrees):
+        return [], []
+    entry = next((item for item in worktrees if item["role"] == "target" and item["status"] == "active"), None)
+    if entry is not None:
+        if entry.get("kind") == "none" or "pull_request" in entry or "pr_exemption" in entry:
+            return [], []
+        where = str(entry.get("path"))
+    else:
+        status = worktree_status(candidate)
+        if not status["available"]:
+            return [], status["warnings"][:1]
+        if not status["is_repository"]:
+            return [], []
+        where = candidate["working_directory"]
+    by_id = {task["id"]: task for task in tasks if isinstance(task.get("id"), str)}
+    unprotected = [task["id"] for task in judged if not _has_external_ancestor(by_id, task)]
+    return ([no_merge_request_message(where, unprotected)] if unprotected else []), []

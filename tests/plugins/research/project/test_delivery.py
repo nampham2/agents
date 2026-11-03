@@ -7,6 +7,7 @@ import os
 import time
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest.mock import patch
 
 import pytest
 import workspace_lib
@@ -839,7 +840,10 @@ class TestGates:
         second = task("T02", depends_on=["T01"])
         second["outputs"] = [{"root": "target", "path": "y.txt", "required": False}]
         second["effect"] = {"kind": "local_write", "description": "Edit y"}
-        update_project_data(project, {"tasks": [first, second]}, expected_revision=1)
+        # A plan made before the c3 gate existed: the start gate is tested on its own here, and
+        # test_planning_gate.py covers the planning refusal.
+        with patch("workspace_delivery.mr_gate_errors", return_value=([], [])):
+            update_project_data(project, {"tasks": [first, second]}, expected_revision=1)
 
     def planned_project(self, tmp_path: Path, repository: Path, linked: Path, *, first_writes: bool = True) -> Path:
         git(repository, "remote", "add", "origin", "https://github.com/o/r.git")

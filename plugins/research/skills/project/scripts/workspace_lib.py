@@ -5332,6 +5332,17 @@ def check_candidate(
     return check_state_candidate(project_dir, candidate, expected_revision=expected_revision)
 
 
+def transition_gate_errors(
+    project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]
+) -> tuple[list[str], list[str]]:
+    """The design gate and the MR gate, as (errors, warnings); the one place the three call sites list them."""
+    from workspace_delivery import mr_gate_errors
+    from workspace_goldfish import design_gate_errors
+
+    errors, warnings = mr_gate_errors(project_dir, previous, candidate)
+    return design_gate_errors(project_dir, previous, candidate) + errors, warnings
+
+
 def check_state_candidate(
     project_dir: Path, candidate: dict[str, Any], *, expected_revision: int | None = None,
     check_files: bool = True,
@@ -5364,9 +5375,10 @@ def check_state_candidate(
     if check_files:
         report.errors.extend(alignment_gate_errors(project_dir, current, candidate))
         from workspace_evidence import newly_terminal_task_errors
-        from workspace_goldfish import design_gate_errors
 
-        report.errors.extend(design_gate_errors(project_dir, current, candidate))
+        gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate)
+        report.errors.extend(gate_errors)
+        report.warnings.extend(gate_warnings)
 
         accept_errors, accept_warnings = newly_terminal_task_errors(project_dir, current, candidate)
         report.errors.extend(accept_errors)
@@ -5412,12 +5424,16 @@ def commit_state(
     expected_revision: int,
     lock_timeout: float = 5.0,
     locked_guard: "Callable[[dict[str, Any]], None] | None" = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
-    """Commit an in-memory candidate through the canonical guarded transaction."""
+    """Commit an in-memory candidate through the canonical guarded transaction.
+
+    `warnings`, when given, receives the gate warnings of the commit (Git unavailable while judging).
+    """
     project_dir = project_dir.resolve()
     candidate = copy.deepcopy(candidate_state)
     with DirectoryLock(project_dir / ".project.lock", timeout=lock_timeout):
-        candidate = _commit_state_locked(project_dir, candidate, expected_revision, locked_guard)
+        candidate = _commit_state_locked(project_dir, candidate, expected_revision, locked_guard, warnings)
     # The commit already landed; a failed index rebuild must not read as a failed commit, or the
     # retry reloads and reports a revision conflict against the write that actually succeeded.
     _rebuild_index_after_commit(project_dir.parent, f"revision {candidate['revision']} is committed", lock_timeout)
@@ -5427,6 +5443,7 @@ def commit_state(
 def _commit_state_locked(
     project_dir: Path, candidate: dict[str, Any], expected_revision: int,
     locked_guard: Callable[[dict[str, Any]], None] | None = None,
+    warnings: list[str] | None = None,
 ) -> dict[str, Any]:
     """Commit under an already-held project lock; the caller rebuilds indexes afterward."""
     current = load_json(project_dir / "project.json")
@@ -5449,9 +5466,11 @@ def _commit_state_locked(
         raise WorkspaceError(immutable_changes[0])
     transition_errors = check_state_transition(current, candidate) + alignment_gate_errors(project_dir, current, candidate)
     from workspace_evidence import newly_terminal_task_errors
-    from workspace_goldfish import design_gate_errors
 
-    transition_errors += design_gate_errors(project_dir, current, candidate)
+    gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate)
+    transition_errors += gate_errors
+    if warnings is not None:
+        warnings.extend(gate_warnings)
 
     transition_errors += newly_terminal_task_errors(project_dir, current, candidate)[0]
     if transition_errors:

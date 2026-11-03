@@ -366,13 +366,15 @@ def _run_operation(
                     report = check_state_candidate(project, candidate, expected_revision=expected, check_files=False)
                     if report.errors:
                         raise WorkspaceError("; ".join(report.errors))
-                    from workspace_goldfish import design_gate_errors
+                    from workspace_lib import transition_gate_errors
 
-                    # The commit paths run this gate too, but only after the documents are written; the
+                    # The commit paths run these gates too, but only after the documents are written; the
                     # preflight refuses before anything is journaled.
-                    gated = design_gate_errors(project, state, candidate)
+                    gated, gate_warnings = transition_gate_errors(project, state, candidate)
                     if gated:
                         raise WorkspaceError("; ".join(gated))
+                    if gate_warnings:
+                        result["warnings"] = gate_warnings
                 journal = {
                     "kind": "metadata",
                     "id": operation_id,
