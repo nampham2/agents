@@ -60,7 +60,9 @@ independent level-two `section` in staging and supplies `disposition` (`promote`
 
 Existing topics use their current token; new ones require description/kind/scope. Triage records
 promotion source IDs, deduplicated incident identities and destination receipts before removing
-selected staging sections. Unselected sections remain untouched; decisions remain in the journal.
+selected staging sections. A body the topic already holds under another entry is skipped,
+listed in `skipped_duplicates`; unmarked older entries are not seen. Unselected sections
+remain untouched; decisions remain in the journal.
 For local reflection/discard, omit promotion fields. Topic-rule rewrites still use guarded
 `compact-memory` after judgment; promotion appends an incident to an existing rule.
 

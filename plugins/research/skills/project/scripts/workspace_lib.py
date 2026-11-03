@@ -3298,6 +3298,14 @@ def memory_topic_body(content: str) -> str:
     return ""
 
 
+MEMORY_ENTRY_MARKER = re.compile(r"<!-- memory-entry: (?P<id>\S+) (?P<digest>[0-9a-f]{64}) -->")
+
+
+def memory_entry_digests(text: str) -> dict[str, str]:
+    """Body digest to entry id for every marker in a topic file; unmarked entries are invisible."""
+    return {match["digest"]: match["id"] for match in MEMORY_ENTRY_MARKER.finditer(text)}
+
+
 def memory_entry_marker(entry_id: str, body: str) -> str:
     """The comment that makes an amendment idempotent: same id and same body is the same entry."""
     return f"<!-- memory-entry: {entry_id} {document_sha256(body)} -->"
