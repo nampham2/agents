@@ -86,6 +86,25 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.32.0 clearer refusals, local-only delivery, stricter readiness
+
+The `project` skill implements thirteen changes from retro 2026-10-28-001. Each one makes the tool
+refuse or report a case that a reference used to state only in prose.
+
+- **Refusals.** Unknown, missing and nested field errors come from one key-set module, and
+  `--schema` prints nested keys, exempt variants and `merged_head`. Task start, finish,
+  `finish --start-next` and backfill share one precondition message.
+- **Local-only delivery.** A worktree records a `pr_exemption` with reason `local_only` and the
+  user's words. A release, a local merge record, closure and removal accept it, and a release
+  replaces a version exemption.
+- **Guards.** A target task planned before the draft MR or exemption is refused.
+  `record-evidence` refuses an unguarded pipe in an inline script, and a pre-commit rewrite is
+  recorded as its own outcome.
+- **Readiness.** It lists missing delivery records, hints at recovery for a gone worktree and
+  compares required checks with CI job names.
+- **Smaller changes.** `commands.md` names the zsh and BSD shell pitfalls, `task finish --evidence`
+  takes several ids in one flag, and `triage` skips a lesson that a topic already holds.
+
 ### 0.31.0 Goldfish review gates
 
 The `project` skill adds an Elephant-Goldfish review, after the
