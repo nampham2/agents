@@ -364,11 +364,38 @@ def session_observation() -> dict[str, str] | None:
     return None
 
 
+STOPPING_LABELS = ("waiting", "blocked", "ready for handoff")
+
+
+def infer_stop_reason(project: Path, state: dict[str, Any], continuation: Any) -> str | None:
+    """The stop_reason a stopping checkpoint omitted, when `next_move` names one; otherwise None.
+
+    The label is read the way `render_checkpoint` reads it, from the supplied continuation and else from the
+    saved handoff. An empty stop_reason counts as omitted; a non-empty one is never replaced.
+    """
+    if not isinstance(continuation, dict) or continuation.get("stop_reason"):
+        return None
+    label = continuation.get("session")
+    if label is None:
+        previous = checkpoint_data(project)
+        label = previous["continuation"].get("session", "working") if previous else "working"
+    return next_move(state)["stop_reason"] if label in STOPPING_LABELS else None
+
+
+def next_hint(state: dict[str, Any]) -> str | None:
+    """What `next_move` says to do instead of stopping, for the refusal that names a missing stop_reason."""
+    move = next_move(state)
+    if move["continue"] is None:
+        return None
+    return f"next_move says continue {move['continue']}: {move['move_detail']}"
+
+
 def render_checkpoint(
     project: Path,
     state: dict[str, Any],
     changes: dict[str, Any],
     documents: dict[str, str] | None = None,
+    next_hint: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Merge explicitly supplied continuation fields, deriving mechanical metadata."""
     object_input(changes, CONTINUATION_FIELDS | {"import_legacy"})
@@ -404,7 +431,7 @@ def render_checkpoint(
     elif continuation.get("stop_reason") not in STOP_REASONS:
         raise WorkspaceError(
             f"session {session_label!r} needs a stop_reason, one of: {', '.join(STOP_REASONS)}. Continue the "
-            "next ready task instead of stopping when none of them applies"
+            "next ready task instead of stopping when none of them applies" + (f" ({next_hint})" if next_hint else "")
         )
     sources = {}
     for name in ("spec", "planning"):

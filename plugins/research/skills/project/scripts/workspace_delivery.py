@@ -383,7 +383,10 @@ def delivery_operation(
 CONFIRMATION = NESTED_INPUTS["confirmation"][0]
 
 # The sentence the operation code raises for a key; the combined refusal repeats it for callers who search for it.
+PATH_HINT = "path must be non-empty text; use <repo-parent>/<repo>.worktrees/<project-id>"
+
 KEY_HINTS = {
+    "path": PATH_HINT,
     "files": "files are required for the first alpha or release record",
     "reason": "reason must be non-empty text",
     "evidence": "evidence must be non-empty text",
@@ -393,6 +396,18 @@ KEY_HINTS = {
     "host": "a pull_request record needs host, url and number, or exempt no_remote or local_only",
     "url": "a pull_request record needs host, url and number, or exempt no_remote or local_only",
     "number": "a pull_request record needs host, url and number, or exempt no_remote or local_only",
+}
+
+# The same for `workflow confirm`: what each required key is, so a missing one is a single retry.
+CONFIRM_HINTS = {
+    "kind": "kind is requirements, planning or alignment",
+    "review_id": "review_id is the identifier (A1, A2) written in planning.md",
+    "response": "response is the user's actual words",
+    "source": "source says where the user answered",
+    "scope": "scope names what the user agreed to",
+    "proposal_sha256": "proposal_sha256 is the document token that research-project context prints",
+    "requirements_sha256": "requirements_sha256 is the spec token that research-project context prints",
+    "planning_sha256": "planning_sha256 is the planning token that research-project context prints",
 }
 
 
