@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from memory_search import creation_gate, rank_topics, search_postmortems
+from workspace_context import compact_context, start_project
 from workspace_documents import (
     FRICTION_KINDS,
     WHOLE_DOCUMENTS,
@@ -30,7 +31,6 @@ from workspace_lib import (
     ROOT_SEARCH_MAX_DEPTH,
     WORKSPACE_ROOT_ENV_VAR,
     WorkspaceError,
-    allocate_project,
     amend_memory_topic,
     apply_migration,
     check_candidate,
@@ -54,10 +54,9 @@ from workspace_lib import (
     resolve_workspace_root,
     retire_memory_topic,
     validate_v3_state,
-    vcs_warnings,
     verification_order_warnings,
 )
-from workspace_operations import CloseOperationError, close_project, task_operation
+from workspace_operations import CloseOperationError, close_project, finish_and_checkpoint, init_project, task_operation
 from workspace_retro import record_run, record_schema, retro_batch
 from workspace_session import (
     _load_state,
@@ -68,7 +67,7 @@ from workspace_session import (
     update_project_data,
     validated_project_context,
 )
-from workspace_similar import check_new_project, find_similar
+from workspace_similar import find_similar
 from workspace_workflows import FIELDS, READ_ACTIONS, input_schema, preview, workflow
 
 
@@ -103,6 +102,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", help="return path, revision, roots, document tokens and warnings"
     )
 
+    start = subparsers.add_parser(
+        "start", help="Find, create or resume a project and print its compact context in one call"
+    )
+    start.add_argument("--workspace-root", type=Path, help=f"workspace root; defaults to ${WORKSPACE_ROOT_ENV_VAR}")
+    start.add_argument("--project-dir", type=Path, help="resume this project")
+    start.add_argument("--title", help="find a project by title (needs --working-directory)")
+    start.add_argument("--working-directory", type=Path)
+    start.add_argument(
+        "--create",
+        action="store_true",
+        help="run init when no live project looks like this title; a look-alike on the same repository is "
+        "resumed instead, and a genuinely new project then needs `init --acknowledge-duplicates <project-id>`",
+    )
+    start.add_argument("--create-root", action="store_true", help="with --create: create a missing workspace root")
+    start.add_argument("--briefing", action="store_true", help="with --create: scaffold an optional briefing")
+    start.add_argument("--lock-timeout", type=float, default=5.0)
+
     automation = subparsers.add_parser("workflow", help="Named lifecycle automation with closed JSON input schemas")
     automation.add_argument("project_directory", type=Path)
     automation.add_argument("action", choices=sorted(FIELDS.keys() | READ_ACTIONS))
@@ -115,7 +131,10 @@ def _build_parser() -> argparse.ArgumentParser:
 
     context = subparsers.add_parser("context", help="Print bounded resume context without completed task history")
     context.add_argument("project_directory", type=Path)
-    context.add_argument("--limit", type=int, default=5)
+    context.add_argument("--limit", type=int, default=None, help="active tasks to list (default 5)")
+    context.add_argument(
+        "--compact", action="store_true", help="the project-level summary in one object; no other projection"
+    )
     context.add_argument("--task", help="include one complete task definition")
     context.add_argument(
         "--worker", action="store_true", help="return only the selected task and dependency references"
@@ -542,24 +561,10 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
     """Run one parsed command and return its exit code; workspace errors propagate to `main`."""
     if args.command == "init":
         workspace_root = resolve_workspace_root(args.workspace_root)
-        # Before the directory exists: a refused init leaves nothing behind, and only the user's answer
-        # lets a live look-alike pass.
-        similar_warnings = check_new_project(
-            workspace_root, args.title, args.working_directory, args.acknowledge_duplicates
+        project_dir, warnings = init_project(
+            workspace_root, args.title, args.working_directory, acknowledged=args.acknowledge_duplicates,
+            lock_timeout=args.lock_timeout, create_root=args.create_root, briefing=args.briefing,
         )
-        project_dir = allocate_project(
-            workspace_root,
-            title=args.title,
-            working_directory=args.working_directory,
-            lock_timeout=args.lock_timeout,
-            create_root=args.create_root,
-            briefing=args.briefing,
-            acknowledged_duplicates=args.acknowledge_duplicates,
-        )
-        # Warned at init as well as at validation, because this is the moment someone chooses
-        # where the record of the work will live. Checked after allocation, since --create-root
-        # means the directory to check may not have existed a moment ago.
-        warnings = [*similar_warnings, *vcs_warnings(workspace_root)]
         for warning in warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
         if args.json:
@@ -569,6 +574,17 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         else:
             print(project_dir)
         return 0
+
+    if args.command == "start":
+        result, code = start_project(
+            args.workspace_root, project_dir=args.project_dir, title=args.title,
+            working_directory=args.working_directory, create=args.create, create_root=args.create_root,
+            briefing=args.briefing, lock_timeout=args.lock_timeout,
+        )
+        for warning in result.get("warnings", []):
+            print(f"WARNING: {warning}", file=sys.stderr)
+        print(json.dumps(result, indent=2))
+        return code
 
     if args.command == "workflow":
         if args.schema:
@@ -581,14 +597,24 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         return 1 if result.get("valid") is False or result.get("passed") is False else 0
 
     if args.command == "context":
+        limit = 5 if args.limit is None else args.limit
+        if args.compact:
+            if args.validate or args.task is not None or args.worker or args.task_only or args.limit is not None:
+                raise WorkspaceError(
+                    "context --compact cannot be combined with --validate, --task, --worker, --task-only or --limit"
+                )
+            print(json.dumps(compact_context(
+                validated_project_context(args.project_directory, limit=limit), _load_state(args.project_directory),
+            ), indent=2))
+            return 0
         if args.validate:
             if args.task is not None or args.worker or args.task_only:
                 raise WorkspaceError("context --validate cannot be combined with task projections")
-            result = validated_project_context(args.project_directory, limit=args.limit)
+            result = validated_project_context(args.project_directory, limit=limit)
             print(json.dumps(result, indent=2))
             return 0 if result["validation"]["valid"] else 1
         print(json.dumps(project_context(
-            args.project_directory, limit=args.limit, task_id=args.task,
+            args.project_directory, limit=limit, task_id=args.task,
             worker=args.worker, task_only=args.task_only,
         ), indent=2))
         return 0
@@ -702,12 +728,21 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         return 0
 
     if args.command == "task":
-        print(json.dumps(task_operation(
-            args.project_directory, args.action, args.task_id, expected_revision=args.expected_revision,
-            reason=args.reason, evidence_record_ids=args.evidence_records, start_next=args.start_next,
-            lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
-            observation_record_ids=args.observation_records,
-        ), indent=2))
+        if args.action == "finish":
+            result = finish_and_checkpoint(
+                args.project_directory, args.task_id, expected_revision=args.expected_revision,
+                evidence_record_ids=args.evidence_records, start_next=args.start_next,
+                lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
+                observation_record_ids=args.observation_records,
+            )
+        else:
+            result = task_operation(
+                args.project_directory, args.action, args.task_id, expected_revision=args.expected_revision,
+                reason=args.reason, evidence_record_ids=args.evidence_records, start_next=args.start_next,
+                lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
+                observation_record_ids=args.observation_records,
+            )
+        print(json.dumps(result, indent=2))
         return 0
 
     if args.command == "close":

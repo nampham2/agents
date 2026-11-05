@@ -23,7 +23,7 @@ from workspace_journal import (
     snapshot,
     string_input,
 )
-from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso
+from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso, resolve_workspace_root
 from workspace_session import (
     STOP_REASONS,
     _headings,
@@ -32,6 +32,7 @@ from workspace_session import (
     project_context,
     validated_project_context,
 )
+from workspace_similar import find_similar
 
 CHECKPOINT = re.compile(r"\A<!-- research-checkpoint-v1\n(.*?)\n-->\n", re.DOTALL)
 # `key.title()` would print "Do_Not"; the one field whose heading is not its name.
@@ -603,3 +604,81 @@ def fingerprint(project: Path, references: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+COMPACT_NOTE = "tokens are valid until the next write; validation findings are omitted, run context --validate for them"
+
+
+def compact_context(payload: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """The project-level summary of `context` in one object: what an agent needs to resume and write."""
+    move = next_move(state)
+    return {
+        "project_dir": payload["roots"]["workspace"],
+        "revision": payload["revision"],
+        "roots": payload["roots"],
+        "tokens": payload["tokens"],
+        "current_tasks": state.get("current_tasks", []),
+        "next_move": {key: move[key] for key in ("continue", "stop_reason", "move_detail")},
+        "valid": payload["validation"]["valid"],
+        "compact": True,
+        "note": COMPACT_NOTE,
+    }
+
+
+def start_project(
+    workspace_root: Path | None,
+    *,
+    project_dir: Path | None = None,
+    title: str | None = None,
+    working_directory: Path | None = None,
+    create: bool = False,
+    create_root: bool = False,
+    briefing: bool = False,
+    lock_timeout: float = 5.0,
+    limit: int = 5,
+) -> tuple[dict[str, Any], int]:
+    """Find, create or resume a project and return its compact context with the exit code.
+
+    A title resumes a project only when exactly one live look-alike is on the same repository; several
+    matches, or one elsewhere, come back as candidates and nothing is chosen. `create` runs init when there
+    is no look-alike at all.
+    """
+    if project_dir is not None and (title is not None or working_directory is not None):
+        raise WorkspaceError(
+            "give --project-dir to resume, or --title and --working-directory to find or create"
+        )
+    matched: dict[str, Any] | None = None
+    warnings: list[str] = []
+    if project_dir is None:
+        if title is None or working_directory is None:
+            raise WorkspaceError("give --project-dir to resume, or --title together with --working-directory")
+        root = resolve_workspace_root(workspace_root)
+        blocking = find_similar(root, title, working_directory)["blocking"] if root.is_dir() else []
+        if len(blocking) == 1 and blocking[0]["same_repository"]:
+            matched = blocking[0]
+            project_dir = root / matched["project"]
+        elif blocking:
+            return {"candidates": blocking}, 1
+        elif not create:
+            return {"candidates": []}, 0
+        else:
+            from workspace_operations import init_project
+
+            project_dir, warnings = init_project(
+                root, title, working_directory, lock_timeout=lock_timeout, create_root=create_root,
+                briefing=briefing,
+            )
+    project_dir = project_dir.resolve()
+    payload = validated_project_context(project_dir, limit=limit)
+    state = _load_state(project_dir)
+    result = compact_context(payload, state)
+    move = result["next_move"]["continue"]
+    task_ids = {task["id"] for task in state["tasks"]}
+    result["assignment"] = (
+        project_context(project_dir, limit=limit, task_id=move, task_only=True) if move in task_ids else None
+    )
+    if matched is not None:
+        result["matched"] = {key: matched[key] for key in ("project", "title", "status", "score", "same_repository")}
+    if warnings:
+        result["warnings"] = warnings
+    return result, 0

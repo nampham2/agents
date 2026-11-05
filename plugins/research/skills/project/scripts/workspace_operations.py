@@ -4,14 +4,17 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import re
 from pathlib import Path
 from typing import Any
 
 from workspace_documents import append_record, edit_document
 from workspace_evidence import evidence_entries, evidence_findings, selected_evidence_references
+from workspace_journal import OperationError, snapshot
 from workspace_lib import (
     WorkspaceConflict,
     WorkspaceError,
+    allocate_project,
     authorization_findings,
     commit_state,
     now_iso,
@@ -20,8 +23,10 @@ from workspace_lib import (
     staged_lesson_lines,
     task_stamps_enabled,
     validate_project,
+    vcs_warnings,
 )
-from workspace_session import _load_state, next_move
+from workspace_session import _load_state, document_tokens, next_move
+from workspace_similar import check_new_project
 
 
 class CloseOperationError(WorkspaceError):
@@ -421,3 +426,120 @@ def close_project(
         "reflection": reflection_result,
         "validation": {"valid": report.valid, "errors": report.errors, "warnings": report.warnings},
     }
+
+
+def init_project(
+    workspace_root: Path,
+    title: str,
+    working_directory: Path,
+    *,
+    acknowledged: list[str] | None = None,
+    lock_timeout: float = 5.0,
+    create_root: bool = False,
+    briefing: bool = False,
+) -> tuple[Path, list[str]]:
+    """Allocate a project and return its directory with the warnings to show; `init` and `start` share it."""
+    acknowledged = acknowledged or []
+    # Before the directory exists: a refused init leaves nothing behind, and only the user's answer
+    # lets a live look-alike pass.
+    similar_warnings = check_new_project(workspace_root, title, working_directory, acknowledged)
+    project_dir = allocate_project(
+        workspace_root,
+        title=title,
+        working_directory=working_directory,
+        lock_timeout=lock_timeout,
+        create_root=create_root,
+        briefing=briefing,
+        acknowledged_duplicates=acknowledged,
+    )
+    # Warned at init as well as at validation, because this is the moment someone chooses where the record
+    # of the work will live. Checked after allocation, since create_root means the directory to check may not
+    # have existed a moment ago.
+    return project_dir, [*similar_warnings, *vcs_warnings(workspace_root)]
+
+
+VALIDATION_FAILED = "candidate validation failed:"
+OUTPUT_ERROR = re.compile(r"^(?P<owner>task \S+ output #\d+): (?P<rest>.+)$")
+
+
+def _group_by_output(message: str) -> str:
+    """Regroup the bullets of a candidate-validation refusal per output, keeping its first line.
+
+    Bullets that name one output of one task move under a single heading, so a finish with several
+    problems on an output reads as one fix. Any other bullet, and a message that is not a validation
+    refusal, is returned as it was.
+    """
+    if not message.startswith(VALIDATION_FAILED + "\n- "):
+        return message
+    bullets = message[len(VALIDATION_FAILED) + 1 :].split("\n- ")
+    bullets[0] = bullets[0][2:]
+    groups: dict[str, list[str]] = {}
+    plain: list[str] = []
+    for bullet in bullets:
+        found = OUTPUT_ERROR.match(bullet)
+        if found:
+            groups.setdefault(found["owner"], []).append(found["rest"])
+        else:
+            plain.append(bullet)
+    lines = [VALIDATION_FAILED]
+    for owner, rests in groups.items():
+        lines.append(f"- {owner}: " + "; ".join(rests))
+    lines += [f"- {bullet}" for bullet in plain]
+    return "\n".join(lines)
+
+
+def finish_and_checkpoint(
+    project_dir: Path,
+    task_id: str,
+    *,
+    expected_revision: int,
+    evidence_record_ids: list[str] | None = None,
+    start_next: str | None = None,
+    lock_timeout: float = 5.0,
+    backfill: bool = False,
+    note: str | None = None,
+    observation_record_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Finish a task, regrouping a validation refusal per output, and save a checkpoint after `--start-next`.
+
+    The task operation runs once, whichever path it takes, and the checkpoint follows it, so a failed
+    checkpoint can never be mistaken for a failed finish. The checkpoint writes `handoff.md` only and uses no
+    revision, so the revision in the result still fits the next `task start`.
+    """
+    project_dir = project_dir.resolve()
+    try:
+        result = task_operation(
+            project_dir, "finish", task_id, expected_revision=expected_revision,
+            evidence_record_ids=evidence_record_ids, start_next=start_next, lock_timeout=lock_timeout,
+            backfill=backfill, note=note, observation_record_ids=observation_record_ids,
+        )
+    except WorkspaceError as error:
+        regrouped = _group_by_output(str(error))
+        if regrouped == str(error):
+            raise
+        raise WorkspaceError(regrouped) from error
+    if start_next is None:
+        return result
+    from workspace_context import checkpoint_data
+    from workspace_workflows import workflow
+
+    existing, _ = snapshot(project_dir / "handoff.md")
+    if existing and checkpoint_data(project_dir) is None:
+        result["checkpoint_skipped"] = "legacy handoff"
+        return result
+    request = {
+        "id": re.sub(r"[^a-z0-9-]", "-", f"finish-{task_id}-{result['revision']}".lower())[:64],
+        "expected_revision": result["revision"],
+        "tokens": {"handoff": document_tokens(project_dir)["handoff"]},
+        "continuation": {"next": result["move_detail"], "session": "working"},
+    }
+    try:
+        workflow(project_dir, "checkpoint", request)
+    except (WorkspaceError, OSError) as error:
+        failed = {
+            **result, "operation": "task.finish", "committed": True, "saved": ["finish"],
+            "recovery": "run workflow checkpoint", "error": str(error),
+        }
+        raise OperationError(str(error), failed) from error
+    result["checkpoint"] = "saved"
+    return result
