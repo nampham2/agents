@@ -1,6 +1,7 @@
 # Merge requests and delivery
 
-Read this before a review ask, a test deploy and repository closure. An MR means a GitHub pull request or a GitLab merge request.
+Read this before a review ask, a test deploy and repository closure. An MR means a GitHub pull
+request or a GitLab merge request.
 
 ## Before asking for review or deploying a test
 

@@ -1,7 +1,8 @@
 # Repository worktrees
 
 Every repository a project writes to gets its own git worktree and a draft merge request (MR; a
-GitHub pull request or GitLab merge request). Both are recorded in `project.json` before the first write. The agent runs Git and host commands only after the user confirms them.
+GitHub pull request or GitLab merge request). Both are recorded in `project.json` before the
+first write. The agent runs Git and host commands only after the user confirms them.
 
 ## Before the first write
 
@@ -32,7 +33,8 @@ GitHub pull request or GitLab merge request). Both are recorded in `project.json
    a non-repository target once. Fix refusals in the worktree, not the request.
 6. Record the MR with `"operation":"pull_request"`, `host` (`github` or `gitlab`), `url` and
    `number`. A repository with no remote records `"exempt":"no_remote"` instead; a project never
-   pushed records `"exempt":"local_only"`, with the user's words. A non-repository target needs neither.
+   pushed records `"exempt":"local_only"`, with the user's words. A non-repository target needs
+   neither.
 7. Record an alpha line only for a test or experiment build, and the version decision before
    closing ([versioning.md](versioning.md)).
 

@@ -1,8 +1,8 @@
 # Writing rules for project records
 
 Write the specification, planning, task fields, handoff and notes with these 45 rules.
-They are inspired by ASD-STE100. Thirteen come from the public STE list (D). The other 32 are
-project rules (I). Do not claim that a record follows STE.
+They are inspired by ASD-STE100. Thirteen come from the public list (D).
+The other 32 are marked (I) as project rules. Do not claim that a record follows STE.
 
 `research-validate` reports five kinds of finding as advice. It checks form only and skips quoted
 text, code, tables and headings. Preferred words are in

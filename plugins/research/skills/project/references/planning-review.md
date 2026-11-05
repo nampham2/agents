@@ -31,7 +31,7 @@ Medium and high effort keep full coverage and separate confirmations.
 ## Make effort reviewable
 
 Rate effort per workstream and overall as low, medium or high before creating tasks.
-Never estimate in time units. Name external waits as dependencies.
+Never estimate in hours, days or other time units. Name external waits as dependencies.
 
 - Low: one module or file family, existing patterns, no new interface, migration or external
   system, one or two tasks, no open unknowns.
