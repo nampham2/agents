@@ -1,79 +1,74 @@
 # Keep project context durable
 
-Save facts that change the next action, its constraints or rationale. Persistence is event-driven,
-not background autosave. Use guarded commands from [commands.md](commands.md).
+Save facts that change the next action, its constraints or rationale. Persistence is event-driven.
+Use guarded commands from [commands.md](commands.md).
 Write each record as [writing-rules.md](writing-rules.md) says.
 
 ## Save at the point of use
 
 Save consequential user input before dependent work, answered interview/review rounds before the
-next question, and findings before switching work. Preserve sources, qualifications, rejected
-alternatives and uncertainty; proposals remain pending. Routine corrections follow the short path
-in the skill; invalidated assignments/agreement need
-[execution-changes.md](execution-changes.md).
+next question, and findings before switching work. Keep sources, rejected alternatives and
+uncertainty. Proposals stay pending. Invalidated assignments/agreement need
+[execution-changes.md](execution-changes.md); routine corrections use the skill's short path.
 
-Before launching a long command or worker, save intent, affected paths and recovery details; append
-its handle when available and its outcome when observed. Native workers follow
-[task-workers.md](task-workers.md). Unknown ownership blocks conflicting writes.
+Before a long command or worker, save intent, affected paths and recovery details; append its handle
+and outcome. Native workers follow [task-workers.md](task-workers.md). Unknown ownership blocks
+conflicting writes.
 
 ## Put each fact in its owning record
 
 | Information | Record |
 | --- | --- |
-| Current requirements and constraints | Canonical sections of `spec.md`. |
-| Consequential decisions and confirmations | Dated `append ... decision` entries, with source, scope and superseded decision. |
-| Plan, alternatives and agreement | `planning.md`, with review ID and truthful draft/agreed status. |
+| Requirements and constraints | Canonical sections of `spec.md`. |
+| Consequential decisions and confirmations | Dated `append ... decision` entries with source, scope and superseded decision. |
+| Plan, alternatives and agreement | `planning.md`, with review ID and true draft/agreed status. |
 | Technical design | `artifacts/architecture.md`. |
-| Findings, partial work and worker recovery | `append ... finding --task <id>` into `tasks/<id>.md`. |
+| Findings, partial work, worker recovery | `append ... finding --task <id>` into `tasks/<id>.md`. |
 | Friction with the skill or the tool | `append ... friction --kind <kind> --pointer <ref>` into `friction.md`. |
-| Acceptance checks | `record-evidence`, retaining actual output and failures. |
-| Task status, authorization and receipts | Guarded `project.json` operations. |
-| Repository worktrees and their closure decisions | `workflow ... worktree` entries in `project.json`. |
-| Continuation context | `handoff.md`, linking owning records. |
-| Prior/new lessons | Local assessments / `memory-staging.md`; see [memory-operations.md](memory-operations.md). |
+| Acceptance checks | `record-evidence`, with actual output and failures. |
+| Task status, authorization, receipts | Guarded `project.json` operations. |
+| Worktrees and closure decisions | `workflow ... worktree` entries in `project.json`. |
+| Continuation context | `handoff.md`, linking records. |
+| Lessons | Local assessments, `memory-staging.md`; see [memory-operations.md](memory-operations.md). |
 
-Before tasks exist, keep findings in draft design or the note; link artifacts for lengthy material.
-Never invent task IDs. Preserve history through superseding entries, not erasure.
+Before tasks exist, keep findings in draft design or the note; link artifacts for long material.
+Never invent task IDs. Supersede entries; never erase history.
 
 ## Keep the layout small and consistent
 
-Create directories with their first useful file. Task notes are optional; definitions stay in
-`project.json`. `artifacts/` holds durable supporting material and requested deliverables;
-repository outputs belong in the target. Send state patches through stdin; keep scratch work in
-temporary storage.
+Create a directory with its first useful file. Task notes are optional; definitions stay in
+`project.json`. `artifacts/` holds supporting material and requested deliverables; repository
+outputs belong in the target. Keep scratch work in temporary storage.
 
-`execution/` is legacy storage; preserve it and consult [legacy-executor.md](legacy-executor.md)
-only for old ownership/storage. Requested cleanup must preserve cited outputs, evidence, receipts
-and recovery records.
+`execution/` is legacy storage: preserve it; consult [legacy-executor.md](legacy-executor.md)
+only for old ownership. Cleanup must keep cited outputs, evidence, receipts and recovery records.
 
 ### Delivery-review checkpoints
 
 A Goldfish round ([goldfish-review.md](goldfish-review.md)) is not delivery review. Use delivery
 review only when the user, acceptance criteria or repository workflow require it, via
-[`workflow review`](automation-records.md) with reviewer, scope/version, findings, outcome and
-evidence; it allocates `reviews/review_NN.md` and aligns review state. File existence or passing
-tests do not establish acceptance; preserve earlier cycles. Requirements/planning agreement stays in
-spec/planning; fixes use task notes and correction tasks for terminal work, and acceptance a
-correction invalidates reopens as `pending`.
+[`workflow review`](automation.md) with reviewer, scope/version, findings, outcome and
+evidence; it allocates `reviews/review_NN.md` and aligns review state. A file or passing tests do
+not establish acceptance. Keep earlier cycles. Agreement stays in spec/planning. Fixes use task
+notes, and correction tasks for terminal work; a correction that invalidates acceptance reopens it
+as `pending`.
 
 ## Maintain the continuation note while working
 
-Read [handoff-writing.md](handoff-writing.md) before writing continuation fields or a brief,
-including for routine checkpoints and closure.
+Read [handoff-writing.md](handoff-writing.md) before writing continuation fields or a brief.
 
-Keep `handoff.md` short: next action, open decisions, partial work, pointers, agreement, current
-revision/spec/design tokens, and worker/command ownership or uncertain effects. Mark it `Session
-state: working`, `waiting`, `blocked` or `ready for handoff`; labels change neither canonical status
-nor ownership. Refresh after material changes, before waiting or ending a turn, and before a risky
-operation, batching related saves: a routine task transition already in state/evidence needs no
-duplicate narrative. Use [`workflow checkpoint`](automation-records.md) with the last token and
-continuation fields. Move lasting facts to owning records before replacing the note, keeping
-unresolved entries.
+Keep `handoff.md` short: next action, open decisions, partial work, pointers, agreement, tokens,
+and ownership or uncertain effects. Mark it `Session state: working`,
+`waiting`, `blocked` or `ready for handoff`; labels change neither status nor ownership.
+Refresh after material changes and before waiting, ending a turn or a risky operation; a routine
+transition already in state/evidence needs no narrative. Use
+[`workflow checkpoint`](automation.md) with the last token and continuation fields. Move
+lasting facts to owning records before replacing the note.
 
-Write owning records first and check every result: cross-document writes are not one transaction.
-On conflict reread and reconcile; on failure pause dependent work and report unsaved essentials.
-Active executor guards require legacy recovery, never bypassing.
+Write owning records first and check every result: cross-document writes are not atomic. On
+conflict reread and reconcile; on failure pause dependent work and report unsaved essentials.
+Active executor guards require legacy recovery.
 
 For handoff or interruption recovery use [session-handoff.md](session-handoff.md): reconcile records
 and ownership before writes, resume agreement and open questions without replaying history, and set
-a ready note to `working` before continuing; its label proves no process stopped.
+a ready note to `working`; its label proves no process stopped.

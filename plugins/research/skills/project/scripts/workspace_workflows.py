@@ -165,7 +165,7 @@ def input_schema(action: str) -> dict[str, Any]:
         variants = {name: sorted(required | keys) for name, keys in REQUIRED_BY.get(action, {}).items()}
         note = (
             "write action: further per-action rules are checked when it runs "
-            "(see references/automation-records.md)"
+            "(see references/automation.md)"
         )
     else:
         allowed, required = READ_INPUTS[action]

@@ -2,24 +2,23 @@
 
 ## Worker observations and checks
 
-`record-observation` is not a workflow action. For a check that has no command, such as an MCP read
-or a query, it records `--source`, `--result passed|FAILED` and the observed text (`--body` or
-`--body-file -`) under a task or closure step. The entry has an `Observation:` line and no exit
-code, so `task finish --evidence` refuses it and `--observation` accepts it. A finish resting only
-on observations appends an attested-finish note to the task, and a `FAILED` one never finishes it.
+`record-observation` is not a workflow action. For a check with no command (an MCP read, a query) it
+records `--source`, `--result passed|FAILED` and the observed text (`--body` or `--body-file -`)
+under a task or closure step. The entry has an `Observation:` line and no exit code, so `task finish
+--evidence` refuses it; `--observation` accepts it. A finish resting only on observations appends an
+attested-finish note; a `FAILED` one never finishes the task.
 
-`worker-event` uses the [common metadata fields](automation-records.md) plus `task`, `handle`,
-`event`, `scope`, `observation`, `assignment_revision`. Events: `intent`, `launched`, `observed`,
-`completed`, `stopped`, `failed`. It appends to `tasks/<id>.md`; supply the existing note's token.
-Record actual host observations. Resume surfaces the latest unresolved observation per handle;
-neither an intent record nor missing handle proves no worker exists. Use the host to observe/stop.
+`worker-event` uses the [common metadata fields](automation.md) plus `task`, `handle`, `event`,
+`scope`, `observation`, `assignment_revision`. Events: `intent`, `launched`, `observed`,
+`completed`, `stopped`, `failed`. It appends to `tasks/<id>.md`; supply the note's token. Record
+actual host observations. Resume surfaces the latest unresolved observation per handle; neither an
+intent record nor a missing handle proves no worker exists.
 
 `verify` takes `id`, a nonempty `checks` array, optional boolean `continue_on_failure` (default
-false), optional check-shaped `control`, and optional selected `fingerprints` references. It needs
-no document token or state revision; it does not change task status. Each check requires exactly
-one `task` or closure `step` (currently `report`), an explicit nonempty `argv` array and optional
-positive `timeout` seconds (default 300, maximum 3,600). Never translate arbitrary free-text
-`verification` into execution.
+false), optional check-shaped `control`, and optional `fingerprints` references. It needs no token
+or revision and leaves task status alone. Each check requires exactly one `task` or closure `step`
+(currently `report`), a nonempty `argv` array and optional positive `timeout` seconds (default 300,
+maximum 3,600). Never translate free-text `verification` into execution.
 
 ```json
 {"id":"parser-checks-1","continue_on_failure":false,"checks":[
@@ -28,29 +27,26 @@ positive `timeout` seconds (default 300, maximum 3,600). Never translate arbitra
  "fingerprints":[{"root":"target","path":"src/parser.py"}]}
 ```
 
-Checks run without a shell in the target, using the evidence runner. Keep secrets out of argv and
-output. Results distinguish recorded exits, rejected inputs, launch errors, timeouts and unknown
-outcomes. No fabricated exit code is assigned to timeout or launch error. Only normal recorded
-failures may continue the batch. A timeout does not prove descendant processes stopped.
-Same-ID retries repair saved evidence without rerunning attempted commands; unknown outcomes stop
-for inspection. Select a new ID for a genuinely new, authorized verification run. Zero exit alone
-does not satisfy task acceptance.
+Checks run without a shell in the target, using the evidence runner. Keep secrets out of argv.
+Results distinguish recorded exits, rejected inputs, launch errors, timeouts and unknown outcomes;
+the last three get no exit code. Only recorded failures continue the batch. A timeout does not prove
+descendants stopped. Same-ID retries repair saved evidence without rerunning; unknown outcomes stop
+for inspection. A new run needs a new ID. Zero exit alone does not satisfy acceptance.
 
-The `control` is a check declared to fail on the current content; it runs last, after the short
-circuit, and validates in the same pre-pass, so a malformed batch records nothing. The response
-always carries `controls_fired` as `n/m`: the control fired only on a recorded non-zero exit, so
-timeout, launch error and rejection report `0/1` and fail the batch alongside any failing check.
-Without a control the batch reports `0/0` and passes when every check records zero. A control that
-records zero watched the checks pass and proves nothing, so the batch fails. Give each acceptance
-batch a control the current content really fails; `finalize` warns, without refusing, when a
-project has verify batches but no control was ever observed failing.
+The `control` is a check declared to fail on the current content; it runs last and validates in the
+same pre-pass; a malformed batch records nothing. The response carries `controls_fired` as `n/m`;
+the control fires only on a recorded non-zero exit, so timeout, launch error and rejection report
+`0/1` and fail the batch. Without a control it reports `0/0` and passes when every check records
+zero. A control recording zero proves nothing and fails the batch. Give each acceptance batch a
+control the content fails; `finalize` warns when verify batches exist but no control was ever
+observed failing.
 
 ## Staged lessons and recovery
 
-`triage` takes `id` (maximum 45 characters), `expected_revision`, `tokens` for `memory-staging`
-and, when receiving local lessons, `reflection`, plus `items`. Each item selects an exact,
-independent level-two `section` in staging and supplies `disposition` (`promote`, `reflection`,
-`discard`) and `reason`. Promotion additionally needs:
+`triage` takes `id` (maximum 45 characters), `expected_revision`, `tokens` for `memory-staging` and,
+for local lessons, `reflection`, plus `items`. Each item selects an independent level-two `section`
+in staging with `disposition` (`promote`, `reflection`, `discard`) and `reason`. Promotion also
+needs:
 
 ```json
 {"topic":"parser-errors","body":"<agent-authored reusable lesson>",
@@ -58,17 +54,14 @@ independent level-two `section` in staging and supplies `disposition` (`promote`
  "kind":"method","scope":"Parsers"}
 ```
 
-Existing topics use their current token; new ones require description/kind/scope. Triage records
-promotion source IDs, deduplicated incident identities and destination receipts before removing
-selected staging sections. A body the topic already holds under another entry is skipped,
-listed in `skipped_duplicates`; unmarked older entries are not seen. Unselected sections
-remain untouched; decisions remain in the journal.
-For local reflection/discard, omit promotion fields. Topic-rule rewrites still use guarded
-`compact-memory` after judgment; promotion appends an incident to an existing rule.
+Existing topics use their token; new ones require description/kind/scope. Triage records source IDs,
+deduplicated incident identities and destination receipts before removing selected sections. A body
+the topic already holds under another entry is skipped, listed in `skipped_duplicates`. For
+reflection/discard, omit promotion fields. Topic-rule rewrites use guarded `compact-memory`;
+promotion appends an incident to an existing rule.
 
-Composed writes preflight tokens, journal intended metadata, then save documents before the state
-commit; final handoff is deliberately after DONE commits. This is recoverable, not cross-file
-atomic. A failure reports saved steps and whether state landed. Inspect `recover {"id":"..."}`;
-`apply:true` repairs metadata/index steps only. Checks and triage use their own same-ID command
-for recovery. Reconcile source conflicts before proceeding. Never steal locks, clear ownership,
-invent a successful result, or repeat an external action to repair bookkeeping.
+Composed writes preflight tokens, journal metadata, save documents, then commit state; the final
+handoff follows the DONE commit. Not cross-file atomic: a failure reports saved steps and whether
+state landed. Inspect `recover {"id":"..."}`; `apply:true` repairs metadata/index steps only. Checks
+and triage recover through their own same-ID command. Reconcile source conflicts first. Never steal
+locks, clear ownership, invent success, or repeat an effect to repair bookkeeping.
