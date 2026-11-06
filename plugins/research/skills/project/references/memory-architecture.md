@@ -201,9 +201,9 @@ close:
    heading whose title names a lesson, body verbatim — to that same file in the commit that writes
    the reflection, so a post-mortem read once cannot leave its lessons reflection-only. The result
    carries `reflected_lessons`: the titles staged, and the titles skipped with the reason — already
-   staged, a body naming only staged items, a title conflict, or a body triage could not take (a
-   heading inside it, or none at all). Nothing matched, nothing is written and the file stays
-   byte-identical.
+   staged, a list of bare staged titles (short labels such as `(P1)` allowed), a title conflict, or
+   a body triage could not take (a heading inside it, or none at all). Nothing matched, nothing is
+   written and the file stays byte-identical.
 3. **Then drain it.** For each staged observation, decide: promote it into a new or existing
    topic file with `research-project promote-memory <slug> --body … --source <project-id>`, fold it
    into this project's post-mortem, or discard it. Then empty the staging file. `promote-memory`

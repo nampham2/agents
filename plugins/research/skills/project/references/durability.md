@@ -22,6 +22,8 @@ Send it to `workflow <project-dir> effect -`. Afterwards, clear it with `resolve
  "key":"push feat/x to origin","outcome":"done","note":"origin/feat/x at abc1234"}
 ```
 
+`outcome` is `done`, `not-done` or `unknown`. Intents are optional; nothing enforces them.
+
 `resolve` is the normal path. A receipt clears an intent only when its `value` equals the key, so
 this works only when you chose a key that is already a valid receipt value, such as
 `commit:<sha>` or the URL you expect. A key like the example above is cleared only by `resolve`. An
@@ -113,8 +115,9 @@ writes no anchor, so an older wait can reappear. Record a new `wait` to replace 
 
 After an editorial-only change, `goldfish waive` may name the round it relies on with
 `"reuses": NN`, together with the user's `confirmation`. Round NN must be `accepted` or
-`accepted-residual` (not a waiver) and must have the same target and worktree. The default stays a
-fresh round.
+`accepted-residual` (not a waiver), must have the same target and worktree, and must be the latest
+round of that target and worktree that is not a waiver: a later open or failed review refuses it.
+The default stays a fresh round.
 
 ## What the counts rely on
 

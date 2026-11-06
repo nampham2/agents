@@ -101,7 +101,8 @@ read every project 0.34.0 touches.
   stale or unknown, and `research-project unlock` removes only an identical stale lock.
 - **Workers and waits.** `unresolved_workers` entries show `silent_minutes`; `workflow wait` records
   what a BLOCKED task waits for, shown in resume, context and the dashboard and flagged when due.
-- **Cheaper gates.** `goldfish waive` takes `reuses` naming an accepted round of the same target.
+- **Cheaper gates.** `goldfish waive` takes `reuses` naming the latest accepted round of the same
+  target and worktree.
 - **Friction fixes.** `worker-event --schema` lists required fields per event; finalize skips a
   lesson section that only names staged items; clearer external-reference refusals.
   `references/durability.md` documents all of it.
