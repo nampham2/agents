@@ -207,13 +207,77 @@ def test_due_is_judged_against_now(blocked: Path, monkeypatch: pytest.MonkeyPatc
 
 def test_the_dashboard_row_carries_the_wait(blocked: Path) -> None:
     wait(blocked, "wait-1", until=PAST)
-    row = dash.build_project(blocked)
+    row = dash.attach_waits([dash.build_project(blocked)], dash.utcnow())[0]
     by_id = {item["id"]: item for item in row["tasks"]}
     assert by_id["T01"]["wait"] == {"on": "user reply", "until": PAST, "due": True}
     assert by_id["T02"]["wait"] is None
-    assert "invocations.jsonl" in dash.WATCHED_FILES  # a wait call moves the fingerprint through its line
+
+
+def test_the_dashboard_judges_due_at_serve_time(blocked: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    until = "2030-06-01T12:00:00+02:00"
+    wait(blocked, "wait-1", until=until)
+    moment = datetime.fromisoformat(until).astimezone(timezone.utc)
+    monkeypatch.setattr(dash, "utcnow", lambda: moment - timedelta(seconds=1))
+    board = dash.Dashboard(blocked.parent, blocked.parent / "claude")
+    before = board.version()["fingerprint"]
+    first = {item["id"]: item for item in board.payload()["projects"][0]["tasks"]}
+    assert first["T01"]["wait"] == {"on": "user reply", "until": until, "due": False}
+    monkeypatch.setattr(dash, "utcnow", lambda: moment)  # time passes; no file changes
+    assert board.version()["fingerprint"] != before  # the page reloads when the wait turns due
+    second = {item["id"]: item for item in board.payload()["projects"][0]["tasks"]}
+    assert second["T01"]["wait"]["due"] is True
+
+
+def test_an_invocation_line_alone_does_not_rebuild_the_dashboard(
+    blocked: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert "invocations.jsonl" not in dash.WATCHED_FILES
+    builds = []
+    original = dash.build_model
+
+    def counting(root: Path) -> dict[str, Any]:
+        builds.append(root)
+        return original(root)
+
+    monkeypatch.setattr(dash, "build_model", counting)
+    board = dash.Dashboard(blocked.parent, blocked.parent / "claude")
+    board.payload()
+    before = board.version()["fingerprint"]
+    with (blocked / "invocations.jsonl").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({"command": "context", "exit": 0}) + "\n")
+    assert board.version()["fingerprint"] == before
+    board.payload()
+    assert len(builds) == 1
+
+
+def test_a_new_wait_shows_on_the_next_payload(blocked: Path) -> None:
+    board = dash.Dashboard(blocked.parent, blocked.parent / "claude")
+    before = board.version()["fingerprint"]
+    assert {item["id"]: item for item in board.payload()["projects"][0]["tasks"]}["T01"]["wait"] is None
+    wait(blocked, "wait-1", until=FUTURE)
+    assert board.version()["fingerprint"] != before
+    payload = board.payload()
+    assert payload["fingerprint"] == board.version()["fingerprint"]
+    rows = {item["id"]: item for item in payload["projects"][0]["tasks"]}
+    assert rows["T01"]["wait"] == {"on": "user reply", "until": FUTURE, "due": False}
 
 
 def test_the_page_renders_the_wait_in_the_status_cell() -> None:
     page = PAGE.read_text(encoding="utf-8")
     assert "waits on" in page and "waitText(t.wait)" in page and "(due)" in page
+
+
+def test_a_due_wait_and_an_open_intent_are_both_named_in_the_move(blocked: Path) -> None:
+    from tests.plugins.research.project.test_durability_effects import intent
+
+    intent(blocked, "intent-1")
+    wait(blocked, "wait-1", until=PAST)
+    assert workflow(blocked, "resume", {})["move_detail"] == (
+        "T02 is ready: start it; wait due: T01 (user reply); effect may have happened: T01 (pr-63)"
+    )
+
+
+def test_an_unreadable_row_passes_through_attach_waits(tmp_path: Path) -> None:
+    (tmp_path / "2026-11-06-009").mkdir()
+    row = dash.build_project(tmp_path / "2026-11-06-009")
+    assert row["unreadable"] and dash.attach_waits([row], dash.utcnow()) == [row]

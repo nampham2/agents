@@ -39,9 +39,10 @@ current: "Invocation | None" = None
 
 
 def note(**facts: Any) -> None:
-    """Attach facts to the current call's line; a no-op when no CLI call is running."""
-    if current is not None:
-        current.facts.update(facts)
+    """Attach facts to the current call's line; a no-op when no CLI call is running or it was recorded."""
+    invocation = current
+    if invocation is not None:
+        invocation.facts.update(facts)
 
 
 def classify(error: "BaseException | None", exit_code: int) -> "str | None":
@@ -124,7 +125,13 @@ class Invocation:
         current = self
 
     def record(self, exit_code: int, error: "BaseException | None" = None) -> "Path | None":
-        """Append the line; return its path, or None when nothing was (or could be) written."""
+        """Append the line; return its path, or None when nothing was (or could be) written.
+
+        The call is over once recorded, so it stops being current: a later `note` attaches to nothing.
+        """
+        global current
+        if current is self:
+            current = None
         if self.project_dir is None or not (self.project_dir / "project.json").is_file():
             return None
         line: dict[str, Any] = {

@@ -185,9 +185,16 @@ FOLDED_TITLE = "Lessons folded here (staged items, user chose fold at closure)"
 FOLDED_SECTION = (
     f"## {FOLDED_TITLE}\n\n"
     "These are plugin-change candidates for the next retro, not cross-project lessons:\n"
-    f"- {STAGED_ONE} (P1): record the intent before an external effect.\n"
-    f"- `{STAGED_TWO}` (P2): stop as blocked after three resumes\n"
-    "  without progress.\n\n"
+    f"- {STAGED_ONE} (P1)\n"
+    f"- [`{STAGED_TWO}`](memory-staging.md) (P2, P3).\n\n"
+)
+# The shape project 2026-11-06-001 actually closed with: each item restates its lesson in words, so the
+# words are prose the staged section may not carry and the section is staged.
+DESCRIBED_SECTION = (
+    f"## {FOLDED_TITLE}\n\n"
+    "These are plugin-change candidates for the next retro, not cross-project lessons:\n"
+    f'- {STAGED_ONE} (P1): record "about to run X with key K" before an external effect.\n'
+    f"- {STAGED_TWO} (P2): stop as blocked after N resumes without progress.\n\n"
 )
 
 
@@ -211,6 +218,10 @@ class TestFoldedLessonSections:
             {"title": FOLDED_TITLE, "reason": "names only items already staged"},
         ]
         assert FOLDED_TITLE not in staging(staged)
+
+    def test_items_that_describe_their_lesson_in_words_stage_the_section(self, staged: Path) -> None:
+        result = finalize(staged, with_section(DESCRIBED_SECTION))
+        assert FOLDED_TITLE in result["reflected_lessons"]["staged"]
 
     def test_a_real_lesson_section_that_mentions_a_staged_item_is_still_staged(self, staged: Path) -> None:
         section = (
@@ -237,9 +248,10 @@ class TestNamesOnlyStaged:
     @pytest.mark.parametrize(
         "body",
         (
-            "- alpha-one\n- beta-two: why it mattered",
-            "Folded:\n\n1. alpha-one\n2) `beta-two`\n   wrapped onto a second line",
-            "* alpha-one\n+ beta-two",
+            "- alpha-one\n- beta-two.",
+            "Folded:\n\n1. alpha-one;\n2) `beta-two`\n   (P3, P4)",
+            "* [alpha-one](memory-staging.md) (P1)\n+ **beta-two** (R2 and R3) -",
+            "- alpha-one, beta-two",
         ),
     )
     def test_bodies_that_only_list_staged_titles_qualify(self, body: str) -> None:
@@ -255,6 +267,11 @@ class TestNamesOnlyStaged:
             "A lead-in that does not end with a colon\n- alpha-one",
             "- alpha-one\n- gamma-three",
             "- alpha-oneish",
+            "- alpha-one: new detail X learned this time",
+            "- alpha-one (P1): record the intent before an external effect.",
+            "- beta-two\n  wrapped onto a second line",
+            "- alpha-one (see notes)",
+            "- [why it mattered](alpha-one)",
             "  indented text before any item",
         ),
     )

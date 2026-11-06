@@ -651,8 +651,9 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
 PROC_ROOT = Path("/proc")
 LOCK_OWNER_FILENAME = "owner.json"
 LOCK_IDENTITY_KEYS = ("pid", "host", "started", "created")
-# The calling process's own token, read once: every lock it takes records the same value.
-_OWN_START_TOKEN: "list[str]" = []
+# The calling process's own token, read once per process id: every lock it takes records the same
+# value, and a forked child, which has its own start time, reads its own.
+_OWN_START_TOKEN: "dict[int, str]" = {}
 
 
 def process_start_token(pid: int) -> str:
@@ -684,10 +685,11 @@ def process_start_token(pid: int) -> str:
 
 
 def own_start_token() -> str:
-    """This process's start token, read once and cached."""
-    if not _OWN_START_TOKEN:
-        _OWN_START_TOKEN.append(process_start_token(os.getpid()))
-    return _OWN_START_TOKEN[0]
+    """This process's start token, read once per process id and cached."""
+    pid = os.getpid()
+    if pid not in _OWN_START_TOKEN:
+        _OWN_START_TOKEN[pid] = process_start_token(pid)
+    return _OWN_START_TOKEN[pid]
 
 
 def _read_lock_owner(path: Path) -> "dict[str, Any] | None":

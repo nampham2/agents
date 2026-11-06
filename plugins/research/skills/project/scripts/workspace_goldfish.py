@@ -463,7 +463,8 @@ def waive_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
 
 
 def _reused(project: Path, request: "dict[str, Any]", target: str, worktree: "str | None") -> Round:
-    """The earlier round a waiver reuses: it passed on review (not by a waiver) for the same target and worktree."""
+    """The earlier round a waiver reuses: it passed on review (not by a waiver) for the same target and worktree,
+    and no later non-waived round reviewed that target and worktree."""
     number = request["reuses"]
     if type(number) is not int or number < 1:
         raise WorkspaceError("reuses must be the positive number of an earlier round")
@@ -478,6 +479,17 @@ def _reused(project: Path, request: "dict[str, Any]", target: str, worktree: "st
     if found.key != (target, worktree):
         shown = found.target + (f" of {found.worktree}" if found.worktree else "")
         raise WorkspaceError(f"reuses: round {number:02d} reviewed {shown}, not this waiver's target and worktree")
+    # Only the latest review of the key may be reused: a later open or failed round says the reused
+    # verdict no longer stands. Waivers in between review nothing, so they do not supersede it.
+    latest = max(
+        (item for item in round_documents(project) if item.key == found.key and item.outcome != "waived"),
+        key=lambda item: item.number,
+    )
+    if latest.number != found.number:
+        raise WorkspaceError(
+            f"reuses: round {latest.number:02d} ({latest.outcome}) is a later review of the same target and "
+            f"worktree, so round {number:02d} no longer stands; close or re-run the review, or waive without reuses"
+        )
     return found
 
 

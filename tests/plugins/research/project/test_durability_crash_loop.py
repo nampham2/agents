@@ -269,3 +269,21 @@ def test_the_real_cli_path_writes_the_flags_and_stops_on_the_third_resume(tmp_pa
     assert counts(project) == {"T01": 3}
     assert manage("workflow", project, "receipt", receipt_file) == 0
     assert counts(project) == {}
+
+
+def test_any_one_worker_key_marks_a_resume_as_a_worker_packet(
+    tmp_path: Path, capsys: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import workspace_context
+    import workspace_workflows
+
+    assert workspace_workflows.WORKER_KEYS is workspace_context.WORKER_KEYS  # one list of worker keys
+    project = make_running(tmp_path, start=())
+    # A narrowed key set is honoured by the logging branch: only `worker` now marks a worker packet.
+    monkeypatch.setattr(workspace_workflows, "WORKER_KEYS", ("worker",))
+    for number, body in enumerate(({"worker": "w"}, {"scope": "s"})):
+        path = project / f"packet-{number}.json"
+        path.write_text(json.dumps(body))
+        assert manage("workflow", project, "resume", path) == 0
+    capsys.readouterr()
+    assert [line.get("worker_packet") for line in lines(project)] == [True, None]

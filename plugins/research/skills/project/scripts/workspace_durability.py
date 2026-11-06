@@ -212,14 +212,18 @@ def crash_loop_detail(loops: list[dict[str, Any]]) -> str:
 def durable_move(project: Path, state: dict[str, Any], *, pending_resume: bool = False) -> dict[str, Any]:
     """`next_move`, replaced by a blocked stop when a RUNNING task is in a crash loop.
 
-    Whatever the move, each due wait is appended to `move_detail`.
+    Whatever the move, each due wait and then each unresolved effect intent is appended to `move_detail`.
     """
     loops = crash_loops(project, state, pending_resume=pending_resume)
     if loops:
         move = {"continue": None, "stop_reason": "blocked", "move_detail": crash_loop_detail(loops)}
     else:
         move = next_move(state)
-    return _with_due_waits(move, waits(project, state))
+    move = _with_due_waits(move, waits(project, state))
+    intents = "".join(
+        f"; effect may have happened: {item['task']} ({item['key']})" for item in effect_intents(project, state)
+    )
+    return {**move, "move_detail": move["move_detail"] + intents} if intents else move
 
 
 def silent_minutes(recorded: Any, now: "datetime | None" = None) -> "int | None":

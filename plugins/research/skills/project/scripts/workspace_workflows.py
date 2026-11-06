@@ -12,6 +12,7 @@ from typing import Any
 from memory_search import memory_health
 from workspace_ci import ci_checks
 from workspace_context import (
+    WORKER_KEYS,
     checkpoint_freshness,
     fingerprint,
     infer_stop_reason,
@@ -564,6 +565,13 @@ def _effect(project: Path, state: dict[str, Any], request: dict[str, Any]) -> tu
                 f"effect intents are for external or destructive tasks; {task['id']} has effect kind {kind}"
             )
         entry = {"op": "intent", "key": key, "effect": string_input(request.get("effect"), "effect")}
+        receipts = task.get("receipts")
+        if isinstance(receipts, list) and any(isinstance(item, dict) and item.get("value") == key for item in receipts):
+            # A receipt with the key's value closes the intent at once, so recording one would show nothing.
+            raise WorkspaceError(
+                f"{task['id']} already has a receipt with value {key!r}, so that effect is recorded as done; "
+                "use another key for a new effect"
+            )
         if key in opened:
             raise WorkspaceError(
                 f"an open intent with key {key!r} already exists on {task['id']}; check whether the effect happened, "
@@ -985,7 +993,7 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
         return triage(project, request)
     if action in ("resume", "packet"):
         schema_input(request, action)
-        if action == "resume" and any(key in request for key in ("worker", "scope", "lessons")):
+        if action == "resume" and any(key in request for key in WORKER_KEYS):
             note(worker_packet=True)
         result = resume_bundle(project, request, action=action)
         events = worker_events(project)

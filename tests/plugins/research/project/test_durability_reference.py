@@ -25,13 +25,18 @@ def test_the_durability_reference_covers_every_feature() -> None:
         '"reuses": NN',
         "accepted-residual",
         "durability_warnings",
+        "effect may have happened",
+        "foreign host",
+        "Run the command only when",
     ):
         assert phrase in text, phrase
 
 
 def test_each_feature_is_reachable_from_the_documents_that_route_to_it() -> None:
     assert "[Durability](durability.md)" in read("automation.md")
+    skill = (REFERENCES.parent / "SKILL.md").read_text(encoding="utf-8")
+    assert "a prior intent ([durability.md](references/durability.md))" in skill
     assert "`reuses` ([durability.md](durability.md))" in read("goldfish-review.md")
-    assert "(`triage` `reflection`)" in read("memory-operations.md")
+    assert "(`triage` `reflection` before finalize)" in read("memory-operations.md")
     assert "[durability.md](durability.md)" in read("stopping.md")
     assert "[durability.md](durability.md)" in read("task-workers.md")

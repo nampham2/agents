@@ -183,3 +183,37 @@ def test_the_schema_lists_reuses_as_optional() -> None:
     assert "reuses" in schema["allowed"]
     assert "reuses" not in schema["required_by"]["operation=waive"]
     assert "reuses" in goldfish.OPERATION_FIELDS["waive"]
+
+
+def test_a_round_superseded_by_a_later_review_of_the_same_target_cannot_be_reused(project: Path) -> None:
+    close(project, open_round(project))
+    edit_planning(project)
+    later = open_round(project)
+    refuses(
+        project,
+        r"round 02 \(open\) is a later review",
+        operation="waive",
+        target="planning",
+        reason="r",
+        confirmation=CONFIRMATION,
+        reuses=1,
+    )
+    edit_planning(project, "Changed again.\n")
+    close(project, later, [finding("F1", "Blocker", "FIX")])
+    assert [item.outcome for item in rounds(project)] == ["accepted", "reaudit-required"]
+    refuses(
+        project,
+        r"round 02 \(reaudit-required\) is a later review",
+        operation="waive",
+        target="planning",
+        reason="r",
+        confirmation=CONFIRMATION,
+        reuses=1,
+    )
+
+
+def test_a_waiver_in_between_does_not_supersede_the_reused_round(project: Path) -> None:
+    close(project, open_round(project))
+    waive(project)
+    close(project, open_round(project, "spec"))  # another target does not supersede it either
+    assert waive(project, reuses=1)["reuses"] == 1

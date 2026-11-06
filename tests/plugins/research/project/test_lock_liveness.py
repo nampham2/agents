@@ -77,7 +77,7 @@ def _unlock(argv: list[str], capsys: pytest.CaptureFixture[str]) -> tuple[int, d
 
 
 def test_own_start_token_is_read_once_and_cached() -> None:
-    with patch.object(workspace_lib, "_OWN_START_TOKEN", []):
+    with patch.object(workspace_lib, "_OWN_START_TOKEN", {}):
         with patch.object(workspace_lib, "process_start_token", return_value="linux:7") as reader:
             assert own_start_token() == "linux:7"
             assert own_start_token() == "linux:7"
@@ -477,3 +477,15 @@ def test_rename_failure_refuses(root: Path, capsys: pytest.CaptureFixture[str]) 
     assert code == 1
     assert "denied" in err
     assert (path / "owner.json").is_file()
+
+
+def test_own_start_token_is_cached_per_process() -> None:
+    """A forked child has its own start time, so it must not reuse its parent's cached token."""
+    with patch.object(workspace_lib, "_OWN_START_TOKEN", {}):
+        with patch.object(workspace_lib, "process_start_token", side_effect=lambda pid: f"linux:{pid}") as reader:
+            with patch.object(workspace_lib.os, "getpid", return_value=100):
+                assert own_start_token() == "linux:100"
+            with patch.object(workspace_lib.os, "getpid", return_value=200):
+                assert own_start_token() == "linux:200"
+                assert own_start_token() == "linux:200"
+    assert reader.call_count == 2

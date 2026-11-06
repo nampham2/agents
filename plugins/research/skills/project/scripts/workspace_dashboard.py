@@ -40,8 +40,9 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 TERMINAL = frozenset({"DONE", "CANCELLED"})
-# `invocations.jsonl` gains a line with every call, so a `workflow wait` moves the fingerprint.
-WATCHED_FILES = ("project.json", "spec.md", "handoff.md", "invocations.jsonl")
+# Waits are read at serve time (`attach_waits`), so the task notes and `invocations.jsonl` are not
+# watched: a logged call must not rebuild every project, and a wait turning due changes no file.
+WATCHED_FILES = ("project.json", "spec.md", "handoff.md")
 DECISION_LIMIT = 6
 SESSION_LIMIT = 3
 # A transcript counts as having worked on a project when a write command named the project
@@ -102,11 +103,8 @@ def _wait(project_dir: Path, task: dict[str, Any], lines: list[dict[str, Any]], 
     return {key: found[key] for key in ("on", "until", "due")} if found else None
 
 
-def _task_rows(tasks: list[Any], project_dir: Path) -> list[dict[str, Any]]:
+def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
     rows = []
-    blocked = any(isinstance(task, dict) and task.get("status") == "BLOCKED" for task in tasks)
-    lines = invocation_lines(project_dir) if blocked else []
-    now = utcnow()
     for task in tasks:
         if not isinstance(task, dict):
             continue
@@ -120,7 +118,6 @@ def _task_rows(tasks: list[Any], project_dir: Path) -> list[dict[str, Any]]:
                 "effect": _text(effect.get("kind")) if isinstance(effect, dict) else "",
                 "evidence": len(evidence) if isinstance(evidence, list) else 0,
                 "block_reason": _text(task.get("block_reason")),
-                "wait": _wait(project_dir, task, lines, now),
                 "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
             }
         )
@@ -180,7 +177,7 @@ def build_project(project_dir: Path) -> dict[str, Any]:
     if not isinstance(status, str) or not status:
         row.update(unreadable=True, title=project_dir.name, status="UNREADABLE", needs_you=False, sessions=[])
         return row
-    tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [], project_dir)
+    tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [])
     counts: dict[str, int] = {}
     for task in tasks:
         counts[task["status"]] = counts.get(task["status"], 0) + 1
@@ -270,8 +267,33 @@ def fingerprint(root: Path) -> str:
 
 
 def build_model(root: Path) -> dict[str, Any]:
-    """Describe every project under a root. Sessions are filled in by `attach_sessions`."""
+    """Describe every project under a root. Sessions and waits are filled in at serve time."""
     return {"root": str(root), "projects": [build_project(directory) for directory in project_directories(root)]}
+
+
+def attach_waits(projects: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    """Copy the projects with each task's active wait, read from the files now and judged against `now`.
+
+    Only a project with a BLOCKED task reads its notes and invocation log.
+    """
+    result = []
+    for project in projects:
+        tasks = project.get("tasks")
+        if not isinstance(tasks, list):
+            result.append(project)
+            continue
+        directory = Path(project["path"])
+        blocked = any(task["status"] == "BLOCKED" for task in tasks)
+        lines = invocation_lines(directory) if blocked else []
+        rows = [{**task, "wait": _wait(directory, task, lines, now) if blocked else None} for task in tasks]
+        result.append({**project, "tasks": rows})
+    return result
+
+
+def _with_waits(files: str, projects: list[dict[str, Any]]) -> str:
+    """The page's version: the file fingerprint plus every wait, so a new or newly due wait reloads it."""
+    waits = [[project["id"], task["id"], task["wait"]] for project in projects for task in project.get("tasks", [])]
+    return hashlib.sha256(f"{files}\0{json.dumps(waits, sort_keys=True)}".encode()).hexdigest()
 
 
 class SessionIndex:
@@ -555,16 +577,23 @@ class Dashboard:
         self._seen = ""
         self._projects: list[dict[str, Any]] = []
 
+    def _current(self) -> tuple[str, list[dict[str, Any]]]:
+        """Rebuild when a watched file moved, then add the waits as of now. Call under the lock."""
+        files = fingerprint(self.root)
+        if files != self._seen:
+            self._projects = build_model(self.root)["projects"]
+            self._seen = files
+        projects = attach_waits(self._projects, utcnow())
+        return _with_waits(files, projects), projects
+
     def version(self) -> dict[str, str]:
-        return {"fingerprint": fingerprint(self.root)}
+        with self._lock:
+            return {"fingerprint": self._current()[0]}
 
     def payload(self) -> dict[str, Any]:
         with self._lock:
-            current = fingerprint(self.root)
-            if current != self._seen:
-                self._projects = build_model(self.root)["projects"]
-                self._seen = current
-            projects = attach_sessions(self._projects, self._index, self._pi_index)
+            current, projects = self._current()
+            projects = attach_sessions(projects, self._index, self._pi_index)
         return {"root": str(self.root), "generated": now_iso(), "fingerprint": current, "projects": projects}
 
 

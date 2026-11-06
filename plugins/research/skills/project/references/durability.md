@@ -15,14 +15,22 @@ next session then knows the effect may have run:
  "key":"push feat/x to origin","effect":"git push origin feat/x"}
 ```
 
-Send it to `workflow <project-dir> effect -`. Afterwards, clear it with
-`{"operation":"resolve","key":"…","outcome":"done|not-done|unknown","note":"…"}`. A receipt on the
-same task whose `value` equals the key also clears it, but `resolve` is the normal path.
+Send it to `workflow <project-dir> effect -`. Afterwards, clear it with `resolve`:
 
-When resume lists an unresolved intent, check the destination before retrying: the effect may have
-happened. Then resolve with what you found. Intents work only on tasks with an external or
-destructive effect. A second intent with the same open key, or a resolve without an intent, is
-refused.
+```json
+{"id":"t05-push-resolve","expected_revision":N,"task":"T05","operation":"resolve",
+ "key":"push feat/x to origin","outcome":"done","note":"origin/feat/x at abc1234"}
+```
+
+`resolve` is the normal path. A receipt clears an intent only when its `value` equals the key, so
+this works only when you chose a key that is already a valid receipt value, such as
+`commit:<sha>` or the URL you expect. A key like the example above is cleared only by `resolve`. An
+intent whose key equals an existing receipt value on the task is refused.
+
+When resume lists an unresolved intent (and `move_detail` says `effect may have happened`), check
+the destination before retrying: the effect may have happened. Then resolve with what you found.
+Intents work only on tasks with an external or destructive effect. A second intent with the same
+open key, or a resolve without an intent, is refused.
 
 Use the handoff `effects` field for the narrative ("pushed; PR not yet opened"). Use an intent for
 the one command whose outcome a crash would leave unknown.
@@ -50,10 +58,11 @@ A busy lock reports its status:
 
 - `live`: the owner runs on this host.
 - `stale`: the owner's pid is dead, or the pid now belongs to a newer process.
-- `unknown`: there is no `owner.json`, the owner is legacy or from another host, or its start time
-  cannot be read.
+- `unknown`: there is no `owner.json`, the owner is unreadable or legacy or from another host, the
+  pid check failed, or its start time cannot be read.
 
-For a stale lock the refusal prints:
+The refusal always prints the status, its reason and the unlock command. Run the command only when
+the status is `stale`; `unlock` refuses anything else:
 
 ```sh
 research-project unlock <path> --workspace-root <root>
@@ -70,6 +79,8 @@ Manual cases need a person to check:
 - A lock left with a `.owner.json.*.tmp` file, from a crash during the write, stays unknown.
 - Containers that share a volume and a hostname but run separate pid namespaces can report a false
   dead pid.
+- On macOS the hostname can change with the network (`x.local` versus `x.corp`). A lock left before
+  the change reads as `foreign host`; check that its pid is gone, then remove it by hand.
 - If `unlock` reports a kept tombstone, the original path was taken while it worked. Inspect both
   paths.
 - A holder that exits while its lock sits in a tombstone gets "cannot release". The restored lock
@@ -95,7 +106,8 @@ to the task's `block_reason`.
 
 Resume, context and the dashboard show the wait. Once `until` passes, `move_detail` says
 `wait due`. The wait ends when the task leaves BLOCKED, and only a wait recorded after the task's
-latest `task block` counts. A re-block through `update` or `reconcile` does not reset that anchor.
+latest `task block` counts. Block with `task block`: a re-block through `update` or `reconcile`
+writes no anchor, so an older wait can reappear. Record a new `wait` to replace it.
 
 ## Reusing a Goldfish round
 
@@ -103,3 +115,9 @@ After an editorial-only change, `goldfish waive` may name the round it relies on
 `"reuses": NN`, together with the user's `confirmation`. Round NN must be `accepted` or
 `accepted-residual` (not a waiver) and must have the same target and worktree. The default stays a
 fresh round.
+
+## What the counts rely on
+
+Crash loops and waits are read from `invocations.jsonl`, which the launcher appends after each
+command. A failed append is silent, so a missing line can hide a wait or miss a resume. Treat the
+counts as a safety net, not as proof.

@@ -273,3 +273,50 @@ def test_note_is_a_no_op_without_a_current_invocation(monkeypatch: pytest.Monkey
     assert workspace_invocations.current is invocation
     note(worker_packet=True)
     assert invocation.facts == {"worker_packet": True}
+
+
+def test_an_intent_whose_key_is_already_a_receipt_value_is_refused(running: Path) -> None:
+    receipt(running, "receipt-63", "https://github.com/o/r/pull/63")
+    with pytest.raises(WorkspaceError, match=r"T01 already has a receipt with value 'https://github.com/o/r/pull/63'"):
+        intent(running, "intent-done", key="https://github.com/o/r/pull/63")
+    notes = running / "tasks/T01.md"
+    assert not notes.exists() or "research-effect" not in notes.read_text(encoding="utf-8")
+    intent(running, "intent-other", key="https://github.com/o/r/pull/64")  # another key is still open to record
+
+
+def test_each_unresolved_intent_is_named_in_the_move_detail(running: Path) -> None:
+    plain = workflow(running, "resume", {})["move_detail"]
+    assert "effect may have happened" not in plain
+    intent(running, "intent-1")
+    intent(running, "intent-2", key="pr-64", effect="open PR 64")
+    resumed = workflow(running, "resume", {})
+    named = "; effect may have happened: T01 (pr-63); effect may have happened: T01 (pr-64)"
+    assert resumed["move_detail"] == plain + named
+    resolve(running, "resolve-1")
+    resolve(running, "resolve-2", key="pr-64")
+    assert workflow(running, "resume", {})["move_detail"] == plain
+
+
+@pytest.mark.parametrize("logged", [True, False])
+def test_record_clears_the_current_invocation_so_a_later_note_attaches_to_nothing(
+    running: Path, tmp_path: Path, logged: bool
+) -> None:
+    import argparse
+
+    project = running if logged else tmp_path / "not-a-project"
+    args = argparse.Namespace(command="workflow", action="resume", project_directory=project)
+    invocation = Invocation("research-project", args)
+    note(task="T01")
+    assert (invocation.record(0) is not None) is logged
+    assert workspace_invocations.current is None
+    note(worker_packet=True)  # after the call is recorded: no error, and the recorded call is not changed
+    assert invocation.facts == {"task": "T01"}
+
+
+def test_record_leaves_a_newer_current_invocation_alone() -> None:
+    import argparse
+
+    older = Invocation("research-project", argparse.Namespace(command="context"))
+    newer = Invocation("research-project", argparse.Namespace(command="context"))
+    older.record(0)
+    assert workspace_invocations.current is newer

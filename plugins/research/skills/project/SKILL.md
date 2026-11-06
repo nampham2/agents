@@ -106,9 +106,9 @@ allocates correction tasks for terminal work without copying acceptance or conse
 
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
 and roots. Start before writing; `finish --backfill --note` records earlier work. Dependencies must
-be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization (existing
-counts). A repository target needs a recorded worktree and MR before its first write: follow
-[worktrees.md](references/worktrees.md) when the assignment warns.
+be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization (existing counts)
+and a prior intent ([durability.md](references/durability.md)). A repository target needs a recorded
+worktree and MR before its first write ([worktrees.md](references/worktrees.md)).
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
 [legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs startup

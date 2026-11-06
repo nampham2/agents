@@ -38,8 +38,8 @@ coordinator updates shared topics.
 
 Stage reusable findings: `research-project stage <project-dir> --title <unique> --body-file -`
 (conditions, lesson/hypothesis, evidence pointers; no headings). At closure, promote supported
-findings, fold project-specific ones into reflection (`triage` `reflection`), or discard with a
-reason. Record dispositions there; remove only resolved items. Report failed or unauthorized
-promotion as deferred. Staging warns unless memory delivery is required.
+findings, fold project-specific ones into reflection (`triage` `reflection` before finalize), or
+discard with a reason. Record dispositions there; remove only resolved items. Report failed or
+unauthorized promotion deferred. Staging warns unless memory delivery is required.
 
-To promote, compact or retire a topic, read [memory-promotion.md](memory-promotion.md).
+To promote, compact or retire topics, read [memory-promotion.md](memory-promotion.md).
