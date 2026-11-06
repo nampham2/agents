@@ -194,4 +194,4 @@ def test_the_default_context_output_is_unchanged(
     assert "compact" not in default
     code, full, _ = cli(capsys, "context", str(project), "--validate", "--limit", "7")
     assert code == 0 and full == json.loads(json.dumps(validated_project_context(project, limit=7)))
-    assert compact_context(validated_project_context(project), _load_state(project))["compact"] is True
+    assert compact_context(validated_project_context(project), _load_state(project), project)["compact"] is True

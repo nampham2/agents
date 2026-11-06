@@ -22,3 +22,6 @@ these in `stop_reason`. A `working` session carries none.
 These are not reasons: a task finished, a phase changed, a summary is ready, or a wish for
 reassurance. Do not ask whether to continue. Report the result and start the next task in the same
 turn.
+
+When resume reports `crash_loop` or a due wait, or a lock is busy, read
+[durability.md](durability.md) before deciding to stop.

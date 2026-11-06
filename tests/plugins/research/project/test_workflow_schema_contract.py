@@ -26,6 +26,7 @@ from workspace_workflows import input_schema, workflow
 from tests.plugins.research.project.test_delivery import FILES, fetched, write_versions
 from tests.plugins.research.project.test_gate_new_projects import PLANNING
 from tests.plugins.research.project.test_goldfish import CODE_TASK, close, open_round, report
+from tests.plugins.research.project.test_lifecycle_commands import planned, request
 from tests.plugins.research.project.test_workflow_automation import fill_spec
 from tests.plugins.research.project.test_worktrees import (
     add_worktree,
@@ -363,3 +364,41 @@ class TestGatedVariants:
             "recorded_at": "2026-01-01T00:00:00+00:00",
         }
         assert delivery_errors(state["worktrees"][0], "worktrees[0]") == []
+
+
+WORKER_EVENTS = ("intent", "launched", "observed", "completed", "stopped", "failed")
+
+
+class TestWorkerEventContract:
+    """Each printed `event=<name>` entry is a request the runtime accepts, and every key in it is demanded."""
+
+    def worker_event(self, project: Path, variant: str) -> dict[str, Any]:
+        planned(project)
+        supplied = request(
+            project,
+            short_id("worker"),
+            task="T01",
+            handle="native-1",
+            event=variant.split("=", 1)[1],
+            scope="review only",
+            observation="observed through the host",
+            assignment_revision=0,
+        )
+        keys = schema_keys("worker-event", variant)
+        assert set(supplied) - {"tokens"} == keys, f"{variant}: schema prints {sorted(keys)}"
+        return supplied
+
+    @pytest.mark.parametrize("event", WORKER_EVENTS)
+    def test_every_event_accepts_a_request_built_from_its_schema_entry(self, tmp_path: Path, event: str) -> None:
+        project = make_project(tmp_path, tmp_path)
+        assert workflow(project, "worker-event", self.worker_event(project, f"event={event}"))
+
+    def test_omitting_any_printed_key_is_refused_and_names_it(self, tmp_path: Path) -> None:
+        project = make_project(tmp_path, tmp_path)
+        full = self.worker_event(project, "event=observed")
+        for key in sorted(set(full) - {"tokens"}):
+            without = {**full, "id": short_id("omit")}
+            del without[key]
+            with pytest.raises(WorkspaceError) as caught:
+                workflow(project, "worker-event", without)
+            assert key in str(caught.value), f"without {key}: {caught.value}"

@@ -131,7 +131,7 @@ class TestSchemaTable:
     def test_every_action_has_exactly_one_schema(self) -> None:
         assert set(ACTIONS) == workflows.FIELDS.keys() | journal.READ_INPUTS.keys()
         assert workflows.READ_ACTIONS == set(journal.READ_INPUTS), "read actions are derived from the table"
-        assert len(ACTIONS) == 28
+        assert len(ACTIONS) == 30
 
     @pytest.mark.parametrize("action", ACTIONS)
     def test_the_printed_schema_is_what_validation_enforces(self, project: Path, action: str) -> None:
@@ -173,9 +173,20 @@ class TestRequiredBy:
             assert schema["required_by"][name] == sorted(universal | extra), name
             assert set(schema["required_by"][name]) <= set(schema["allowed"])
 
+    def test_worker_event_prints_every_event_with_all_its_fields_required(self) -> None:
+        # 2026-11-06-001 friction: the schema listed the fields but not which were required or which
+        # events exist, so a caller learned both from refusals.
+        schema = workflows.input_schema("worker-event")
+        fields = {"assignment_revision", "event", "handle", "observation", "scope", "task"}
+        assert fields <= set(schema["required"])
+        events = ("intent", "launched", "observed", "completed", "stopped", "failed")
+        assert set(schema["required_by"]) == {f"event={name}" for name in events}
+        for name in events:
+            assert schema["required_by"][f"event={name}"] == schema["required"], name
+
     @pytest.mark.parametrize("action", ACTIONS)
     def test_every_other_action_prints_no_variants(self, action: str) -> None:
-        if action not in ("worktree", "confirm", "goldfish"):
+        if action not in ("worktree", "confirm", "goldfish", "worker-event", "effect"):
             assert workflows.input_schema(action)["required_by"] == {}
 
     def test_the_table_matches_the_vocabulary_the_runtime_accepts(self, project: Path) -> None:

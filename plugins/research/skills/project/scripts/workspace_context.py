@@ -12,6 +12,7 @@ from typing import Any
 
 from memory_search import memory_health
 from workspace_documents import ENTRY_MARKER_PATTERN, _section_span
+from workspace_durability import context_view, durability_view, durable_move
 from workspace_evidence import evidence_entries
 from workspace_fields import CONTINUATION_FIELDS
 from workspace_journal import (
@@ -28,7 +29,6 @@ from workspace_session import (
     STOP_REASONS,
     _headings,
     _load_state,
-    next_move,
     project_context,
     validated_project_context,
 )
@@ -38,6 +38,8 @@ CHECKPOINT = re.compile(r"\A<!-- research-checkpoint-v1\n(.*?)\n-->\n", re.DOTAL
 # `key.title()` would print "Do_Not"; the one field whose heading is not its name.
 CONTINUATION_HEADINGS = {"do_not": "Do not", "stop_reason": "Stop reason"}
 SESSION_FIELDS = {"host", "id", "cwd"}
+# A resume request carrying any of these is a worker packet: it never counts toward a crash loop.
+WORKER_KEYS = ("worker", "scope", "lessons")
 
 
 def selected_read(project: Path, selection: dict[str, Any]) -> dict[str, Any]:
@@ -380,12 +382,15 @@ def infer_stop_reason(project: Path, state: dict[str, Any], continuation: Any) -
     if label is None:
         previous = checkpoint_data(project)
         label = previous["continuation"].get("session", "working") if previous else "working"
-    return next_move(state)["stop_reason"] if label in STOPPING_LABELS else None
+    return durable_move(project, state)["stop_reason"] if label in STOPPING_LABELS else None
 
 
-def next_hint(state: dict[str, Any]) -> str | None:
-    """What `next_move` says to do instead of stopping, for the refusal that names a missing stop_reason."""
-    move = next_move(state)
+def next_hint(project: Path, state: dict[str, Any]) -> str | None:
+    """What the move says to do instead of stopping, for the refusal that names a missing stop_reason.
+
+    The move is `durable_move` without a pending resume: a checkpoint is not a resume.
+    """
+    move = durable_move(project, state)
     if move["continue"] is None:
         return None
     return f"next_move says continue {move['continue']}: {move['move_detail']}"
@@ -527,8 +532,12 @@ def checkpoint_freshness(project: Path) -> dict[str, Any]:
     return freshness
 
 
-def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
-    """Read one coherent cooperative-writer snapshot, with bounded explicit selections."""
+def resume_bundle(project: Path, request: dict[str, Any], *, action: str = "resume") -> dict[str, Any]:
+    """Read one coherent cooperative-writer snapshot, with bounded explicit selections.
+
+    Only a project resume counts itself toward a crash loop (`pending_resume`): it is not logged until
+    it finishes. A packet, or a resume carrying worker keys, is logged as a worker packet and never adds one.
+    """
     schema_input(request, "resume")
     maximum = request.get("max_chars", 12000)
     if type(maximum) is not int or not 1 <= maximum <= 40000:
@@ -562,14 +571,17 @@ def resume_bundle(project: Path, request: dict[str, Any]) -> dict[str, Any]:
         do_not = checkpoint["continuation"].get("do_not", "") if checkpoint else ""
         if do_not:
             context["do_not"] = do_not
-        context["worktree"] = worktree_status(_load_state(project))
-        context.update(next_move(_load_state(project)))
+        state = _load_state(project)
+        context["worktree"] = worktree_status(state)
+        pending = action == "resume" and not any(key in request for key in WORKER_KEYS)
+        context.update(durable_move(project, state, pending_resume=pending))
+        context.update(durability_view(project, state, pending_resume=pending))
         context["memory_health"] = memory_health(project.parent, context["title"])
         if "task" in request:
             context["assignment"] = project_context(
                 project, task_id=string_input(request["task"], "task"), task_only=True
             )
-        context["worker_packet"] = {key: request[key] for key in ("worker", "scope", "lessons") if key in request}
+        context["worker_packet"] = {key: request[key] for key in WORKER_KEYS if key in request}
         return context
 
 
@@ -609,10 +621,10 @@ def fingerprint(project: Path, references: list[Any]) -> list[dict[str, Any]]:
 COMPACT_NOTE = "tokens are valid until the next write; validation findings are omitted, run context --validate for them"
 
 
-def compact_context(payload: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+def compact_context(payload: dict[str, Any], state: dict[str, Any], project: Path) -> dict[str, Any]:
     """The project-level summary of `context` in one object: what an agent needs to resume and write."""
-    move = next_move(state)
-    return {
+    move = durable_move(project, state)
+    result: dict[str, Any] = {
         "project_dir": payload["roots"]["workspace"],
         "revision": payload["revision"],
         "roots": payload["roots"],
@@ -623,6 +635,8 @@ def compact_context(payload: dict[str, Any], state: dict[str, Any]) -> dict[str,
         "compact": True,
         "note": COMPACT_NOTE,
     }
+    result.update(context_view(project, state))
+    return result
 
 
 def start_project(
@@ -671,7 +685,7 @@ def start_project(
     project_dir = project_dir.resolve()
     payload = validated_project_context(project_dir, limit=limit)
     state = _load_state(project_dir)
-    result = compact_context(payload, state)
+    result = compact_context(payload, state, project_dir)
     move = result["next_move"]["continue"]
     task_ids = {task["id"] for task in state["tasks"]}
     result["assignment"] = (

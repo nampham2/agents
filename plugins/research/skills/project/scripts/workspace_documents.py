@@ -380,6 +380,59 @@ LESSON_TITLE_TOKENS = (
 )
 
 
+LIST_ITEM_PATTERN = re.compile(r"(?:[-*+]|\d+[.)])\s+(?P<text>.*)")
+LINK_PATTERN = re.compile(r"\[(?P<text>[^\]]*)\]\([^)]*\)")
+# A short label such as `(P1)`, `(P3, P4)` or `(R2 and R3)`: letters then digits, joined by separators.
+SHORT_LABEL_PATTERN = re.compile(
+    r"\(\s*[A-Za-z]{1,3}\d+(?:\s*(?:[,/&;+]|and)\s*[A-Za-z]{1,3}\d+)*\s*\)"
+)
+
+
+def _names_only(item: str, patterns: list[re.Pattern[str]]) -> bool:
+    """Whether one list item names a staged title and carries nothing but formatting besides it."""
+    text = LINK_PATTERN.sub(lambda match: match["text"], item)
+    text = re.sub(r"[`*~]", "", text)
+    named = False
+    for pattern in patterns:
+        text, count = pattern.subn(" ", text)
+        named = named or count > 0
+    text = SHORT_LABEL_PATTERN.sub(" ", text.replace("_", " "))
+    return named and not re.search(r"\w", text)
+
+
+def names_only_staged(body: str, staged_titles: list[str]) -> bool:
+    """Whether a section body is only a list of items already staged, so staging it again adds nothing.
+
+    The body qualifies when it has at least one list item, every list item names a staged title and
+    nothing else, and every other line is either a lead-in ending with a colon or, after an item, an
+    indented line that continues it. A list item starts with `-`, `*`, `+` or a number followed by
+    `.` or `)`. It names a staged title when the title occurs in its text with no letter, digit,
+    hyphen or underscore directly on either side, so `x-v2` does not name `x`; a link counts by its
+    text, not its target. It names nothing else when, after removing link wrappers, backticks,
+    asterisks and tildes, every staged title, underscores, and short labels such as `(P1)` or
+    `(P3, P4)`, no letter or digit remains: only punctuation and separators. A described item such as
+    `- slug (P1): record the intent first` carries words the staged section may not, so it is prose
+    and the section is staged, as is any other line. Project 2026-11-06-001 closed with a `Lessons
+    folded here` list of its staged slugs, which finalize then staged as a fifth lesson; a list of
+    bare slugs and labels is now skipped, while that list's one-line descriptions still stage it.
+    """
+    patterns = [re.compile(rf"(?<![\w-]){re.escape(title)}(?![\w-])") for title in staged_titles if title]
+    if not patterns:
+        return False
+    items: list[str] = []
+    for line in body.splitlines():
+        if not line.strip():
+            continue
+        item = LIST_ITEM_PATTERN.fullmatch(line)
+        if item is not None:
+            items.append(item.group("text"))
+        elif line[0].isspace() and items:
+            items[-1] += " " + line.strip()
+        elif not line.rstrip().endswith(":"):
+            return False
+    return bool(items) and all(_names_only(item, patterns) for item in items)
+
+
 def reflection_lesson_sections(reflection: str) -> list[tuple[str, str]]:
     """The reflection's level-two sections whose title names a lesson, in document order.
 

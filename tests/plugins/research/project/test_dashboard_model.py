@@ -291,6 +291,7 @@ def test_the_fingerprint_moves_with_each_watched_file(tmp_path: Path) -> None:
     directory = write_project(tmp_path)
     (directory / "spec.md").write_text("spec", encoding="utf-8")
     (directory / "handoff.md").write_text("handoff", encoding="utf-8")
+    (directory / "invocations.jsonl").write_text("{}\n", encoding="utf-8")
     before = dash.fingerprint(tmp_path)
     assert dash.fingerprint(tmp_path) == before
     for name in dash.WATCHED_FILES:

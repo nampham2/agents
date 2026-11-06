@@ -177,3 +177,103 @@ class TestReflectedLessons:
             "exists": True,
             "sha256": lib.document_sha256(staging(project)),
         }
+
+
+STAGED_ONE = "rp-effect-intent-record"
+STAGED_TWO = "rp-resume-counter-crash-loop"
+FOLDED_TITLE = "Lessons folded here (staged items, user chose fold at closure)"
+FOLDED_SECTION = (
+    f"## {FOLDED_TITLE}\n\n"
+    "These are plugin-change candidates for the next retro, not cross-project lessons:\n"
+    f"- {STAGED_ONE} (P1)\n"
+    f"- [`{STAGED_TWO}`](memory-staging.md) (P2, P3).\n\n"
+)
+# The shape project 2026-11-06-001 actually closed with: each item restates its lesson in words, so the
+# words are prose the staged section may not carry and the section is staged.
+DESCRIBED_SECTION = (
+    f"## {FOLDED_TITLE}\n\n"
+    "These are plugin-change candidates for the next retro, not cross-project lessons:\n"
+    f'- {STAGED_ONE} (P1): record "about to run X with key K" before an external effect.\n'
+    f"- {STAGED_TWO} (P2): stop as blocked after N resumes without progress.\n\n"
+)
+
+
+def with_section(section: str) -> str:
+    return LESSON_REFLECTION.replace("## Retro\n", section + "## Retro\n")
+
+
+class TestFoldedLessonSections:
+    """A section that only lists items already staged is a pointer, not a lesson (2026-11-06-001 friction)."""
+
+    @pytest.fixture
+    def staged(self, project: Path) -> Path:
+        workspace_documents.stage_lesson(project, STAGED_ONE, "Record the intent before an external effect.")
+        workspace_documents.stage_lesson(project, STAGED_TWO, "Stop as blocked after three empty resumes.")
+        return project
+
+    def test_a_section_naming_only_staged_items_is_not_staged(self, staged: Path) -> None:
+        result = finalize(staged, with_section(FOLDED_SECTION))
+        assert result["reflected_lessons"]["staged"] == ["What did not work", "Lessons"]
+        assert result["reflected_lessons"]["skipped"] == [
+            {"title": FOLDED_TITLE, "reason": "names only items already staged"},
+        ]
+        assert FOLDED_TITLE not in staging(staged)
+
+    def test_items_that_describe_their_lesson_in_words_stage_the_section(self, staged: Path) -> None:
+        result = finalize(staged, with_section(DESCRIBED_SECTION))
+        assert FOLDED_TITLE in result["reflected_lessons"]["staged"]
+
+    def test_a_real_lesson_section_that_mentions_a_staged_item_is_still_staged(self, staged: Path) -> None:
+        section = (
+            "## Lessons from the effects work\n\n"
+            f"The receipt arrived after the crash, so {STAGED_ONE} alone would not have helped.\n"
+            f"- {STAGED_TWO}\n\n"
+        )
+        result = finalize(staged, with_section(section))
+        assert "Lessons from the effects work" in result["reflected_lessons"]["staged"]
+        assert "## Lessons from the effects work" in staging(staged)
+
+    def test_a_list_item_naming_an_unstaged_item_stages_the_section(self, staged: Path) -> None:
+        section = FOLDED_SECTION + "- rp-effect-intent-record-v2: a slug that only shares a prefix.\n\n"
+        result = finalize(staged, with_section(section))
+        assert FOLDED_TITLE in result["reflected_lessons"]["staged"]
+
+
+STAGED_PAIR = ["alpha-one", "beta-two"]
+
+
+class TestNamesOnlyStaged:
+    """The rule itself: every list item names a staged title; other lines are lead-ins ending with a colon."""
+
+    @pytest.mark.parametrize(
+        "body",
+        (
+            "- alpha-one\n- beta-two.",
+            "Folded:\n\n1. alpha-one;\n2) `beta-two`\n   (P3, P4)",
+            "* [alpha-one](memory-staging.md) (P1)\n+ **beta-two** (R2 and R3) -",
+            "- alpha-one, beta-two",
+        ),
+    )
+    def test_bodies_that_only_list_staged_titles_qualify(self, body: str) -> None:
+        assert workspace_documents.names_only_staged(body, STAGED_PAIR)
+        assert not workspace_documents.names_only_staged(body, []), "nothing staged means nothing to skip"
+
+    @pytest.mark.parametrize(
+        "body",
+        (
+            "alpha-one",
+            "Folded:",
+            "- alpha-one\nA closing sentence that is a lesson in its own right.",
+            "A lead-in that does not end with a colon\n- alpha-one",
+            "- alpha-one\n- gamma-three",
+            "- alpha-oneish",
+            "- alpha-one: new detail X learned this time",
+            "- alpha-one (P1): record the intent before an external effect.",
+            "- beta-two\n  wrapped onto a second line",
+            "- alpha-one (see notes)",
+            "- [why it mattered](alpha-one)",
+            "  indented text before any item",
+        ),
+    )
+    def test_any_other_body_does_not(self, body: str) -> None:
+        assert not workspace_documents.names_only_staged(body, STAGED_PAIR)

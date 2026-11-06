@@ -86,6 +86,27 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.34.0 effect intents, crash-loop stop, lock liveness, waits
+
+The `project` skill adopts the improvement points from the durable agents study (projects
+2026-11-06-001 and 2026-11-06-002). No `project.json` field is added, so 0.33.0 launchers still
+read every project 0.34.0 touches.
+
+- **Effect intents.** `workflow effect` records an intent before an external or destructive effect;
+  resume and context show an unresolved intent as "may have happened" until `resolve` or a receipt
+  whose value is the key.
+- **Crash-loop stop.** Resume stops as `blocked` after three project resumes without progress on a
+  RUNNING task, counted from `invocations.jsonl` and task notes; resume stays read-only.
+- **Lock liveness.** `owner.json` records host and process start time; a busy lock reports live,
+  stale or unknown, and `research-project unlock` removes only an identical stale lock.
+- **Workers and waits.** `unresolved_workers` entries show `silent_minutes`; `workflow wait` records
+  what a BLOCKED task waits for, shown in resume, context and the dashboard and flagged when due.
+- **Cheaper gates.** `goldfish waive` takes `reuses` naming the latest accepted round of the same
+  target and worktree.
+- **Friction fixes.** `worker-event --schema` lists required fields per event; finalize skips a
+  lesson section that only names staged items; clearer external-reference refusals.
+  `references/durability.md` documents all of it.
+
 ### 0.32.0 clearer refusals, local-only delivery, stricter readiness
 
 The `project` skill implements thirteen changes from retro 2026-10-28-001. Each one makes the tool

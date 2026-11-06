@@ -11,15 +11,16 @@ Send one JSON object on stdin (`-`) or a file path. Unknown fields fail. Named c
 bookkeeping; decisions, confirmations, chosen checks and acceptance stay agent-authored. They expand
 no permission.
 
-Records are below. Other references:
+Other references:
 
 - [Context](automation-context.md): `resume`, `packet`, conditional/exact `read`, `freshness`,
   `preview`, `impact`, `fingerprint`, `readiness`, `memory-health`, and `recover`.
 - [Execution and memory](automation-execution.md): native `worker-event` observations,
   durable `verify` check batches, retry-safe `triage`.
+- [Durability](durability.md): `effect`, `wait`, crash loops, `unlock`.
 
 `workflow <project-dir> <action> --schema` prints allowed, required, nested and variant keys. Writes
-return tokens, revisions and partial outcomes. A new ID is for new work, not for bypassing a
+return tokens, revisions and partial outcomes. A new ID is for new work, not bypassing a
 conflict; inspect unknown outcomes, never replay. A draft or passing check does not establish
 agreement, effect authorization, task acceptance or stopped workers.
 
@@ -27,13 +28,13 @@ agreement, effect authorization, task acceptance or stopped workers.
 
 Every metadata write requires `id` (lowercase letters/digits/hyphens, at most 64 characters) and
 `expected_revision`, plus `tokens` mapping each existing document it changes to its SHA-256; new
-documents default to `missing`. Retain the exact input for retries: the same ID/input completes the
-operation; changed input with the same ID conflicts.
+documents default to `missing`. Retain the exact input for retries: the same ID/input completes;
+changed input with the same ID conflicts.
 
 ```json
 {"id":"round-2","expected_revision":0,"tokens":{"spec":"<sha256>"},
- "sections":{"In scope":"Parse the existing format; preserve compatibility."},
- "decisions":[{"id":"format-decision","body":"User chose compatibility; source: current reply."}],
+ "sections":{"In scope":"Keep compatibility."},
+ "decisions":[{"id":"format-decision","body":"Source: current reply."}],
  "planning":"# A2\n\nStatus: draft\n\n<complete current proposal>",
  "continuation":{"next":"Ask for A2 confirmation","questions":"Confirm A2?"}}
 ```
@@ -59,7 +60,8 @@ operation; changed input with the same ID conflicts.
 Continuation fields are strings: `next` (required on first checkpoint), `questions`, `pointers`,
 `partial`, `ownership`, `effects`, `lessons`, `do_not`, `session`. Only supplied fields change;
 empty text resolves a prior field. Session labels: `working`, `waiting`, `blocked`, `ready for
-handoff`. Claim readiness only after validation. Before supplying continuation, read
+handoff`; all but `working` need `stop_reason` ([stopping.md](stopping.md)). Claim readiness only
+after validation. Before supplying continuation, read
 [handoff-writing.md](handoff-writing.md). Put verifier status in `next`/`partial`, sourced
 observations in `ownership`/`effects`, prohibitions in `do_not`; headings in values are refused.
 Existing free-form handoffs require `import_legacy: true`; their text is preserved.

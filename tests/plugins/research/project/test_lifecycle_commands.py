@@ -568,7 +568,17 @@ def test_invalid_read_and_check_inputs(project: Path, action: str, payload: dict
         ("confirm", {"kind": "requirements", "proposal_sha256": "stale"}),
         ("correct", {"task": "T01", "replacement": {}, "reason": "No"}),
         ("maintenance", {"reason": "Not completed"}),
-        ("worker-event", {"task": "T01", "handle": "h", "scope": "s", "observation": "o", "event": "invalid"}),
+        (
+            "worker-event",
+            {
+                "task": "T01",
+                "handle": "h",
+                "scope": "s",
+                "observation": "o",
+                "event": "invalid",
+                "assignment_revision": 0,
+            },
+        ),
         (
             "worker-event",
             {

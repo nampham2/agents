@@ -445,15 +445,52 @@ def waive_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
     target, worktree, commit = _target_fields(state, request)
     reason = string_input(request.get("reason"), "reason")
     confirmation = _confirmation(request.get("confirmation"))
+    reused = _reused(project, request, target, worktree) if "reuses" in request else None
     version = version_for(project, state, target, worktree, commit)
     number = max(_round_numbers(project), default=0) + 1
     round_ = Round(number, target, worktree, commit is not None, version, version, "waived", (), None, None)
-    lines = [
-        f"# Goldfish round {number:02d}: {target} (waived)", "", "## Waiver", "", f"Reason: {_flat(reason)}", "",
-        *_confirmation_lines(confirmation),
-    ]
+    lines = [f"# Goldfish round {number:02d}: {target} (waived)", "", "## Waiver", "", f"Reason: {_flat(reason)}", ""]
+    if reused is not None:
+        # In the body, never in the marker: a 0.33.0 reader parses the marker's exact key set.
+        shown = f"Reuses: round {reused.number:02d} ({reused.outcome}, resolved {reused.resolved})"
+        lines += ["## Reuses", "", shown, ""]
+    lines += _confirmation_lines(confirmation)
     documents = _write(number, round_, "\n".join(lines))
-    return documents, {"round": number, "document": round_name(number), "outcome": "waived", "resolved": version}
+    result = {"round": number, "document": round_name(number), "outcome": "waived", "resolved": version}
+    if reused is not None:
+        result["reuses"] = reused.number
+    return documents, result
+
+
+def _reused(project: Path, request: "dict[str, Any]", target: str, worktree: "str | None") -> Round:
+    """The earlier round a waiver reuses: it passed on review (not by a waiver) for the same target and worktree,
+    and no later non-waived round reviewed that target and worktree."""
+    number = request["reuses"]
+    if type(number) is not int or number < 1:
+        raise WorkspaceError("reuses must be the positive number of an earlier round")
+    found = next((item for item in round_documents(project) if item.number == number), None)
+    if found is None:
+        raise WorkspaceError(f"reuses: round {number:02d} does not exist")
+    if found.outcome not in ("accepted", "accepted-residual"):
+        raise WorkspaceError(
+            f"reuses: round {number:02d} is {found.outcome}; a waiver reuses only an accepted or accepted-residual "
+            "round (a waiver cannot back a waiver)"
+        )
+    if found.key != (target, worktree):
+        shown = found.target + (f" of {found.worktree}" if found.worktree else "")
+        raise WorkspaceError(f"reuses: round {number:02d} reviewed {shown}, not this waiver's target and worktree")
+    # Only the latest review of the key may be reused: a later open or failed round says the reused
+    # verdict no longer stands. Waivers in between review nothing, so they do not supersede it.
+    latest = max(
+        (item for item in round_documents(project) if item.key == found.key and item.outcome != "waived"),
+        key=lambda item: item.number,
+    )
+    if latest.number != found.number:
+        raise WorkspaceError(
+            f"reuses: round {latest.number:02d} ({latest.outcome}) is a later review of the same target and "
+            f"worktree, so round {number:02d} no longer stands; close or re-run the review, or waive without reuses"
+        )
+    return found
 
 
 def goldfish_operation(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:

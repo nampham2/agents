@@ -5,12 +5,14 @@ from __future__ import annotations
 import copy
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from memory_search import memory_health
 from workspace_ci import ci_checks
 from workspace_context import (
+    WORKER_KEYS,
     checkpoint_freshness,
     fingerprint,
     infer_stop_reason,
@@ -37,7 +39,17 @@ from workspace_documents import (
     _replace_sections,
     _section_span,
     append_staged_section,
+    names_only_staged,
     reflection_lesson_sections,
+)
+from workspace_durability import (
+    EFFECT_KINDS,
+    EFFECT_OUTCOMES,
+    KEY_LIMIT,
+    aware_instant,
+    open_intents,
+    silent_minutes,
+    valid_key,
 )
 from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
 from workspace_goldfish import (
@@ -48,6 +60,7 @@ from workspace_goldfish import (
     goldfish_findings,
     goldfish_operation,
 )
+from workspace_invocations import note
 from workspace_journal import (
     READ_INPUTS,
     document_path,
@@ -103,6 +116,8 @@ FIELDS = {
     "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
     "authorize": {"task", "authorization", "continuation"},
     "receipt": {"task", "receipt"},
+    "effect": {"operation", "task", "key", "effect", "outcome", "note"},
+    "wait": {"task", "on", "until", "reason"},
     "review": {"reviewer", "version", "scope", "findings", "status", "evidence", "required"},
     "goldfish": set().union(*OPERATION_FIELDS.values()),
     "finalize": {"reflection", "continuation"},
@@ -119,7 +134,7 @@ FIELDS = {
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
 READ_ACTIONS = set(READ_INPUTS)
 
-# Two actions have a discriminator value whose keys the runtime demands on top of the universal
+# Some actions have a discriminator value whose keys the runtime demands on top of the universal
 # ones, and `workflow <action> --schema` must print them per value: a caller that never learns
 # `path`, `branch` or `review_id` until a refusal has already staged the operation learns it too
 # late for a clean retry. Each entry is the complete sorted key set of that variant, so the whole
@@ -151,10 +166,26 @@ WORKTREE_REQUIRED_BY = {
 }
 GOLDFISH_REQUIRED = frozenset({"operation"})
 GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in OPERATION_REQUIRED.items()}
-ALWAYS_REQUIRED = {"confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED}
+# Every worker-event field is required for every event. The `event=<name>` entries add no key; they
+# are how `--schema` names the closed event vocabulary without a new top-level schema key.
+WORKER_EVENTS = ("intent", "launched", "observed", "completed", "stopped", "failed")
+WORKER_EVENT_REQUIRED = frozenset(FIELDS["worker-event"])
+WORKER_EVENT_REQUIRED_BY = {f"event={name}": frozenset() for name in WORKER_EVENTS}
+# P1: an effect intent before an external or destructive effect, and its resolve once checked.
+EFFECT_REQUIRED = frozenset({"operation", "task", "key"})
+EFFECT_REQUIRED_BY = {"operation=intent": frozenset({"effect"}), "operation=resolve": frozenset({"outcome"})}
+# P5: what a BLOCKED task waits for; no operation, no variants and no clear (leaving BLOCKED ends it).
+WAIT_REQUIRED = frozenset({"task", "on"})
+ALWAYS_REQUIRED = {
+    "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
+    "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED, "wait": WAIT_REQUIRED,
+}
 REQUIRED_BY = {
     "confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY, "goldfish": GOLDFISH_REQUIRED_BY,
+    "worker-event": WORKER_EVENT_REQUIRED_BY, "effect": EFFECT_REQUIRED_BY,
 }
+# Workflow writes that name a task put it on their invocation line; a receipt there is crash-loop progress.
+TASK_NOTED_ACTIONS = ("effect", "wait", "receipt", "authorize", "worker-event")
 
 
 def input_schema(action: str) -> dict[str, Any]:
@@ -516,6 +547,68 @@ def _worktree(
     return patch, outcome
 
 
+def _effect(project: Path, state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
+    """The notes document and `research-effect` entry body of an intent or resolve, after its refusals."""
+    task = _task(state, string_input(request.get("task"), "task"))
+    operation = request.get("operation")
+    if operation not in ("intent", "resolve"):
+        raise WorkspaceError("effect operation must be intent or resolve")
+    key = request.get("key")
+    if not valid_key(key):
+        raise WorkspaceError(f"effect key must be 1-{KEY_LIMIT} characters on one line")
+    opened = open_intents(project, task)
+    recorded = datetime.now().astimezone().isoformat(timespec="microseconds")
+    if operation == "intent":
+        kind = task["effect"]["kind"]
+        if kind not in EFFECT_KINDS:
+            raise WorkspaceError(
+                f"effect intents are for external or destructive tasks; {task['id']} has effect kind {kind}"
+            )
+        entry = {"op": "intent", "key": key, "effect": string_input(request.get("effect"), "effect")}
+        receipts = task.get("receipts")
+        if isinstance(receipts, list) and any(isinstance(item, dict) and item.get("value") == key for item in receipts):
+            # A receipt with the key's value closes the intent at once, so recording one would show nothing.
+            raise WorkspaceError(
+                f"{task['id']} already has a receipt with value {key!r}, so that effect is recorded as done; "
+                "use another key for a new effect"
+            )
+        if key in opened:
+            raise WorkspaceError(
+                f"an open intent with key {key!r} already exists on {task['id']}; check whether the effect happened, "
+                "then resolve it or record its receipt"
+            )
+    else:
+        if request.get("outcome") not in EFFECT_OUTCOMES:
+            raise WorkspaceError(f"effect outcome must be one of: {', '.join(EFFECT_OUTCOMES)}")
+        if key not in opened:
+            raise WorkspaceError(f"no open intent with key {key!r} on {task['id']}")
+        entry = {"op": "resolve", "key": key, "outcome": request["outcome"]}
+        if "note" in request:
+            entry["note"] = string_input(request["note"], "note")
+    entry["recorded"] = recorded
+    # `>` only occurs inside JSON strings, so escaping it keeps any `-->` in the text from closing the comment.
+    return "tasks/" + task["id"], "<!-- research-effect " + json.dumps(entry).replace(">", "\\u003e") + " -->"
+
+
+def _wait(state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
+    """The notes document and `research-wait` entry body of a wait, after its refusals."""
+    task = _task(state, string_input(request.get("task"), "task"))
+    if task["status"] != "BLOCKED":
+        raise WorkspaceError(
+            f"a wait is recorded on a BLOCKED task; {task['id']} is {task['status']}, so run task block first"
+        )
+    entry: dict[str, Any] = {"on": string_input(request.get("on"), "on"), "until": None, "reason": None}
+    until = request.get("until")
+    if until is not None:
+        if aware_instant(until) is None:
+            raise WorkspaceError("wait until must be a timezone-aware ISO 8601 time, such as 2026-11-07T09:00:00+01:00")
+        entry["until"] = until.strip()
+    if request.get("reason") is not None:
+        entry["reason"] = string_input(request["reason"], "reason")
+    entry["recorded"] = datetime.now().astimezone().isoformat(timespec="microseconds")
+    return "tasks/" + task["id"], "<!-- research-wait " + json.dumps(entry).replace(">", "\\u003e") + " -->"
+
+
 def _build(
     project: Path, action: str, request: dict[str, Any], state: dict[str, Any]
 ) -> tuple[dict[str, str], dict[str, Any] | None, dict[str, Any]]:
@@ -660,7 +753,7 @@ def _build(
         _task(state, string_input(request.get("task"), "task"))
         for field in ("handle", "scope", "observation"):
             string_input(request.get(field), field)
-        if request.get("event") not in ("intent", "launched", "observed", "completed", "stopped", "failed"):
+        if request.get("event") not in WORKER_EVENTS:
             raise WorkspaceError("unsupported worker observation")
         if (
             type(request.get("assignment_revision")) is not int
@@ -673,6 +766,12 @@ def _build(
         documents[name] = _entry(
             read(name), request["id"], "<!-- research-worker " + json.dumps(event, sort_keys=True) + " -->"
         )
+    elif action == "effect":
+        name, body = _effect(project, state, request)
+        documents[name] = _entry(read(name) or f"# Task {request['task']} notes\n", request["id"], body)
+    elif action == "wait":
+        name, body = _wait(state, request)
+        documents[name] = _entry(read(name) or f"# Task {request['task']} notes\n", request["id"], body)
     elif action in ("authorize", "receipt"):
         task = _task(state, string_input(request.get("task"), "task"))
         if action == "authorize":
@@ -733,7 +832,12 @@ def _build(
         planned = read("memory-staging")
         staged: list[str] = []
         skipped: list[dict[str, str]] = []
+        # Titles staged before this close: a section that only lists them is a pointer, not a lesson.
+        staged_titles = [name for level, name, _ in _headings(planned) if level == 2]
         for title, body in reflection_lesson_sections(reflection):
+            if names_only_staged(body, staged_titles):
+                skipped.append({"title": title, "reason": "names only items already staged"})
+                continue
             if any(name == title for _, name, _ in _headings(planned)):
                 level, _, body_start, end = _section_span(planned, title)
                 same = level == 2 and planned[body_start:end].strip() == body
@@ -811,7 +915,7 @@ def _build(
             continuation = {**continuation, "stop_reason": inferred}
             result["stop_reason_inferred"] = inferred
         documents["handoff"], metadata = render_checkpoint(
-            project, target, continuation, documents, next_hint=next_hint(target)
+            project, target, continuation, documents, next_hint=next_hint(project, target)
         )
         result["resume_prompt"] = (
             f"Use the project skill to resume {project}. Run workflow resume with selected sources; "
@@ -841,6 +945,12 @@ def _variant_required(project: Path, action: str, request: Any) -> frozenset[str
         if "architecture_sha256" in request and "planning_sha256" in wanted:
             wanted = (wanted - {"planning_sha256"}) | {"architecture_sha256"}
         return wanted
+    if action == "worker-event":
+        return WORKER_EVENT_REQUIRED
+    if action == "wait":
+        return WAIT_REQUIRED
+    if isinstance(request, dict) and action == "effect":
+        return EFFECT_REQUIRED | EFFECT_REQUIRED_BY.get(f"operation={request.get('operation')}", frozenset())
     if not isinstance(request, dict) or action != "worktree":
         return frozenset()
     entry = None
@@ -870,6 +980,8 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
             nested_required=NESTED_REQUIRED.get(action, frozenset()),
             hints=KEY_HINTS if action == "worktree" else CONFIRM_HINTS if action == "confirm" else None,
         )
+        if action in TASK_NOTED_ACTIONS and isinstance(request.get("task"), str):
+            note(task=request["task"])
         return run_operation(project, action, request, lambda state: _build(project, action, request, state))
     if action == "verify":
         from workspace_checks import verify
@@ -881,8 +993,14 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
         return triage(project, request)
     if action in ("resume", "packet"):
         schema_input(request, action)
-        result = resume_bundle(project, request)
+        if action == "resume" and any(key in request for key in WORKER_KEYS):
+            note(worker_packet=True)
+        result = resume_bundle(project, request, action=action)
         events = worker_events(project)
+        for event in events:
+            silent = silent_minutes(event.get("recorded"))
+            if silent is not None:
+                event["silent_minutes"] = silent
         result["unresolved_workers"] = events[:20]
         result["omitted_workers"] = max(0, len(events) - 20)
         return result
