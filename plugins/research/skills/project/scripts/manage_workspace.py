@@ -54,6 +54,7 @@ from workspace_lib import (
     render_task_graph,
     resolve_workspace_root,
     retire_memory_topic,
+    unlock_lock,
     validate_v3_state,
     verification_order_warnings,
 )
@@ -518,6 +519,18 @@ def _build_parser() -> argparse.ArgumentParser:
     record_run_parser.add_argument("input_json", nargs="?", type=Path, help="JSON input file, or '-' for stdin")
     record_run_parser.add_argument("--schema", action="store_true", help="print the allowed keys and exit")
     record_run_parser.add_argument("--lock-timeout", type=float, default=5.0)
+
+    unlock = subparsers.add_parser(
+        "unlock",
+        help="Remove one stale lock directory after re-checking its owner",
+        epilog=(
+            "Removes the lock only when its owner is stale (dead pid, or the pid's start time changed) on "
+            "this host; a live, foreign-host or unknown owner is refused. Exits 0 only when the lock was removed."
+        ),
+    )
+    # Not `project_directory`: unlock is not project-scoped and writes no invocation line.
+    unlock.add_argument("lock_path", type=Path, help="the lock directory, named *.lock, inside the workspace root")
+    unlock.add_argument("--workspace-root", type=Path, help=f"defaults to ${WORKSPACE_ROOT_ENV_VAR}")
 
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
     migrate.add_argument("project_directory", type=Path)
@@ -1028,6 +1041,14 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
             root, _read_json_object(args.input_json), lock_timeout=args.lock_timeout
         ), indent=2))
         return 0
+
+    if args.command == "unlock":
+        result, code = unlock_lock(args.lock_path, resolve_workspace_root(args.workspace_root))
+        error = result.pop("error", None)
+        print(json.dumps(result, indent=2))
+        if error:
+            print(f"ERROR: {error}", file=sys.stderr)
+        return code
 
     if args.command == "migrate":
         if args.apply:

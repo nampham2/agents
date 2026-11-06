@@ -10,7 +10,9 @@ import json
 import os
 import re
 import shlex
+import socket
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -644,6 +646,197 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
     atomic_write_text(path, json.dumps(value, indent=2, ensure_ascii=False) + "\n")
 
 
+# P3 lock liveness. `owner.json` names the pid, the host and an opaque start token of the process
+# that took the lock; tokens are compared by equality only, never parsed.
+PROC_ROOT = Path("/proc")
+LOCK_OWNER_FILENAME = "owner.json"
+LOCK_IDENTITY_KEYS = ("pid", "host", "started", "created")
+# The calling process's own token, read once: every lock it takes records the same value.
+_OWN_START_TOKEN: "list[str]" = []
+
+
+def process_start_token(pid: int) -> str:
+    """An opaque start-time token for `pid`, or "" when it cannot be read.
+
+    Linux: field 22 of /proc/<pid>/stat, counted after the last `)` so a command name holding spaces
+    or parentheses cannot shift it. macOS: `ps -o lstart=` with LC_ALL=C and TZ=UTC pinned, so the
+    same process gives the same token whatever the calling shell's locale or time zone.
+    """
+    try:
+        if sys.platform.startswith("linux"):
+            text = (PROC_ROOT / str(pid) / "stat").read_text(encoding="utf-8")
+            # After ")" the fields start at field 3 (state), so field 22 sits at index 19.
+            return f"linux:{text[text.rindex(')') + 1 :].split()[19]}"
+        if sys.platform == "darwin":
+            completed = subprocess.run(
+                ["ps", "-o", "lstart=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=5,
+                env={**os.environ, "LC_ALL": "C", "TZ": "UTC"},
+            )
+            value = completed.stdout.strip()
+            return f"darwin:{value}" if completed.returncode == 0 and value else ""
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return ""
+    return ""
+
+
+def own_start_token() -> str:
+    """This process's start token, read once and cached."""
+    if not _OWN_START_TOKEN:
+        _OWN_START_TOKEN.append(process_start_token(os.getpid()))
+    return _OWN_START_TOKEN[0]
+
+
+def _read_lock_owner(path: Path) -> "dict[str, Any] | None":
+    """The lock's owner.json as an object, None when missing; an unreadable file is an empty dict."""
+    owner_path = path / LOCK_OWNER_FILENAME
+    try:
+        value = json.loads(owner_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _owner_status(owner: "dict[str, Any] | None") -> "tuple[str, str]":
+    """Judge one owner record: (live | stale | unknown, reason). See lock_status."""
+    if owner is None:
+        return "unknown", "no owner"
+    pid = owner.get("pid")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return "unknown", "unreadable owner"
+    if "host" not in owner:
+        return "unknown", "legacy owner"
+    started = owner.get("started")
+    if not isinstance(started, str) or not started:
+        return "unknown", "no start token"
+    if owner["host"] != socket.gethostname():
+        return "unknown", f"foreign host {owner['host']}"
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return "stale", "dead pid"
+    except PermissionError:
+        pass  # the pid exists under another user: alive
+    except (OSError, OverflowError):
+        return "unknown", "pid check failed"
+    current = process_start_token(pid)
+    if not current:
+        return "unknown", "start token unreadable"
+    if current != started:
+        return "stale", "pid reused"
+    return "live", "owner alive"
+
+
+def lock_status(path: Path) -> "tuple[str, str]":
+    """Whether a lock directory's owner is live, stale or unknown, with the reason.
+
+    1. no owner.json: unknown. 2. no host, or no start token: unknown. 3. a foreign host: unknown.
+    4. a dead pid: stale (a PermissionError counts as alive). 5. an unreadable current token:
+    unknown. 6. a different token: stale (pid reused). 7. otherwise live. Only `stale` may be
+    removed, and only by `research-project unlock`.
+    """
+    return _owner_status(_read_lock_owner(path))
+
+
+def _lock_workspace_root(path: Path) -> "Path | None":
+    """The workspace root above a lock path, else $RESEARCH_WORKSPACE, else None."""
+    for ancestor in path.absolute().parents:
+        if _is_workspace_root(ancestor):
+            return ancestor
+    configured = os.environ.get(WORKSPACE_ROOT_ENV_VAR, "").strip()
+    return Path(configured).expanduser() if configured else None
+
+
+def busy_lock_message(path: Path) -> str:
+    """The busy-lock refusal: the owner's status, its reason, and the unlock command."""
+    status, reason = lock_status(path)
+    command = f"research-project unlock {shlex.quote(str(path))}"
+    root = _lock_workspace_root(path)
+    if root is not None:
+        command += f" --workspace-root {shlex.quote(str(root))}"
+    return (
+        f"workspace lock is busy: {path}; owner status: {status} ({reason}); "
+        f"unlock removes only a stale lock: {command}"
+    )
+
+
+def _unlock_scope(path: Path, workspace_root: Path) -> Path:
+    """The resolved lock directory `unlock` may act on, or a refusal."""
+    root = workspace_root.expanduser().resolve()
+    target = path.expanduser().resolve()
+    if target == root or not target.is_relative_to(root):
+        raise WorkspaceError(f"refusing to unlock {path}: it resolves to {target}, outside the workspace root {root}")
+    if not target.name.endswith(".lock"):
+        raise WorkspaceError(f"refusing to unlock {target}: its name does not end in .lock")
+    if not target.is_dir():
+        raise WorkspaceError(f"refusing to unlock {target}: not a lock directory")
+    extras = sorted(child.name for child in target.iterdir() if child.name != LOCK_OWNER_FILENAME)
+    if extras:
+        raise WorkspaceError(
+            f"refusing to unlock {target}: it holds more than owner.json ({', '.join(extras)}); inspect it by hand"
+        )
+    return target
+
+
+def unlock_lock(path: Path, workspace_root: Path) -> "tuple[dict[str, Any], int]":
+    """Remove one stale lock directory with an identity re-check; (JSON result, exit code).
+
+    The lock is renamed to a tombstone first, so no one can acquire the old path while it is judged
+    again. Only an owner identical to the first read (pid, host, started, created) and still stale is
+    removed. Anything else is restored without replacing: `mkdir` fails if a new holder took the
+    path. A failed restore keeps the tombstone and names both paths. Takes no lock itself.
+    """
+    target = _unlock_scope(path, workspace_root)
+    first = _read_lock_owner(target)
+    status, reason = _owner_status(first)
+    if status != "stale":
+        return {"status": status, "reason": reason, "removed": False}, 1
+    tombstone = target.with_name(f"{target.name}.tombstone-{os.getpid()}-{uuid.uuid4().hex[:8]}")
+    try:
+        os.rename(target, tombstone)
+    except OSError as error:
+        raise WorkspaceError(f"cannot move {target} aside for unlock: {error}") from error
+    second = _read_lock_owner(tombstone)
+    # A missing or unreadable second read is never identical.
+    identical = bool(first and second and all(second.get(key) == first.get(key) for key in LOCK_IDENTITY_KEYS))
+    if identical:
+        status, reason = _owner_status(second)
+    if identical and status == "stale":
+        try:
+            (tombstone / LOCK_OWNER_FILENAME).unlink()
+            tombstone.rmdir()
+        except OSError as error:
+            return {
+                "status": status,
+                "reason": reason,
+                "removed": False,
+                "tombstone": str(tombstone),
+                "lock": str(target),
+                "error": f"cannot remove tombstone {tombstone} of {target}: {error}",
+            }, 1
+        return {"status": status, "reason": reason, "removed": True}, 0
+    try:
+        os.mkdir(target)
+        os.replace(tombstone / LOCK_OWNER_FILENAME, target / LOCK_OWNER_FILENAME)
+        tombstone.rmdir()
+    except OSError as error:
+        return {
+            "status": status,
+            "reason": "owner changed during unlock",
+            "removed": False,
+            "tombstone": str(tombstone),
+            "lock": str(target),
+            "error": f"cannot restore tombstone {tombstone} to {target}: {error}",
+        }, 1
+    status, reason = lock_status(target)
+    return {"status": status, "reason": reason, "removed": False}, 1
+
+
 class DirectoryLock(AbstractContextManager["DirectoryLock"]):
     """A cross-process lock based on atomic directory creation."""
 
@@ -654,6 +847,7 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
 
     def __enter__(self) -> "DirectoryLock":
         deadline = time.monotonic() + self.timeout
+        host, started = socket.gethostname(), own_start_token()
         while True:
             try:
                 self.path.mkdir()
@@ -661,9 +855,11 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
                 owner = {
                     "pid": os.getpid(),
                     "created": now_iso(),
+                    "host": host,
+                    "started": started,
                 }
                 try:
-                    atomic_write_json(self.path / "owner.json", owner)
+                    atomic_write_json(self.path / LOCK_OWNER_FILENAME, owner)
                 except BaseException:
                     self.acquired = False
                     self.path.rmdir()
@@ -671,9 +867,7 @@ class DirectoryLock(AbstractContextManager["DirectoryLock"]):
                 return self
             except FileExistsError as error:
                 if time.monotonic() >= deadline:
-                    raise WorkspaceConflict(
-                        f"workspace lock is busy: {self.path}; inspect owner.json before removing a stale lock"
-                    ) from error
+                    raise WorkspaceConflict(busy_lock_message(self.path)) from error
                 time.sleep(0.05)
 
     def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
