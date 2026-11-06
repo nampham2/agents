@@ -41,7 +41,15 @@ from workspace_documents import (
     names_only_staged,
     reflection_lesson_sections,
 )
-from workspace_durability import EFFECT_KINDS, EFFECT_OUTCOMES, KEY_LIMIT, open_intents, valid_key
+from workspace_durability import (
+    EFFECT_KINDS,
+    EFFECT_OUTCOMES,
+    KEY_LIMIT,
+    aware_instant,
+    open_intents,
+    silent_minutes,
+    valid_key,
+)
 from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
 from workspace_goldfish import (
     OPERATION_FIELDS,
@@ -108,6 +116,7 @@ FIELDS = {
     "authorize": {"task", "authorization", "continuation"},
     "receipt": {"task", "receipt"},
     "effect": {"operation", "task", "key", "effect", "outcome", "note"},
+    "wait": {"task", "on", "until", "reason"},
     "review": {"reviewer", "version", "scope", "findings", "status", "evidence", "required"},
     "goldfish": set().union(*OPERATION_FIELDS.values()),
     "finalize": {"reflection", "continuation"},
@@ -164,16 +173,18 @@ WORKER_EVENT_REQUIRED_BY = {f"event={name}": frozenset() for name in WORKER_EVEN
 # P1: an effect intent before an external or destructive effect, and its resolve once checked.
 EFFECT_REQUIRED = frozenset({"operation", "task", "key"})
 EFFECT_REQUIRED_BY = {"operation=intent": frozenset({"effect"}), "operation=resolve": frozenset({"outcome"})}
+# P5: what a BLOCKED task waits for; no operation, no variants and no clear (leaving BLOCKED ends it).
+WAIT_REQUIRED = frozenset({"task", "on"})
 ALWAYS_REQUIRED = {
     "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
-    "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED,
+    "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED, "wait": WAIT_REQUIRED,
 }
 REQUIRED_BY = {
     "confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY, "goldfish": GOLDFISH_REQUIRED_BY,
     "worker-event": WORKER_EVENT_REQUIRED_BY, "effect": EFFECT_REQUIRED_BY,
 }
 # Workflow writes that name a task put it on their invocation line; a receipt there is crash-loop progress.
-TASK_NOTED_ACTIONS = ("effect", "receipt", "authorize", "worker-event")
+TASK_NOTED_ACTIONS = ("effect", "wait", "receipt", "authorize", "worker-event")
 
 
 def input_schema(action: str) -> dict[str, Any]:
@@ -571,6 +582,25 @@ def _effect(project: Path, state: dict[str, Any], request: dict[str, Any]) -> tu
     return "tasks/" + task["id"], "<!-- research-effect " + json.dumps(entry).replace(">", "\\u003e") + " -->"
 
 
+def _wait(state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
+    """The notes document and `research-wait` entry body of a wait, after its refusals."""
+    task = _task(state, string_input(request.get("task"), "task"))
+    if task["status"] != "BLOCKED":
+        raise WorkspaceError(
+            f"a wait is recorded on a BLOCKED task; {task['id']} is {task['status']}, so run task block first"
+        )
+    entry: dict[str, Any] = {"on": string_input(request.get("on"), "on"), "until": None, "reason": None}
+    until = request.get("until")
+    if until is not None:
+        if aware_instant(until) is None:
+            raise WorkspaceError("wait until must be a timezone-aware ISO 8601 time, such as 2026-11-07T09:00:00+01:00")
+        entry["until"] = until.strip()
+    if request.get("reason") is not None:
+        entry["reason"] = string_input(request["reason"], "reason")
+    entry["recorded"] = datetime.now().astimezone().isoformat(timespec="microseconds")
+    return "tasks/" + task["id"], "<!-- research-wait " + json.dumps(entry).replace(">", "\\u003e") + " -->"
+
+
 def _build(
     project: Path, action: str, request: dict[str, Any], state: dict[str, Any]
 ) -> tuple[dict[str, str], dict[str, Any] | None, dict[str, Any]]:
@@ -730,6 +760,9 @@ def _build(
         )
     elif action == "effect":
         name, body = _effect(project, state, request)
+        documents[name] = _entry(read(name) or f"# Task {request['task']} notes\n", request["id"], body)
+    elif action == "wait":
+        name, body = _wait(state, request)
         documents[name] = _entry(read(name) or f"# Task {request['task']} notes\n", request["id"], body)
     elif action in ("authorize", "receipt"):
         task = _task(state, string_input(request.get("task"), "task"))
@@ -906,6 +939,8 @@ def _variant_required(project: Path, action: str, request: Any) -> frozenset[str
         return wanted
     if action == "worker-event":
         return WORKER_EVENT_REQUIRED
+    if action == "wait":
+        return WAIT_REQUIRED
     if isinstance(request, dict) and action == "effect":
         return EFFECT_REQUIRED | EFFECT_REQUIRED_BY.get(f"operation={request.get('operation')}", frozenset())
     if not isinstance(request, dict) or action != "worktree":
@@ -954,6 +989,10 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
             note(worker_packet=True)
         result = resume_bundle(project, request, action=action)
         events = worker_events(project)
+        for event in events:
+            silent = silent_minutes(event.get("recorded"))
+            if silent is not None:
+                event["silent_minutes"] = silent
         result["unresolved_workers"] = events[:20]
         result["omitted_workers"] = max(0, len(events) - 20)
         return result

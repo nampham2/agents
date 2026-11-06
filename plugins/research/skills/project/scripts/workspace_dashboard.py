@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from workspace_context import checkpoint_data
+from workspace_durability import active_wait, invocation_lines, utcnow
 from workspace_lib import (
     WorkspaceError,
     find_workspace_roots,
@@ -39,7 +40,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
 TERMINAL = frozenset({"DONE", "CANCELLED"})
-WATCHED_FILES = ("project.json", "spec.md", "handoff.md")
+# `invocations.jsonl` gains a line with every call, so a `workflow wait` moves the fingerprint.
+WATCHED_FILES = ("project.json", "spec.md", "handoff.md", "invocations.jsonl")
 DECISION_LIMIT = 6
 SESSION_LIMIT = 3
 # A transcript counts as having worked on a project when a write command named the project
@@ -94,8 +96,17 @@ def _read_optional(path: Path) -> str:
         return ""
 
 
-def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
+def _wait(project_dir: Path, task: dict[str, Any], lines: list[dict[str, Any]], now: datetime) -> Any:
+    """The task's active wait as the page shows it, or None."""
+    found = active_wait(project_dir, task, lines, now=now)
+    return {key: found[key] for key in ("on", "until", "due")} if found else None
+
+
+def _task_rows(tasks: list[Any], project_dir: Path) -> list[dict[str, Any]]:
     rows = []
+    blocked = any(isinstance(task, dict) and task.get("status") == "BLOCKED" for task in tasks)
+    lines = invocation_lines(project_dir) if blocked else []
+    now = utcnow()
     for task in tasks:
         if not isinstance(task, dict):
             continue
@@ -109,6 +120,7 @@ def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
                 "effect": _text(effect.get("kind")) if isinstance(effect, dict) else "",
                 "evidence": len(evidence) if isinstance(evidence, list) else 0,
                 "block_reason": _text(task.get("block_reason")),
+                "wait": _wait(project_dir, task, lines, now),
                 "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
             }
         )
@@ -168,7 +180,7 @@ def build_project(project_dir: Path) -> dict[str, Any]:
     if not isinstance(status, str) or not status:
         row.update(unreadable=True, title=project_dir.name, status="UNREADABLE", needs_you=False, sessions=[])
         return row
-    tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [])
+    tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [], project_dir)
     counts: dict[str, int] = {}
     for task in tasks:
         counts[task["status"]] = counts.get(task["status"], 0) + 1

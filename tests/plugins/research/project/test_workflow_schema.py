@@ -131,7 +131,7 @@ class TestSchemaTable:
     def test_every_action_has_exactly_one_schema(self) -> None:
         assert set(ACTIONS) == workflows.FIELDS.keys() | journal.READ_INPUTS.keys()
         assert workflows.READ_ACTIONS == set(journal.READ_INPUTS), "read actions are derived from the table"
-        assert len(ACTIONS) == 29
+        assert len(ACTIONS) == 30
 
     @pytest.mark.parametrize("action", ACTIONS)
     def test_the_printed_schema_is_what_validation_enforces(self, project: Path, action: str) -> None:

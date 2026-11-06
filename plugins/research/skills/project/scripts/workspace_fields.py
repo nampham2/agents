@@ -24,7 +24,7 @@ FINDING_REQUIRED = frozenset({"id", "reviewer", "severity", "scope", "summary", 
 OPERATION_FIELDS = {
     "open": frozenset({"operation", "target", "worktree", "commit", "stages"}),
     "close": frozenset({"operation", "round", "reports", "findings", "confirmation"}),
-    "waive": frozenset({"operation", "target", "worktree", "commit", "reason", "confirmation"}),
+    "waive": frozenset({"operation", "target", "worktree", "commit", "reason", "confirmation", "reuses"}),
 }
 OPERATION_REQUIRED = {
     "open": frozenset({"target", "stages"}),
