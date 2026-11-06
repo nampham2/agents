@@ -216,7 +216,10 @@ Local paths are always relative, cannot contain `..`, and are rooted explicitly:
 - `external`: a valid HTTP(S) URL with a host or a non-empty durable identifier prefixed by
   `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:`, or `commit:`. The prefix set is
   closed so a mistyped one is refused rather than accepted; `commit:<sha>` exists because landing a
-  change is a delivery whose durable identifier is the commit SHA.
+  change is a delivery whose durable identifier is the commit SHA. Anything else, such as
+  `bpages:<id>` or a bare page id, is refused with `invalid external reference` and this rule.
+  Record a published page by its URL (`https://host/path`), or a delivery without one as
+  `receipt:<id>`.
 
 Outputs use:
 

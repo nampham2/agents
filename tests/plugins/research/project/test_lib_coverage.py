@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from workspace_lib import (
+    EXTERNAL_IDENTIFIER_PREFIXES,
     DirectoryLock,
     ValidationReport,
     WorkspaceError,
@@ -37,6 +38,8 @@ from workspace_lib import (
     validate_v2_state,
     validate_v3_state,
 )
+
+from tests.conftest import REPO_ROOT
 
 TIMESTAMP = "2026-08-28T10:00:00+02:00"
 
@@ -703,6 +706,26 @@ class ValidateV3StateBranchTests(unittest.TestCase):
         state["tasks"][0]["outputs"] = [{"root": "external", "path": "not-a-url", "required": True}]
         report = validate_v3_state(state, self.project_dir)
         self.assertTrue(any("invalid external reference" in e for e in report.errors))
+
+    def test_an_invalid_external_reference_names_the_rule_and_an_example(self) -> None:
+        # 2026-11-06-001 friction: a `bpages:` output was refused with no word on what is accepted.
+        state = self._state()
+        state["tasks"][0]["outputs"] = [{"root": "external", "path": "bpages:edaa3ca647", "required": True}]
+        state["tasks"][0]["evidence"] = [{"root": "external", "path": "bpages:edaa3ca647", "anchor": None}]
+        errors = validate_v3_state(state, self.project_dir).errors
+        for kind in ("invalid external reference", "invalid external evidence reference"):
+            message = next(e for e in errors if kind in e)
+            self.assertIn("an http(s) URL with a host", message)
+            self.assertIn(", ".join(f"{prefix}:" for prefix in EXTERNAL_IDENTIFIER_PREFIXES), message)
+            self.assertIn("https://host/path", message)
+            self.assertIn("receipt:<id>", message)
+
+    def test_the_schema_reference_documents_the_refusal_and_its_rule(self) -> None:
+        schema = REPO_ROOT / "plugins/research/skills/project/references/workspace-schema.md"
+        text = " ".join(schema.read_text(encoding="utf-8").split())
+        self.assertIn("refused with `invalid external reference` and this rule", text)
+        self.assertIn("(`https://host/path`)", text)
+        self.assertIn("`receipt:<id>`", text)
 
     def test_evidence_dotdot_path_rejected(self) -> None:
         state = self._state()

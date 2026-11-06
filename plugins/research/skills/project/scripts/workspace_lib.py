@@ -51,6 +51,11 @@ REFERENCE_ROOTS = {"workspace", "workspace_root", "target", "external"}
 # "commit" is here because landing a change is a delivery whose durable identifier is the commit
 # SHA, and a plan that makes integration a task of its own had nowhere to record that.
 EXTERNAL_IDENTIFIER_PREFIXES = ("receipt", "deployment", "message", "purchase", "publish", "commit")
+# Appended to an external output or evidence refusal, so the caller learns what is accepted.
+EXTERNAL_REFERENCE_RULE = (
+    "use an http(s) URL with a host, such as https://host/path, or an identifier prefixed with "
+    "one of " + ", ".join(f"{prefix}:" for prefix in EXTERNAL_IDENTIFIER_PREFIXES) + ", such as receipt:<id>"
+)
 
 # Project directories are allocated as YYYY-MM-DD-NNN. A directory that does not match was made by
 # hand or by an older tool: `project` must equal the directory name, so a malformed name becomes a
@@ -778,7 +783,7 @@ def _validate_output_reference(
         return
     if root == "external":
         if not is_external_reference(path):
-            report.errors.append(f"{label}: invalid external reference {path!r}")
+            report.errors.append(f"{label}: invalid external reference {path!r}; {EXTERNAL_REFERENCE_RULE}")
         return
     resolved, error = _resolve_local_reference(project_dir, working_directory, root, path)
     if error:
@@ -823,7 +828,7 @@ def _validate_evidence_reference(
         report.errors.append(f"{label}: anchor must be null or a non-empty string")
     if root == "external":
         if not is_external_reference(path):
-            report.errors.append(f"{label}: invalid external evidence reference {path!r}")
+            report.errors.append(f"{label}: invalid external evidence reference {path!r}; {EXTERNAL_REFERENCE_RULE}")
         return
     resolved, error = _resolve_local_reference(project_dir, working_directory, root, path)
     if error:

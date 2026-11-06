@@ -37,6 +37,7 @@ from workspace_documents import (
     _replace_sections,
     _section_span,
     append_staged_section,
+    names_only_staged,
     reflection_lesson_sections,
 )
 from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
@@ -119,7 +120,7 @@ FIELDS = {
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
 READ_ACTIONS = set(READ_INPUTS)
 
-# Two actions have a discriminator value whose keys the runtime demands on top of the universal
+# Some actions have a discriminator value whose keys the runtime demands on top of the universal
 # ones, and `workflow <action> --schema` must print them per value: a caller that never learns
 # `path`, `branch` or `review_id` until a refusal has already staged the operation learns it too
 # late for a clean retry. Each entry is the complete sorted key set of that variant, so the whole
@@ -151,9 +152,18 @@ WORKTREE_REQUIRED_BY = {
 }
 GOLDFISH_REQUIRED = frozenset({"operation"})
 GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in OPERATION_REQUIRED.items()}
-ALWAYS_REQUIRED = {"confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED}
+# Every worker-event field is required for every event. The `event=<name>` entries add no key; they
+# are how `--schema` names the closed event vocabulary without a new top-level schema key.
+WORKER_EVENTS = ("intent", "launched", "observed", "completed", "stopped", "failed")
+WORKER_EVENT_REQUIRED = frozenset(FIELDS["worker-event"])
+WORKER_EVENT_REQUIRED_BY = {f"event={name}": frozenset() for name in WORKER_EVENTS}
+ALWAYS_REQUIRED = {
+    "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
+    "worker-event": WORKER_EVENT_REQUIRED,
+}
 REQUIRED_BY = {
     "confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY, "goldfish": GOLDFISH_REQUIRED_BY,
+    "worker-event": WORKER_EVENT_REQUIRED_BY,
 }
 
 
@@ -660,7 +670,7 @@ def _build(
         _task(state, string_input(request.get("task"), "task"))
         for field in ("handle", "scope", "observation"):
             string_input(request.get(field), field)
-        if request.get("event") not in ("intent", "launched", "observed", "completed", "stopped", "failed"):
+        if request.get("event") not in WORKER_EVENTS:
             raise WorkspaceError("unsupported worker observation")
         if (
             type(request.get("assignment_revision")) is not int
@@ -733,7 +743,12 @@ def _build(
         planned = read("memory-staging")
         staged: list[str] = []
         skipped: list[dict[str, str]] = []
+        # Titles staged before this close: a section that only lists them is a pointer, not a lesson.
+        staged_titles = [name for level, name, _ in _headings(planned) if level == 2]
         for title, body in reflection_lesson_sections(reflection):
+            if names_only_staged(body, staged_titles):
+                skipped.append({"title": title, "reason": "names only items already staged"})
+                continue
             if any(name == title for _, name, _ in _headings(planned)):
                 level, _, body_start, end = _section_span(planned, title)
                 same = level == 2 and planned[body_start:end].strip() == body
@@ -841,6 +856,8 @@ def _variant_required(project: Path, action: str, request: Any) -> frozenset[str
         if "architecture_sha256" in request and "planning_sha256" in wanted:
             wanted = (wanted - {"planning_sha256"}) | {"architecture_sha256"}
         return wanted
+    if action == "worker-event":
+        return WORKER_EVENT_REQUIRED
     if not isinstance(request, dict) or action != "worktree":
         return frozenset()
     entry = None

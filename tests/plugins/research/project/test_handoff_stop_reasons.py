@@ -279,3 +279,13 @@ def test_the_skill_and_the_stopping_reference_name_every_reason() -> None:
         assert f"`{reason}`" in skill, f"SKILL.md does not name {reason}"
         assert f"`{reason}`" in stopping, f"stopping.md does not define {reason}"
     assert "stopping.md" in skill
+
+
+def test_automation_points_a_stopping_session_to_the_stop_reason_rule() -> None:
+    """2026-11-06-001 friction: a `waiting` checkpoint was refused for a missing `stop_reason` that
+    automation.md, where the continuation fields are listed, never mentioned."""
+    automation = (SKILL / "references/automation.md").read_text(encoding="utf-8")
+    stopping = (SKILL / "references/stopping.md").read_text(encoding="utf-8")
+    paragraph = next(block for block in automation.split("\n\n") if "Session labels:" in block)
+    assert "`stop_reason`" in paragraph and "[stopping.md](stopping.md)" in paragraph, paragraph
+    assert "must carry one of\nthese in `stop_reason`" in stopping
