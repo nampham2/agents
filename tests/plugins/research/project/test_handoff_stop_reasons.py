@@ -122,7 +122,7 @@ def test_infer_stop_reason_ignores_a_non_object_continuation(project: Path) -> N
 
     state = _load_state(project)
     assert infer_stop_reason(project, state, "not an object") is None
-    assert next_hint(state) is None  # an ALIGNING project stops, so there is nothing to continue
+    assert next_hint(project, state) is None  # an ALIGNING project stops, so there is nothing to continue
 
 
 @pytest.mark.parametrize("reason", STOP_REASONS)

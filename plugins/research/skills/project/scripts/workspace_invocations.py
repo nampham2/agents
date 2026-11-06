@@ -30,6 +30,18 @@ EXAMPLE_LIMIT = 10
 # exception (a validation that found errors, a wrapped command that failed). `crash`: anything else.
 ERROR_CLASSES = ("conflict", "operation", "refused", "nonzero", "crash")
 _VERSION: "list[str]" = []
+# Optional facts a command may attach to its own line: the task it named, the successor a finish
+# started, and whether a resume was a worker packet. The crash-loop count reads them (P2).
+NOTED_KEYS = ("task", "start_next", "worker_packet")
+# The invocation of the running CLI call; None in a process that never parsed a command, such as a
+# test calling `workflow()` directly, where `note` has nothing to attach to.
+current: "Invocation | None" = None
+
+
+def note(**facts: Any) -> None:
+    """Attach facts to the current call's line; a no-op when no CLI call is running."""
+    if current is not None:
+        current.facts.update(facts)
 
 
 def classify(error: "BaseException | None", exit_code: int) -> "str | None":
@@ -107,6 +119,9 @@ class Invocation:
         self.command = command if command is not None else str(getattr(args, "command", "") or "")
         self.action = action if action is not None else action_of(args)
         self.expected_revision = getattr(args, "expected_revision", None)
+        self.facts: dict[str, Any] = {}
+        global current
+        current = self
 
     def record(self, exit_code: int, error: "BaseException | None" = None) -> "Path | None":
         """Append the line; return its path, or None when nothing was (or could be) written."""
@@ -122,6 +137,9 @@ class Invocation:
         }
         if isinstance(self.expected_revision, int):
             line["expected_revision"] = self.expected_revision
+        for key in NOTED_KEYS:
+            if key in self.facts:
+                line[key] = self.facts[key]
         version = plugin_version()
         if version:
             line["version"] = version

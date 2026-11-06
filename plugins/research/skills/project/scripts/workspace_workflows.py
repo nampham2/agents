@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +41,7 @@ from workspace_documents import (
     names_only_staged,
     reflection_lesson_sections,
 )
+from workspace_durability import EFFECT_KINDS, EFFECT_OUTCOMES, KEY_LIMIT, open_intents, valid_key
 from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
 from workspace_goldfish import (
     OPERATION_FIELDS,
@@ -49,6 +51,7 @@ from workspace_goldfish import (
     goldfish_findings,
     goldfish_operation,
 )
+from workspace_invocations import note
 from workspace_journal import (
     READ_INPUTS,
     document_path,
@@ -104,6 +107,7 @@ FIELDS = {
     "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
     "authorize": {"task", "authorization", "continuation"},
     "receipt": {"task", "receipt"},
+    "effect": {"operation", "task", "key", "effect", "outcome", "note"},
     "review": {"reviewer", "version", "scope", "findings", "status", "evidence", "required"},
     "goldfish": set().union(*OPERATION_FIELDS.values()),
     "finalize": {"reflection", "continuation"},
@@ -157,14 +161,19 @@ GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in O
 WORKER_EVENTS = ("intent", "launched", "observed", "completed", "stopped", "failed")
 WORKER_EVENT_REQUIRED = frozenset(FIELDS["worker-event"])
 WORKER_EVENT_REQUIRED_BY = {f"event={name}": frozenset() for name in WORKER_EVENTS}
+# P1: an effect intent before an external or destructive effect, and its resolve once checked.
+EFFECT_REQUIRED = frozenset({"operation", "task", "key"})
+EFFECT_REQUIRED_BY = {"operation=intent": frozenset({"effect"}), "operation=resolve": frozenset({"outcome"})}
 ALWAYS_REQUIRED = {
     "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
-    "worker-event": WORKER_EVENT_REQUIRED,
+    "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED,
 }
 REQUIRED_BY = {
     "confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY, "goldfish": GOLDFISH_REQUIRED_BY,
-    "worker-event": WORKER_EVENT_REQUIRED_BY,
+    "worker-event": WORKER_EVENT_REQUIRED_BY, "effect": EFFECT_REQUIRED_BY,
 }
+# Workflow writes that name a task put it on their invocation line; a receipt there is crash-loop progress.
+TASK_NOTED_ACTIONS = ("effect", "receipt", "authorize", "worker-event")
 
 
 def input_schema(action: str) -> dict[str, Any]:
@@ -526,6 +535,42 @@ def _worktree(
     return patch, outcome
 
 
+def _effect(project: Path, state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
+    """The notes document and `research-effect` entry body of an intent or resolve, after its refusals."""
+    task = _task(state, string_input(request.get("task"), "task"))
+    operation = request.get("operation")
+    if operation not in ("intent", "resolve"):
+        raise WorkspaceError("effect operation must be intent or resolve")
+    key = request.get("key")
+    if not valid_key(key):
+        raise WorkspaceError(f"effect key must be 1-{KEY_LIMIT} characters on one line")
+    opened = open_intents(project, task)
+    recorded = datetime.now().astimezone().isoformat(timespec="microseconds")
+    if operation == "intent":
+        kind = task["effect"]["kind"]
+        if kind not in EFFECT_KINDS:
+            raise WorkspaceError(
+                f"effect intents are for external or destructive tasks; {task['id']} has effect kind {kind}"
+            )
+        entry = {"op": "intent", "key": key, "effect": string_input(request.get("effect"), "effect")}
+        if key in opened:
+            raise WorkspaceError(
+                f"an open intent with key {key!r} already exists on {task['id']}; check whether the effect happened, "
+                "then resolve it or record its receipt"
+            )
+    else:
+        if request.get("outcome") not in EFFECT_OUTCOMES:
+            raise WorkspaceError(f"effect outcome must be one of: {', '.join(EFFECT_OUTCOMES)}")
+        if key not in opened:
+            raise WorkspaceError(f"no open intent with key {key!r} on {task['id']}")
+        entry = {"op": "resolve", "key": key, "outcome": request["outcome"]}
+        if "note" in request:
+            entry["note"] = string_input(request["note"], "note")
+    entry["recorded"] = recorded
+    # `>` only occurs inside JSON strings, so escaping it keeps any `-->` in the text from closing the comment.
+    return "tasks/" + task["id"], "<!-- research-effect " + json.dumps(entry).replace(">", "\\u003e") + " -->"
+
+
 def _build(
     project: Path, action: str, request: dict[str, Any], state: dict[str, Any]
 ) -> tuple[dict[str, str], dict[str, Any] | None, dict[str, Any]]:
@@ -683,6 +728,9 @@ def _build(
         documents[name] = _entry(
             read(name), request["id"], "<!-- research-worker " + json.dumps(event, sort_keys=True) + " -->"
         )
+    elif action == "effect":
+        name, body = _effect(project, state, request)
+        documents[name] = _entry(read(name) or f"# Task {request['task']} notes\n", request["id"], body)
     elif action in ("authorize", "receipt"):
         task = _task(state, string_input(request.get("task"), "task"))
         if action == "authorize":
@@ -826,7 +874,7 @@ def _build(
             continuation = {**continuation, "stop_reason": inferred}
             result["stop_reason_inferred"] = inferred
         documents["handoff"], metadata = render_checkpoint(
-            project, target, continuation, documents, next_hint=next_hint(target)
+            project, target, continuation, documents, next_hint=next_hint(project, target)
         )
         result["resume_prompt"] = (
             f"Use the project skill to resume {project}. Run workflow resume with selected sources; "
@@ -858,6 +906,8 @@ def _variant_required(project: Path, action: str, request: Any) -> frozenset[str
         return wanted
     if action == "worker-event":
         return WORKER_EVENT_REQUIRED
+    if isinstance(request, dict) and action == "effect":
+        return EFFECT_REQUIRED | EFFECT_REQUIRED_BY.get(f"operation={request.get('operation')}", frozenset())
     if not isinstance(request, dict) or action != "worktree":
         return frozenset()
     entry = None
@@ -887,6 +937,8 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
             nested_required=NESTED_REQUIRED.get(action, frozenset()),
             hints=KEY_HINTS if action == "worktree" else CONFIRM_HINTS if action == "confirm" else None,
         )
+        if action in TASK_NOTED_ACTIONS and isinstance(request.get("task"), str):
+            note(task=request["task"])
         return run_operation(project, action, request, lambda state: _build(project, action, request, state))
     if action == "verify":
         from workspace_checks import verify
@@ -898,7 +950,9 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
         return triage(project, request)
     if action in ("resume", "packet"):
         schema_input(request, action)
-        result = resume_bundle(project, request)
+        if action == "resume" and any(key in request for key in ("worker", "scope", "lessons")):
+            note(worker_packet=True)
+        result = resume_bundle(project, request, action=action)
         events = worker_events(project)
         result["unresolved_workers"] = events[:20]
         result["omitted_workers"] = max(0, len(events) - 20)

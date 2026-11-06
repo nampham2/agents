@@ -20,8 +20,9 @@ from workspace_documents import (
     edit_document,
     stage_lesson,
 )
+from workspace_durability import context_view
 from workspace_evidence import evidence_entries
-from workspace_invocations import Invocation
+from workspace_invocations import Invocation, note
 from workspace_journal import OperationError
 from workspace_lib import (
     CLOSURE_STEPS,
@@ -605,18 +606,23 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
                 )
             print(json.dumps(compact_context(
                 validated_project_context(args.project_directory, limit=limit), _load_state(args.project_directory),
+                args.project_directory,
             ), indent=2))
             return 0
         if args.validate:
             if args.task is not None or args.worker or args.task_only:
                 raise WorkspaceError("context --validate cannot be combined with task projections")
             result = validated_project_context(args.project_directory, limit=limit)
+            result.update(context_view(args.project_directory, _load_state(args.project_directory)))
             print(json.dumps(result, indent=2))
             return 0 if result["validation"]["valid"] else 1
-        print(json.dumps(project_context(
+        result = project_context(
             args.project_directory, limit=limit, task_id=args.task,
             worker=args.worker, task_only=args.task_only,
-        ), indent=2))
+        )
+        if not (args.worker or args.task_only):
+            result.update(context_view(args.project_directory, _load_state(args.project_directory)))
+        print(json.dumps(result, indent=2))
         return 0
 
     if args.command == "read":
@@ -728,6 +734,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         return 0
 
     if args.command == "task":
+        note(task=args.task_id, **({"start_next": args.start_next} if args.start_next else {}))
         if args.action == "finish":
             result = finish_and_checkpoint(
                 args.project_directory, args.task_id, expected_revision=args.expected_revision,
