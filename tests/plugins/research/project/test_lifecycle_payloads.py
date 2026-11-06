@@ -189,6 +189,7 @@ CONDITIONAL = {
     "automation-context": "only for context reads such as resume, packet and readiness",
     "automation-execution": "only for worker events, verify batches and lesson triage",
     "design-document": "only when writing or updating the design task's artifacts/architecture.md",
+    "durability": "only for intents, crash loops, waits, silent workers, busy locks or waivers",
     "execution-changes": "only when execution invalidates assignments, inputs or agreement",
     "goldfish-personas": "only for reviewer subagents; the coordinator hands the file to them",
     "goldfish-review": "only at a gate: a confirmation, the first code task, a release or a merge",

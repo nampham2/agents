@@ -59,3 +59,6 @@ assignment; use a fresh agent for a distinct task.
 On resume or cancellation, inspect the recorded handle and partial outputs. Establish that the
 worker and its commands stopped before takeover or redispatch. An unobserved launch does not prove
 nothing ran. Unknown ownership blocks conflicting work; preserve the record and unresolved effects.
+
+While a worker runs, record `observed` events so `silent_minutes` measures real silence; see
+[durability.md](durability.md).

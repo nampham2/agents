@@ -17,6 +17,7 @@ Other references:
   `preview`, `impact`, `fingerprint`, `readiness`, `memory-health`, and `recover`.
 - [Execution and memory](automation-execution.md): native `worker-event` observations,
   durable `verify` check batches, retry-safe `triage`.
+- [Durability](durability.md): `effect`, `wait`, crash loops, `unlock`.
 
 `workflow <project-dir> <action> --schema` prints allowed, required, nested and variant keys. Writes
 return tokens, revisions and partial outcomes. A new ID is for new work, not bypassing a
@@ -32,8 +33,8 @@ changed input with the same ID conflicts.
 
 ```json
 {"id":"round-2","expected_revision":0,"tokens":{"spec":"<sha256>"},
- "sections":{"In scope":"Parse the existing format; preserve compatibility."},
- "decisions":[{"id":"format-decision","body":"User chose compatibility; source: current reply."}],
+ "sections":{"In scope":"Keep compatibility."},
+ "decisions":[{"id":"format-decision","body":"Source: current reply."}],
  "planning":"# A2\n\nStatus: draft\n\n<complete current proposal>",
  "continuation":{"next":"Ask for A2 confirmation","questions":"Confirm A2?"}}
 ```
