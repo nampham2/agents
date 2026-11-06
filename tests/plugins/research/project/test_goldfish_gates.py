@@ -565,7 +565,7 @@ def test_the_findings_name_an_open_round_and_a_pending_re_audit(project: Path) -
     opened = open_round(project, "planning", ("combined",))
     assert goldfish_findings(project) == ["Goldfish round 01 (planning) is open; close it or open a new round"]
     edit_planning(project)
-    close(project, opened, [finding("F1", "Major", "FIX")], reports=report(("combined",)))
+    close(project, opened, [finding("F1", "Blocker", "FIX")], reports=report(("combined",)))
     assert goldfish_findings(project) == ["Goldfish round 01 (planning) needs its re-audit; open a round"]
 
 

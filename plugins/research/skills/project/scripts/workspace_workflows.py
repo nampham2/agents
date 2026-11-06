@@ -13,6 +13,8 @@ from workspace_ci import ci_checks
 from workspace_context import (
     checkpoint_freshness,
     fingerprint,
+    infer_stop_reason,
+    next_hint,
     render_checkpoint,
     resume_bundle,
     selected_read,
@@ -21,8 +23,10 @@ from workspace_context import (
     worktree_registered,
 )
 from workspace_delivery import (
+    CONFIRM_HINTS,
     DELIVERY_OPERATIONS,
     KEY_HINTS,
+    PATH_HINT,
     abandoned_note,
     delivery_operation,
     removal_findings,
@@ -161,7 +165,7 @@ def input_schema(action: str) -> dict[str, Any]:
         variants = {name: sorted(required | keys) for name, keys in REQUIRED_BY.get(action, {}).items()}
         note = (
             "write action: further per-action rules are checked when it runs "
-            "(see references/automation-records.md)"
+            "(see references/automation.md)"
         )
     else:
         allowed, required = READ_INPUTS[action]
@@ -374,7 +378,10 @@ def _worktree(
     agent's, under the user's authorization, and this only refuses to record what Git contradicts.
     """
     worktrees = copy.deepcopy(state.get("worktrees", []))
-    path = string_input(request.get("path"), "path")
+    raw_path = request.get("path")
+    if not isinstance(raw_path, str) or not raw_path.strip():
+        raise WorkspaceError(PATH_HINT)
+    path = string_input(raw_path, "path")
     if not Path(path).is_absolute():
         raise WorkspaceError("worktree path must be absolute")
     path = str(Path(path).resolve())
@@ -415,7 +422,10 @@ def _worktree(
                 else None
             )
             if repository is not None and repository != seen["repository"]:
-                raise WorkspaceError(f"repository mismatch: requested {repository}, observed {seen['repository']}")
+                raise WorkspaceError(
+                    f"repository mismatch: requested {repository}, observed {seen['repository']}; "
+                    f"send repository {seen['repository']}"
+                )
             repository = seen["repository"]
             if not seen["head"]:
                 raise WorkspaceError("the worktree has no commit to record as its base")
@@ -795,7 +805,14 @@ def _build(
     if "continuation" in request or action in ("checkpoint", "finalize", "maintenance", "cancel", "reconcile"):
         target = prepare_update(state, patch, internal=True) if patch else copy.deepcopy(state)
         target["revision"] += int(patch is not None)
-        documents["handoff"], metadata = render_checkpoint(project, target, request.get("continuation", {}), documents)
+        continuation = request.get("continuation", {})
+        inferred = infer_stop_reason(project, target, continuation)
+        if inferred is not None:
+            continuation = {**continuation, "stop_reason": inferred}
+            result["stop_reason_inferred"] = inferred
+        documents["handoff"], metadata = render_checkpoint(
+            project, target, continuation, documents, next_hint=next_hint(target)
+        )
         result["resume_prompt"] = (
             f"Use the project skill to resume {project}. Run workflow resume with selected sources; "
             f"reconcile ownership first. Checkpoint revision {target['revision']}; "
@@ -818,6 +835,12 @@ def _variant_required(project: Path, action: str, request: Any) -> frozenset[str
     Only the unconditional part of a variant is enforced here: the operation code keeps the checks that
     read project state (an existing alpha line, a recorded entry) and raises their own message.
     """
+    if isinstance(request, dict) and action == "confirm":
+        wanted = CONFIRM_REQUIRED | CONFIRM_REQUIRED_BY.get(f"kind={request.get('kind')}", frozenset())
+        # An alignment may carry the planning digest under its old name; the runtime accepts either.
+        if "architecture_sha256" in request and "planning_sha256" in wanted:
+            wanted = (wanted - {"planning_sha256"}) | {"architecture_sha256"}
+        return wanted
     if not isinstance(request, dict) or action != "worktree":
         return frozenset()
     entry = None
@@ -845,7 +868,7 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
             where=f"workflow {action}",
             nested=ACTION_NESTED.get(action),
             nested_required=NESTED_REQUIRED.get(action, frozenset()),
-            hints=KEY_HINTS if action == "worktree" else None,
+            hints=KEY_HINTS if action == "worktree" else CONFIRM_HINTS if action == "confirm" else None,
         )
         return run_operation(project, action, request, lambda state: _build(project, action, request, state))
     if action == "verify":

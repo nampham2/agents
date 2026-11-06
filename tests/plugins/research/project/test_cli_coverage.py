@@ -59,7 +59,7 @@ class ManageCLIInitTests(unittest.TestCase):
         self.assertEqual(1, len(dirs))
 
     def test_init_workspace_error_returns_1(self) -> None:
-        with patch("manage_workspace.allocate_project", side_effect=WorkspaceError("bad title")):
+        with patch("workspace_operations.allocate_project", side_effect=WorkspaceError("bad title")):
             result = _call_manage(
                 [
                     "init",

@@ -37,6 +37,8 @@ from workspace_occupancy import _query
 
 TARGETS = ("spec", "planning", "design", "diff")
 STAGES = ("comprehension", "design-critic", "zoom-out", "readiness", "combined")
+# Targets whose rounds need only the combined stage and whose outcome turns on Blockers alone.
+LIGHT_TARGETS = ("spec", "planning")
 OUTCOMES = ("open", "accepted", "accepted-residual", "reaudit-required", "waived")
 PASSING = frozenset({"accepted", "accepted-residual", "waived"})
 SEVERITIES = ("Blocker", "Major", "Nit")
@@ -278,8 +280,8 @@ def _stages(value: object) -> "tuple[str, ...]":
 def _check_stage_rules(target: str, stages: "tuple[str, ...]", delta: bool) -> None:
     if "combined" not in stages and "design-critic" not in stages:
         raise WorkspaceError("every round lists the combined stage or the design-critic stage")
-    if (target == "spec" or delta) and not {"comprehension", "combined"} <= set(stages):
-        raise WorkspaceError("a spec round and a delta round list the comprehension and combined stages")
+    if delta and target in ("design", "diff") and not {"comprehension", "combined"} <= set(stages):
+        raise WorkspaceError("a delta round on a design or diff target lists the comprehension and combined stages")
 
 
 def _round_text(directory: Path, number: int) -> "tuple[str, str]":
@@ -412,11 +414,17 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
             )
     if confirmation is None and any(item["triage"] in ("ESCALATE", "CONTEST") for item in important):
         raise WorkspaceError("a Blocker or Major that is contested or escalated needs the user's confirmation")
-    if current.reaudit_of is not None and important:
+    # A spec or planning round is lighter: only a Blocker forces a re-audit or holds one open. Design and
+    # diff rounds keep the rule for Blockers and Majors alike.
+    decisive = important
+    if current.target in LIGHT_TARGETS:
+        decisive = [item for item in important if item["severity"] == "Blocker"]
+    fixed_decisive = [item for item in decisive if item["triage"] == "FIX"]
+    if current.reaudit_of is not None and decisive:
         if confirmation is None:
             raise WorkspaceError("a re-audit that still holds a Blocker or Major needs the user's confirmation")
         outcome = "accepted-residual"
-    elif current.reaudit_of is None and (fixed or (changed and important)):
+    elif current.reaudit_of is None and (fixed_decisive or (changed and decisive)):
         outcome = "reaudit-required"
     else:
         outcome = "accepted"

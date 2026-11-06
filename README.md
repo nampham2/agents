@@ -141,7 +141,7 @@ records the round and refuses the next step without a current one.
   is a gate.
 - **Words.** The coordinator procedure is `references/goldfish-review.md` (300 words, the cap,
   test-enforced). Reviewer prompts are in `references/goldfish-personas.md`, read only by the
-  reviewer subagents. With the pointer sentences, the `goldfish` row of `automation-records.md`
+  reviewer subagents. With the pointer sentences, the `goldfish` row of `automation.md`
   (which carries the field shapes) and its name in the router, the instruction paths grow against
   0.30.4: alignment by 402 words, closure by 471, resume by 100, material change after resume by
   102, and the records branch of the default payload by 92 (the entry file by 1, to 899 of 900).

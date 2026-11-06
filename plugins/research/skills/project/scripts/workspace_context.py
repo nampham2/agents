@@ -23,7 +23,7 @@ from workspace_journal import (
     snapshot,
     string_input,
 )
-from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso
+from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso, resolve_workspace_root
 from workspace_session import (
     STOP_REASONS,
     _headings,
@@ -32,6 +32,7 @@ from workspace_session import (
     project_context,
     validated_project_context,
 )
+from workspace_similar import find_similar
 
 CHECKPOINT = re.compile(r"\A<!-- research-checkpoint-v1\n(.*?)\n-->\n", re.DOTALL)
 # `key.title()` would print "Do_Not"; the one field whose heading is not its name.
@@ -364,11 +365,38 @@ def session_observation() -> dict[str, str] | None:
     return None
 
 
+STOPPING_LABELS = ("waiting", "blocked", "ready for handoff")
+
+
+def infer_stop_reason(project: Path, state: dict[str, Any], continuation: Any) -> str | None:
+    """The stop_reason a stopping checkpoint omitted, when `next_move` names one; otherwise None.
+
+    The label is read the way `render_checkpoint` reads it, from the supplied continuation and else from the
+    saved handoff. An empty stop_reason counts as omitted; a non-empty one is never replaced.
+    """
+    if not isinstance(continuation, dict) or continuation.get("stop_reason"):
+        return None
+    label = continuation.get("session")
+    if label is None:
+        previous = checkpoint_data(project)
+        label = previous["continuation"].get("session", "working") if previous else "working"
+    return next_move(state)["stop_reason"] if label in STOPPING_LABELS else None
+
+
+def next_hint(state: dict[str, Any]) -> str | None:
+    """What `next_move` says to do instead of stopping, for the refusal that names a missing stop_reason."""
+    move = next_move(state)
+    if move["continue"] is None:
+        return None
+    return f"next_move says continue {move['continue']}: {move['move_detail']}"
+
+
 def render_checkpoint(
     project: Path,
     state: dict[str, Any],
     changes: dict[str, Any],
     documents: dict[str, str] | None = None,
+    next_hint: str | None = None,
 ) -> tuple[str, dict[str, Any]]:
     """Merge explicitly supplied continuation fields, deriving mechanical metadata."""
     object_input(changes, CONTINUATION_FIELDS | {"import_legacy"})
@@ -404,7 +432,7 @@ def render_checkpoint(
     elif continuation.get("stop_reason") not in STOP_REASONS:
         raise WorkspaceError(
             f"session {session_label!r} needs a stop_reason, one of: {', '.join(STOP_REASONS)}. Continue the "
-            "next ready task instead of stopping when none of them applies"
+            "next ready task instead of stopping when none of them applies" + (f" ({next_hint})" if next_hint else "")
         )
     sources = {}
     for name in ("spec", "planning"):
@@ -576,3 +604,81 @@ def fingerprint(project: Path, references: list[Any]) -> list[dict[str, Any]]:
             }
         )
     return result
+
+
+COMPACT_NOTE = "tokens are valid until the next write; validation findings are omitted, run context --validate for them"
+
+
+def compact_context(payload: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
+    """The project-level summary of `context` in one object: what an agent needs to resume and write."""
+    move = next_move(state)
+    return {
+        "project_dir": payload["roots"]["workspace"],
+        "revision": payload["revision"],
+        "roots": payload["roots"],
+        "tokens": payload["tokens"],
+        "current_tasks": state.get("current_tasks", []),
+        "next_move": {key: move[key] for key in ("continue", "stop_reason", "move_detail")},
+        "valid": payload["validation"]["valid"],
+        "compact": True,
+        "note": COMPACT_NOTE,
+    }
+
+
+def start_project(
+    workspace_root: Path | None,
+    *,
+    project_dir: Path | None = None,
+    title: str | None = None,
+    working_directory: Path | None = None,
+    create: bool = False,
+    create_root: bool = False,
+    briefing: bool = False,
+    lock_timeout: float = 5.0,
+    limit: int = 5,
+) -> tuple[dict[str, Any], int]:
+    """Find, create or resume a project and return its compact context with the exit code.
+
+    A title resumes a project only when exactly one live look-alike is on the same repository; several
+    matches, or one elsewhere, come back as candidates and nothing is chosen. `create` runs init when there
+    is no look-alike at all.
+    """
+    if project_dir is not None and (title is not None or working_directory is not None):
+        raise WorkspaceError(
+            "give --project-dir to resume, or --title and --working-directory to find or create"
+        )
+    matched: dict[str, Any] | None = None
+    warnings: list[str] = []
+    if project_dir is None:
+        if title is None or working_directory is None:
+            raise WorkspaceError("give --project-dir to resume, or --title together with --working-directory")
+        root = resolve_workspace_root(workspace_root)
+        blocking = find_similar(root, title, working_directory)["blocking"] if root.is_dir() else []
+        if len(blocking) == 1 and blocking[0]["same_repository"]:
+            matched = blocking[0]
+            project_dir = root / matched["project"]
+        elif blocking:
+            return {"candidates": blocking}, 1
+        elif not create:
+            return {"candidates": []}, 0
+        else:
+            from workspace_operations import init_project
+
+            project_dir, warnings = init_project(
+                root, title, working_directory, lock_timeout=lock_timeout, create_root=create_root,
+                briefing=briefing,
+            )
+    project_dir = project_dir.resolve()
+    payload = validated_project_context(project_dir, limit=limit)
+    state = _load_state(project_dir)
+    result = compact_context(payload, state)
+    move = result["next_move"]["continue"]
+    task_ids = {task["id"] for task in state["tasks"]}
+    result["assignment"] = (
+        project_context(project_dir, limit=limit, task_id=move, task_only=True) if move in task_ids else None
+    )
+    if matched is not None:
+        result["matched"] = {key: matched[key] for key in ("project", "title", "status", "score", "same_repository")}
+    if warnings:
+        result["warnings"] = warnings
+    return result, 0

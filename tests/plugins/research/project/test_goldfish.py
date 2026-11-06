@@ -234,7 +234,6 @@ def test_opening_changes_no_project_state(project: Path) -> None:
         ({"target": "planning", "stages": ["combined", "combined"]}, "stages must list each stage once"),
         ({"target": "planning", "stages": ["combined", "unknown"]}, "stage must be one of"),
         ({"target": "planning", "stages": ["comprehension"]}, "combined stage or the design-critic"),
-        ({"target": "spec", "stages": ["design-critic"]}, "comprehension and combined"),
         ({"target": "planning", "stages": ["combined"], "worktree": "/w"}, "diff target only"),
         ({"target": "planning", "stages": ["combined"], "commit": "a" * 40}, "diff target only"),
     ],
@@ -244,11 +243,9 @@ def test_a_round_that_breaks_a_rule_is_refused(project: Path, fields: dict[str, 
     refuses(project, fragment, operation="open", **fields)
 
 
-def test_a_spec_round_needs_comprehension_and_the_combined_critic(project: Path) -> None:
-    refuses(project, "comprehension and combined", operation="open", target="spec",
-            stages=["comprehension", "design-critic"])
-    refuses(project, "comprehension and combined", operation="open", target="spec", stages=["combined"])
-    assert open_round(project, "spec", ("comprehension", "combined", "design-critic"))["round"] == 1
+def test_a_spec_round_needs_only_a_combined_or_design_critic_stage(project: Path) -> None:
+    refuses(project, "combined stage or the design-critic", operation="open", target="spec", stages=["comprehension"])
+    assert open_round(project, "spec", ("combined",))["round"] == 1
 
 
 def test_design_and_diff_need_a_code_task(project: Path, worktree: Path) -> None:
@@ -301,15 +298,15 @@ def test_a_blocker_fixed_by_a_change_needs_a_re_audit(project: Path) -> None:
     assert again["reviewed"] == closed["resolved"]
 
 
-def test_a_re_audit_with_a_major_left_needs_the_users_words(project: Path) -> None:
+def test_a_re_audit_with_a_blocker_left_needs_the_users_words(project: Path) -> None:
     first = open_round(project)
     edit_planning(project)
-    close(project, first, [finding("F1", "Major", "FIX")])
+    close(project, first, [finding("F1", "Blocker", "FIX")])
     second = open_round(project)
     edit_planning(project, "Fixed after the re-audit.\n")  # a fix after the one re-audit changes the target again
     with pytest.raises(WorkspaceError, match="re-audit that still holds a Blocker or Major"):
-        close(project, second, [finding("F2", "Major", "FIX")])
-    closed = close(project, second, [finding("F2", "Major", "FIX")], confirmation=CONFIRMATION)
+        close(project, second, [finding("F2", "Blocker", "FIX")])
+    closed = close(project, second, [finding("F2", "Blocker", "FIX")], confirmation=CONFIRMATION)
     assert closed["outcome"] == "accepted-residual" and closed["resolved"] != second["reviewed"]
     assert open_round(project)["reaudit_of"] is None
 
@@ -317,16 +314,16 @@ def test_a_re_audit_with_a_major_left_needs_the_users_words(project: Path) -> No
 def test_a_clean_re_audit_is_accepted(project: Path) -> None:
     first = open_round(project)
     edit_planning(project)
-    close(project, first, [finding("F1", "Major", "FIX")])
+    close(project, first, [finding("F1", "Blocker", "FIX")])
     second = open_round(project)
     assert close(project, second, [finding("N1", "Nit", "DECLINE")])["outcome"] == "accepted"
 
 
-def test_a_change_with_a_major_finding_needs_a_re_audit_even_when_contested(project: Path) -> None:
+def test_a_change_with_a_blocker_needs_a_re_audit_even_when_contested(project: Path) -> None:
     opened = open_round(project)
     edit_planning(project)
     closed = close(
-        project, opened, [finding("F1", "Major", "CONTEST"), finding("N1", "Nit", "FIX")], confirmation=CONFIRMATION,
+        project, opened, [finding("F1", "Blocker", "CONTEST"), finding("N1", "Nit", "FIX")], confirmation=CONFIRMATION,
     )
     assert closed["outcome"] == "reaudit-required"
 
@@ -348,10 +345,9 @@ def test_a_contested_or_escalated_major_needs_the_users_words(project: Path, tri
 def test_a_delta_round_follows_a_change_after_acceptance(project: Path) -> None:
     close(project, open_round(project))
     edit_planning(project)
-    delta = open_round(project)
+    delta = open_round(project, "planning", ("combined",))
     assert delta["delta_of"] == 1 and delta["reaudit_of"] is None
-    refuses(project, "comprehension and combined", operation="open", target="planning", stages=["combined"])
-    assert close(project, delta)["outcome"] == "accepted"
+    assert close(project, delta, reports=report(("combined",)))["outcome"] == "accepted"
 
 
 def test_a_round_on_the_same_version_is_not_a_delta(project: Path) -> None:
@@ -399,7 +395,7 @@ def test_a_major_fix_on_an_unchanged_target_must_name_an_artifact(project: Path)
         close(project, opened, [finding("F1", "Major", "FIX")])
     (project / "artifacts" / "decision.md").write_text("A decision.\n", encoding="utf-8")
     closed = close(project, opened, [finding("F1", "Major", "FIX", artifact="artifacts/decision.md")])
-    assert closed["outcome"] == "reaudit-required"
+    assert closed["outcome"] == "accepted"  # a spec or planning round is lighter: a fixed Major needs no re-audit
     assert "Artifact: artifacts/decision.md." in (project / "reviews" / "goldfish_01.md").read_text(encoding="utf-8")
 
 

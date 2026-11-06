@@ -130,69 +130,57 @@ def test_before_after_lifecycle_payloads(tmp_path: Path, scenario: str, history:
 
 
 def test_default_instruction_payload_budget() -> None:
+    """The entry, the routine commands and the router carry every project; one branch adds to them.
+
+    automation-records.md is merged into automation.md (0.33.0), so no branch needs a records
+    file. Each ceiling is the measured words rounded up to the next 10, and the always-loaded
+    chain stays below the 0.32.0 records-branch ceiling of 2442 words.
+    """
     skill = REPO_ROOT / "plugins/research/skills/project"
     entry = (skill / "SKILL.md").read_text()
     routine = (skill / "references/commands.md").read_text()
-    assert len(entry.split()) <= 900
-    assert len((entry + routine).split()) <= 1500
+    assert len(entry.split()) <= 860
+    assert len((entry + routine).split()) <= 1400
     router = (skill / "references/automation.md").read_text()
-    assert len((entry + routine + router).split()) <= 1750
-    for reference in ("automation-context", "automation-records", "automation-execution"):
+    chain = len((entry + routine + router).split())
+    assert chain <= 2190 < 2442
+    ceilings = {"automation-context": 2520, "automation-execution": 2730}
+    for reference, ceiling in ceilings.items():
         selected = (skill / f"references/{reference}.md").read_text()
-        allowance = GOLDFISH_RECORDS if reference == "automation-records" else 0
-        assert len((entry + routine + router + selected).split()) <= 2350 + allowance
+        assert len((entry + routine + router + selected).split()) <= ceiling
 
 
 SKILL_DIR = REPO_ROOT / "plugins/research/skills/project"
 CORE = ("SKILL", "commands")
 ALIGNMENT = ("durable-context", "writing-rules", "grill", "planning-review", "memory-operations", "automation",
-             "automation-records", "handoff-writing", "goldfish-review")
+             "handoff-writing", "goldfish-review")
 RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operations", "automation",
-          "automation-context", "automation-records", "handoff-writing")
+          "automation-context", "handoff-writing")
 
 # Each scenario is the complete set of documents the routing requires for that piece of work, in the
-# order SKILL.md reaches them. The first version of these budgets omitted the automation router, the
-# records reference and the handoff guide that alignment cannot proceed without, so the measured
-# cost was about a quarter lower than the cost paid. Documents reached only conditionally are
-# classified in CONDITIONAL, below, not left out silently.
-# Words that references/writing-rules.md adds to every scenario that writes records (0.23.0). Each
-# budget below is its old value plus this, and no more: a measured cost, not a round allowance.
-RULES = 774
-# Words the Goldfish review (0.31.0) adds to each scenario, measured: the coordinator procedure
-# (references/goldfish-review.md, at most 300 words), where a gate event is handled, plus the
-# pointer sentences in the documents each scenario loads. By the user's decision of 2026-10-27 the
-# affected budgets and the 0.21.0 alignment cap rise by this measured cost and no more.
-# The `goldfish` row of references/automation-records.md, its name in the router and one word in SKILL.md
-# are 92 of these words, and the same 92 raise the default payload budget of the records branch below.
-GOLDFISH_RECORDS = 92
-GOLDFISH_ALIGNMENT = 402
-GOLDFISH_CLOSURE = 471
-GOLDFISH_RESUME = 100
-GOLDFISH_MATERIAL = 102
-
+# order SKILL.md reaches them. Documents reached only conditionally are classified in CONDITIONAL,
+# below, not left out silently. Each ceiling is the measured words of the set at 0.33.0 rounded up
+# to the next 10, so a ceiling is a measurement, not an allowance; BASELINE is what the same stage
+# cost at 0.32.0, and every ceiling must stay strictly below it.
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
-    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7031 + RULES + GOLDFISH_ALIGNMENT),
-    "alignment-plain": ((*CORE, *ALIGNMENT), 6550 + RULES + GOLDFISH_ALIGNMENT),
-    "resume": ((*CORE, *RESUME), 5000 + RULES + GOLDFISH_RESUME),
-    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5200 + RULES + GOLDFISH_RESUME),
-    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7800 + RULES + GOLDFISH_ALIGNMENT),
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7060),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6660),
+    "resume": ((*CORE, *RESUME), 5080),
+    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5270),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7640),
     "material-change-after-resume": (
-        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 9000 + RULES + GOLDFISH_MATERIAL),
+        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8590),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
-                 "automation-records", "handoff-writing", "worktrees", "pull-requests", "goldfish-review"),
-                5016 + RULES + GOLDFISH_CLOSURE),
+                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 5540),
+}
+BASELINE = {
+    "alignment-repository": 8205, "alignment-plain": 7726, "resume": 5843, "resume-with-verifier": 6033,
+    "alignment-and-handoff": 8938, "material-change-after-resume": 9863, "closure": 6261,
 }
 
-# The closure budget rose from 4450 to 5016 (plus RULES) in 0.24.0 by the user's decision of 2026-10-05:
-# pull-requests.md (comment sweep, release, merge, cleanup, project commit) is required at repository
-# closure, and about 190 of its words moved there from worktrees.md. The other limits did not move.
-
-# Words in the same repository-target alignment set as measured at commit 4b3a68f (version 0.21.0),
-# before the compact path existed. The budget above must stay below it: a simpler procedure, not
-# instructions moved outside the count. (Until 0.23.0 the margin was 10 percent.)
-# Raised on 2026-10-27 by the measured cost of the Goldfish review (GOLDFISH_ALIGNMENT), by the
-# user's decision; the name keeps the original size it was measured against.
-ORIGINAL_ALIGNMENT_WORDS = 7813 + GOLDFISH_ALIGNMENT
+# Words in the repository-target alignment set at 0.32.0, the size the 0.33.0 trim is measured
+# against: a simpler procedure, not instructions moved outside the count.
+ORIGINAL_ALIGNMENT_WORDS = BASELINE["alignment-repository"]
 
 # Documents a loaded document links to but that only some work needs, and what triggers the read.
 # A link to anything not in the scenario and not listed here is routing drift: either the scenario
@@ -266,16 +254,14 @@ def test_every_reference_is_in_a_scenario_or_classified() -> None:
 
 
 def test_the_drift_check_notices_a_required_read_missing_from_a_scenario() -> None:
-    """A scenario without the records reference must be reported, or the check proves nothing."""
-    names = tuple(name for name in SCENARIOS["alignment-repository"][0] if name != "automation-records")
+    """A scenario without a required reference must be reported, or the check proves nothing."""
+    names = tuple(name for name in SCENARIOS["alignment-repository"][0] if name != "handoff-writing")
     reachable = set().union(*(linked_references(name) for name in names)) - set(names)
-    assert "automation-records" in reachable - set(CONDITIONAL)
+    assert "handoff-writing" in reachable - set(CONDITIONAL)
 
 
-def test_the_alignment_path_stays_below_its_0_21_0_size() -> None:
-    """The earlier guard demanded 10 percent less than 0.21.0. Adding the writing rules (0.23.0) cost
-    more than that margin, so by the user's decision (2026-10-05) the guard is now 'below the 0.21.0
-    size': the alignment path may not grow back past what it was before the compact path existed."""
+def test_the_alignment_path_stays_below_its_0_32_0_size() -> None:
+    """The alignment path may not grow back past its 0.32.0 size (ORIGINAL_ALIGNMENT_WORDS)."""
     names, budget = SCENARIOS["alignment-repository"]
     words = sum(len(document(name).read_text(encoding="utf-8").split()) for name in names)
     assert budget < ORIGINAL_ALIGNMENT_WORDS and words < ORIGINAL_ALIGNMENT_WORDS
@@ -286,8 +272,9 @@ def test_writing_rules_is_loaded_in_every_scenario_that_writes_records() -> None
         assert "writing-rules" in names, scenario
 
 
-def test_the_rules_budget_increase_is_the_measured_size_of_the_file() -> None:
-    assert RULES == len(document("writing-rules").read_text(encoding="utf-8").split())
+@pytest.mark.parametrize("scenario", sorted(SCENARIOS))
+def test_every_ceiling_is_strictly_below_the_0_32_0_baseline(scenario: str) -> None:
+    assert SCENARIOS[scenario][1] < BASELINE[scenario]
 
 
 def test_durable_context_points_to_the_writing_rules_in_one_sentence() -> None:

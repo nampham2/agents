@@ -280,9 +280,15 @@ def document_conflict_message(
     of a refusal, and a retro groups conflicts by that head.
     """
     supply = use or f"tokens.{document}"
+    skeleton = (
+        '{"tokens": {"%s": "%s"}}' % (supply.split(".", 1)[1], found)
+        if supply.startswith("tokens.")
+        else '{"%s": "%s"}' % (supply, found)
+    )
     return (
         f"{prefix}: {document}; expected token {expected}, found {found}; "
-        f"run 'research-project context {project}' and supply {supply} as the current token"
+        f"run 'research-project context {project}' and supply {supply} as the current token; "
+        f"retry with {skeleton}"
     )
 
 
