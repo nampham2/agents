@@ -39,16 +39,19 @@ By hand the launcher listens on port 8765 and opens the browser: `research-dashb
   still waits on you stays on the board.
 - A "Waiting on you" board first: every project that needs you, grouped by reason (blocked, needs
   your approval, review is waiting, waiting for your reply, or a `project.json` that cannot be
-  read or has no status), five rows at first and "Show all" for the rest.
+  read or has no status), five rows at first and "Show all" for the rest. That control names any
+  group the first five rows do not reach.
 - Projects in flight as cards grouped by status, each with a five-stop route (hover a stop for its
   name and state), task progress and a chip for each plan or review gate that has something to say.
 - Finished and cancelled projects behind a toggle. A done or cancelled filter, or a search that
   matches one, opens them.
 - Filters: search, repository, a date since (by last update or by creation) and the status chips.
-  A line under them says how many projects remain and offers a button per filter to remove it. A
-  combination with no match says so and offers to clear it.
+  A line under them says how many projects remain and offers a button to remove each repository,
+  date or search filter; a status is removed by unpressing its chip. A combination with no match
+  says so and offers to clear it.
 - Board rows, in-flight cards and the drawer have a "Resume prompt" button that copies
-  `Use the project skill to resume <path>.` Click a project id anywhere to copy it. A session adds
+  `Use the project skill to resume <path>.` (a project that cannot be read offers its path
+  instead). Click a project id to copy it; finished rows hide the id on a phone. A session adds
   a "Resume command" button in the drawer, which copies `cd <directory> && claude --resume <id>`.
 - A drawer per project: phase and gates, next step, open questions, blockers and waits, tasks with
   evidence and receipts, counts, decisions, worktrees and merge request, and the sessions.

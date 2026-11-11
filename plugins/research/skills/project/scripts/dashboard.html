@@ -84,13 +84,13 @@ h1 { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spac
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--rc); margin-right: 6px; }
 .radios { display: inline-flex; gap: 10px; color: var(--muted); font-size: 13px; }
 .datefield { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
-.radios label, .check { display: inline-flex; gap: 6px; align-items: center; }
+.radios label { display: inline-flex; gap: 6px; align-items: center; }
 .linkbtn { background: none; border: 0; padding: 4px; color: var(--c-planning); text-decoration: underline; cursor: pointer; }
 .only-narrow { display: none; }
 [hidden] { display: none !important; }
 .fl { color: var(--muted); font-size: 13px; }
 .chip.zero:not([aria-pressed="true"]) { opacity: .55; }
-.applied-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; min-height: 0; }
+.applied-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
 .applied-bar .results { color: var(--muted); font-size: 14px; margin-right: 4px; }
 .applied-bar .results b { color: var(--ink); }
 button.applied { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--edge); background: var(--surface); border-radius: 999px; padding: 3px 8px 3px 12px; cursor: pointer; font-size: 13px; }
@@ -151,7 +151,8 @@ button.pid:hover { color: var(--ink); text-decoration-color: currentColor; }
 .bar i { display: block; width: 72px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .bar i b { display: block; height: 100%; background: var(--rc); }
 .gates { display: flex; flex-wrap: wrap; gap: 6px; }
-.cardfoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.cardfoot { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.cardfoot .gates { flex: 1 1 0; min-width: 0; }
 .cardfoot .copybtn { margin-left: auto; padding: 4px 10px; font-size: 13px; }
 .dmeta { color: var(--muted); font-size: 14px; margin-top: 4px; }
 .gate { font-size: 13px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--gc, var(--line)); background: color-mix(in srgb, var(--gc, var(--line)) 10%, var(--surface)); }
@@ -174,7 +175,6 @@ button.pid:hover { color: var(--ink); text-decoration-color: currentColor; }
 
 .none { padding: 28px 20px; color: var(--muted); background: var(--surface); border-radius: 14px; border: 1px solid var(--line); }
 .notice { margin: 14px 0 0; padding: 10px 14px; background: var(--surface); border-left: 4px solid var(--c-blocked); border-radius: 8px; font-size: 14px; }
-.notice[hidden] { display: none; }
 
 /* Drawer */
 .scrim { position: fixed; inset: 0; background: rgba(8, 10, 30, .45); opacity: 0; visibility: hidden; transition: opacity .18s; z-index: 20; }
@@ -364,7 +364,7 @@ function firstWait(p) { return (p.tasks || []).map(t => waitText(t.wait)).find(B
 function sessionCmd(s) { return s.resume || `${s.cwd ? `cd ${shq(s.cwd)} && ` : ""}claude --resume ${shq(s.id)}`; }
 function isOpen(id) { return state.last === id && state.open.has(id); }
 function resumePrompt(p) { return `Use the project skill to resume ${p.path}.`; }
-function copyBtn(p) { return `<button class="copybtn" data-copy="${esc(resumePrompt(p))}" data-what="resume prompt" title="Copy the prompt that resumes this project">${ic("copy")}Resume prompt</button>`; }
+function copyBtn(p) { return `<button class="copybtn" data-copy="${esc(resumePrompt(p))}" data-what="resume prompt" title="Copy the prompt that resumes this project" aria-label="Copy resume prompt for ${esc(p.title)}">${ic("copy")}Resume prompt</button>`; }
 // The project id copies on click, wherever it is shown.
 function pidHtml(p) { return `<button class="pid" data-copy="${esc(p.id)}" data-what="project ID" title="Copy project ID" aria-label="Copy project ID ${esc(p.id)}">${esc(p.id)}</button>`; }
 
@@ -406,7 +406,7 @@ function cardHtml(p) {
     <button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>
     <div class="meta">${repoHtml(p)}${progressHtml(p)}</div>
     ${wait ? `<div class="waitline">${wait}</div>` : ""}
-    <div class="cardfoot"><div class="gates">${gatesHtml(p, true)}</div>${copyBtn(p)}</div></article>`;
+    <div class="cardfoot">${gatesHtml(p, true) ? `<div class="gates">${gatesHtml(p, true)}</div>` : ""}${copyBtn(p)}</div></article>`;
 }
 function pastHtml(p) {
   return `<article class="past s-${esc(p.status)}" data-id="${esc(p.id)}">
@@ -487,8 +487,7 @@ function appliedFilters() {
   return out;
 }
 function removeFilter(key) {
-  if (key.startsWith("status:")) state.statuses.delete(key.slice(7));
-  else if (key === "repo") { state.repo = ""; document.getElementById("repo").value = ""; }
+  if (key === "repo") { state.repo = ""; document.getElementById("repo").value = ""; }
   else if (key === "from") { state.from = ""; document.getElementById("from").value = ""; }
   else if (key === "q") { state.q = ""; document.getElementById("q").value = ""; }
   render();
@@ -510,7 +509,8 @@ function bandHtml(band) {
   // Rows hidden by the cap may belong to groups that are not shown at all: say so.
   const hidden = new Map();
   band.slice(shown.length).forEach(p => { if (!groups.has(p.needs_you_reason)) hidden.set(p.needs_you_reason, (hidden.get(p.needs_you_reason) || 0) + 1); });
-  const alsoIn = [...hidden].map(([r, n]) => `${(pick(REASON, r) || [r])[0]} ${n}`).join(", ");
+  const SHORT = { unreadable: "unreadable", blocked: "blocked", authorization: "needs approval", review: "review waiting", waiting: "waiting" };
+  const alsoIn = [...hidden].map(([r, n]) => `${pick(SHORT, r) || r} ${n}`).join(", ");
   const more = band.length > BAND_LIMIT ? `<div class="morebar"><button class="linkbtn" data-more="1">${state.showAllNeeds ? "Show fewer" : `Show all ${band.length}${alsoIn ? ` (also: ${alsoIn})` : ""}`}</button></div>` : "";
   return `<div class="board">${parts.join("")}${more}</div>`;
 }
@@ -542,8 +542,9 @@ function rememberFocus() {
 }
 function restoreFocus(kept) {
   if (!kept || kept.index < 0 || document.contains(document.activeElement) && document.activeElement !== document.body) return;
-  // The control may be gone (the last filter was removed, the empty message cleared): fall back to the search box.
-  (document.getElementById(kept.id)?.querySelectorAll(CONTROLS)[kept.index] || document.getElementById("q")).focus({ preventScroll: true });
+  const control = document.getElementById(kept.id)?.querySelectorAll(CONTROLS)[kept.index];
+  // Removing the last filter or clearing the empty message deletes the focused control: those two go to the search box.
+  (control || (kept.id === "applied" || kept.id === "empty" ? document.getElementById("q") : null))?.focus({ preventScroll: true });
 }
 
 function render() {
@@ -559,8 +560,7 @@ function render() {
     setHtml(get("status-chips"), "");
     setHtml(get("empty"), "");
     get("empty").hidden = true;
-    state.statuses.clear();
-    // Nothing to filter or list: only the root's message stays.
+    // Nothing to list: only the root's message stays. The user's filters are kept for when projects return.
     get("band-section").hidden = false;
     for (const id of ["flight-section", "archive-section"]) get(id).hidden = true;
     get("archive-toggle").hidden = true;
@@ -587,7 +587,7 @@ function render() {
   const archive = shown.filter(p => !p.needs_you_reason && TERMINAL.has(p.status));
   const nothing = filtered && !shown.length;
   get("empty").hidden = !nothing;
-  setHtml(get("empty"), nothing ? `No project matches these filters. Remove one with the buttons under the filters, or <button class="linkbtn" data-clearall="1">clear them all</button>.` : "");
+  setHtml(get("empty"), nothing ? `No project matches these filters. Unpress a status chip, remove a filter with the buttons under the filters, or <button class="linkbtn" data-clearall="1">clear them all</button>.` : "");
   get("band-section").hidden = filtered && !band.length;
   get("flight-section").hidden = filtered && !flight.length;
   get("archive-section").hidden = filtered && !archive.length;
