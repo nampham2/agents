@@ -299,6 +299,7 @@ def build_project(project_dir: Path) -> dict[str, Any]:
             "cancellation_reason": _text(state.get("cancellation_reason")),
             "block_reasons": [task["block_reason"] for task in tasks if task["block_reason"]],
             "pending_authorization": pending_authorization,
+            # These five keys repeat `_defaults()`: keep the two lists in step.
             "needs_you": reason != "",
             "needs_you_reason": reason,
             "agreement": _agreement(project_dir),

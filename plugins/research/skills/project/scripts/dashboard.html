@@ -155,7 +155,7 @@ h2 { font-family: var(--display); font-weight: 700; font-size: 21px; letter-spac
 .past .when { color: var(--muted); text-align: right; }
 
 .none { padding: 28px 20px; color: var(--muted); background: var(--surface); border-radius: 14px; border: 1px solid var(--line); }
-.notice { margin: 12px 0 0; padding: 10px 14px; background: var(--surface); border-left: 4px solid var(--c-blocked); border-radius: 8px; font-size: 14px; }
+.notice { margin: 14px 0 0; padding: 10px 14px; background: var(--surface); border-left: 4px solid var(--c-blocked); border-radius: 8px; font-size: 14px; }
 .notice[hidden] { display: none; }
 
 /* Drawer */
@@ -228,7 +228,8 @@ body.has-drawer .drawer { transform: none; visibility: visible; transition: tran
   <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
 </svg>
 <div class="wrap" id="page">
-  <header class="top">
+  <div class="notice" id="notice" role="status" hidden></div>
+  <header class="top" id="top">
     <div class="title-row">
       <h1>Research projects</h1>
       <div class="root" id="root"></div>
@@ -236,7 +237,6 @@ body.has-drawer .drawer { transform: none; visibility: visible; transition: tran
     </div>
     <p class="tally" id="tally"></p>
     <div class="flight-summary" id="flight-summary" aria-label="Projects in flight by status"></div>
-    <div class="notice" id="notice" role="status" hidden></div>
     <div class="filters" id="filters">
       <div class="filters-main">
         <input type="search" id="q" placeholder="Search id, title or path" aria-label="Search projects">
@@ -324,10 +324,9 @@ const byMoved = (a, b) => (b[state.field] || "").localeCompare(a[state.field] ||
 // The route: five stations, the project stands on the current one. BLOCKED stands on stage 2 (stage 0 with no tasks).
 function routeHtml(p) {
   let idx = RAIL.indexOf(p.status);
-  const blocked = p.status === "BLOCKED", cancelled = p.status === "CANCELLED";
+  const blocked = p.status === "BLOCKED";
   if (blocked) idx = p.task_total ? 2 : 0;
-  if (cancelled) idx = -1;
-  let h = `<div class="route ${cancelled ? "cancelled" : ""}" role="img" aria-label="Stage: ${esc(p.status.toLowerCase())}">`;
+  let h = `<div class="route" role="img" aria-label="Stage: ${esc(p.status.toLowerCase())}">`;
   RAIL.forEach((s, i) => {
     const reached = i <= idx, cur = i === idx;
     h += `<i class="${reached ? "on" : ""} ${cur ? "cur" : ""} ${cur && blocked ? "hollow" : ""}"></i>`;
@@ -412,7 +411,7 @@ function drawerParts(p) {
   const rail = `<div class="s-${esc(p.status)}" style="margin-top: 8px">${routeHtml(p)}</div>`;
   if (p.unreadable) {
     return { head: `<div class="pid">${esc(p.id)}</div><h2>${esc(p.title)}</h2>`, rc: "var(--c-unreadable)",
-      body: `<h3>This project cannot be read</h3><p>project.json is missing or malformed. Path: ${esc(p.path)}</p><div class="btnrow"><button class="copybtn" data-copy="${esc(p.path)}">${ic("copy")}Copy project path</button></div>` };
+      body: `<h3>This project cannot be read</h3><p>project.json is missing, malformed or has no status. Path: ${esc(p.path)}</p><div class="btnrow"><button class="copybtn" data-copy="${esc(p.path)}">${ic("copy")}Copy project path</button></div>` };
   }
   const [label] = pick(REASON, p.needs_you_reason) || [""];
   const tasks = p.tasks.length ? `<table><tr><th>Task</th><th>Name</th><th>Status</th><th>Effect</th><th>Evidence</th><th>Receipts</th></tr>${p.tasks.map(t => `<tr><td>${esc(t.id)}</td><td>${esc(t.name)}${t.block_reason ? `<br><span class="mute">${esc(t.block_reason)}</span>` : ""}</td><td><span class="${pick(TASK_CLASS, t.status) || ""}"><span class="stat">${esc(t.status.toLowerCase())}</span></span>${waitText(t.wait) ? `<br><span class="mute">${waitText(t.wait)}</span>` : ""}</td><td>${esc(t.effect)}</td><td>${t.evidence}</td><td>${t.receipts}</td></tr>`).join("")}</table>` : `<p class="mute">No tasks yet.</p>`;
@@ -484,6 +483,7 @@ function archiveHtml(archive) {
 const FOCUS_REGIONS = ["band", "flight", "archive", "status-chips", "drawer-body"];
 const CONTROLS = "button, a, input, select";
 // Writing identical markup would drop focus and any text selection, so an unchanged region is left alone.
+// Only setHtml writes these regions: a direct write would leave the cache stale and a later identical write would be skipped.
 function setHtml(el, html) { if (el.__html === html) return; el.innerHTML = html; el.__html = html; }
 function rememberFocus() {
   const active = document.activeElement;
@@ -506,8 +506,14 @@ function render() {
   get("root").textContent = DATA.root;
   if (!all.length) {
     get("tally").textContent = "";
-    get("flight-summary").innerHTML = "";
-    for (const id of ["band", "flight", "archive"]) get(id).innerHTML = id === "band" ? `<div class="none">No projects under ${esc(DATA.root)}.</div>` : "";
+    for (const id of ["band-count", "flight-count"]) get(id).textContent = "";
+    setHtml(get("flight-summary"), "");
+    for (const id of ["band", "flight", "archive"]) setHtml(get(id), id === "band" ? `<div class="none">No projects under ${esc(DATA.root)}.</div>` : "");
+    // With nothing to show there is no drawer: close it and give the page back.
+    state.open.clear(); state.last = null; state.focus = null; state.focusDrawer = false;
+    document.body.classList.remove("has-drawer");
+    for (const id of ["top", "register"]) get(id).inert = false;
+    get("drawer").setAttribute("aria-hidden", "true");
     return;
   }
   const needsAll = all.filter(p => p.needs_you_reason);
@@ -533,7 +539,7 @@ function render() {
   const expanded = state.archiveOpen || forced;
   const toggle = get("archive-toggle");
   toggle.setAttribute("aria-expanded", String(expanded));
-  toggle.disabled = forced;
+  toggle.setAttribute("aria-disabled", String(forced));
   get("archive-label").textContent = forced ? "Showing finished projects that match your filters" : expanded ? "Hide finished projects" : `Show finished projects (${all.filter(p => TERMINAL.has(p.status)).length})`;
   setHtml(get("archive"), expanded ? (archive.length ? archiveHtml(archive) : `<div class="none">No finished project matches these filters.</div>`) : "");
 
@@ -556,7 +562,7 @@ function render() {
   if (!current) { state.open.clear(); state.last = null; }
   document.body.classList.toggle("has-drawer", Boolean(current));
   // The drawer is modal: the page behind it cannot take focus while it is open.
-  get("page").inert = Boolean(current);
+  for (const id of ["top", "register"]) get(id).inert = Boolean(current);
   if (current) {
     const parts = drawerParts(current);
     setHtml(get("drawer-title"), parts.head);
@@ -569,7 +575,7 @@ function render() {
   if (state.focusDrawer && current) { get("drawer-close").focus({ preventScroll: true }); state.focusDrawer = false; state.focus = null; }
   else if (state.focus) {
     const target = [...document.querySelectorAll("[data-id]")].find(r => r.dataset.id === state.focus);
-    target?.querySelector(".rowbtn")?.focus({ preventScroll: true });
+    (target?.querySelector(".rowbtn") || get("q")).focus({ preventScroll: true });
     state.focus = null;
   } else restoreFocus(kept);
 }
@@ -589,7 +595,7 @@ async function load() {
   DATA = await getJson("/api/projects");
   // A project id in the address opens its detail, when a project has that id; it is never written back.
   if (state.hashId) {
-    if (DATA.projects.some(p => p.id === state.hashId)) { state.open.add(state.hashId); state.last = state.hashId; }
+    if (DATA.projects.some(p => p.id === state.hashId)) { state.open.add(state.hashId); state.last = state.hashId; state.focusDrawer = true; }
     state.hashId = "";
   }
   render();
@@ -635,14 +641,15 @@ document.addEventListener("click", e => {
   const chip = e.target.closest(".chip"); if (chip) { const s = chip.dataset.status; state.statuses.has(s) ? state.statuses.delete(s) : state.statuses.add(s); return render(); }
   const copy = e.target.closest("[data-copy]");
   if (copy) { navigator.clipboard.writeText(copy.dataset.copy).then(() => toast("Copied"), () => toast("Copy failed")); return; }
-  if (e.target.closest("[data-close]")) return closeDrawer();
+  if (e.target.closest("[data-close]")) { if (e.detail > 1 && e.target.closest(".scrim")) return; return closeDrawer(); }
   if (e.target.closest("[data-more]")) { state.showAllNeeds = !state.showAllNeeds; return render(); }
-  if (e.target.closest("#archive-toggle")) { state.archiveOpen = !state.archiveOpen; return render(); }
+  if (e.target.closest("#archive-toggle")) { if (document.getElementById("archive-toggle").getAttribute("aria-disabled") !== "true") { state.archiveOpen = !state.archiveOpen; render(); } return; }
   if (e.target.closest("#filters-toggle")) { state.filtersOpen = !state.filtersOpen; return render(); }
   if (e.target.closest("#theme")) return setTheme();
   if (e.target.closest("#drawer") || e.target.closest("a")) return;
   const row = e.target.closest("[data-id]");
-  if (row && !String(getSelection()).length) toggleProject(row.dataset.id);
+  // A mouse drag that selected text is not a click on the project; a keyboard click (detail 0) always opens it.
+  if (row && !(e.detail > 0 && String(getSelection()).length)) toggleProject(row.dataset.id);
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
 document.getElementById("from").addEventListener("input", e => { state.from = e.target.value; render(); });
