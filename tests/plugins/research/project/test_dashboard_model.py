@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 import workspace_dashboard as dash
+import workspace_goldfish as goldfish
 import workspace_lib as lib
 from workspace_workflows import workflow
 
@@ -127,7 +128,11 @@ def test_an_unreadable_project_is_a_row_not_an_error(tmp_path: Path, text: str) 
     (directory / "project.json").write_text(text, encoding="utf-8")
     row = dash.build_project(directory)
     assert row["unreadable"] is True
-    assert (row["status"], row["title"], row["needs_you"], row["sessions"]) == ("UNREADABLE", OTHER, False, [])
+    assert (row["status"], row["title"], row["needs_you"], row["sessions"]) == ("UNREADABLE", OTHER, True, [])
+    assert row["needs_you_reason"] == "unreadable"
+    assert row["agreement"] == "none"
+    assert row["goldfish"] == {"rounds": 0, "last_outcome": ""}
+    assert (row["receipt_count"], row["evidence_count"]) == (0, 0)
 
 
 def test_a_directory_without_project_json_is_unreadable(tmp_path: Path) -> None:
@@ -737,3 +742,239 @@ def test_a_local_only_exemption_shows_a_label_and_other_exemptions_show_nothing(
     (directory / "project.json").write_text(json.dumps(state), encoding="utf-8")
     rows = dash.build_project(directory)["worktrees"]
     assert [row["mr"] for row in rows] == ["local only", "", "", ""]
+
+
+# --- the keys the redesigned page reads ----------------------------------------------------------
+
+
+def goldfish_text(outcome: str = "accepted") -> str:
+    marker = goldfish.render_marker(
+        goldfish.Round(1, "spec", None, False, "a" * 64, None, outcome, ("combined",), None, None)
+    )
+    return marker + "\n# Round\n"
+
+
+def add_round(directory: Path, number: int, text: str | None = None) -> Path:
+    reviews = directory / "reviews"
+    reviews.mkdir(exist_ok=True)
+    path = reviews / f"goldfish_{number:02d}.md"
+    path.write_text(goldfish_text() if text is None else text, encoding="utf-8")
+    return path
+
+
+@pytest.mark.parametrize(
+    ("status", "authorization", "review", "session", "expected"),
+    [
+        ("BLOCKED", False, "not_required", "", "blocked"),
+        ("BLOCKED", True, "pending", "waiting", "blocked"),
+        ("EXECUTING", True, "pending", "waiting", "authorization"),
+        ("EXECUTING", True, "not_required", "blocked", "authorization"),
+        ("REVIEW", False, "pending", "waiting", "review"),
+        ("EXECUTING", False, "not_required", "waiting", "waiting"),
+        ("EXECUTING", False, "not_required", "blocked", "blocked"),
+        ("EXECUTING", False, "not_required", "working", ""),
+        ("PLANNING", False, "accepted", "", ""),
+        ("DONE", True, "pending", "waiting", ""),
+        ("CANCELLED", True, "pending", "blocked", ""),
+    ],
+)
+def test_the_reason_a_project_needs_you_follows_one_precedence(
+    status: str, authorization: bool, review: str, session: str, expected: str
+) -> None:
+    assert dash._needs_you_reason(status, authorization, review, session) == expected
+
+
+def test_a_blocked_row_carries_its_reason_and_needs_you_follows_it(tmp_path: Path) -> None:
+    blocked = dash.build_project(write_project(tmp_path, status="BLOCKED"))
+    assert (blocked["needs_you_reason"], blocked["needs_you"]) == ("blocked", True)
+    quiet = dash.build_project(write_project(tmp_path, OTHER, status="DONE", review={"status": "pending"}))
+    assert (quiet["needs_you_reason"], quiet["needs_you"]) == ("", False)
+    pending = {"required": True, "status": "pending"}
+    review = dash.build_project(write_project(tmp_path, "2026-10-12-001", review=pending))
+    assert review["needs_you_reason"] == "review"
+    authorization = dash.build_project(
+        write_project(
+            tmp_path,
+            "2026-10-12-002",
+            tasks=[task(status="RUNNING", authorization={"required": True, "status": "pending"})],
+        )
+    )
+    assert authorization["needs_you_reason"] == "authorization"
+
+
+def test_a_waiting_session_gives_the_reason_waiting_and_a_blocked_one_blocked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    for label, expected in (("waiting", "waiting"), ("blocked", "blocked")):
+        project = lib.allocate_project(
+            tmp_path / label, title=label, working_directory=tmp_path, create_root=True
+        )
+        workflow(
+            project,
+            "checkpoint",
+            request(project, "cp", continuation={"next": "Go", "session": label, "stop_reason": "user-decision"}),
+        )
+        assert dash.build_project(project)["needs_you_reason"] == expected
+
+
+def planning_project(root: Path, text: str | None, name: str = "planning.md") -> Path:
+    directory = write_project(root)
+    if text is not None:
+        (directory / name).write_text(text, encoding="utf-8")
+    return directory
+
+
+@pytest.mark.parametrize(
+    ("name", "text", "expected"),
+    [
+        ("planning.md", "# A1\n\nStatus: agreed\n", "agreed"),
+        ("planning.md", "# A1\n\n**Status:** draft\n", "draft"),
+        ("planning.md", "# A1\n\nno status line\n", "none"),
+        ("architecture.md", "# Legacy\n\nStatus: agreed\n", "agreed"),
+        ("planning.md", None, "none"),
+    ],
+)
+def test_the_agreement_comes_from_the_planning_file_or_the_legacy_one(
+    tmp_path: Path, name: str, text: str | None, expected: str
+) -> None:
+    assert dash.build_project(planning_project(tmp_path, text, name))["agreement"] == expected
+
+
+def test_a_project_with_neither_planning_file_has_no_agreement(tmp_path: Path) -> None:
+    assert dash.build_project(write_project(tmp_path))["agreement"] == "none"
+
+
+def test_goldfish_counts_every_round_and_reports_the_newest_outcome(tmp_path: Path) -> None:
+    directory = write_project(tmp_path)
+    assert dash.build_project(directory)["goldfish"] == {"rounds": 0, "last_outcome": ""}
+    add_round(directory, 1, goldfish_text("reaudit-required"))
+    add_round(directory, 2, goldfish_text("accepted-residual"))
+    assert dash.build_project(directory)["goldfish"] == {"rounds": 2, "last_outcome": "accepted-residual"}
+
+
+def test_a_malformed_newest_round_has_no_outcome_but_is_still_counted(tmp_path: Path) -> None:
+    directory = write_project(tmp_path)
+    add_round(directory, 1, goldfish_text("accepted"))
+    add_round(directory, 2, "not a marker\n")
+    assert dash.build_project(directory)["goldfish"] == {"rounds": 2, "last_outcome": ""}
+
+
+def test_a_newest_round_that_is_a_directory_or_not_text_does_not_raise(tmp_path: Path) -> None:
+    directory = write_project(tmp_path)
+    add_round(directory, 1)
+    (directory / "reviews" / "goldfish_02.md").mkdir()
+    assert dash.build_project(directory)["goldfish"] == {"rounds": 2, "last_outcome": ""}
+    other = write_project(tmp_path, OTHER)
+    add_round(other, 1)
+    (other / "reviews" / "goldfish_02.md").write_bytes(b"\xff\xfe not utf-8")
+    assert dash.build_project(other)["goldfish"] == {"rounds": 2, "last_outcome": ""}
+
+
+def test_round_ninety_nine_comes_before_round_one_hundred(tmp_path: Path) -> None:
+    directory = write_project(tmp_path)
+    (directory / "reviews").mkdir()
+    (directory / "reviews" / "goldfish_99.md").write_text(goldfish_text("accepted"), encoding="utf-8")
+    (directory / "reviews" / "goldfish_100.md").write_text(goldfish_text("waived"), encoding="utf-8")
+    assert [number for number, _ in dash._round_files(directory)] == [99, 100]
+    assert dash.build_project(directory)["goldfish"] == {"rounds": 2, "last_outcome": "waived"}
+
+
+def test_a_reviews_path_that_is_a_file_or_cannot_be_listed_has_no_rounds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = write_project(tmp_path)
+    (directory / "reviews").write_text("a file", encoding="utf-8")
+    assert dash._round_files(directory) == []
+    other = write_project(tmp_path, OTHER)
+    add_round(other, 1)
+    real = Path.iterdir
+
+    def failing(self: Path):  # type: ignore[no-untyped-def]
+        if self.name == "reviews":
+            raise PermissionError("denied")
+        return real(self)
+
+    monkeypatch.setattr(Path, "iterdir", failing)
+    assert dash._round_files(other) == []
+    assert dash.build_project(other)["goldfish"] == {"rounds": 0, "last_outcome": ""}
+
+
+def test_evidence_and_receipt_counts_sum_over_the_tasks(tmp_path: Path) -> None:
+    directory = write_project(
+        tmp_path,
+        tasks=[
+            task("T01", "DONE", evidence=["a", "b"], receipts=[{"kind": "commit"}]),
+            task("T02", "DONE", evidence=["c"], receipts=[{}, {}]),
+            task("T03", "TODO", receipts="nope"),
+            "junk",
+        ],
+    )
+    row = dash.build_project(directory)
+    assert (row["evidence_count"], row["receipt_count"]) == (3, 3)
+    assert [item["receipts"] for item in row["tasks"]] == [1, 2, 0]
+
+
+# --- the wider fingerprint -----------------------------------------------------------------------
+
+
+def test_the_fingerprint_moves_when_the_planning_file_changes(tmp_path: Path) -> None:
+    directory = planning_project(tmp_path, "Status: draft\n")
+    before = dash.fingerprint(tmp_path)
+    bump(directory / "planning.md")
+    assert dash.fingerprint(tmp_path) != before
+
+
+def test_the_fingerprint_moves_when_the_legacy_planning_file_changes_or_the_layout_switches(
+    tmp_path: Path,
+) -> None:
+    directory = planning_project(tmp_path, "Status: draft\n", "architecture.md")
+    legacy = dash.fingerprint(tmp_path)
+    bump(directory / "architecture.md")
+    edited = dash.fingerprint(tmp_path)
+    assert edited != legacy
+    (directory / "planning.md").write_text("Status: agreed\n", encoding="utf-8")
+    assert dash.fingerprint(tmp_path) != edited
+
+
+def test_the_fingerprint_moves_when_a_round_is_added_edited_in_place_or_removed(tmp_path: Path) -> None:
+    directory = write_project(tmp_path)
+    first = add_round(directory, 1)
+    one = dash.fingerprint(tmp_path)
+    second = add_round(directory, 2)
+    two = dash.fingerprint(tmp_path)
+    assert two != one
+    bump(second)
+    edited = dash.fingerprint(tmp_path)
+    assert edited != two
+    first.unlink()
+    assert dash.fingerprint(tmp_path) != edited
+
+
+def test_the_fingerprint_survives_a_failing_planning_check_listing_or_round_stat(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    directory = planning_project(tmp_path, "Status: agreed\n")
+    add_round(directory, 1)
+    healthy = dash.fingerprint(tmp_path)
+    real_is_file = Path.is_file
+
+    def failing_is_file(self: Path) -> bool:
+        if self.name == "planning.md":
+            raise PermissionError("denied")
+        return real_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", failing_is_file)
+    assert dash.fingerprint(tmp_path) != ""
+    monkeypatch.setattr(Path, "is_file", real_is_file)
+    real_stat = Path.stat
+
+    def vanishing_stat(self: Path, **kwargs: Any):  # type: ignore[no-untyped-def]
+        if self.name == "goldfish_01.md":
+            raise FileNotFoundError(self)
+        return real_stat(self, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", vanishing_stat)
+    assert dash.fingerprint(tmp_path) != ""
+    monkeypatch.setattr(Path, "stat", real_stat)
+    assert dash.fingerprint(tmp_path) == healthy

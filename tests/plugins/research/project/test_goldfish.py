@@ -674,3 +674,10 @@ def test_a_sub_heading_that_mentions_the_status_title_is_not_the_status_section(
 def test_a_task_list_that_was_hand_edited_does_not_crash_the_helpers(tasks: Any) -> None:
     assert goldfish.has_code_task({"tasks": tasks}) is False
     assert goldfish._code_started({"tasks": tasks}) is False
+
+
+def test_round_numbers_is_the_public_form_of_the_private_listing(project: Path) -> None:
+    assert goldfish.round_numbers(project / "elsewhere") == []
+    (project / "reviews").mkdir()
+    (project / "reviews" / "goldfish_02.md").write_text("x", encoding="utf-8")
+    assert goldfish.round_numbers(project) == goldfish._round_numbers(project) == [2]
