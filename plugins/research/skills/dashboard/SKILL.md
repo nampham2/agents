@@ -34,7 +34,8 @@ By hand the launcher listens on port 8765 and opens the browser: `research-dashb
 ## What the page offers
 
 - A "Waiting on you" board first: every project that needs you, with the reason (blocked, needs
-  your approval, review is waiting, waiting for your reply, or an unreadable `project.json`). It
+  your approval, review is waiting, waiting for your reply, or a `project.json` that cannot be
+  read or has no status). It
   shows five rows and a "Show all" control; each row has a button that copies the resume command.
 - Projects in flight as cards grouped by status, each with a five-stop route, task progress and
   chips for the plan, Goldfish review and delivery review. A strip under the title counts them.

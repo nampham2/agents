@@ -54,7 +54,7 @@ a { color: var(--c-planning); text-underline-offset: 2px; }
 .wrap { max-width: 1240px; margin: 0 auto; padding: 0 20px 72px; }
 
 /* Top bar */
-.top { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(10px); padding: 18px 0 12px; }
+.top { padding: 18px 0 12px; }
 .title-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
 h1 { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spacing: -0.02em; margin: 0; }
 .root { color: var(--muted); font-size: 14px; word-break: break-all; flex: 1 1 200px; min-width: 0; }
@@ -125,8 +125,6 @@ h2 { font-family: var(--display); font-weight: 700; font-size: 21px; letter-spac
 .route s.on { background: var(--rc); }
 .route i.cur { width: 18px; height: 18px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--rc) 24%, transparent); }
 .route i.hollow { background: var(--surface); border: 3px solid var(--rc); }
-.route.cancelled i { background: var(--edge); }
-.route.cancelled s { background: var(--line); }
 .s-EXECUTING .route i.cur { animation: pulse 2.4s ease-in-out infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--rc) 6%, transparent); } }
 .card .top-line { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; color: var(--muted); }
@@ -162,7 +160,7 @@ h2 { font-family: var(--display); font-weight: 700; font-size: 21px; letter-spac
 
 /* Drawer */
 .scrim { position: fixed; inset: 0; background: rgba(8, 10, 30, .45); opacity: 0; visibility: hidden; transition: opacity .18s; z-index: 20; }
-.drawer { position: fixed; top: 0; right: 0; height: 100vh; width: min(540px, 100vw); background: var(--surface); z-index: 21; overflow-y: auto; box-shadow: -12px 0 40px rgba(8, 10, 30, .25); transform: translateX(100%); visibility: hidden; transition: transform .2s ease, visibility 0s .2s; border-radius: 20px 0 0 20px; }
+.drawer { position: fixed; top: 0; right: 0; height: 100vh; height: 100dvh; width: min(540px, 100vw); background: var(--surface); z-index: 21; overflow-y: auto; box-shadow: -12px 0 40px rgba(8, 10, 30, .25); transform: translateX(100%); visibility: hidden; transition: transform .2s ease, visibility 0s .2s; border-radius: 20px 0 0 20px; }
 body.has-drawer .scrim { opacity: 1; visibility: visible; }
 body.has-drawer .drawer { transform: none; visibility: visible; transition: transform .2s ease; }
 .drawer-head { position: sticky; top: 0; background: var(--surface); padding: 18px 22px 14px; border-bottom: 4px solid var(--rc); display: flex; gap: 12px; align-items: flex-start; }
@@ -197,7 +195,8 @@ body.has-drawer .drawer { transform: none; visibility: visible; transition: tran
   .hold { grid-template-columns: minmax(0, 1fr); padding: 12px 14px; gap: 6px; }
   .hold .why { padding-left: 0; }
   .past { grid-template-columns: minmax(0, 1fr) auto; }
-  .past .pid, .past .repo { display: none; }
+  .past .pid { display: none; }
+  .past .when { grid-column: 1 / -1; text-align: left; }
   .drawer { border-radius: 0; }
   .filters-more { display: none; }
   .filters.open .filters-more { display: flex; }
@@ -227,9 +226,8 @@ body.has-drawer .drawer { transform: none; visibility: visible; transition: tran
   <symbol id="i-moon" viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></symbol>
   <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
-  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
 </svg>
-<div class="wrap">
+<div class="wrap" id="page">
   <header class="top">
     <div class="title-row">
       <h1>Research projects</h1>
@@ -272,7 +270,7 @@ body.has-drawer .drawer { transform: none; visibility: visible; transition: tran
   </main>
 </div>
 <div class="scrim" data-close="1"></div>
-<aside class="drawer" id="drawer" aria-label="Project detail" tabindex="-1">
+<aside class="drawer" id="drawer" role="dialog" aria-modal="true" aria-label="Project detail" tabindex="-1">
   <div class="drawer-head" id="drawer-head">
     <div class="heading" id="drawer-title"></div>
     <button class="iconbtn" id="drawer-close" data-close="1" aria-label="Close project detail"><svg class="ic" aria-hidden="true"><use href="#i-x"/></svg></button>
@@ -301,9 +299,10 @@ const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov
 const STATUS_ICON = { ALIGNING: "compass", PLANNING: "plan", EXECUTING: "play", REVIEW: "eye", BLOCKED: "alert", DONE: "check", CANCELLED: "ban", UNREADABLE: "alert" };
 const REASON = {
   blocked: ["Blocked", "alert"], authorization: ["Needs your approval", "key"], review: ["Review is waiting", "eye"],
-  waiting: ["Waiting for your reply", "hand"], unreadable: ["project.json cannot be read", "alert"],
+  waiting: ["Waiting for your reply", "hand"], unreadable: ["project.json is unreadable or has no status", "alert"],
 };
 const TASK_CLASS = { DONE: "s-DONE", RUNNING: "s-EXECUTING", BLOCKED: "s-BLOCKED", SKIPPED: "s-CANCELLED", TODO: "s-CANCELLED" };
+const pick = (map, key) => Object.hasOwn(map, key) ? map[key] : undefined;
 const OUTCOME = { accepted: "good", "accepted-residual": "good", waived: "neutral", open: "warn", "reaudit-required": "warn" };
 
 function rel(iso) {
@@ -336,12 +335,15 @@ function routeHtml(p) {
   });
   return h + "</div>";
 }
-function statusHtml(p) { return `<span class="stat">${ic(STATUS_ICON[p.status] || "alert")}${esc(p.status.toLowerCase())}</span>`; }
+function statusHtml(p) { return `<span class="stat">${ic(pick(STATUS_ICON, p.status) || "alert")}${esc(p.status.toLowerCase())}</span>`; }
 function waitText(w) { return w ? `Blocked, waits on ${esc(w.on)}${w.until ? ` until ${esc(w.until)}` : ""}${w.due ? " (due)" : ""}` : ""; }
+function firstWait(p) { return (p.tasks || []).map(t => waitText(t.wait)).find(Boolean) || ""; }
+function sessionCmd(s) { return s.resume || `${s.cwd ? `cd ${shq(s.cwd)} && ` : ""}claude --resume ${shq(s.id)}`; }
+function isOpen(id) { return state.last === id && state.open.has(id); }
 function resumeText(p) {
   const s = (p.sessions || [])[0];
   if (!s) return `Use the project skill to resume ${p.path}.`;
-  return s.resume || `${s.cwd ? `cd ${shq(s.cwd)} && ` : ""}claude --resume ${shq(s.id)}`;
+  return sessionCmd(s);
 }
 function copyBtn(p) { return `<button class="copybtn" data-copy="${esc(resumeText(p))}">${ic("copy")}Copy resume command</button>`; }
 
@@ -351,7 +353,7 @@ function gatesHtml(p) {
   else if (p.agreement === "draft") out.push(`<span class="gate g-warn">Plan in draft</span>`);
   else out.push(`<span class="gate g-neutral">No plan yet</span>`);
   const g = p.goldfish || { rounds: 0, last_outcome: "" };
-  if (g.rounds) out.push(`<span class="gate g-${OUTCOME[g.last_outcome] || "neutral"}">Goldfish ${esc(g.last_outcome || "round " + g.rounds)} (${g.rounds})</span>`);
+  if (g.rounds) out.push(`<span class="gate g-${pick(OUTCOME, g.last_outcome) || "neutral"}">Goldfish ${esc(g.last_outcome || "round " + g.rounds)} (${g.rounds})</span>`);
   else out.push(`<span class="gate g-neutral">No review</span>`);
   if (p.review_required && p.review !== "not_required") out.push(`<span class="gate g-${p.review === "pending" ? "warn" : "good"}">Delivery review ${esc(p.review)}</span>`);
   return out.join("");
@@ -365,25 +367,25 @@ function unreadableHtml(p) {
   const [label, icon] = REASON.unreadable;
   return `<article class="hold r-unreadable" data-id="${esc(p.id)}">
     <div class="why">${ic(icon)}${esc(label)}</div>
-    <div class="what"><button class="rowbtn name">${esc(p.title)}</button><div class="sub"><span class="pid">${esc(p.id)}</span></div></div>
-    <div></div></article>`;
+    <div class="what"><button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button><div class="sub"><span class="pid">${esc(p.id)}</span></div></div>
+    <div><button class="copybtn" data-copy="${esc(p.path)}">${ic("copy")}Copy project path</button></div></article>`;
 }
 function holdHtml(p) {
   if (p.unreadable) return unreadableHtml(p);
-  const [label, icon] = REASON[p.needs_you_reason] || ["Waiting", "hand"];
-  const wait = (p.tasks || []).map(t => waitText(t.wait)).find(Boolean);
+  const [label, icon] = pick(REASON, p.needs_you_reason) || ["Waiting", "hand"];
+  const wait = firstWait(p);
   return `<article class="hold r-${esc(p.needs_you_reason)}" data-id="${esc(p.id)}">
     <div class="why">${ic(icon)}${esc(label)}</div>
-    <div class="what"><button class="rowbtn name" aria-expanded="${state.open.has(p.id)}">${esc(p.title)}</button>
+    <div class="what"><button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>
       <div class="sub"><span class="pid">${esc(p.id)}</span>${repoHtml(p)}<span>${ic("clock")}${esc(rel(p.updated))}</span>${p.task_total ? `<span>${p.task_done} of ${p.task_total} tasks</span>` : ""}${wait ? `<span>${wait}</span>` : ""}</div></div>
     <div>${copyBtn(p)}</div></article>`;
 }
 function cardHtml(p) {
-  const wait = (p.tasks || []).map(t => waitText(t.wait)).find(Boolean);
+  const wait = firstWait(p);
   return `<article class="card s-${esc(p.status)}" data-id="${esc(p.id)}">
     ${routeHtml(p)}
     <div class="top-line"><span class="pid">${esc(p.id)}</span><span title="${esc(p.updated)}">${esc(rel(p.updated))}</span></div>
-    <button class="rowbtn name" aria-expanded="${state.open.has(p.id)}">${esc(p.title)}</button>
+    <button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>
     <div class="meta">${statusHtml(p)}${repoHtml(p)}${progressHtml(p)}</div>
     ${wait ? `<div class="waitline">${wait}</div>` : ""}
     <div class="gates">${gatesHtml(p)}</div></article>`;
@@ -391,7 +393,7 @@ function cardHtml(p) {
 function pastHtml(p) {
   return `<article class="past s-${esc(p.status)}" data-id="${esc(p.id)}">
     <span class="pid">${esc(p.id)}</span>
-    <button class="rowbtn name" aria-expanded="${state.open.has(p.id)}">${esc(p.title)}</button>
+    <button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>
     ${statusHtml(p)}<span class="when">${repoHtml(p)} ${esc(rel(p.updated))}</span></article>`;
 }
 
@@ -400,7 +402,7 @@ function sessionHtml(s, i) {
   const tag = s.exact ? "recorded" : i === 0 ? "latest" : "";
   const facts = [s.last ? `active ${rel(s.last)}` : "", s.mentions ? `named ${s.mentions} times` : "", s.cwd ? `in ${s.cwd.split("/").pop()}` : ""].filter(Boolean).join(", ");
   const host = s.host === "pi" ? "Pi" : s.host === "claude" ? "Claude" : "";
-  const cmd = s.resume || `${s.cwd ? `cd ${shq(s.cwd)} && ` : ""}claude --resume ${shq(s.id)}`;
+  const cmd = sessionCmd(s);
   return `<li><div><b>${esc(s.id.slice(0, 8))}</b> ${live} <span class="mute">${esc([tag, host, facts].filter(Boolean).join(", "))}</span></div>
     ${s.prompt ? `<div class="prompt">"${esc(s.prompt)}"</div>` : ""}
     <button class="copybtn" data-copy="${esc(cmd)}">${ic("copy")}Copy resume command</button></li>`;
@@ -412,8 +414,8 @@ function drawerParts(p) {
     return { head: `<div class="pid">${esc(p.id)}</div><h2>${esc(p.title)}</h2>`, rc: "var(--c-unreadable)",
       body: `<h3>This project cannot be read</h3><p>project.json is missing or malformed. Path: ${esc(p.path)}</p><div class="btnrow"><button class="copybtn" data-copy="${esc(p.path)}">${ic("copy")}Copy project path</button></div>` };
   }
-  const [label] = REASON[p.needs_you_reason] || [""];
-  const tasks = p.tasks.length ? `<table><tr><th>Task</th><th>Name</th><th>Status</th><th>Effect</th><th>Evidence</th><th>Receipts</th></tr>${p.tasks.map(t => `<tr><td>${esc(t.id)}</td><td>${esc(t.name)}${t.block_reason ? `<br><span class="mute">${esc(t.block_reason)}</span>` : ""}</td><td><span class="${TASK_CLASS[t.status] || ""}"><span class="stat">${esc(t.status.toLowerCase())}</span></span></td><td>${esc(t.effect)}</td><td>${t.evidence}</td><td>${t.receipts}</td></tr>`).join("")}</table>` : `<p class="mute">No tasks yet.</p>`;
+  const [label] = pick(REASON, p.needs_you_reason) || [""];
+  const tasks = p.tasks.length ? `<table><tr><th>Task</th><th>Name</th><th>Status</th><th>Effect</th><th>Evidence</th><th>Receipts</th></tr>${p.tasks.map(t => `<tr><td>${esc(t.id)}</td><td>${esc(t.name)}${t.block_reason ? `<br><span class="mute">${esc(t.block_reason)}</span>` : ""}</td><td><span class="${pick(TASK_CLASS, t.status) || ""}"><span class="stat">${esc(t.status.toLowerCase())}</span></span>${waitText(t.wait) ? `<br><span class="mute">${waitText(t.wait)}</span>` : ""}</td><td>${esc(t.effect)}</td><td>${t.evidence}</td><td>${t.receipts}</td></tr>`).join("")}</table>` : `<p class="mute">No tasks yet.</p>`;
   const waits = (p.tasks || []).map(t => waitText(t.wait) ? `<li>${esc(t.id)}: ${waitText(t.wait)}</li>` : "").join("");
   const blocks = (p.block_reasons || []).map(b => `<li>${esc(b)}</li>`).join("");
   const wts = (p.worktrees || []).map(w => `<li>${ic("branch")}${esc(w.branch)} <span class="mute">(${esc(w.status)})</span><br><span class="mute">${esc(w.path)}</span>${w.mr ? `<br>${link(w.mr, w.mr)}` : ""}</li>`).join("");
@@ -424,8 +426,9 @@ function drawerParts(p) {
   const body = `
     <h3>Phase and gates</h3>
     ${rail}
+    ${p.running && p.running.length ? `<p style="margin-top: 10px"><span class="stat s-EXECUTING">${ic("play")}</span>Running ${esc(p.running.join(", "))}</p>` : ""}
     <div class="gates" style="margin-top: 10px">${gatesHtml(p)}</div>
-    ${label ? `<p style="margin-top: 10px"><span class="stat r-${esc(p.needs_you_reason)}">${ic((REASON[p.needs_you_reason] || ["", "hand"])[1])}${esc(label)}</span></p>` : ""}
+    ${label ? `<p style="margin-top: 10px"><span class="stat r-${esc(p.needs_you_reason)}">${ic((pick(REASON, p.needs_you_reason) || ["", "hand"])[1])}${esc(label)}</span></p>` : ""}
     <h3>Next</h3>
     ${p.has_handoff ? `<p>${esc(p.next) || '<span class="mute">Not written.</span>'}</p>
       ${p.do_not ? `<p class="donot">${esc(p.do_not)}</p>` : ""}
@@ -446,7 +449,7 @@ function drawerParts(p) {
       ${active.map(w => `<button class="copybtn" data-copy="${esc(w.path)}">${ic("copy")}Worktree path</button>${safeUrl(w.mr) ? `<button class="copybtn" data-copy="${esc(safeUrl(w.mr))}">${ic("copy")}Merge request link</button>` : ""}`).join("")}
     </div>
     <h3>Files</h3><div class="btnrow">${files}</div>`;
-  return { head: `<div class="pid">${esc(p.id)} ${statusHtml(p)}</div><h2>${esc(p.title)}</h2><div class="pid">${repoHtml(p)} ${esc(exact(p.updated))}</div>`, rc: `var(--c-${p.status.toLowerCase()})`, body };
+  return { head: `<div class="pid">${esc(p.id)} ${statusHtml(p)}</div><h2>${esc(p.title)}</h2><div class="pid">${repoHtml(p)} moved ${esc(exact(p.updated))}, created ${esc(exact(p.created))}</div>`, rc: `var(--c-${p.status.toLowerCase()})`, body };
 }
 
 function matches(p) {
@@ -465,11 +468,12 @@ function bandHtml(band) {
   return `<div class="board">${shown.map(holdHtml).join("")}${more}</div>`;
 }
 function flightHtml(flight) {
+  if (state.attnOnly) return `<div class="none">Hidden while "Waiting on you only" is on.</div>`;
   if (!flight.length) return `<div class="none">No project is in flight${state.q || state.statuses.size || state.repo || state.from ? " for these filters" : ""}.</div>`;
   const groups = new Map();
   flight.forEach(p => { if (!groups.has(p.status)) groups.set(p.status, []); groups.get(p.status).push(p); });
   const keys = [...FLIGHT_ORDER.filter(s => groups.has(s)), ...[...groups.keys()].filter(s => !FLIGHT_ORDER.includes(s))];
-  return keys.map(s => `<div class="s-${esc(s)}"><div class="group-title">${ic(STATUS_ICON[s] || "alert")}${esc(s.toLowerCase())}<span class="count">${groups.get(s).length}</span></div><div class="cards">${groups.get(s).sort(byMoved).map(cardHtml).join("")}</div></div>`).join("");
+  return keys.map(s => `<div class="s-${esc(s)}"><div class="group-title">${ic(pick(STATUS_ICON, s) || "alert")}${esc(s.toLowerCase())}<span class="count">${groups.get(s).length}</span></div><div class="cards">${groups.get(s).sort(byMoved).map(cardHtml).join("")}</div></div>`).join("");
 }
 function archiveHtml(archive) {
   const groups = new Map();
@@ -477,19 +481,43 @@ function archiveHtml(archive) {
   return [...groups.keys()].sort().reverse().map(k => `<div class="day"><h3>${esc(dayLabel(k))}</h3>${groups.get(k).sort(byMoved).map(pastHtml).join("")}</div>`).join("");
 }
 
+const FOCUS_REGIONS = ["band", "flight", "archive", "status-chips", "drawer-body"];
+const CONTROLS = "button, a, input, select";
+// Writing identical markup would drop focus and any text selection, so an unchanged region is left alone.
+function setHtml(el, html) { if (el.__html === html) return; el.innerHTML = html; el.__html = html; }
+function rememberFocus() {
+  const active = document.activeElement;
+  for (const id of FOCUS_REGIONS) {
+    const region = document.getElementById(id);
+    if (region && region.contains(active)) return { id, index: [...region.querySelectorAll(CONTROLS)].indexOf(active) };
+  }
+  return null;
+}
+function restoreFocus(kept) {
+  if (!kept || kept.index < 0 || document.contains(document.activeElement) && document.activeElement !== document.body) return;
+  document.getElementById(kept.id)?.querySelectorAll(CONTROLS)[kept.index]?.focus({ preventScroll: true });
+}
+
 function render() {
   const get = id => document.getElementById(id);
   if (!DATA) { get("band").innerHTML = `<div class="none">Loading projects.</div>`; return; }
+  const kept = rememberFocus();
   const all = DATA.projects;
   get("root").textContent = DATA.root;
-  const inflightAll = all.filter(p => !TERMINAL.has(p.status));
+  if (!all.length) {
+    get("tally").textContent = "";
+    get("flight-summary").innerHTML = "";
+    for (const id of ["band", "flight", "archive"]) get(id).innerHTML = id === "band" ? `<div class="none">No projects under ${esc(DATA.root)}.</div>` : "";
+    return;
+  }
   const needsAll = all.filter(p => p.needs_you_reason);
   const quiet = all.filter(p => !p.needs_you_reason && !TERMINAL.has(p.status));
   const latest = all.map(p => p.updated || "").sort().pop();
-  get("tally").innerHTML = all.length ? `<b>${all.length}</b> projects, <b>${inflightAll.length}</b> in flight, <b>${needsAll.length}</b> waiting on you. Last movement ${esc(rel(latest))}.` : "";
+  get("tally").innerHTML = `<b>${all.length}</b> projects, <b>${quiet.length}</b> in flight, <b>${needsAll.length}</b> waiting on you. Last movement ${esc(rel(latest))}.`;
   const counts = {}; quiet.forEach(p => counts[p.status] = (counts[p.status] || 0) + 1);
   const summary = [...FLIGHT_ORDER, ...Object.keys(counts).filter(s => !FLIGHT_ORDER.includes(s))].filter(s => counts[s]);
-  get("flight-summary").innerHTML = summary.length ? summary.map(s => `<span class="pill s-${esc(s)}">${ic(STATUS_ICON[s] || "alert")}${esc(s.toLowerCase())}<b>${counts[s]}</b></span>`).join("") : `<span class="count">No project is moving without waiting on you.</span>`;
+  // The strip and the section counts cover the whole workspace; the filters narrow only the lists below.
+  setHtml(get("flight-summary"), summary.length ? summary.map(s => `<span class="pill s-${esc(s)}">${ic(pick(STATUS_ICON, s) || "alert")}${esc(s.toLowerCase())}<b>${counts[s]}</b></span>`).join("") : `<span class="count">No project is moving without waiting on you.</span>`);
 
   const shown = all.filter(matches);
   // An unreadable project cannot say what it needs, so it leads the band; the rest are newest first.
@@ -497,17 +525,20 @@ function render() {
   const flight = state.attnOnly ? [] : shown.filter(p => !p.needs_you_reason && !TERMINAL.has(p.status));
   const archive = state.attnOnly ? [] : shown.filter(p => !p.needs_you_reason && TERMINAL.has(p.status));
   get("band-count").textContent = needsAll.length ? String(needsAll.length) : "";
-  get("band").innerHTML = bandHtml(band);
+  setHtml(get("band"), bandHtml(band));
   get("flight-count").textContent = quiet.length ? String(quiet.length) : "";
-  get("flight").innerHTML = flightHtml(flight);
-  const expanded = Boolean(state.archiveOpen || [...state.statuses].some(s => TERMINAL.has(s)) || (state.q && archive.length > 0));
+  setHtml(get("flight"), flightHtml(flight));
+  // A finished-status filter or a search that matches a finished project opens the archive and the toggle cannot close it.
+  const forced = Boolean([...state.statuses].some(s => TERMINAL.has(s)) || (state.q && archive.length > 0));
+  const expanded = state.archiveOpen || forced;
   const toggle = get("archive-toggle");
   toggle.setAttribute("aria-expanded", String(expanded));
-  get("archive-label").textContent = expanded ? "Hide finished projects" : `Show finished projects (${all.filter(p => TERMINAL.has(p.status)).length})`;
-  get("archive").innerHTML = expanded ? (archive.length ? archiveHtml(archive) : `<div class="none">No finished project matches these filters.</div>`) : "";
+  toggle.disabled = forced;
+  get("archive-label").textContent = forced ? "Showing finished projects that match your filters" : expanded ? "Hide finished projects" : `Show finished projects (${all.filter(p => TERMINAL.has(p.status)).length})`;
+  setHtml(get("archive"), expanded ? (archive.length ? archiveHtml(archive) : `<div class="none">No finished project matches these filters.</div>`) : "");
 
-  const all2 = {}; all.forEach(p => all2[p.status] = (all2[p.status] || 0) + 1);
-  get("status-chips").innerHTML = ORDER.filter(s => all2[s]).map(s => `<button class="chip s-${s}" data-status="${s}" aria-pressed="${state.statuses.has(s)}"><span class="dot"></span>${s.toLowerCase()}<span class="n">${all2[s]}</span></button>`).join("");
+  const byStatus = {}; all.forEach(p => byStatus[p.status] = (byStatus[p.status] || 0) + 1);
+  setHtml(get("status-chips"), ORDER.filter(s => byStatus[s]).map(s => `<button class="chip s-${s}" data-status="${s}" aria-pressed="${state.statuses.has(s)}"><span class="dot"></span>${s.toLowerCase()}<span class="n">${byStatus[s]}</span></button>`).join(""));
   const repos = [...new Set(all.map(p => p.repo).filter(Boolean))].sort();
   const select = get("repo");
   if (select.dataset.key !== repos.join("\n")) {
@@ -518,15 +549,19 @@ function render() {
   }
   get("filters").classList.toggle("open", state.filtersOpen);
   get("filters-toggle").setAttribute("aria-expanded", String(state.filtersOpen));
+  const active = state.statuses.size + (state.repo ? 1 : 0) + (state.from ? 1 : 0);
+  get("filters-toggle").textContent = active ? `More filters (${active})` : "More filters";
 
   const current = state.last && state.open.has(state.last) ? all.find(p => p.id === state.last) : null;
   if (!current) { state.open.clear(); state.last = null; }
   document.body.classList.toggle("has-drawer", Boolean(current));
+  // The drawer is modal: the page behind it cannot take focus while it is open.
+  get("page").inert = Boolean(current);
   if (current) {
     const parts = drawerParts(current);
-    get("drawer-title").innerHTML = parts.head;
+    setHtml(get("drawer-title"), parts.head);
     get("drawer-head").style.setProperty("--rc", parts.rc);
-    get("drawer-body").innerHTML = parts.body;
+    setHtml(get("drawer-body"), parts.body);
     get("drawer").setAttribute("aria-hidden", "false");
   } else {
     get("drawer").setAttribute("aria-hidden", "true");
@@ -536,7 +571,7 @@ function render() {
     const target = [...document.querySelectorAll("[data-id]")].find(r => r.dataset.id === state.focus);
     target?.querySelector(".rowbtn")?.focus({ preventScroll: true });
     state.focus = null;
-  }
+  } else restoreFocus(kept);
 }
 
 function setStatus(kind, detail) {
@@ -574,6 +609,7 @@ function toast(message) { const t = document.getElementById("toast"); t.textCont
 function closeDrawer() { if (!state.open.size) return; state.focus = state.last; state.open.clear(); state.last = null; render(); }
 function toggleProject(id) {
   if (state.open.has(id) && state.last === id) return closeDrawer();
+  state.open.clear();
   state.open.add(id);
   state.last = id;
   state.focus = id;
@@ -606,7 +642,7 @@ document.addEventListener("click", e => {
   if (e.target.closest("#theme")) return setTheme();
   if (e.target.closest("#drawer") || e.target.closest("a")) return;
   const row = e.target.closest("[data-id]");
-  if (row) toggleProject(row.dataset.id);
+  if (row && !String(getSelection()).length) toggleProject(row.dataset.id);
 });
 document.addEventListener("keydown", e => { if (e.key === "Escape") closeDrawer(); });
 document.getElementById("from").addEventListener("input", e => { state.from = e.target.value; render(); });
@@ -623,7 +659,7 @@ document.getElementById("clear").addEventListener("click", () => {
 });
 try { const saved = localStorage.getItem("research-dashboard-theme"); if (saved === "light" || saved === "dark") document.documentElement.dataset.theme = saved; } catch (error) { /* no stored choice: follow the system */ }
 paintThemeButton();
-if (location.hash) state.hashId = decodeURIComponent(location.hash.slice(1));
+try { if (location.hash) state.hashId = decodeURIComponent(location.hash.slice(1)); } catch (error) { /* a malformed address opens nothing */ }
 render();
 tick();
 // Relative times ("5 min ago") age on their own.

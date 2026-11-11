@@ -24,7 +24,7 @@ from urllib.parse import urlsplit
 
 from workspace_context import checkpoint_data
 from workspace_durability import active_wait, invocation_lines, utcnow
-from workspace_goldfish import parse_round, round_numbers
+from workspace_goldfish import parse_round, round_name, round_numbers
 from workspace_lib import (
     WorkspaceError,
     find_workspace_roots,
@@ -216,7 +216,8 @@ def _round_files(project_dir: Path) -> list[tuple[int, Path]]:
         numbers = round_numbers(project_dir)
     except OSError:
         return []
-    return [(number, project_dir / "reviews" / f"goldfish_{number:02d}.md") for number in numbers]
+    # The file name comes from `round_name`, which owns the format `ROUND_FILE` matches.
+    return [(number, project_dir / f"{round_name(number)}.md") for number in numbers]
 
 
 def _goldfish_summary(project_dir: Path) -> dict[str, Any]:
@@ -268,7 +269,6 @@ def build_project(project_dir: Path) -> dict[str, Any]:
     spec = _read_optional(project_dir / "spec.md")
     working_directory = _text(state.get("working_directory"))
     reason = _needs_you_reason(status, pending_authorization, _text(review.get("status")), handoff["session"])
-    row.update(_defaults())
     row.update(
         {
             "title": _text(state.get("title")) or project_dir.name,
@@ -346,8 +346,9 @@ def _goldfish_and_planning_marks(directory: Path) -> str:
     """What else the page reads from a project: the planning file, every round name, the newest round.
 
     The round names move the fingerprint when any round appears, disappears or is renamed; the newest
-    round's stat moves it when that file is edited in place, which changes the outcome shown. Every
-    call may fail on a directory the user cannot read, and none of those failures may fail the poll.
+    round's stat moves it when that file is edited in place, which changes the outcome shown. The
+    planning resolution and each stat can fail on a directory the user cannot read, so they sit in
+    their own guards, and `_round_files` guards its listing; no failure may fail the poll.
     """
     marks = []
     try:

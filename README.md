@@ -88,24 +88,19 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ### 0.35.0 dashboard redesign
 
-The local dashboard (`research-dashboard`, project 2026-11-11-004) puts what needs you first. It
-stays read-only and keeps its two routes and its single HTML file; the project model gains five
-additive keys, so 0.34.0 launchers still read every project 0.35.0 touches.
+The local dashboard (`research-dashboard`) puts what needs you first. It stays read-only, with the
+same two routes and one HTML file, and adds five keys to each project row, so 0.34.0 launchers
+still read every project 0.35.0 touches. `skills/dashboard/SKILL.md` describes the page.
 
-- **The page.** A "Waiting on you" board lists the projects that need you, each with its reason
-  (blocked, needs your approval, review is waiting, waiting for your reply, or an unreadable
-  `project.json`), the first five shown and the rest behind "Show all". Projects in flight follow as
-  cards grouped by status, each with a five-stop route line, task progress and gate chips for the
-  plan, Goldfish review and delivery review. Finished and cancelled projects sit behind a toggle.
-  Light and dark themes, readable to 390px, keyboard operable, and every contrast pair measured.
-- **The drawer.** A project opens in a side drawer: phase and gates, next step, open questions,
-  blockers and waits, tasks with evidence and receipts, counts, decisions, worktree and merge
-  request, sessions, and copy buttons. A project with no session copies the resume prompt instead.
-- **Model keys.** `needs_you_reason` (the order that the page used to hold in `cause()`), `agreement`,
+- **The page.** A "Waiting on you" board with the reason for each project, then in-flight projects
+  as cards with a route line and plan, Goldfish and delivery-review chips, then finished projects
+  behind a toggle. A side drawer shows one project in full. Light and dark themes, and a layout
+  for phone widths.
+- **Model keys.** `needs_you_reason` (the order the page used to hold in `cause()`), `agreement`,
   `goldfish` (`rounds`, `last_outcome`), `receipt_count` and `evidence_count`. `needs_you` stays and
-  now covers an unreadable project. The change fingerprint also watches the planning file and the
-  Goldfish rounds, so the page refreshes when either changes. `workspace_goldfish.round_numbers` is
-  the public form of the round listing.
+  now covers a project whose `project.json` cannot be read. The change fingerprint also watches the
+  planning file and the Goldfish rounds. `workspace_goldfish.round_numbers` is the public form of
+  the round listing.
 
 ### 0.34.0 effect intents, crash-loop stop, lock liveness, waits
 
