@@ -86,6 +86,27 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.35.0 dashboard redesign
+
+The local dashboard (`research-dashboard`, project 2026-11-11-004) puts what needs you first. It
+stays read-only and keeps its two routes and its single HTML file; the project model gains five
+additive keys, so 0.34.0 launchers still read every project 0.35.0 touches.
+
+- **The page.** A "Waiting on you" board lists the projects that need you, each with its reason
+  (blocked, needs your approval, review is waiting, waiting for your reply, or an unreadable
+  `project.json`), the first five shown and the rest behind "Show all". Projects in flight follow as
+  cards grouped by status, each with a five-stop route line, task progress and gate chips for the
+  plan, Goldfish review and delivery review. Finished and cancelled projects sit behind a toggle.
+  Light and dark themes, readable to 390px, keyboard operable, and every contrast pair measured.
+- **The drawer.** A project opens in a side drawer: phase and gates, next step, open questions,
+  blockers and waits, tasks with evidence and receipts, counts, decisions, worktree and merge
+  request, sessions, and copy buttons. A project with no session copies the resume prompt instead.
+- **Model keys.** `needs_you_reason` (the order that the page used to hold in `cause()`), `agreement`,
+  `goldfish` (`rounds`, `last_outcome`), `receipt_count` and `evidence_count`. `needs_you` stays and
+  now covers an unreadable project. The change fingerprint also watches the planning file and the
+  Goldfish rounds, so the page refreshes when either changes. `workspace_goldfish.round_numbers` is
+  the public form of the round listing.
+
 ### 0.34.0 effect intents, crash-loop stop, lock liveness, waits
 
 The `project` skill adopts the improvement points from the durable agents study (projects

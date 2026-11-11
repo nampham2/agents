@@ -33,9 +33,18 @@ By hand the launcher listens on port 8765 and opens the browser: `research-dashb
 
 ## What the page offers
 
-- One list of every project, newest movement first, grouped by day, with a status rail.
-- Filters: status, moved since (updated or created), repository, search, needs you.
-- A detail panel per project: tasks, decisions, handoff, worktrees and merge request.
+- A "Waiting on you" board first: every project that needs you, with the reason (blocked, needs
+  your approval, review is waiting, waiting for your reply, or an unreadable `project.json`). It
+  shows five rows and a "Show all" control; each row has a button that copies the resume command.
+- Projects in flight as cards grouped by status, each with a five-stop route, task progress and
+  chips for the plan, Goldfish review and delivery review. A strip under the title counts them.
+- Finished and cancelled projects behind a toggle. A done or cancelled status filter, or a search
+  that matches one, opens them.
+- Filters: search, waiting on you only, status, repository and moved since (updated or created).
+- A drawer per project: phase and gates, next step, open questions, blockers and waits, tasks with
+  evidence and receipts, counts, decisions, worktrees and merge request.
 - Claude sessions: the session the project recorded, then the sessions that worked on it, each
-  with a copy button for `cd <directory> && claude --resume <id>`.
+  with a copy button for `cd <directory> && claude --resume <id>`. With no session the button
+  copies `Use the project skill to resume <path>.`.
+- Light and dark themes, a theme button, and keyboard use: Enter opens a project, Escape closes it.
 - The page refreshes itself when a project file changes.
