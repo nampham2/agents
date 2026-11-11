@@ -92,9 +92,10 @@ The local dashboard (`research-dashboard`) puts what needs you first. It stays r
 same two routes and one HTML file, and adds five keys to each project row, so 0.34.0 launchers
 still read every project 0.35.0 touches. `skills/dashboard/SKILL.md` describes the page.
 
-- **The page.** A "Waiting on you" board with the reason for each project, then in-flight projects
-  as cards with a route line and plan, Goldfish and delivery-review chips, then finished projects
-  behind a toggle. A side drawer shows one project in full. Light and dark themes, and a layout
+- **The page.** One status bar that filters, a "Waiting on you" board grouped by reason, in-flight
+  projects as cards with a labelled route line, and finished projects behind a toggle. Only the
+  sections that hold a match stay on screen. Each project has a "Resume prompt" button and a
+  click-to-copy id. A side drawer shows one project in full. Light and dark themes, and a layout
   for phone widths.
 - **Model keys.** `needs_you_reason` (the order the page used to hold in `cause()`), `agreement`,
   `goldfish` (`rounds`, `last_outcome`), `receipt_count` and `evidence_count`. `needs_you` stays and

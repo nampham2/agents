@@ -33,20 +33,23 @@ By hand the launcher listens on port 8765 and opens the browser: `research-dashb
 
 ## What the page offers
 
-- A "Waiting on you" board first: every project that needs you, with the reason (blocked, needs
+- A status bar under the title: one chip per status with its count. A chip filters the page, and
+  its count follows the other filters. Only the sections that hold a match stay on screen, so
+  Done shows Finished alone and Blocked shows the board alone.
+- A "Waiting on you" board first: every project that needs you, grouped by reason (blocked, needs
   your approval, review is waiting, waiting for your reply, or a `project.json` that cannot be
-  read or has no status). It shows five rows and a "Show all" control; each row has a button that
-  copies the resume command.
-- Projects in flight as cards grouped by status, each with a five-stop route, task progress and
-  chips for the plan, Goldfish review and delivery review. A strip under the title counts them;
-  the counts cover the whole workspace and ignore the filters.
-- Finished and cancelled projects behind a toggle. A done or cancelled status filter, or a search
-  that matches one, opens them.
-- Filters: search, waiting on you only, status, repository and moved since (updated or created).
+  read or has no status), five rows at first and "Show all" for the rest.
+- Projects in flight as cards grouped by status, each with a five-stop route (hover a stop for its
+  name and state), task progress and a chip for each plan or review gate that has something to say.
+- Finished and cancelled projects behind a toggle. A done or cancelled filter, or a search that
+  matches one, opens them.
+- Filters: search, repository, a date since (by last update or by creation) and the status chips.
+  A line under them says how many projects remain and offers a button per filter to remove it. A
+  combination with no match says so and offers to clear it.
+- Every project has a "Resume prompt" button that copies `Use the project skill to resume <path>.`
+  Click a project id to copy it. A session adds a "Resume command" button in the drawer, which
+  copies `cd <directory> && claude --resume <id>`.
 - A drawer per project: phase and gates, next step, open questions, blockers and waits, tasks with
-  evidence and receipts, counts, decisions, worktrees and merge request.
-- Claude sessions: the session the project recorded, then the sessions that worked on it, each
-  with a copy button for `cd <directory> && claude --resume <id>`. With no session the button
-  copies `Use the project skill to resume <path>.`.
+  evidence and receipts, counts, decisions, worktrees and merge request, and the sessions.
 - Light and dark themes, a theme button, and keyboard use: Enter opens a project, Escape closes it.
 - The page refreshes itself when a project file changes.
