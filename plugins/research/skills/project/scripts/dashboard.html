@@ -491,14 +491,15 @@ function render() {
   get("flight-summary").innerHTML = summary.length ? summary.map(s => `<span class="pill s-${esc(s)}">${ic(STATUS_ICON[s] || "alert")}${esc(s.toLowerCase())}<b>${counts[s]}</b></span>`).join("") : `<span class="count">No project is moving without waiting on you.</span>`;
 
   const shown = all.filter(matches);
-  const band = shown.filter(p => p.needs_you_reason).sort(byMoved);
+  // An unreadable project cannot say what it needs, so it leads the band; the rest are newest first.
+  const band = shown.filter(p => p.needs_you_reason).sort((a, b) => Number(Boolean(b.unreadable)) - Number(Boolean(a.unreadable)) || byMoved(a, b));
   const flight = state.attnOnly ? [] : shown.filter(p => !p.needs_you_reason && !TERMINAL.has(p.status));
   const archive = state.attnOnly ? [] : shown.filter(p => !p.needs_you_reason && TERMINAL.has(p.status));
   get("band-count").textContent = needsAll.length ? String(needsAll.length) : "";
   get("band").innerHTML = bandHtml(band);
   get("flight-count").textContent = quiet.length ? String(quiet.length) : "";
   get("flight").innerHTML = flightHtml(flight);
-  const expanded = state.archiveOpen || [...state.statuses].some(s => TERMINAL.has(s)) || (state.q && archive.length > 0);
+  const expanded = Boolean(state.archiveOpen || [...state.statuses].some(s => TERMINAL.has(s)) || (state.q && archive.length > 0));
   const toggle = get("archive-toggle");
   toggle.setAttribute("aria-expanded", String(expanded));
   get("archive-label").textContent = expanded ? "Hide finished projects" : `Show finished projects (${all.filter(p => TERMINAL.has(p.status)).length})`;
@@ -529,7 +530,7 @@ function render() {
   } else {
     get("drawer").setAttribute("aria-hidden", "true");
   }
-  if (state.focusDrawer && current) { get("drawer-close").focus({ preventScroll: true }); state.focusDrawer = false; }
+  if (state.focusDrawer && current) { get("drawer-close").focus({ preventScroll: true }); state.focusDrawer = false; state.focus = null; }
   else if (state.focus) {
     const target = [...document.querySelectorAll("[data-id]")].find(r => r.dataset.id === state.focus);
     target?.querySelector(".rowbtn")?.focus({ preventScroll: true });
