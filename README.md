@@ -94,8 +94,8 @@ still read every project 0.35.0 touches. `skills/dashboard/SKILL.md` describes t
 
 - **The page.** One status bar that filters, a "Waiting on you" board grouped by reason, in-flight
   projects as cards with a labelled route line, and finished projects behind a toggle. Only the
-  sections that hold a match stay on screen. Each project has a "Resume prompt" button and a
-  click-to-copy id. A side drawer shows one project in full. Light and dark themes, and a layout
+  sections that hold a match stay on screen while a filter is on. Board rows, in-flight cards and
+  the drawer have a "Resume prompt" button, and every project id copies on click. A side drawer shows one project in full. Light and dark themes, and a layout
   for phone widths.
 - **Model keys.** `needs_you_reason` (the order the page used to hold in `cause()`), `agreement`,
   `goldfish` (`rounds`, `last_outcome`), `receipt_count` and `evidence_count`. `needs_you` stays and

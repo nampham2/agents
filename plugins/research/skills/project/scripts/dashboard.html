@@ -151,6 +151,9 @@ button.pid:hover { color: var(--ink); text-decoration-color: currentColor; }
 .bar i { display: block; width: 72px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .bar i b { display: block; height: 100%; background: var(--rc); }
 .gates { display: flex; flex-wrap: wrap; gap: 6px; }
+.cardfoot { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 2px; }
+.cardfoot .copybtn { margin-left: auto; padding: 4px 10px; font-size: 13px; }
+.dmeta { color: var(--muted); font-size: 14px; margin-top: 4px; }
 .gate { font-size: 13px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--gc, var(--line)); background: color-mix(in srgb, var(--gc, var(--line)) 10%, var(--surface)); }
 .g-good { --gc: var(--c-done); } .g-warn { --gc: var(--c-blocked); } .g-neutral { --gc: var(--c-cancelled); }
 .waitline { font-size: 14px; color: var(--c-blocked); font-weight: 700; }
@@ -332,7 +335,7 @@ function rel(iso) {
 }
 function exact(iso) { if (!iso) return ""; const d = new Date(iso); return `${d.getDate()} ${MONTHS[d.getMonth()]} ${String(d.getHours()).padStart(2,"0")}:${String(d.getMinutes()).padStart(2,"0")}`; }
 // The age every list shows follows the date the filters use, and says which date it is.
-function stamp(p) { const f = state.field === "created" ? "created" : "updated"; return `${f} ${rel(p[f] || p.updated)}`; }
+function stamp(p) { const f = state.field === "created" && p.created ? "created" : "updated"; return `${f} ${rel(p[f] || p.updated)}`; }
 function dayKey(p) { return (p[state.field] || p.updated || p.id).slice(0, 10); }
 function dayLabel(key) { const d = new Date(key + "T00:00:00"); const y = d.getFullYear() === new Date().getFullYear() ? "" : " " + d.getFullYear(); return `${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]} ${d.getDate()} ${MONTHS[d.getMonth()]}${y}`; }
 // A repository keeps one tint: the sum of its name's code points, modulo eight.
@@ -345,7 +348,8 @@ function routeHtml(p) {
   let idx = RAIL.indexOf(p.status);
   const blocked = p.status === "BLOCKED";
   if (blocked) idx = p.task_total ? 2 : 0;
-  let h = `<div class="route" role="img" aria-label="Stage: ${esc(p.status.toLowerCase())}">`;
+  const stations = RAIL.map((s, i) => `${STAGE_NAME[s]} ${i === idx ? (blocked ? "blocked here" : "current") : i < idx ? "reached" : "not reached"}`).join(", ");
+  let h = `<div class="route" role="img" aria-label="Stage ${esc(p.status.toLowerCase())}. ${stations}">`;
   RAIL.forEach((s, i) => {
     const reached = i <= idx, cur = i === idx;
     const where = cur ? (blocked ? "blocked here" : "current") : reached ? "reached" : "not reached";
@@ -402,7 +406,7 @@ function cardHtml(p) {
     <button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>
     <div class="meta">${repoHtml(p)}${progressHtml(p)}</div>
     ${wait ? `<div class="waitline">${wait}</div>` : ""}
-    ${gatesHtml(p, true) ? `<div class="gates">${gatesHtml(p, true)}</div>` : ""}</article>`;
+    <div class="cardfoot"><div class="gates">${gatesHtml(p, true)}</div>${copyBtn(p)}</div></article>`;
 }
 function pastHtml(p) {
   return `<article class="past s-${esc(p.status)}" data-id="${esc(p.id)}">
@@ -462,7 +466,7 @@ function drawerParts(p) {
       ${active.map(w => `<button class="copybtn" data-copy="${esc(w.path)}">${ic("copy")}Worktree path</button>${safeUrl(w.mr) ? `<button class="copybtn" data-copy="${esc(safeUrl(w.mr))}">${ic("copy")}Merge request link</button>` : ""}`).join("")}
     </div>
     <h3>Files</h3><div class="btnrow">${files}</div>`;
-  return { head: `<div class="idline">${pidHtml(p)} ${statusHtml(p)}</div><h2>${esc(p.title)}</h2><div class="pid">${repoHtml(p)} moved ${esc(exact(p.updated))}, created ${esc(exact(p.created))}</div>`, rc: `var(--c-${p.status.toLowerCase()})`, body };
+  return { head: `<div class="idline">${pidHtml(p)} ${statusHtml(p)}</div><h2>${esc(p.title)}</h2><div class="dmeta">${repoHtml(p)} moved ${esc(exact(p.updated))}, created ${esc(exact(p.created))}</div>`, rc: `var(--c-${p.status.toLowerCase()})`, body };
 }
 
 // Every filter except status: status is applied after it, so the status chips can show what each would add.
@@ -475,7 +479,8 @@ function matchesBase(p) {
 function isFiltered() { return Boolean(state.statuses.size || state.q || state.repo || state.from); }
 const FIELD_NAME = { updated: "last update", created: "creation" };
 function appliedFilters() {
-  const out = [...state.statuses].map(s => [`status:${s}`, `Status: ${s.toLowerCase()}`]);
+  // A chosen status is already shown pressed in the status bar, so it is not listed twice.
+  const out = [];
   if (state.repo) out.push(["repo", `Repository: ${state.repo}`]);
   if (state.from) out.push(["from", `Since ${state.from} by ${FIELD_NAME[state.field] || state.field}`]);
   if (state.q) out.push(["q", `Search: "${state.q}"`]);
@@ -502,7 +507,11 @@ function bandHtml(band) {
   shown.forEach(p => { const r = p.needs_you_reason; if (!groups.has(r)) groups.set(r, []); groups.get(r).push(p); });
   // The reason is said once per group, not once per row.
   const parts = [...groups].map(([r, rows]) => { const [label, icon] = pick(REASON, r) || ["Waiting", "hand"]; return `<div class="reason r-${esc(r)}"><div class="reason-title">${ic(icon)}${esc(label)}</div>${rows.map(holdHtml).join("")}</div>`; });
-  const more = band.length > BAND_LIMIT ? `<div class="morebar"><button class="linkbtn" data-more="1">${state.showAllNeeds ? "Show fewer" : `Show all ${band.length}`}</button></div>` : "";
+  // Rows hidden by the cap may belong to groups that are not shown at all: say so.
+  const hidden = new Map();
+  band.slice(shown.length).forEach(p => { if (!groups.has(p.needs_you_reason)) hidden.set(p.needs_you_reason, (hidden.get(p.needs_you_reason) || 0) + 1); });
+  const alsoIn = [...hidden].map(([r, n]) => `${(pick(REASON, r) || [r])[0]} ${n}`).join(", ");
+  const more = band.length > BAND_LIMIT ? `<div class="morebar"><button class="linkbtn" data-more="1">${state.showAllNeeds ? "Show fewer" : `Show all ${band.length}${alsoIn ? ` (also: ${alsoIn})` : ""}`}</button></div>` : "";
   return `<div class="board">${parts.join("")}${more}</div>`;
 }
 function flightHtml(flight) {
@@ -518,7 +527,7 @@ function archiveHtml(archive) {
   return [...groups.keys()].sort().reverse().map(k => `<div class="day"><h3>${esc(dayLabel(k))}</h3>${groups.get(k).sort(byMoved).map(pastHtml).join("")}</div>`).join("");
 }
 
-const FOCUS_REGIONS = ["band", "flight", "archive", "status-chips", "applied", "drawer-body"];
+const FOCUS_REGIONS = ["band", "flight", "archive", "empty", "status-chips", "applied", "drawer-body"];
 const CONTROLS = "button, a, input, select";
 // Writing identical markup would drop focus and any text selection, so an unchanged region is left alone.
 // Only setHtml writes these regions: a direct write would leave the cache stale and a later identical write would be skipped.
@@ -533,7 +542,8 @@ function rememberFocus() {
 }
 function restoreFocus(kept) {
   if (!kept || kept.index < 0 || document.contains(document.activeElement) && document.activeElement !== document.body) return;
-  document.getElementById(kept.id)?.querySelectorAll(CONTROLS)[kept.index]?.focus({ preventScroll: true });
+  // The control may be gone (the last filter was removed, the empty message cleared): fall back to the search box.
+  (document.getElementById(kept.id)?.querySelectorAll(CONTROLS)[kept.index] || document.getElementById("q")).focus({ preventScroll: true });
 }
 
 function render() {
@@ -546,8 +556,14 @@ function render() {
     get("tally").textContent = "";
     for (const id of ["band-count", "flight-count", "archive-count"]) get(id).textContent = "";
     setHtml(get("applied"), "");
+    setHtml(get("status-chips"), "");
+    setHtml(get("empty"), "");
     get("empty").hidden = true;
-    for (const id of ["band-section", "flight-section", "archive-section"]) get(id).hidden = false;
+    state.statuses.clear();
+    // Nothing to filter or list: only the root's message stays.
+    get("band-section").hidden = false;
+    for (const id of ["flight-section", "archive-section"]) get(id).hidden = true;
+    get("archive-toggle").hidden = true;
     for (const id of ["band", "flight", "archive"]) setHtml(get(id), id === "band" ? `<div class="none">No projects under ${esc(DATA.root)}.</div>` : "");
     // With nothing to show there is no drawer: close it and give the page back.
     state.open.clear(); state.last = null; state.focus = null; state.focusDrawer = false;
@@ -571,7 +587,7 @@ function render() {
   const archive = shown.filter(p => !p.needs_you_reason && TERMINAL.has(p.status));
   const nothing = filtered && !shown.length;
   get("empty").hidden = !nothing;
-  if (nothing) get("empty").innerHTML = `No project matches these filters. Remove one with the buttons under the filters, or <button class="linkbtn" data-clearall="1">clear them all</button>.`;
+  setHtml(get("empty"), nothing ? `No project matches these filters. Remove one with the buttons under the filters, or <button class="linkbtn" data-clearall="1">clear them all</button>.` : "");
   get("band-section").hidden = filtered && !band.length;
   get("flight-section").hidden = filtered && !flight.length;
   get("archive-section").hidden = filtered && !archive.length;
@@ -592,7 +608,7 @@ function render() {
 
   // What is on, and how much it leaves.
   const applied = appliedFilters();
-  setHtml(get("applied"), applied.length ? `<span class="results">Showing <b>${shown.length}</b> of ${all.length} projects</span>` + applied.map(([key, label]) => `<button class="applied" data-remove="${esc(key)}" aria-label="Remove filter: ${esc(label)}">${esc(label)}${ic("x")}</button>`).join("") : "");
+  setHtml(get("applied"), filtered ? `<span class="results">Showing <b>${shown.length}</b> of ${all.length} projects</span>` + applied.map(([key, label]) => `<button class="applied" data-remove="${esc(key)}" aria-label="Remove filter: ${esc(label)}">${esc(label)}${ic("x")}</button>`).join("") : "");
 
   // Status chips count what each status would show under the other filters.
   const byStatus = {}; all.forEach(p => byStatus[p.status] = (byStatus[p.status] || 0) + 1);
@@ -608,7 +624,7 @@ function render() {
   }
   get("filters").classList.toggle("open", state.filtersOpen);
   get("filters-toggle").setAttribute("aria-expanded", String(state.filtersOpen));
-  const active = state.statuses.size + (state.repo ? 1 : 0) + (state.from ? 1 : 0);
+  const active = (state.repo ? 1 : 0) + (state.from ? 1 : 0);
   get("filters-toggle").textContent = active ? `More filters (${active})` : "More filters";
 
   const current = state.last && state.open.has(state.last) ? all.find(p => p.id === state.last) : null;

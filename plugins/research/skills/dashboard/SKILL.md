@@ -34,8 +34,9 @@ By hand the launcher listens on port 8765 and opens the browser: `research-dashb
 ## What the page offers
 
 - A status bar under the title: one chip per status with its count. A chip filters the page, and
-  its count follows the other filters. Only the sections that hold a match stay on screen, so
-  Done shows Finished alone and Blocked shows the board alone.
+  its count follows the other filters. While a filter is on, only the sections that hold a match
+  stay on screen, so Done shows Finished and Blocked shows the board; a finished project that
+  still waits on you stays on the board.
 - A "Waiting on you" board first: every project that needs you, grouped by reason (blocked, needs
   your approval, review is waiting, waiting for your reply, or a `project.json` that cannot be
   read or has no status), five rows at first and "Show all" for the rest.
@@ -46,9 +47,9 @@ By hand the launcher listens on port 8765 and opens the browser: `research-dashb
 - Filters: search, repository, a date since (by last update or by creation) and the status chips.
   A line under them says how many projects remain and offers a button per filter to remove it. A
   combination with no match says so and offers to clear it.
-- Every project has a "Resume prompt" button that copies `Use the project skill to resume <path>.`
-  Click a project id to copy it. A session adds a "Resume command" button in the drawer, which
-  copies `cd <directory> && claude --resume <id>`.
+- Board rows, in-flight cards and the drawer have a "Resume prompt" button that copies
+  `Use the project skill to resume <path>.` Click a project id anywhere to copy it. A session adds
+  a "Resume command" button in the drawer, which copies `cd <directory> && claude --resume <id>`.
 - A drawer per project: phase and gates, next step, open questions, blockers and waits, tasks with
   evidence and receipts, counts, decisions, worktrees and merge request, and the sessions.
 - Light and dark themes, a theme button, and keyboard use: Enter opens a project, Escape closes it.
