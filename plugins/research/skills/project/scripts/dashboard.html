@@ -8,7 +8,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700&display=swap">
 <style>
 :root {
-  --bg: #ECEFF9; --surface: #FFFFFF; --sunken: #F4F6FD; --ink: #141838; --muted: #555B7F; --line: #D3D9EE; --focus: #2D56D6;
+  --bg: #ECEFF9; --surface: #FFFFFF; --sunken: #F4F6FD; --ink: #141838; --muted: #555B7F; --line: #D3D9EE; --edge: #7A82A8; --focus: #2D56D6;
   --c-executing: #007A6B; --c-planning: #2D56D6; --c-aligning: #7B3FE4; --c-review: #BE1F6E;
   --c-blocked: #BF3F0A; --c-done: #2B7A2F; --c-cancelled: #5E6578; --c-unreadable: #B3261E;
   --t0: #0B6E99; --t1: #8A4FD6; --t2: #B5541A; --t3: #2F7D4F; --t4: #B0306A; --t5: #5A6BD1; --t6: #8C6A00; --t7: #00796B;
@@ -18,7 +18,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #0C0F22; --surface: #161A36; --sunken: #1D2242; --ink: #EEF0FD; --muted: #A5ABD0; --line: #2C3260; --focus: #8FB0FF;
+    --bg: #0C0F22; --surface: #161A36; --sunken: #1D2242; --ink: #EEF0FD; --muted: #A5ABD0; --line: #2C3260; --edge: #7F87B8; --focus: #8FB0FF;
     --c-executing: #3FE0C0; --c-planning: #85A8FF; --c-aligning: #BA9BFF; --c-review: #FF86BE;
     --c-blocked: #FF9D5C; --c-done: #72DC7E; --c-cancelled: #9CA3B5; --c-unreadable: #FF7F76;
     --t0: #5CC8F2; --t1: #C39BFF; --t2: #FFA561; --t3: #74D99A; --t4: #FF8DB6; --t5: #93A2FF; --t6: #E4C14D; --t7: #4FD3C4;
@@ -26,7 +26,7 @@
   }
 }
 :root[data-theme="dark"] {
-  --bg: #0C0F22; --surface: #161A36; --sunken: #1D2242; --ink: #EEF0FD; --muted: #A5ABD0; --line: #2C3260; --focus: #8FB0FF;
+  --bg: #0C0F22; --surface: #161A36; --sunken: #1D2242; --ink: #EEF0FD; --muted: #A5ABD0; --line: #2C3260; --edge: #7F87B8; --focus: #8FB0FF;
   --c-executing: #3FE0C0; --c-planning: #85A8FF; --c-aligning: #BA9BFF; --c-review: #FF86BE;
   --c-blocked: #FF9D5C; --c-done: #72DC7E; --c-cancelled: #9CA3B5; --c-unreadable: #FF7F76;
   --t0: #5CC8F2; --t1: #C39BFF; --t2: #FFA561; --t3: #74D99A; --t4: #FF8DB6; --t5: #93A2FF; --t6: #E4C14D; --t7: #4FD3C4;
@@ -72,7 +72,7 @@ h1 { font-family: var(--display); font-weight: 700; font-size: 28px; letter-spac
 .filters { margin-top: 14px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 8px 10px; display: grid; gap: 8px; }
 .filters-main { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .filters input[type="search"], .filters input[type="date"], .filters select {
-  border: 1px solid var(--line); border-radius: 10px; background: var(--sunken); padding: 8px 10px; min-width: 0;
+  border: 1px solid var(--edge); border-radius: 10px; background: var(--sunken); padding: 8px 10px; min-width: 0;
 }
 .filters input[type="search"] { flex: 1 1 220px; }
 .filters-more { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
@@ -119,13 +119,14 @@ h2 { font-family: var(--display); font-weight: 700; font-size: 21px; letter-spac
 .card { background: linear-gradient(180deg, color-mix(in srgb, var(--rc) 9%, var(--surface)), var(--surface) 70px); border: 1px solid var(--line); border-radius: 18px; padding: 16px 18px 14px; cursor: pointer; display: flex; flex-direction: column; gap: 8px; min-width: 0; box-shadow: var(--shadow); }
 .card:hover { border-color: var(--rc); }
 .route { display: flex; align-items: center; height: 22px; }
-.route i { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--line); flex: none; }
+.route i { display: block; width: 12px; height: 12px; border-radius: 50%; background: var(--edge); flex: none; }
 .route s { display: block; height: 4px; background: var(--line); flex: 1; border-radius: 2px; text-decoration: none; }
 .route i.on { background: var(--rc); }
 .route s.on { background: var(--rc); }
 .route i.cur { width: 18px; height: 18px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--rc) 24%, transparent); }
 .route i.hollow { background: var(--surface); border: 3px solid var(--rc); }
-.route.cancelled i, .route.cancelled s { background: var(--line); }
+.route.cancelled i { background: var(--edge); }
+.route.cancelled s { background: var(--line); }
 .s-EXECUTING .route i.cur { animation: pulse 2.4s ease-in-out infinite; }
 @keyframes pulse { 50% { box-shadow: 0 0 0 8px color-mix(in srgb, var(--rc) 6%, transparent); } }
 .card .top-line { display: flex; justify-content: space-between; gap: 10px; font-size: 14px; color: var(--muted); }
