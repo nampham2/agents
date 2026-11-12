@@ -262,7 +262,7 @@ def test_a_new_wait_shows_on_the_next_payload(blocked: Path) -> None:
     assert rows["T01"]["wait"] == {"on": "user reply", "until": FUTURE, "due": False}
 
 
-def test_the_page_renders_the_wait_in_the_status_cell() -> None:
+def test_the_page_renders_the_wait() -> None:
     page = PAGE.read_text(encoding="utf-8")
     assert "waits on" in page and "waitText(t.wait)" in page and "(due)" in page
 

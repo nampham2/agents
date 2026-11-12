@@ -86,6 +86,24 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.35.0 dashboard redesign
+
+The local dashboard (`research-dashboard`) puts what needs you first. It stays read-only, with the
+same two routes and one HTML file, and adds five keys to each project row (and a `receipts` count
+to each task row), so 0.34.0 launchers still read every project 0.35.0 touches.
+`skills/dashboard/SKILL.md` describes the page.
+
+- **The page.** One status bar that filters, a "Waiting on you" board grouped by reason, in-flight
+  projects as cards with a labelled route line, and finished projects behind a toggle. Only the
+  sections that hold a match stay on screen while a filter is on. Board rows, in-flight cards and
+  the drawer have a "Resume prompt" button, and project ids copy on click. A side drawer shows one
+  project in full. Light and dark themes, and a layout for phone widths.
+- **Model keys.** `needs_you_reason` (the order the page used to hold in `cause()`), `agreement`,
+  `goldfish` (`rounds`, `last_outcome`), `receipt_count` and `evidence_count`. `needs_you` stays and
+  now covers a project whose `project.json` cannot be read. The change fingerprint also watches the
+  planning file and the Goldfish rounds. `workspace_goldfish.round_numbers` is the public form of
+  the round listing.
+
 ### 0.34.0 effect intents, crash-loop stop, lock liveness, waits
 
 The `project` skill adopts the improvement points from the durable agents study (projects

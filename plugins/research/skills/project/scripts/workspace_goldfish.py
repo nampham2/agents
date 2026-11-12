@@ -136,6 +136,11 @@ def _round_numbers(project: Path) -> "list[int]":
     return sorted(int(match.group(1)) for match in found if match is not None)
 
 
+def round_numbers(project: Path) -> "list[int]":
+    """The numbers of the project's round files, ascending; the public form of `_round_numbers`."""
+    return _round_numbers(project)
+
+
 def round_documents(project: Path) -> "list[Round]":
     """Every well-formed round, oldest first. A file whose marker does not parse is not a round."""
     rounds = []

@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 
 from workspace_context import checkpoint_data
 from workspace_durability import active_wait, invocation_lines, utcnow
+from workspace_goldfish import parse_round, round_name, round_numbers
 from workspace_lib import (
     WorkspaceError,
     find_workspace_roots,
@@ -32,6 +33,7 @@ from workspace_lib import (
     needs_merge,
     now_iso,
     planning_path,
+    planning_status,
     read_text,
     resolve_workspace_root,
 )
@@ -110,6 +112,7 @@ def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
             continue
         effect = task.get("effect")
         evidence = task.get("evidence")
+        receipts = task.get("receipts")
         rows.append(
             {
                 "id": _text(task.get("id")),
@@ -117,6 +120,7 @@ def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
                 "status": _text(task.get("status")),
                 "effect": _text(effect.get("kind")) if isinstance(effect, dict) else "",
                 "evidence": len(evidence) if isinstance(evidence, list) else 0,
+                "receipts": len(receipts) if isinstance(receipts, list) else 0,
                 "block_reason": _text(task.get("block_reason")),
                 "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
             }
@@ -166,6 +170,70 @@ def _handoff(project_dir: Path) -> dict[str, Any]:
     }
 
 
+def _defaults() -> dict[str, Any]:
+    """The keys the page reads beyond the project's own fields, as an unreadable project has them."""
+    return {
+        "needs_you_reason": "",
+        "agreement": "none",
+        "goldfish": {"rounds": 0, "last_outcome": ""},
+        "receipt_count": 0,
+        "evidence_count": 0,
+    }
+
+
+def _needs_you_reason(status: str, pending_authorization: bool, review_status: str, session: str) -> str:
+    """Why a project waits on the user, or an empty string. The first branch that holds wins.
+
+    A finished project waits on nobody. An unreadable project never reaches this function.
+    """
+    if status in TERMINAL:
+        return ""
+    if status == "BLOCKED":
+        return "blocked"
+    if pending_authorization:
+        return "authorization"
+    if review_status == "pending":
+        return "review"
+    if session == "waiting":
+        return "waiting"
+    if session == "blocked":
+        return "blocked"
+    return ""
+
+
+def _agreement(project_dir: Path) -> str:
+    """`agreed`, `draft` or `none`, from the planning file or the legacy root `architecture.md`."""
+    return planning_status(_read_optional(planning_path(project_dir))) or "none"
+
+
+def _round_files(project_dir: Path) -> list[tuple[int, Path]]:
+    """The Goldfish round files, oldest first, ordered by number: round 99 comes before round 100.
+
+    Files are counted, not well-formed rounds: a file whose marker does not parse is still a round the user
+    sees in `reviews/`, and its outcome shows as empty. A directory that cannot be listed has no rounds.
+    The guard lives here and not in `round_numbers`, because `iterdir()` raises there.
+    """
+    try:
+        numbers = round_numbers(project_dir)
+    except OSError:
+        return []
+    # The file name comes from `round_name`, which owns the format `ROUND_FILE` matches.
+    return [(number, project_dir / f"{round_name(number)}.md") for number in numbers]
+
+
+def _goldfish_summary(project_dir: Path) -> dict[str, Any]:
+    """How many rounds the project has had, and the outcome of the newest one.
+
+    A newest round that is a directory, cannot be read or does not parse gives an empty outcome.
+    """
+    files = _round_files(project_dir)
+    if not files:
+        return {"rounds": 0, "last_outcome": ""}
+    number, path = files[-1]
+    parsed = parse_round(number, _read_optional(path))
+    return {"rounds": len(files), "last_outcome": parsed.outcome if parsed else ""}
+
+
 def build_project(project_dir: Path) -> dict[str, Any]:
     """Describe one project directory. A project that cannot be read is a row, not an error."""
     row: dict[str, Any] = {"id": project_dir.name, "path": str(project_dir), "unreadable": False}
@@ -175,7 +243,15 @@ def build_project(project_dir: Path) -> dict[str, Any]:
         state = {}
     status = state.get("status")
     if not isinstance(status, str) or not status:
-        row.update(unreadable=True, title=project_dir.name, status="UNREADABLE", needs_you=False, sessions=[])
+        row.update(_defaults())
+        row.update(
+            unreadable=True,
+            title=project_dir.name,
+            status="UNREADABLE",
+            needs_you=True,
+            needs_you_reason="unreadable",
+            sessions=[],
+        )
         return row
     tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [])
     counts: dict[str, int] = {}
@@ -193,12 +269,7 @@ def build_project(project_dir: Path) -> dict[str, Any]:
     handoff = _handoff(project_dir)
     spec = _read_optional(project_dir / "spec.md")
     working_directory = _text(state.get("working_directory"))
-    waiting = (
-        status == "BLOCKED"
-        or pending_authorization
-        or handoff["session"] in {"waiting", "blocked"}
-        or review.get("status") == "pending"
-    )
+    reason = _needs_you_reason(status, pending_authorization, _text(review.get("status")), handoff["session"])
     row.update(
         {
             "title": _text(state.get("title")) or project_dir.name,
@@ -229,7 +300,13 @@ def build_project(project_dir: Path) -> dict[str, Any]:
             "cancellation_reason": _text(state.get("cancellation_reason")),
             "block_reasons": [task["block_reason"] for task in tasks if task["block_reason"]],
             "pending_authorization": pending_authorization,
-            "needs_you": status not in TERMINAL and waiting,
+            # These five keys repeat `_defaults()`: keep the two lists in step.
+            "needs_you": reason != "",
+            "needs_you_reason": reason,
+            "agreement": _agreement(project_dir),
+            "goldfish": _goldfish_summary(project_dir),
+            "receipt_count": sum(task["receipts"] for task in tasks),
+            "evidence_count": sum(task["evidence"] for task in tasks),
             "sessions": [],
         }
     )
@@ -263,7 +340,34 @@ def fingerprint(root: Path) -> str:
             except OSError:
                 continue
             digest.update(f"{directory.name}/{name}\0{info.st_mtime_ns}\0{info.st_size}\n".encode())
+        digest.update(_goldfish_and_planning_marks(directory).encode())
     return digest.hexdigest()
+
+
+def _goldfish_and_planning_marks(directory: Path) -> str:
+    """What else the page reads from a project: the planning file, every round name, the newest round.
+
+    The round names move the fingerprint when any round appears, disappears or is renamed; the newest
+    round's stat moves it when that file is edited in place, which changes the outcome shown. The
+    planning resolution and each stat can fail on a directory the user cannot read, so they sit in
+    their own guards, and `_round_files` guards its listing; no failure may fail the poll.
+    """
+    marks = []
+    try:
+        planning = planning_path(directory)
+        info = planning.stat()
+        marks.append(f"{directory.name}/{planning.name}\0{info.st_mtime_ns}\0{info.st_size}\n")
+    except OSError:
+        pass
+    files = _round_files(directory)
+    if files:
+        marks.append(f"{directory.name}/rounds\0{','.join(str(number) for number, _ in files)}\n")
+        try:
+            info = files[-1][1].stat()
+            marks.append(f"{directory.name}/newest\0{info.st_mtime_ns}\0{info.st_size}\n")
+        except OSError:
+            pass
+    return "".join(marks)
 
 
 def build_model(root: Path) -> dict[str, Any]:
