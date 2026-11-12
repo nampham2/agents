@@ -210,8 +210,8 @@ def _round_files(project_dir: Path) -> list[tuple[int, Path]]:
     """The Goldfish round files, oldest first, ordered by number: round 99 comes before round 100.
 
     Files are counted, not well-formed rounds: a file whose marker does not parse is still a round the user
-    sees in `reviews/`, and its outcome shows as empty. A directory that cannot be listed has no rounds. The guard lives here and not in `round_numbers`,
-    because `iterdir()` raises there.
+    sees in `reviews/`, and its outcome shows as empty. A directory that cannot be listed has no rounds.
+    The guard lives here and not in `round_numbers`, because `iterdir()` raises there.
     """
     try:
         numbers = round_numbers(project_dir)
