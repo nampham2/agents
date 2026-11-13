@@ -12,6 +12,7 @@ from typing import Any
 
 from memory_search import creation_gate, rank_topics, search_postmortems
 from workspace_context import compact_context, start_project
+from workspace_doctor import run_doctor
 from workspace_documents import (
     FRICTION_KINDS,
     WHOLE_DOCUMENTS,
@@ -339,6 +340,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     graph.add_argument("project_directory", type=Path)
+
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Read-only check of the workspace records layout (size, LFS, ignore rules)",
+        epilog="Exits 0 without errors, 1 with any error finding, 2 when git or the directory is unreadable.",
+    )
+    doctor.add_argument("workspace_root", nargs="?", type=Path, default=None)
 
     roots = subparsers.add_parser(
         "find-roots",
@@ -895,6 +903,16 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
     if args.command == "show-graph":
         print(render_task_graph(project_task_graph(args.project_directory)))
         return 0
+
+    if args.command == "doctor":
+        try:
+            findings = run_doctor(resolve_workspace_root(args.workspace_root))
+        except WorkspaceError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 2
+        for finding in findings:
+            print(finding.line())
+        return 1 if any(finding.severity == "error" for finding in findings) else 0
 
     if args.command == "find-roots":
         found = find_workspace_roots(args.search_paths or None, max_depth=args.max_depth)

@@ -7,7 +7,7 @@ stdin.
 
 `context <project-dir>` returns revision, roots and the guarded-write `tokens` map. `--validate`
 adds active summaries, ready IDs, review/executor status, findings. `--compact` returns the project
-summary in one object; no other projection flag. `--task T01 --task-only` returns task/dependencies;
+summary in one object; no other projection. `--task T01 --task-only` returns task/dependencies;
 `--worker` sets the role, no authority.
 
 `read <project-dir> spec --section "<exact heading>"` selects a heading; `--outline` returns
@@ -92,7 +92,8 @@ earlier work. `read <project-dir> evidence --entries --task T01` lists checks; `
 returns one.
 
 A failed `close` reports what was saved; keep drafts, reload, use the reported recovery
-(`rebuild-index` after an index failure); never repeat the update or close.
+(`rebuild-index` after an index failure); never repeat it. Layout, `doctor`:
+[records-layout](records-layout.md).
 
 External effects: `workflow authorize` (`status: explicit`, actual `scope`, user `source`, real
 `authorized_at`; an effect change does not update it), `task start`, the effect through
