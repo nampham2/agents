@@ -86,6 +86,24 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.36.0 committable workspace records
+
+`INDEX.md`, `MEMORY.md`, `POSTMORTEMS.md` and `RETRO.md` are now derived views that a workspace can
+leave untracked, so a project commit no longer rewrites a shared file. The plugin adds a read-only
+`research-project doctor`, a `migrate --layout` flag and `references/records-layout.md`.
+
+- **Views.** `context` and `workflow resume` rebuild a missing or stale view, and `rebuild-index`
+  also writes `RETRO.md`. A workspace root is a directory with a project directory plus either
+  `INDEX.md` or the new `.workspace-root` marker, so a fresh clone of an untracked layout works.
+- **Doctor.** Six rules: a new non-LFS file over 4 MiB (error), a new file of 1-4 MiB outside
+  `artifacts/large` (warning), Git LFS not configured (error), leftover `.*.tmp` files (warning), an
+  incomplete layout (error), and an ignored file over 1 MiB missing from `artifacts/MANIFEST.json`
+  (warning). Exit status is 0, 1 or 2. The pre-commit snippet in the reference runs it as a hook.
+- **Migration.** `research-project migrate --layout WORKSPACE_DIR` previews and `--apply` writes the
+  marker, the anchored ignore lines, one `.gitattributes` line that sends `artifacts/large/` to LFS,
+  and stages `git rm --cached` of the four views. It never commits. Without `--layout`, `migrate`
+  behaves as before.
+
 ### 0.35.0 dashboard redesign
 
 The local dashboard (`research-dashboard`) puts what needs you first. It stays read-only, with the
