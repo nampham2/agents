@@ -25,6 +25,7 @@ from workspace_durability import context_view
 from workspace_evidence import evidence_entries
 from workspace_invocations import Invocation, note
 from workspace_journal import OperationError
+from workspace_layout import migrate_layout
 from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
@@ -542,7 +543,14 @@ def _build_parser() -> argparse.ArgumentParser:
     unlock.add_argument("--workspace-root", type=Path, help=f"defaults to ${WORKSPACE_ROOT_ENV_VAR}")
 
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
-    migrate.add_argument("project_directory", type=Path)
+    migrate.add_argument(
+        "project_directory", type=Path, help="project directory; with --layout, the workspace directory"
+    )
+    migrate.add_argument(
+        "--layout",
+        action="store_true",
+        help="migrate a workspace directory to the records layout (marker, ignore rules, LFS) instead",
+    )
     migrate.add_argument("--apply", action="store_true", help="Apply the migration; default is a read-only preview")
     migrate.add_argument("--lock-timeout", type=float, default=5.0)
 
@@ -1073,6 +1081,13 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         return code
 
     if args.command == "migrate":
+        if args.layout:
+            lines, findings = migrate_layout(args.project_directory, apply=args.apply)
+            for line in lines:
+                print(line)
+            for finding in findings:
+                print(finding.line())
+            return 1 if any(finding.severity == "error" for finding in findings) else 0
         if args.apply:
             print(apply_migration(args.project_directory, lock_timeout=args.lock_timeout))
             return 0

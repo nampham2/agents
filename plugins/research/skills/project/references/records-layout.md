@@ -70,3 +70,23 @@ Git-ignored views and LFS config do not travel with a clone. After cloning, run
 `git lfs install --local`, then `research-project rebuild-index <workspace-root>`. A plugin older
 than this layout finds a root only through `INDEX.md`; update the plugin, or run `rebuild-index`
 once, before relying on a fresh clone.
+
+## `research-project migrate --layout <workspace-dir> [--apply]`
+
+With `--layout` the positional is the workspace directory; without it `migrate` still takes a
+project directory and its schema migration is unchanged. The default is a dry run that lists the
+steps. `--apply` performs them, checking real state first and skipping a step already done, so an
+interrupted run resumes and a second run changes nothing. It never commits; review `git status`,
+then commit the staged files yourself.
+
+1. S1 `git lfs install --local`.
+2. S2 write `.workspace-root` containing `{"layout":1}`.
+3. S3 append the anchored lines to the git root's `.gitignore`: `/<prefix>/INDEX.md`, `MEMORY.md`,
+   `POSTMORTEMS.md`, `RETRO.md`, `/<prefix>/.*.tmp` and `/<prefix>/*/.*.tmp`. Existing lines stay.
+4. S4 append the `.gitattributes` LFS line for `artifacts/large/`.
+5. S5 `git rm --cached` of the views that are tracked; the files stay on disk.
+6. S6 `git add` the marker, `.gitignore` and `.gitattributes`.
+7. S7 run doctor and print its findings; the exit code is 1 when an error remains.
+
+`<prefix>` is the workspace path relative to the git root. Layout state is re-derived on every run;
+there is no journal.
