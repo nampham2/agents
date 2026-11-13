@@ -5560,6 +5560,16 @@ def ensure_views(workspace_root: Path, *, lock_timeout: float = 5.0) -> EnsureRe
     return EnsureResult(written, ok)
 
 
+def ensure_project_views(project_dir: Path) -> EnsureResult | None:
+    """Repair the views of the workspace holding `project_dir`, when that is a workspace root.
+
+    Used by the read paths (`context`, `workflow resume`); a project outside any root is left alone
+    and a failed repair is not an error there, because the views are derived.
+    """
+    root = project_dir.resolve().parent
+    return ensure_views(root) if _is_workspace_root(root) else None
+
+
 def _task_index(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Index a state's tasks by id, skipping anything that is not a task with a usable id.
 

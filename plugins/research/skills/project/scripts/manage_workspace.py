@@ -37,6 +37,7 @@ from workspace_lib import (
     check_candidate,
     commit_candidate,
     compact_memory_topic,
+    ensure_project_views,
     find_workspace_roots,
     index_headroom,
     launcher_version_warning,
@@ -606,11 +607,14 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
             return 0
         if args.input_json is None:
             raise WorkspaceError("workflow needs an input file, or '-' for stdin; or --schema to print its keys")
+        if args.action == "resume":
+            ensure_project_views(args.project_directory)
         result = workflow(args.project_directory, args.action, _read_json_object(args.input_json))
         print(json.dumps(result, indent=2))
         return 1 if result.get("valid") is False or result.get("passed") is False else 0
 
     if args.command == "context":
+        ensure_project_views(args.project_directory)
         limit = 5 if args.limit is None else args.limit
         if args.compact:
             if args.validate or args.task is not None or args.worker or args.task_only or args.limit is not None:

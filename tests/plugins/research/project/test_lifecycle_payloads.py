@@ -199,6 +199,7 @@ CONDITIONAL = {
     "maintenance": "only when reopening a closed project",
     "planning-review": "only when a change reopens alignment",
     "memory-architecture": "only for memory format, migration or validation repairs",
+    "records-layout": "only for the workspace records layout, doctor and migrate --layout",
     "memory-promotion": "only when closing with a promotion, compaction or retirement",
     "pull-requests": "only before a review ask or test deploy in a repository, and at repository closure",
     "report-design": "only when a report is requested",

@@ -119,7 +119,10 @@ the one running.
 
 Four commands are rarely needed. `commit` applies a full candidate state through the guards, and
 `commit --dry-run` reports every problem it would hit. `migrate` previews a schema migration unless
-told to apply it. `rebuild-index` regenerates `INDEX.md` after a reported index failure.
+told to apply it. `rebuild-index` regenerates the derived views (`INDEX.md`, `MEMORY.md`,
+`POSTMORTEMS.md`, `RETRO.md`) after a reported index failure or a fresh clone; `context` and
+`workflow resume` repair them on their own. `doctor` checks the records layout
+(`references/records-layout.md`).
 `show-graph` prints a project's task graph.
 
 Resume context bounds active tasks and specification text. Task-only and worker views preserve the
