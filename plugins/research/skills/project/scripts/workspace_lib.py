@@ -182,14 +182,18 @@ ROOT_SEARCH_PRUNED_NAMES = frozenset(
 )
 
 
+WORKSPACE_MARKER = ".workspace-root"
+
+
 def _is_workspace_root(candidate: Path) -> bool:
-    """A root holds INDEX.md and at least one canonically named project directory.
+    """A root holds the marker or INDEX.md and at least one canonically named project directory.
 
     Both conditions matter. `INDEX.md` alone matches any documentation directory, and a
-    date-named directory alone matches dated notes that were never a workspace.
+    date-named directory alone matches dated notes that were never a workspace. The marker
+    `.workspace-root` is the committed alternative to the untracked `INDEX.md`; only its existence counts.
     """
     try:
-        if not (candidate / "INDEX.md").is_file():
+        if not ((candidate / WORKSPACE_MARKER).is_file() or (candidate / "INDEX.md").is_file()):
             return False
         return any(child.is_dir() and is_canonical_project_id(child.name) for child in candidate.iterdir())
     except OSError:
@@ -4015,7 +4019,8 @@ def memory_findings(workspace_root: Path, *, check_index: bool = False) -> Valid
                     actual = read_text(path)
                 except WorkspaceError:
                     actual = ""
-            if actual != expected:
+            if actual != expected and not (workspace_root / WORKSPACE_MARKER).is_file():
+                # With the marker the views are untracked and self-repair through `ensure_views`.
                 report.errors.append(f"derived cross-project memory index is stale: {path}")
     return report
 
@@ -4081,7 +4086,7 @@ def validate_project(
         except WorkspaceError as error:
             report.errors.append(f"derived index is unreadable: {error}")
         else:
-            if actual != expected:
+            if actual != expected and not (project_dir.parent / WORKSPACE_MARKER).is_file():
                 report.errors.append(f"derived index is stale: {index_path}")
     return report
 
@@ -5467,6 +5472,11 @@ def rebuild_index(workspace_root: Path, *, lock_timeout: float = 5.0) -> Path:
             # directory scan, and because a commit already ends by rebuilding, so memory stays
             # current for free.
             atomic_write_text(index_path, render_index(workspace_root))
+            if (workspace_root / "retro").is_dir():
+                # Function-local: workspace_retro imports this module at top level.
+                from workspace_retro import RETRO_INDEX_FILENAME, render_retro_index
+
+                atomic_write_text(workspace_root / RETRO_INDEX_FILENAME, render_retro_index(workspace_root))
             if (workspace_root / MEMORY_DIRECTORY).is_dir() or memory_index_path(workspace_root).is_file():
                 atomic_write_text(memory_index_path(workspace_root), render_memory_index(workspace_root))
                 # Written whenever `MEMORY.md` is, so the pointer in it never names a missing file.
@@ -5478,6 +5488,86 @@ def rebuild_index(workspace_root: Path, *, lock_timeout: float = 5.0) -> Path:
         return index_path
     except OSError as error:
         raise WorkspaceError(f"cannot rebuild {workspace_root / 'INDEX.md'}: {error}") from error
+
+
+def render_views(workspace_root: Path) -> dict[str, str]:
+    """The derived views as text, keyed by file name. Reads only; deterministic, no clock."""
+    from workspace_retro import RETRO_DIRECTORY, RETRO_INDEX_FILENAME, render_retro_index
+
+    workspace_root = workspace_root.resolve()
+    views = {"INDEX.md": render_index(workspace_root)}
+    if (workspace_root / MEMORY_DIRECTORY).is_dir() or memory_index_path(workspace_root).is_file():
+        views[memory_index_path(workspace_root).name] = render_memory_index(workspace_root)
+        views[postmortem_index_path(workspace_root).name] = render_postmortem_index(workspace_root)
+    if (workspace_root / RETRO_DIRECTORY).is_dir():
+        views[RETRO_INDEX_FILENAME] = render_retro_index(workspace_root)
+    return views
+
+
+@dataclass(frozen=True)
+class EnsureResult:
+    written: tuple[Path, ...]
+    ok: bool
+
+
+STALE_TEMP_SECONDS = 600
+
+
+def _sweep_stale_temporaries(workspace_root: Path, names: "Sequence[str]") -> None:
+    cutoff = time.time() - STALE_TEMP_SECONDS
+    try:
+        for name in names:
+            for stale in workspace_root.glob(f".{name}.*.tmp"):
+                try:
+                    if stale.is_file() and stale.stat().st_mtime < cutoff:
+                        stale.unlink()
+                except OSError:
+                    continue
+    except OSError:
+        return
+
+
+def _read_bytes_or_none(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def ensure_views(workspace_root: Path, *, lock_timeout: float = 5.0) -> EnsureResult:
+    """Repair missing or stale views under the index lock; never raise for a filesystem failure."""
+    workspace_root = workspace_root.resolve()
+    try:
+        views = render_views(workspace_root)
+    except WorkspaceError:
+        return EnsureResult((), False)
+    paths = {name: workspace_root / name for name in views}
+    before = {name: _read_bytes_or_none(path) for name, path in paths.items()}
+    expected = {name: text.encode("utf-8") for name, text in views.items()}
+    names = tuple(views)
+    if before == expected:
+        _sweep_stale_temporaries(workspace_root, names)
+        return EnsureResult((), True)
+    ok = True
+    try:
+        rebuild_index(workspace_root, lock_timeout=lock_timeout)
+    except WorkspaceError:
+        ok = False
+    written = tuple(
+        path for name, path in paths.items() if _read_bytes_or_none(path) != before[name]
+    )
+    _sweep_stale_temporaries(workspace_root, names)
+    return EnsureResult(written, ok)
+
+
+def ensure_project_views(project_dir: Path) -> EnsureResult | None:
+    """Repair the views of the workspace holding `project_dir`, when that is a workspace root.
+
+    Used by the read paths (`context`, `workflow resume`); a project outside any root is left alone
+    and a failed repair is not an error there, because the views are derived.
+    """
+    root = project_dir.resolve().parent
+    return ensure_views(root) if _is_workspace_root(root) else None
 
 
 def _task_index(state: dict[str, Any]) -> dict[str, dict[str, Any]]:

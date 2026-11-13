@@ -46,7 +46,10 @@ every one of these files stays valid, and so do its projects.
 ### Layer 1 — `MEMORY.md`, generated, consulted on demand
 
 `<workspace-root>/MEMORY.md` is a generated index of pointers. It is read in full at discovery,
-when relevant to the work, and it is the only memory file with a hard size budget:
+when relevant to the work. In a workspace with the `.workspace-root` marker it is untracked and
+git-ignored, so a fresh clone has none: when it is absent, discovery runs `research-project
+rebuild-index <workspace-root>` (`context` and `workflow resume` also repair it). See
+`records-layout.md`. It is the only memory file with a hard size budget:
 
 - **120 lines** and **12 KB**, whichever binds first. Exceeding either is an **error**.
 

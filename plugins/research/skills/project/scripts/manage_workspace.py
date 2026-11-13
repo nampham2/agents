@@ -12,6 +12,7 @@ from typing import Any
 
 from memory_search import creation_gate, rank_topics, search_postmortems
 from workspace_context import compact_context, start_project
+from workspace_doctor import run_doctor
 from workspace_documents import (
     FRICTION_KINDS,
     WHOLE_DOCUMENTS,
@@ -24,6 +25,7 @@ from workspace_durability import context_view
 from workspace_evidence import evidence_entries
 from workspace_invocations import Invocation, note
 from workspace_journal import OperationError
+from workspace_layout import migrate_layout
 from workspace_lib import (
     CLOSURE_STEPS,
     EVIDENCE_TAIL_LINES,
@@ -37,6 +39,7 @@ from workspace_lib import (
     check_candidate,
     commit_candidate,
     compact_memory_topic,
+    ensure_project_views,
     find_workspace_roots,
     index_headroom,
     launcher_version_warning,
@@ -339,6 +342,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     graph.add_argument("project_directory", type=Path)
 
+    doctor = subparsers.add_parser(
+        "doctor",
+        help="Read-only check of the workspace records layout (size, LFS, ignore rules)",
+        epilog="Exits 0 without errors, 1 with any error finding, 2 when git or the directory is unreadable.",
+    )
+    doctor.add_argument("workspace_root", nargs="?", type=Path, default=None)
+
     roots = subparsers.add_parser(
         "find-roots",
         help="Search for established workspace roots instead of guessing one",
@@ -533,7 +543,14 @@ def _build_parser() -> argparse.ArgumentParser:
     unlock.add_argument("--workspace-root", type=Path, help=f"defaults to ${WORKSPACE_ROOT_ENV_VAR}")
 
     migrate = subparsers.add_parser("migrate", help="Preview or explicitly apply a v1/v2-to-v3 migration")
-    migrate.add_argument("project_directory", type=Path)
+    migrate.add_argument(
+        "project_directory", type=Path, help="project directory; with --layout, the workspace directory"
+    )
+    migrate.add_argument(
+        "--layout",
+        action="store_true",
+        help="migrate a workspace directory to the records layout (marker, ignore rules, LFS) instead",
+    )
     migrate.add_argument("--apply", action="store_true", help="Apply the migration; default is a read-only preview")
     migrate.add_argument("--lock-timeout", type=float, default=5.0)
 
@@ -606,11 +623,14 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
             return 0
         if args.input_json is None:
             raise WorkspaceError("workflow needs an input file, or '-' for stdin; or --schema to print its keys")
+        if args.action == "resume":
+            ensure_project_views(args.project_directory)
         result = workflow(args.project_directory, args.action, _read_json_object(args.input_json))
         print(json.dumps(result, indent=2))
         return 1 if result.get("valid") is False or result.get("passed") is False else 0
 
     if args.command == "context":
+        ensure_project_views(args.project_directory)
         limit = 5 if args.limit is None else args.limit
         if args.compact:
             if args.validate or args.task is not None or args.worker or args.task_only or args.limit is not None:
@@ -892,6 +912,16 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         print(render_task_graph(project_task_graph(args.project_directory)))
         return 0
 
+    if args.command == "doctor":
+        try:
+            findings = run_doctor(resolve_workspace_root(args.workspace_root))
+        except WorkspaceError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 2
+        for finding in findings:
+            print(finding.line())
+        return 1 if any(finding.severity == "error" for finding in findings) else 0
+
     if args.command == "find-roots":
         found = find_workspace_roots(args.search_paths or None, max_depth=args.max_depth)
         for root in found:
@@ -1051,6 +1081,13 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         return code
 
     if args.command == "migrate":
+        if args.layout:
+            lines, findings = migrate_layout(args.project_directory, apply=args.apply)
+            for line in lines:
+                print(line)
+            for finding in findings:
+                print(finding.line())
+            return 1 if any(finding.severity == "error" for finding in findings) else 0
         if args.apply:
             print(apply_migration(args.project_directory, lock_timeout=args.lock_timeout))
             return 0
