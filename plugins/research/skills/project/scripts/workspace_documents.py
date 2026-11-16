@@ -380,7 +380,9 @@ LESSON_TITLE_TOKENS = (
 )
 
 
-LIST_ITEM_PATTERN = re.compile(r"(?:[-*+]|\d+[.)])\s+(?P<text>.*)")
+# A list marker, shared by the staged-lesson check and the follow-up reader so the two cannot drift apart.
+MARKER = r"(?:[-*+]|\d+[.)])"
+LIST_ITEM_PATTERN = re.compile(rf"{MARKER}\s+(?P<text>.*)")
 LINK_PATTERN = re.compile(r"\[(?P<text>[^\]]*)\]\([^)]*\)")
 # A short label such as `(P1)`, `(P3, P4)` or `(R2 and R3)`: letters then digits, joined by separators.
 SHORT_LABEL_PATTERN = re.compile(
@@ -434,8 +436,13 @@ def names_only_staged(body: str, staged_titles: list[str]) -> bool:
 
 
 FOLLOW_UP_TITLES = frozenset({"follow-up", "follow-ups"})
-BULLET = re.compile(r"(?:[-*]|\d+\.)[ \t]+(.*)")
-FENCE_LINE = re.compile(r" {0,3}(`{3,}|~{3,})")  # the same indent limit as `_headings`
+BULLET = re.compile(rf"({MARKER})([ \t]+)(.*)")
+BARE_MARKER = re.compile(MARKER)
+FENCE_RUN = re.compile(r"(`{3,}|~{3,})(.*)")  # the run and whatever follows it, info string included
+# The deepest indent at which `_headings` sees a fence. Outer fences open and close at this limit, an item fence
+# ends at a fence run within it, and item fences live only beyond it; that keeps the reader inside a fence
+# whenever `_headings` is. A module constant so the property test's negative control can move it.
+_OUTER_FENCE_MAX_INDENT = 3
 FOLLOW_UP_START = re.compile(r"follow[\s_-]?ups?\b")
 
 
@@ -447,48 +454,80 @@ def is_follow_up_title(title: str) -> bool:
 def follow_up_items(reflection: str) -> "tuple[list[str], bool]":
     """The items of the reflection's `## Follow-up` section, and whether it holds text but no bullet.
 
-    Each top-level bullet (`-`, `*` or `1.`) is one item. A wrapped line, an indented line and a nested
-    bullet join the item above, separated by one space. The first such section wins, a level-three heading
-    is not the section, and bullets inside a fenced block are not items. A missing or empty section gives
-    no items and no flag. The flag is set for text with no bullet at all, and for a fenced block that is
-    never closed (it hides what follows), so `finalize` can say so.
+    Each top-level bullet is one item: `-`, `*`, `+` or a number followed by `.` or `)`, at column 0, then
+    spaces or tabs. A line holding only a marker is an empty item and is skipped. A wrapped line, an indented
+    line and a nested bullet join the item above, separated by one space. The first such section wins, and a
+    level-three heading is not the section.
+
+    Fenced blocks are skipped. Indents are counted in spaces after expanding tabs to multiples of 4.
+    - An outer fence opens and closes at indent 0 to 3, exactly where `_headings` sees one.
+    - An item fence opens at indent 4 or more, 0 to 3 past the current item's content indent (the marker and
+      the spaces after it). It closes on a matching run with the same two properties. It also ends at a
+      non-blank line indented less than the content indent, or at a fence run at indent 0 to 3; that line is
+      then read again as an ordinary line.
+    So the reader is inside a fence whenever `_headings` is, and a section that `_headings` runs to the end of
+    the document is flagged, never harvested. A fence more than 3 columns past the content indent, under a
+    nested item for example, is read as text, since nesting is flattened.
+
+    A missing or empty section gives no items and no flag. The flag is set for text with no bullet at all, and
+    for a fence still open at the end of the section (it hides what follows), so `finalize` can say so.
     """
     headings = _headings(reflection)
     body = None
     for index, (level, title, offset) in enumerate(headings):
         if level == 2 and is_follow_up_title(title):
             end = next((position for depth, _, position in headings[index + 1 :] if depth <= level), len(reflection))
-            body = reflection[_line_end(reflection, offset) : end]
+            # The heading line ends where `_headings` ends it: at any `str.splitlines` boundary, not only `\n`.
+            heading_line = reflection[offset:].splitlines(keepends=True)[0]
+            body = reflection[offset + len(heading_line) : end]
             break
     if body is None:
         return [], False
     items: list[str] = []
     loose = False
-    fence = ""  # the opening run of a fenced block while one is open
+    fence = ""  # the opening run of the open fenced block, or empty
+    item_fence = False  # whether the open fence is an item fence
+    content = 0  # the current top-level item's content indent; 0 before the first item
     for line in body.splitlines():
-        stripped = line.strip()
-        run = FENCE_LINE.match(line)
+        expanded = line.expandtabs(4)
+        indent = len(expanded) - len(expanded.lstrip(" "))
+        run = FENCE_RUN.match(expanded, indent)
+        blank = not line.strip()
         if fence:
-            # A closing fence repeats the character, is at least as long as the opening one, and has no text after it.
             closes = bool(run) and run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence)
-            if closes and not line[run.end() :].strip():
+            closes = closes and not run.group(2).strip()
+            if not item_fence:
+                if closes and indent <= _OUTER_FENCE_MAX_INDENT:
+                    fence = ""
+                continue
+            if closes and indent > _OUTER_FENCE_MAX_INDENT and 0 <= indent - content <= 3:
                 fence = ""
+                continue
+            if blank or not (indent < content or (run and indent <= _OUTER_FENCE_MAX_INDENT)):
+                continue
+            fence = ""  # the item ends here; read this line again below
+        if run and indent <= _OUTER_FENCE_MAX_INDENT:
+            fence, item_fence = run.group(1), False
             continue
-        if run:
-            fence = run.group(1)
+        if run and indent > _OUTER_FENCE_MAX_INDENT and 0 <= indent - content <= 3:
+            fence, item_fence = run.group(1), True
             continue
-        if not stripped or stripped in ("-", "*"):
+        stripped = line.strip()
+        # An empty item: a marker alone at column 0, or a bare `-`, `*` or `+` anywhere. An indented `2025.`
+        # is text that continues the bullet above.
+        if blank or BARE_MARKER.fullmatch(line.rstrip()) or stripped in ("-", "*", "+"):
             continue
         top = BULLET.fullmatch(line)
         if top:
-            if top.group(1).strip():  # an empty bullet is not an item
-                items.append(top.group(1).strip())
+            content = len((top.group(1) + top.group(2)).expandtabs(4))
+            if top.group(3).strip():
+                items.append(top.group(3).strip())
         elif items:
             nested = BULLET.fullmatch(stripped)
-            items[-1] += " " + (nested.group(1).strip() if nested else stripped)
+            items[-1] += " " + (nested.group(3).strip() if nested else stripped)
         else:
             loose = True
-    # A fence that is never closed hides every bullet below it: flag that even when some items were read.
+    # A fence still open hides every bullet below it: flag that even when some items were read.
     return items, (loose and not items) or bool(fence)
 
 

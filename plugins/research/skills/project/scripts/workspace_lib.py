@@ -374,6 +374,23 @@ def _non_empty_string(value: object) -> TypeGuard[str]:
     return isinstance(value, str) and bool(value.strip())
 
 
+def validate_title(title: object) -> str | None:
+    """The first problem with a project title, or None. Callers that store a stripped title strip first.
+
+    A title is written as a heading line of spec.md and briefing.md, so it must be one line by
+    `str.splitlines()`: a second line, even one started by a trailing newline or a U+2028 separator, could
+    plant a record marker or a heading outside any fence. The record markers of spec.md are matched anywhere
+    in the text, so `<!--` on the one line is enough to forge one.
+    """
+    if not _non_empty_string(title):
+        return "title must be a non-empty string"
+    if title.splitlines() != [title]:
+        return "title must be one line"
+    if "<!--" in title:
+        return "title must not contain '<!--', which could forge a record marker"
+    return None
+
+
 def _enum_string(value: object, choices: set[str]) -> TypeGuard[str]:
     return isinstance(value, str) and value in choices
 
@@ -2268,9 +2285,12 @@ def validate_v3_state(
 
     if state.get("schema_version") != 3:
         report.errors.append("schema_version must be 3")
-    for field_name in ("project", "title", "working_directory"):
+    for field_name in ("project", "working_directory"):
         if not _non_empty_string(state.get(field_name)):
             report.errors.append(f"project: {field_name} must be a non-empty string")
+    title_problem = validate_title(state.get("title"))
+    if title_problem:
+        report.errors.append(f"project: {title_problem}")
     if _non_empty_string(state.get("project")) and state.get("project") != project_dir.name:
         report.errors.append("project field must match the project directory name")
     if not is_canonical_project_id(project_dir.name):
@@ -2591,9 +2611,12 @@ def validate_v4_state(
         if not isinstance(attempts, dict):
             report.errors.append("execution: attempts must be an object")
 
-    for field_name in ("project", "title", "working_directory"):
+    for field_name in ("project", "working_directory"):
         if not _non_empty_string(state.get(field_name)):
             report.errors.append(f"project: {field_name} must be a non-empty string")
+    title_problem = validate_title(state.get("title"))
+    if title_problem:
+        report.errors.append(f"project: {title_problem}")
     if _non_empty_string(state.get("project")) and state.get("project") != project_dir.name:
         report.errors.append("project field must match the project directory name")
     if not is_canonical_project_id(project_dir.name):
@@ -6028,15 +6051,11 @@ def allocate_project(
     `history_entries` is markdown appended to the new `spec.md` decision history after the usual bullets.
     """
     workspace_root = workspace_root.expanduser()
-    if not _non_empty_string(title):
-        raise WorkspaceError("title must be non-empty")
-    # The title is written as a heading line of spec.md and briefing.md: a second line could plant a record
-    # marker or a heading outside any fence.
-    if len(title.strip().splitlines()) != 1:
-        raise WorkspaceError("title must be one line")
-    # The record markers of spec.md are matched anywhere in the text, so one line is enough to forge one.
-    if "<!--" in title:
-        raise WorkspaceError("title must not contain '<!--', which could forge a record marker")
+    # The stored title is stripped (below), so the rule applies to the stripped text: a trailing newline is
+    # removed here, while `update` and the validators refuse one in a stored title.
+    title_problem = validate_title(title.strip() if isinstance(title, str) else title)
+    if title_problem:
+        raise WorkspaceError(title_problem)
     # Before any directory exists: a bad tag leaves nothing behind. None records no `tags` field at all.
     stored_tags = None if tags is None else normalize_tags(tags)
     working_directory = working_directory.resolve()

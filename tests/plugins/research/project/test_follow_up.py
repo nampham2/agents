@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import manage_workspace
 import pytest
+import workspace_documents as documents
 import workspace_lib as lib
 from workspace_documents import (
     follow_up_items,
@@ -106,9 +107,123 @@ def test_a_fence_that_is_never_closed_is_flagged_not_silently_swallowed() -> Non
     assert items == ["kept"] and flagged is True
 
 
-def test_a_deeply_indented_fence_line_is_text_not_a_fence() -> None:
+def test_a_fence_indented_under_an_item_is_an_item_fence_that_a_dedented_bullet_ends() -> None:
+    # `    ```` under `- a` (content indent 2) is an item fence; `- b` at column 0 ends it, as it ends the item.
     items, flagged = follow_up_items(reflection("## Follow-up\n\n- a\n\n    ```\n- b"))
-    assert items[-1] == "b" and flagged is False
+    assert items == ["a", "b"] and flagged is False
+
+
+# --- list markers and fences inside list items (project 2026-11-16-004) ----------------------------
+
+FENCE = "```"
+
+
+def section(body: str) -> tuple[list[str], bool]:
+    return follow_up_items(reflection(f"## Follow-up\n\n{body}"))
+
+
+def test_a_line_holding_only_a_list_marker_is_skipped_and_keeps_the_item_above_current() -> None:
+    assert section("- a\n1.\n2)\n-\n+\n- b") == (["a", "b"], False)
+    # The bare marker does not become the current item: the wrapped line still joins `a`.
+    assert section("- a\n1.\n  continues a") == (["a continues a"], False)
+
+
+def test_plus_and_parenthesis_markers_are_items() -> None:
+    assert section("+ plus item\n1) paren item\n12) twelfth") == (["plus item", "paren item", "twelfth"], False)
+
+
+def test_a_no_break_space_after_a_marker_is_not_a_separator() -> None:
+    assert section("- real\n-\u00a0not an item") == (["real -\u00a0not an item"], False)
+
+
+def test_a_fence_and_closer_indented_four_under_a_numbered_item_hide_their_bullets() -> None:
+    body = f"1. item\n\n    {FENCE}\n    - hidden\n    {FENCE}\n\n2. two"
+    assert section(body) == (["item", "two"], False)
+
+
+def test_a_fence_and_closer_indented_four_under_a_dash_item_hide_their_bullets() -> None:
+    body = f"- item\n\n    {FENCE}\n    - hidden\n    {FENCE}\n\n- two"
+    assert section(body) == (["item", "two"], False)
+
+
+def test_a_tab_after_the_marker_counts_to_the_next_tab_stop() -> None:
+    # `-` then a tab reaches column 4, so a fence at four spaces is 0 past the content indent.
+    body = f"-\titem\n    {FENCE}\n    - hidden\n    {FENCE}\n- two"
+    assert section(body) == (["item", "two"], False)
+    # The item text keeps its own tabs.
+    assert section("- a\tb") == (["a\tb"], False)
+
+
+def test_a_column_zero_fence_after_a_ten_item_is_still_a_fence() -> None:
+    body = f"10. x\n{FENCE}\n- hidden\n{FENCE}\n- y"
+    assert section(body) == (["x", "y"], False)
+
+
+def test_an_indented_closer_like_line_does_not_close_a_column_zero_fence() -> None:
+    body = f"- a\n{FENCE}text\n    {FENCE}\n- hidden\n{FENCE}\n- b"
+    assert section(body) == (["a", "b"], False)
+
+
+def test_text_indented_past_the_content_indent_plus_three_joins_the_item() -> None:
+    assert section("- a\n          deep code\n- b") == (["a deep code", "b"], False)
+
+
+def test_a_line_indented_four_with_no_item_is_loose_text() -> None:
+    assert section("    indented text") == ([], True)
+
+
+def test_a_fence_run_with_an_info_string_at_indent_three_ends_an_item_fence() -> None:
+    # The `~~~py` run at indent 0 ends the item fence and opens an outer one, as `_headings` reads it; the
+    # outer fence is closed, so the bullet after it is read.
+    body = f"- a\n    {FENCE}\n    code\n~~~py\n- hidden\n~~~\n- b"
+    assert section(body) == (["a", "b"], False)
+
+
+def test_an_item_fence_with_its_only_closer_at_column_zero_is_flagged() -> None:
+    body = f"- a\n    {FENCE}\n    code\n{FENCE}\n- would be harvested"
+    items, flagged = section(body)
+    assert flagged is True and "would be harvested" not in " ".join(items)
+
+
+def test_an_item_fence_holding_a_column_zero_run_never_harvests_a_later_section() -> None:
+    body = f"1. item\n    {FENCE}\n{FENCE}text\n    {FENCE}\n2. second"
+    text = reflection(f"## Follow-up\n\n{body}", "## Lessons\n\n- lesson")
+    items, flagged = follow_up_items(text)
+    assert flagged is True
+    assert not any("lesson" in item or "second" in item for item in items)
+
+
+def test_an_item_fence_still_open_at_the_next_heading_is_flagged() -> None:
+    text = reflection(f"## Follow-up\n\n- a\n    {FENCE}\n    - hidden", "## Lessons\n\n- lesson")
+    items, flagged = follow_up_items(text)
+    assert items == ["a"] and flagged is True
+
+
+def test_a_dedented_bullet_ends_an_item_fence_and_is_an_item() -> None:
+    body = f"- item\n    {FENCE}\n    code\n- next item\n    {FENCE}\n- third"
+    assert section(body) == (["item", "next item", "third"], False)
+
+
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r", "\x0c", "\x85", "\u2028"])
+def test_the_section_starts_after_the_heading_line_whatever_ends_it(ending: str) -> None:
+    # `_headings` ends a line at every `str.splitlines` boundary, so the section must start there too: a
+    # fence opened on the next line hides the bullets after it, and the first bullet is never dropped.
+    fenced = f"# R\n\n## Follow-up{ending}{FENCE}\n- hidden\n- also\n"
+    items, flagged = follow_up_items(fenced)
+    assert items == [] and flagged is True
+    assert follow_up_items(f"# R\n\n## Follow-up{ending}- a\n- b\n") == (["a", "b"], False)
+
+
+def test_a_wrapped_line_that_is_only_a_number_and_a_dot_joins_the_item() -> None:
+    # Only a marker at column 0 (or a bare `-`, `*` or `+` anywhere) is an empty item; an indented `2025.`
+    # continues the bullet above.
+    assert section("- shipped in\n  2025.\n- b") == (["shipped in 2025.", "b"], False)
+
+
+def test_five_spaces_after_a_marker_put_a_fence_at_four_into_the_item_text() -> None:
+    # A documented limit: every space counts toward the content indent (6 here), so a fence at 4 is neither
+    # an outer nor an item fence. `_headings` ignores it too, so nothing is harvested.
+    assert section(f"-     a\n    {FENCE}\n    b") == ([f"a {FENCE} b"], False)
 
 
 def test_a_title_that_only_looks_like_the_section_is_named_so_it_can_be_warned_about() -> None:
@@ -732,3 +847,66 @@ def test_the_command_prints_its_warnings_on_stderr(source: Path, capsys: pytest.
     (broken / "project.json").write_text("{not json", encoding="utf-8")
     assert _manage(["follow-up", source, "--title", "Warned", "--agreement", AGREEMENT]) == 0
     assert "WARNING:" in capsys.readouterr().err
+
+
+# --- the reader against `_headings`: a seeded property test (project 2026-11-16-004) ---------------
+
+PIECES = [
+    "- item", "* star", "+ plus", "1. one", "1) paren", "10. ten", "-\ttab item", "-     wide", "  - nested", "",
+    "text", "    code", "        deep", "\t```", "    ```", "  ```", "```", "```py", "````", "~~~", "    ~~~", "~~~ ~",
+    "  ```text", "\t- tabbed", "1.", "-", "## Next", "a\x0cb", "x\u2028```", "\r```", "- c\x85d",
+]
+# Heading-line endings: `_headings` ends a line at every `str.splitlines` boundary.
+ENDINGS = ["\n", "\r\n", "\r", "\x0c", "\x85", "\u2028"]
+
+
+def headings_in_fence_after_each_line(lines: list[str], ending: str = "\n") -> list[bool]:
+    """The reference: `_headings` is inside a fence after line i exactly when a heading appended there is hidden."""
+    states = []
+    for index in range(len(lines)):
+        probe = f"# R\n## Follow-up{ending}" + "\n".join([*lines[: index + 1], "## probe"]) + "\n"
+        states.append("probe" not in [title for _, title, _ in documents._headings(probe)])
+    return states
+
+
+def reader_in_fence_after_each_line(lines: list[str], ending: str = "\n") -> list[bool]:
+    """The reader's state after line i, read from the public function: with a seed item, flagged means open fence."""
+    states = []
+    for index in range(len(lines)):
+        prefix = f"# R\n## Follow-up{ending}" + "\n".join(["- seed", *lines[: index + 1]]) + "\n"
+        states.append(follow_up_items(prefix)[1])
+    return states
+
+
+def first_counterexample(seed: int, cases: int) -> "list[str] | None":
+    import random
+
+    generator = random.Random(seed)
+    checked = 0
+    for _ in range(cases):
+        lines = [generator.choice(PIECES) for _ in range(generator.randint(1, 10))]
+        if "## Next" in lines:
+            lines = lines[: lines.index("## Next")]  # a real heading would end the section the probe reads
+        if not lines:
+            continue
+        checked += 1
+        ending = generator.choice(ENDINGS)
+        # The seed item is the first line after the heading; `_headings` ignores list items, so the reference
+        # starts the same lines straight after the heading.
+        reference = headings_in_fence_after_each_line(lines, ending)
+        reader = reader_in_fence_after_each_line(lines, ending)
+        if any(inside and not read for inside, read in zip(reference, reader, strict=True)):
+            return lines
+    assert checked > cases // 2, f"the generator produced too few sections: {checked}"
+    return None
+
+
+def test_the_reader_is_inside_a_fence_whenever_headings_is() -> None:
+    assert first_counterexample(seed=20261116, cases=1500) is None
+
+
+def test_the_property_test_finds_a_reader_that_opens_outer_fences_too_deep(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Negative control: with the outer-fence limit raised to 8 the reader opens fences `_headings` does not see
+    # and then disagrees about which run closes them, so the same check must find a counterexample.
+    monkeypatch.setattr(documents, "_OUTER_FENCE_MAX_INDENT", 8, raising=True)
+    assert first_counterexample(seed=20261116, cases=1500) is not None

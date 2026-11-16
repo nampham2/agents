@@ -33,9 +33,13 @@ refuse a tag that is still not in that form, a duplicate and a sixth tag. They n
      --working-directory <target> --tag <tag> --tag <tag>
    ```
 
-   A title is one line and cannot contain `<!--`. `init <root> ... --tag <tag>` takes the same
-   flag. With 0 tags, more than 5, a duplicate or a bad tag the command prints `init created
-   nothing` and writes nothing.
+   A title is one line and cannot contain `<!--`. Creation strips the title first, so a trailing
+   newline is dropped. `update` refuses a title with any line break, trailing ones included, and
+   `research-validate` reports one in a v3 or v4 `project.json`. A bad title that gets into
+   `project.json` by hand makes every state command refuse the project, naming the title, and
+   blocks migration of a v1 or v2 project. Fix it in `project.json` (or the v1 plan heading) by
+   hand. `init <root> ... --tag <tag>` takes the same flag. With 0 tags, more than 5, a duplicate
+   or a bad tag the command prints `init created nothing` and writes nothing.
 
 ## Change tags later
 
@@ -71,13 +75,24 @@ user agrees or declines. You never start work in it: it stays in `ALIGNING` unti
 
 Write a `## Follow-up` section in the reflection: one bullet for each piece of work, risk or open
 question that the project leaves behind, and why it matters. Do not list work that is done. A bullet
-may wrap onto the next line, and an indented line or a nested bullet joins the bullet above. A
-section with text and no bullet gives a warning, and a section with no bullets gives no items. The
-section is never stored as a lesson, whatever its title says. A fenced block that is indented four
-or more spaces inside a numbered item is not tracked as a fence (the same limit as headings). Name
-it `Follow-up` or `Follow-ups`: a title that only starts that way, such as `Follow-up work` or
-`Follow up`, is not read, and `finalize` warns about it. It also warns when a fenced block in the
-section is never closed, because that hides the bullets below it.
+starts with `-`, `*`, `+`, or a number followed by `.` or `)`, at the start of the line. It may
+wrap onto the next line, and an indented line or a nested bullet joins the bullet above. A marker
+alone at the start of a line is skipped. A section with text and no bullet gives a warning, and a
+section with no bullets gives no items. The section is never stored as a lesson, whatever its title
+says.
+
+Bullets inside a fenced block are not items. A fence may start up to three spaces in, or be
+indented under a bullet to that bullet's text. These cases are limits:
+- A fence indented more than three columns past the text of the top-level bullet, for example
+  under a nested bullet, is not tracked: its lines join the bullet as text.
+- Under a bullet with five or more spaces after its marker, a fence at four or five spaces is not
+  tracked either, for the same reason.
+- A fence opened on the bullet line itself, as in `` - ``` ``, is not tracked; its closing line
+  then opens a fence that hides what follows, and `finalize` warns that it is never closed.
+
+Name the section `Follow-up` or `Follow-ups`: a title that only starts that way, such as
+`Follow-up work` or `Follow up`, is not read, and `finalize` warns about it. It also warns when a
+fenced block in the section is never closed, because that hides the bullets below it.
 
 ### After `finalize`
 
