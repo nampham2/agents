@@ -87,7 +87,7 @@ jobs:
           # init refuses to create a workspace root implicitly, so a fresh root is explicit here and
           # resolution from the environment is exercised in the same breath.
           project="$(launch "$scripts/research-project" init "$workdir/ws" --create-root \
-            --title "CI smoke" --working-directory "$workdir")"
+            --title "CI smoke" --working-directory "$workdir" --tag ci)"
           launch "$scripts/research-validate" "$project"
           launch "$scripts/research-project" context "$project" --validate
           launch "$scripts/research-project" read "$project" spec --outline
