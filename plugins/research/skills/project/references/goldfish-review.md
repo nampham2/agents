@@ -4,8 +4,8 @@ A Goldfish is a fresh agent without conversation history; it reads one target, w
 Self-review never counts.
 
 Each gate needs a current round: `spec` before the requirements confirmation; `planning` before
-the planning confirmation; `design` before the first code task starts; `diff` before the release
-and merge records (no remote: before closure).
+the planning confirmation; `design` before the first code task starts; `diff` before the release and
+merge records and, per target, before closure.
 
 1. Run `workflow <project-dir> goldfish`, `operation: open`, with `target` (`diff` adds
    `worktree`, its recorded path) and `stages`. Keep `round`, `token`, `reviewed`.

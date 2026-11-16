@@ -15,8 +15,9 @@ request or a GitLab merge request.
 
 ## Release and merge
 
-The delivery order is fixed: release, merge on the host,
-record the merge, then close/remove.
+Target `merged` or `release` (and policy 1) closes with this order: release, merge on the host,
+record the merge, then close/remove. Target `pr` stops at the MR: it records no merge or release,
+and its diff round runs at closure. Targets `local` and `research` skip this section.
 
 1. Sweep the threads.
 2. Commit the plain release version `X.Y.Z` into each version file and push, then run the diff
@@ -25,8 +26,8 @@ record the merge, then close/remove.
    released past the base, ask the user, then add `"base_moved":true` and a `reason`.
 3. Run `readiness` with `required_checks` (host-required); fix each `checks.missing` name. Ask
    the user to merge each MR by `squash`, `merge` or `rebase`.
-4. After a yes, merge on the host; a `local_only` worktree merges in the main checkout, with the
-   commit main then points to as `evidence`. Record `"operation":"merge"` with
+4. After a yes, merge on the host; a legacy `local_only` worktree merges in the main checkout, with
+   the commit main then points to as `evidence`. Record `"operation":"merge"` with
    `"merge_state":"merged"`, `method`, `evidence` (merge commit or URL), `merged_head` (the
    merged reviewed head, full hex) and the user's words.
 5. After a no, record `"merge_state":"declined"` with the user's words; the worktree stays.
@@ -38,9 +39,11 @@ An alpha version never merges to main.
 1. Ask only after the merge is recorded.
 2. Run `workflow ... readiness`; record each worktree's `missing` delivery records. Show
    `git status --short --branch`; ask whether to commit (only when asked), keep or remove.
-3. A `no_remote` or `local_only` worktree needs a current diff Goldfish round before its first
-   closure and every remove; a declined local merge needs none, and with its branch gone its latest
-   passed round stands. Record the answer:
+3. The diff Goldfish round before the first closure and every remove depends on the target: `pr`
+   needs one for every recorded worktree (a merged record excuses it); `merged` and `release` (and
+   policy 0 and 1) for a `no_remote` or `local_only` worktree; `local` and `research` none. A
+   declined local merge needs none, and with its branch gone the latest passed round stands. Record
+   the answer:
 
    ```json
    {"id":"worktree-close","expected_revision":N,"tokens":{"handoff":"<sha>"},
@@ -57,7 +60,8 @@ An alpha version never merges to main.
 
 ## Commit the project
 
-Do this after `finalize` and its report.
+Do this after `finalize` and its report, except under target `research` or `local`, where no commit
+is required.
 
 1. Run `git -C <workspace-root> status --short`. Stop if a path outside the project folder
    changed or the workspace root is no repository.

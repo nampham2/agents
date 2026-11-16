@@ -500,6 +500,7 @@ def test_cross_host_commands(tmp_path: Path, host: str, schema: int, runtime: st
         state["schema_version"] = 3
         state.pop("execution")
         state.pop("tags", None)  # schema v3 is closed to tags
+        state.pop("policy_version", None)  # and to the delivery policy
         lib.atomic_write_json(project / "project.json", state)
     payload = request(project, continuation={"next": "Ask requirements"})
     saved = subprocess.run(

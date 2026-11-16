@@ -86,8 +86,9 @@ unrelated changes. It must stand without the chat transcript, with these section
 4. Work breakdown: milestones with `depends_on`, outputs and their roots, effects and verification
    per milestone, and the dependency diagram. Name the design profiles
    ([design-document.md](design-document.md)) when any task writes code. A task that writes to the
-   target needs the draft MR or a recorded exemption first, or an earlier external task that opens
-   it.
+   target needs what the delivery target demands first ([worktrees.md](worktrees.md)): for `pr`,
+   `merged` and `release` the draft MR or a recorded exemption, or an earlier external task that
+   opens it; for `local` nothing; `research` writes none.
 5. Effort per workstream and overall: implementer, reuse, confidence, exclusions, uncertainty.
 6. Edge cases and recovery: case, expected behavior, owner and verification.
 7. Verification plan: each success criterion mapped to a check and to its failing-first control.

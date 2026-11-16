@@ -2,8 +2,9 @@
 
 The tools never call a Git host and never write to Git. They record what the agent reports and
 check only what a local read can show: the host of the remote, the version strings inside the
-recorded files, and the order of the steps. The gates turn on for projects created on or after
-`DELIVERY_GATES_FROM`.
+recorded files, and the order of the steps. What a project owes is `delivery_rules(state)`: the
+policy (from `policy_version`, else from the creation date against `DELIVERY_GATES_FROM`) and, at
+policy 2, the delivery target.
 """
 
 from __future__ import annotations
@@ -19,7 +20,17 @@ from urllib.parse import urlparse
 from workspace_context import _git
 from workspace_fields import EXEMPTION_REPLACED_FIELDS, NESTED_INPUTS, field_errors
 from workspace_journal import list_input, object_input, string_input
-from workspace_lib import WorkspaceError, _is_timestamp, _non_empty_string, is_delivery_gated, needs_merge, now_iso
+from workspace_lib import (
+    DeliveryRules,
+    WorkspaceError,
+    _is_timestamp,
+    _non_empty_string,
+    delivery_rules,
+    merge_demanded,
+    needs_merge,
+    now_iso,
+    removal_merge,
+)
 from workspace_occupancy import check_base, own_text
 
 DELIVERY_OPERATIONS = {"pull_request", "alpha", "release", "merge"}
@@ -101,12 +112,23 @@ def _remote_hostname(root: Path) -> str:
     return hostname.lower()
 
 
-def _pull_request(entry: dict[str, Any], request: dict[str, Any], root: Path, confirmation: dict[str, str]) -> None:
+def _pull_request(
+    entry: dict[str, Any],
+    request: dict[str, Any],
+    root: Path,
+    confirmation: dict[str, str],
+    rules: DeliveryRules,
+) -> None:
     if "pull_request" in entry or "pr_exemption" in entry:
         raise WorkspaceError("the worktree already has a pull_request or a pr_exemption")
     if "exempt" in request:
         exempt = request["exempt"]
         if exempt == "local_only":
+            if not rules.accepts_new_local_only:
+                raise WorkspaceError(
+                    "a local_only exemption is no longer recorded at policy 2; a local implementation target "
+                    "needs no merge request, so change the target with 'workflow retarget' instead"
+                )
             # The user's words are the guard: the tool does not test that the branch is never pushed.
             entry["pr_exemption"] = {"reason": "local_only", **confirmation}
             return
@@ -354,7 +376,7 @@ def gone_worktree_hint(entry: dict[str, Any]) -> str | None:
 
 def delivery_operation(
     worktrees: list[dict[str, Any]], path: str, operation: str, request: dict[str, Any], confirmation: dict[str, str],
-    *, workspace_root: Path, project: str, gate: Gate | None = None,
+    *, workspace_root: Path, project: str, gate: Gate | None = None, rules: DeliveryRules,
 ) -> tuple[dict[str, Any], list[str]]:
     """Apply one delivery operation to the active entry at `path`; returns the entry and any notes.
 
@@ -370,7 +392,7 @@ def delivery_operation(
     root = Path(path)
     notes: list[str] = []
     if operation == "pull_request":
-        _pull_request(entry, request, root, confirmation)
+        _pull_request(entry, request, root, confirmation, rules)
     elif operation == "alpha":
         notes = _alpha(entry, request, root, confirmation, workspace_root, project)
     elif operation == "release":
@@ -408,6 +430,13 @@ CONFIRM_HINTS = {
     "proposal_sha256": "proposal_sha256 is the document token that research-project context prints",
     "requirements_sha256": "requirements_sha256 is the spec token that research-project context prints",
     "planning_sha256": "planning_sha256 is the planning token that research-project context prints",
+    "delivery_target": "delivery_target is research, local, pr, merged or release; only kind alignment takes it",
+}
+
+RETARGET_HINTS = {
+    "delivery_target": "delivery_target is research, local, pr, merged or release",
+    "reason": "reason says why the target changes",
+    "confirmation": "confirmation is {source, response}: where and in what words the user agreed",
 }
 
 
@@ -623,9 +652,22 @@ def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
     return problems
 
 
+RESEARCH_REFUSAL = (
+    "the delivery target is research, which writes nothing to the target; record a different target with "
+    "`workflow <project-dir> retarget` and the user's decision before a task writes to it"
+)
+
+
 def start_findings(state: dict[str, Any]) -> list[str]:
-    """What stops a task that writes to the target: no MR for the target worktree. An alpha line is optional."""
-    if not is_delivery_gated(state):
+    """What stops a task that writes to the target: a research target, or no MR for the target worktree.
+
+    An alpha line is optional. Only the caller knows the task writes to the target, so a research project
+    refuses here whether or not a worktree is recorded.
+    """
+    rules = delivery_rules(state)
+    if rules.forbids_target_writes:
+        return [RESEARCH_REFUSAL]
+    if not rules.mr_required:
         return []
     findings = []
     for item in state.get("worktrees", []):
@@ -635,7 +677,7 @@ def start_findings(state: dict[str, Any]) -> list[str]:
             findings.append(
                 f"worktree {item['path']} has no merge request; open a draft MR after the user approves it and record "
                 "`workflow <project-dir> worktree` operation pull_request, or record operation pull_request with "
-                "exempt local_only when the user says the project is never pushed"
+                "exempt local_only when the user says the project is never pushed (policy 0 and 1 only)"
             )
     return findings
 
@@ -663,19 +705,19 @@ def abandoned_note(entry: dict[str, Any]) -> str | None:
     return f"the merge was declined: {number} {'commit' if number == 1 else 'commits'} of {branch} are abandoned"
 
 
-def removal_findings(entry: dict[str, Any], *, gated: bool) -> list[str]:
+def removal_findings(entry: dict[str, Any], *, rules: DeliveryRules) -> list[str]:
     """What must be recorded before a worktree may be removed, each missing record named.
 
     c5: the removal decision comes last, after the release and the host merge have records. The MR
-    and release requirements belong to the delivery gates, so `gated` turns them on; the merged
-    check has always applied to a worktree that has an MR, so it stays unconditional. An exemption
+    and release requirements belong to the delivery rules; the merge record is demanded by
+    `removal_merge`, which stays on for a pull request at every policy before 2. An exemption
     satisfies its half.
     """
     path = entry["path"]
     findings: list[str] = []
-    if gated and "pull_request" not in entry and "pr_exemption" not in entry:
+    if rules.mr_required and "pull_request" not in entry and "pr_exemption" not in entry:
         findings.append(f"worktree {path} has no merge request; record operation pull_request, or a pr_exemption")
-    if gated and "version_exemption" not in entry:
+    if rules.release_demanded and "version_exemption" not in entry:
         line = entry.get("version_line")
         if not isinstance(line, dict) or line.get("release") is None:
             findings.append(
@@ -684,9 +726,10 @@ def removal_findings(entry: dict[str, Any], *, gated: bool) -> list[str]:
             )
     merge = entry.get("merge")
     state = merge.get("state") if isinstance(merge, dict) else None
-    if "pull_request" in entry and state != "merged":
+    demand = removal_merge(entry, rules)
+    if demand == "merged" and state != "merged":
         findings.append(f"worktree {path} is not merged; record operation merge, merged, before removing it")
-    elif needs_merge(entry) and state not in MERGE_STATES:
+    elif demand == "decision" and state not in MERGE_STATES:
         # A declined local merge abandons the work, so it ends the worktree as a merge does.
         findings.append(
             f"worktree {path} has no merge decision; record operation merge, merged or declined, before removing it"
@@ -695,23 +738,26 @@ def removal_findings(entry: dict[str, Any], *, gated: bool) -> list[str]:
 
 
 def closure_findings(state: dict[str, Any]) -> list[str]:
-    """What stops closure for a gated project: every repository worktree needs its delivery records."""
-    if not is_delivery_gated(state):
-        return []
+    """What stops closure: every repository worktree needs the delivery records its target demands."""
+    rules = delivery_rules(state)
     findings = []
     for item in state.get("worktrees", []):
         if item["kind"] == "none" or item["status"] == "removed":
             continue
         path = item["path"]
-        if "pull_request" not in item and "pr_exemption" not in item:
+        if rules.mr_required and "pull_request" not in item and "pr_exemption" not in item:
             findings.append(f"worktree {path} has no pull_request or pr_exemption")
-        elif needs_merge(item) and "merge" not in item:
+        elif merge_demanded(item, rules) and "merge" not in item:
             findings.append(
                 f"worktree {path} has no merge decision; ask the user to merge, naming the method, "
                 "and record operation merge, merged or declined"
             )
         line = item.get("version_line")
-        if "version_exemption" not in item and (not isinstance(line, dict) or line.get("release") is None):
+        if (
+            rules.release_demanded
+            and "version_exemption" not in item
+            and (not isinstance(line, dict) or line.get("release") is None)
+        ):
             findings.append(
                 f"worktree {path} has no release record or version_exemption; record operation release with the "
                 "plain version, or ask the user for an exemption and record operation alpha with exempt true, "
@@ -724,8 +770,8 @@ def no_merge_request_message(where: str, task_ids: list[str]) -> str:
     """The one sentence that says target tasks are planned before any MR or exemption is recorded."""
     return (
         f"worktree {where} has no merge request; task(s) {', '.join(task_ids)} write to the target. Open a draft "
-        "MR, or record pr_exemption local_only; or depend on a task that does (effect external, output root "
-        "external)."
+        "MR, or record a pr_exemption (no_remote; local_only only before policy 2); or depend on a task that "
+        "does (effect external, output root external)."
     )
 
 
@@ -771,7 +817,8 @@ def mr_gate_errors(
     """
     from workspace_context import worktree_status
 
-    if not is_delivery_gated(candidate):
+    rules = delivery_rules(candidate)
+    if not rules.mr_required and not rules.forbids_target_writes:
         return [], []
     before = {item.get("id"): item for item in _objects(previous.get("tasks"))}
     tasks = _objects(candidate.get("tasks"))
@@ -785,6 +832,9 @@ def mr_gate_errors(
             or any(task.get(key) != before[task["id"]].get(key) for key in ("outputs", "depends_on"))
         )
     ]
+    if rules.forbids_target_writes:
+        # No hook sees file writes, so a research project is refused here, before any early exit.
+        return ([RESEARCH_REFUSAL] if judged else []), []
     worktrees = candidate.get("worktrees", [])
     if not judged or not isinstance(candidate.get("working_directory"), str) or not isinstance(worktrees, list):
         return [], []

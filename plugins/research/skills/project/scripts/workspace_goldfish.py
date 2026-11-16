@@ -605,16 +605,31 @@ def _descends(repository: Path, ancestor: str, commit: str) -> bool:
 def delivery_gate_errors(
     project: Path, state: "dict[str, Any]", entry: "dict[str, Any]", event: str, request: "dict[str, Any]"
 ) -> "list[str]":
-    """The diff gate at a release, a merge record, or the first closure of a worktree with a pr_exemption."""
+    """The diff gate at a release, a merge record, or a closure; which events owe a round is `rules.diff_events`.
+
+    A project with no delivery target (policy 0 and 1, or policy 2 before one is set) keeps the 0.37 order:
+    the record check runs first, whatever the event. With a target, an event that owes nothing returns first.
+    """
     if not workspace_lib.is_goldfish_gated() or not has_code_task(state) or not entry.get("repository"):
         return []
-    if not entry.get("branch") or not entry.get("path"):
+    rules = workspace_lib.delivery_rules(state)
+    events = rules.diff_events
+    incomplete = not entry.get("branch") or not entry.get("path")
+    if incomplete and rules.target is None:
+        return [f"{DIFF_GATE}: the worktree record has no branch or path"]
+    if event == "closure":
+        # `closure` (a reviewable PR) covers every entry; `closure_exempt` only an entry with a pr_exemption.
+        if "closure" not in events and not ("closure_exempt" in events and "pr_exemption" in entry):
+            return []
+        if "closure" in events and _object(entry.get("merge")).get("state") in ("merged", "declined"):
+            return []  # the PR is merged, or its work abandoned: the round exists to hand over an open PR
+    elif event not in events:
+        return []
+    if incomplete:
         return [f"{DIFF_GATE}: the worktree record has no branch or path"]
     worktree = entry["path"]
     repository, ref = Path(entry["repository"]), f"refs/heads/{entry['branch']}"
     if event == "closure":
-        if "pr_exemption" not in entry:
-            return []
         if _object(entry.get("merge")).get("state") == "declined":
             return []  # a declined local merge abandons the work: no round is owed for code that is not delivered
         closed_at = _object(entry.get("closure")).get("observed_at")
@@ -759,7 +774,9 @@ def _object(value: object) -> "dict[str, Any]":
     return value if isinstance(value, dict) else {}
 
 
-def _worktree_event_warnings(entry: "dict[str, Any]", passed: "set[Any]") -> "list[str]":
+def _worktree_event_warnings(
+    entry: "dict[str, Any]", passed: "set[Any]", rules: "workspace_lib.DeliveryRules"
+) -> "list[str]":
     """Release, merge and closure events of one worktree at or after the instant with no diff round.
 
     A release or merge record stores no commit, so the check is that the worktree has a passing diff round
@@ -769,8 +786,12 @@ def _worktree_event_warnings(entry: "dict[str, Any]", passed: "set[Any]") -> "li
     merge = _object(entry.get("merge"))
     release = _object(_object(entry.get("version_line")).get("release"))
     events = [
-        ("release", release.get("recorded_at")),
-        ("merge", merge.get("recorded_at") if merge.get("state") == "merged" else None),
+        (name, stamp)
+        for name, stamp in (
+            ("release", release.get("recorded_at")),
+            ("merge", merge.get("recorded_at") if merge.get("state") == "merged" else None),
+        )
+        if name in rules.diff_events
     ]
     found = [
         f"the {name} of {path} at {stamp} has no Goldfish diff round"
@@ -778,7 +799,7 @@ def _worktree_event_warnings(entry: "dict[str, Any]", passed: "set[Any]") -> "li
         if _at_or_after_instant(stamp) and not any(item[0] == "diff" and item[1] == path for item in passed)
     ]
     closed = _object(entry.get("closure")).get("observed_at")
-    if workspace_lib.needs_merge(entry) and not merge and _at_or_after_instant(closed):
+    if workspace_lib.merge_warned(entry, rules) and not merge and _at_or_after_instant(closed):
         found.append(f"worktree {path} was closed at {closed} with no merge recorded")
     return found
 
@@ -812,8 +833,9 @@ def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str
         for task in _objects(state.get("tasks")):
             if is_code_task(task) and _at_or_after_instant(task.get("started_at")) and not designed:
                 found.append(f"code task {task.get('id')} started at {task['started_at']} with no design round")
+        rules = workspace_lib.delivery_rules(state)
         for entry in _objects(state.get("worktrees")):
-            found += _worktree_event_warnings(entry, passed)
+            found += _worktree_event_warnings(entry, passed, rules)
     return found
 
 

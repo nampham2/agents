@@ -28,6 +28,7 @@ from workspace_journal import OperationError
 from workspace_layout import migrate_layout
 from workspace_lib import (
     CLOSURE_STEPS,
+    DELIVERY_TARGETS,
     EVIDENCE_TAIL_LINES,
     MEMORY_KINDS,
     OBSERVATION_RESULTS,
@@ -83,7 +84,7 @@ from workspace_session import (
     validated_project_context,
 )
 from workspace_similar import find_similar, suggest_tags
-from workspace_workflows import FIELDS, READ_ACTIONS, input_schema, preview, workflow
+from workspace_workflows import FIELDS, READ_ACTIONS, input_schema, migrate_policy, preview, workflow
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -596,6 +597,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     migrate.add_argument("--apply", action="store_true", help="Apply the migration; default is a read-only preview")
     migrate.add_argument("--lock-timeout", type=float, default=5.0)
+
+    migrate_policy_parser = subparsers.add_parser(
+        "migrate-policy",
+        help="Preview or apply the move of a project to delivery policy 2 with a delivery target",
+        description=(
+            "Preview (the default, writes nothing) or apply moving a project to policy 2. The preview lists the "
+            "obligations gained and dropped, records the target would not require, and obligations that existing "
+            "worktrees do not yet satisfy. Apply writes policy_version and delivery_target together and records "
+            "the user's words; there is no revert command. Distinct from `migrate`, which upgrades the schema."
+        ),
+    )
+    migrate_policy_parser.add_argument("project_directory", type=Path)
+    migrate_policy_parser.add_argument("--to", type=int, choices=[2], required=True, help="the policy to move to")
+    migrate_policy_parser.add_argument(
+        "--target", choices=DELIVERY_TARGETS, required=True, help="the delivery target to record"
+    )
+    migrate_policy_parser.add_argument("--apply", action="store_true", help="write it; default is a preview")
+    migrate_policy_parser.add_argument("--expected-revision", type=int, help="the revision the preview was read at")
+    migrate_policy_parser.add_argument("--confirm", help="the user's words approving the migration (apply only)")
 
     return parser
 
@@ -1162,6 +1182,17 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         if error:
             print(f"ERROR: {error}", file=sys.stderr)
         return code
+
+    if args.command == "migrate-policy":
+        outcome = migrate_policy(
+            args.project_directory,
+            target=args.target,
+            apply=args.apply,
+            expected_revision=args.expected_revision,
+            confirm=args.confirm,
+        )
+        print(json.dumps(outcome, indent=2, ensure_ascii=False))
+        return 0
 
     if args.command == "migrate":
         if args.layout:

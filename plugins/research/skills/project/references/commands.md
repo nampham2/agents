@@ -44,6 +44,10 @@ Objects merge; lists/scalars replace. Tasks merge by ID. Project fields: `title`
 `review`, `cancellation_reason`, `predecessor`, `tasks`. Include `block_reason` for `BLOCKED`,
 `skip_reason` for `SKIPPED`; null them when leaving. Use `commit` only for other fields.
 
+## Delivery target
+
+`delivery_target`, `retarget` and `migrate-policy`: [worktrees.md](worktrees.md).
+
 ## Documents and records
 
 Initial `--sections-json -` maps the seven headings to bodies; later batches replace non-overlapping

@@ -19,6 +19,7 @@ import workspace_lib as lib
 from workspace_journal import snapshot
 
 from tests.conftest import REPO_ROOT, backdate_project
+from tests.plugins.research.project.test_delivery import fetched
 from tests.plugins.research.project.test_worktrees import REFLECTION, git, make_repository
 
 SURFACES = ["bin", "skills/project/scripts"]
@@ -79,10 +80,19 @@ def review(cli: Cli, project: Path, target: str, identity: str, **fields: Any) -
         "reports": [{"stage": "combined", "summary": "read the target"}], "findings": []}))
 
 
-def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
-    """Drive one current project to DONE; return each step with whether it was refused."""
+def run_lifecycle(
+    tmp_path: Path, surface: str, *, target: str = "merged", real_pull_request: bool = False
+) -> list[tuple[str, bool]]:
+    """Drive one current project to DONE; return each step with whether it was refused.
+
+    `real_pull_request` records a host pull request instead of the `no_remote` exemption and, with no merge
+    or release owed by its target, no alpha exemption either.
+    """
     cli = Cli(surface)
     repository = make_repository(tmp_path)
+    if real_pull_request:
+        git(repository, "remote", "add", "origin", "https://github.com/o/r.git")
+        fetched(repository)
     created = json.loads(cli.ok(
         "init", "--tag", "test", tmp_path / "workspace", "--create-root", "--title", "Current lifecycle",
         "--working-directory", repository, "--json",
@@ -110,7 +120,7 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
                              "missing", stdin=PLANNING), refused=False)
     confirmation = {
         "kind": "alignment", "review_id": "A1", "response": "Yes, go ahead", "source": "user reply in the test",
-        "scope": "requirements and design",
+        "scope": "requirements and design", "delivery_target": target,
         "requirements_sha256": snapshot(project / "spec.md")[1],
         "planning_sha256": snapshot(project / "planning.md")[1],
     }
@@ -135,11 +145,14 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
         snapshot(project / "planning.md")[1], stdin=planning.replace("One parser", "Three parsers")),
         refused=False)
     stale = step("plan-with-stale-agreement", cli.run(
-        "update", project, "-", "--expected-revision", 0, stdin=json.dumps(plan)), refused=True)
+        "update", project, "-", "--expected-revision", state_of(project)["revision"],
+        stdin=json.dumps(plan)), refused=True)
     assert "changed after its planning confirmation" in stale.stderr
     # The repair the message names: review the current text (here, a waiver), then agree to it again.
     waive("planning", "waive-planning-2")
-    reconfirm = dict(confirmation, planning_sha256=snapshot(project / "planning.md")[1],
+    # The target is already recorded, so the reconfirmation leaves it out; a changed one goes through retarget.
+    reconfirm = {key: value for key, value in confirmation.items() if key != "delivery_target"}
+    reconfirm.update(planning_sha256=snapshot(project / "planning.md")[1],
                      requirements_sha256=snapshot(project / "spec.md")[1])
     step("reconfirm", cli.flow(project, "confirm", "align-2", **reconfirm), refused=False)
     worktree = (repository.parent / f"{repository.name}.worktrees" / "p1").resolve()
@@ -151,12 +164,17 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
     # A current project also owes the delivery records. The repository has no remote and no version
     # file, so both are exemptions; test_delivery.py covers the refusals and the real records.
     user = {"source": "user reply in the test", "response": "no remote, no version"}
-    step("record-pull-request", cli.flow(
-        project, "worktree", "wt-pr", operation="pull_request", path=str(worktree), exempt="no_remote",
-        confirmation=user), refused=False)
-    step("record-alpha-exemption", cli.flow(
-        project, "worktree", "wt-alpha", operation="alpha", path=str(worktree), exempt=True,
-        reason="the repository has no version file", confirmation=user), refused=False)
+    if real_pull_request:
+        step("record-pull-request", cli.flow(
+            project, "worktree", "wt-pr", operation="pull_request", path=str(worktree), host="github",
+            url="https://github.com/o/r/pull/7", number=7, confirmation=user), refused=False)
+    else:
+        step("record-pull-request", cli.flow(
+            project, "worktree", "wt-pr", operation="pull_request", path=str(worktree), exempt="no_remote",
+            confirmation=user), refused=False)
+        step("record-alpha-exemption", cli.flow(
+            project, "worktree", "wt-alpha", operation="alpha", path=str(worktree), exempt=True,
+            reason="the repository has no version file", confirmation=user), refused=False)
     # The plan writes to the target, so it comes after the MR record (here an exemption): the c3 gate.
     step("plan", cli.run(
         "update", project, "-", "--expected-revision", state_of(project)["revision"], stdin=json.dumps(plan)
@@ -229,6 +247,22 @@ def test_both_launcher_surfaces_agree_step_for_step(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("surface", SURFACES)
+def test_a_reviewable_pr_completes_at_closure_with_the_merge_deferred(tmp_path: Path, surface: str) -> None:
+    """Target pr: a host pull request, a closure diff round, and no merge, release or alpha record owed."""
+    steps = run_lifecycle(tmp_path, surface, target="pr", real_pull_request=True)
+    assert [name for name, refused in steps if refused] == [
+        "plan-before-alignment", "confirm-without-round", "plan-with-stale-agreement", "start-without-design-round",
+        "failing-check", "update-done-on-failed-record", "close-with-undecided-worktree", "keep-without-diff-round",
+    ]
+    assert len(steps) == 25
+    project = next(path for path in (tmp_path / "workspace").iterdir() if (path / "project.json").is_file())
+    state = state_of(project)
+    kept = state["worktrees"][0]
+    assert state["status"] == "DONE" and state["delivery_target"] == "pr" and state["policy_version"] == 2
+    assert "pull_request" in kept and "merge" not in kept and "version_line" not in kept
+
+
+@pytest.mark.parametrize("surface", SURFACES)
 def test_a_legacy_project_keeps_the_old_permissive_behaviour(tmp_path: Path, surface: str) -> None:
     """The same `update` that a current project refuses is accepted for one created before the cutoff."""
     cli = Cli(surface)
@@ -249,3 +283,61 @@ def test_a_legacy_project_keeps_the_old_permissive_behaviour(tmp_path: Path, sur
         {"root": "workspace", "path": "evidence.md", "anchor": "T01"}]}]}
     cli.ok("update", project, "-", "--expected-revision", 2, stdin=json.dumps(done))
     assert state_of(project)["tasks"][0]["status"] == "DONE"
+
+
+def run_research(tmp_path: Path, surface: str) -> dict[str, Any]:
+    """A research project over a repository target: no worktree, no software gate, closes without one."""
+    cli = Cli(surface)
+    repository = make_repository(tmp_path)
+    created = json.loads(cli.ok(
+        "init", "--tag", "test", tmp_path / "workspace", "--create-root", "--title", "Research only",
+        "--working-directory", repository, "--json",
+    ).stdout)
+    project = Path(created["project_directory"])
+    sections = {heading: f"Agreed content for {heading}." for heading, _ in lib.SPEC_CANONICAL_SECTIONS}
+    cli.ok("edit", project, "spec", "--sections-json", "-", "--expected-sha256", snapshot(project / "spec.md")[1],
+           stdin=json.dumps(sections))
+    cli.ok("edit", project, "planning", "--body-file", "-", "--expected-sha256", "missing", stdin=PLANNING)
+    no_agent = {"source": "user reply in the test", "response": "no fresh subagent here; proceed"}
+    for target in ("spec", "planning"):
+        cli.ok("workflow", project, "goldfish", "-", stdin=json.dumps({
+            "id": f"waive-{target}", "expected_revision": state_of(project)["revision"], "operation": "waive",
+            "target": target, "reason": "the test host has no fresh subagent", "confirmation": no_agent}))
+    cli.ok("workflow", project, "confirm", "-", stdin=json.dumps({
+        "id": "align-1", "expected_revision": state_of(project)["revision"], "kind": "alignment",
+        "review_id": "A1", "response": "Yes, research only", "source": "user reply in the test",
+        "scope": "requirements and design", "delivery_target": "research",
+        "requirements_sha256": snapshot(project / "spec.md")[1],
+        "planning_sha256": snapshot(project / "planning.md")[1],
+        "tokens": {name: snapshot(project / f"{name}.md")[1] for name in ("spec", "planning")},
+    }))
+    # A task that writes to the target is refused, naming the decision that changes the target.
+    refused = cli.run("update", project, "-", "--expected-revision", state_of(project)["revision"],
+                      stdin=json.dumps({"status": "PLANNING", "tasks": [CODE_TASK]}))
+    assert refused.returncode != 0 and "retarget" in refused.stderr
+    cli.ok("update", project, "-", "--expected-revision", state_of(project)["revision"],
+           stdin=json.dumps({"status": "PLANNING", "tasks": [TASK]}))
+    started = json.loads(cli.ok(
+        "task", project, "start", "T01", "--expected-revision", state_of(project)["revision"]).stdout)
+    assert started["worktree"]["warnings"] == [], "a research project gets no worktree warning"
+    passing = json.loads(cli.ok(
+        "record-evidence", project, "--task", "T01", "--json", "--", sys.executable, "-c", "pass").stdout)
+    cli.ok("task", project, "finish", "T01", "--evidence", passing["record_id"],
+           "--expected-revision", state_of(project)["revision"])
+    (project / "reflection.md").write_text(REFLECTION, encoding="utf-8")
+    cli.ok("workflow", project, "finalize", "-", stdin=json.dumps({
+        "id": "final-1", "expected_revision": state_of(project)["revision"], "reflection": REFLECTION,
+        "continuation": {"next": "none"},
+        "tokens": {name: snapshot(project / f"{name}.md")[1]
+                   for name in ("spec", "planning", "handoff", "reflection") if (project / f"{name}.md").exists()},
+    }))
+    validated = cli.run(project, "--close", "--check-index", tool=cli.validator)
+    assert validated.returncode == 0, validated.stdout + validated.stderr
+    return state_of(project)
+
+
+@pytest.mark.parametrize("surface", SURFACES)
+def test_a_research_project_owes_no_software_delivery_ritual(tmp_path: Path, surface: str) -> None:
+    state = run_research(tmp_path, surface)
+    assert state["status"] == "DONE" and state["delivery_target"] == "research"
+    assert not state.get("worktrees"), "no worktree, merge request, release or diff round was ever recorded"

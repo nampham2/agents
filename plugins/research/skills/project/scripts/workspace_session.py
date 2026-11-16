@@ -542,7 +542,7 @@ def update_project_data(
 UPDATE_FIELDS = {"title", "status", "review", "cancellation_reason", "predecessor", "tasks"}
 # Fields only a verifying operation may patch: `update` must not be able to declare a worktree or
 # move the target root without the Git observations the `worktree` action insists on.
-INTERNAL_UPDATE_FIELDS = UPDATE_FIELDS | {"worktrees", "working_directory"}
+INTERNAL_UPDATE_FIELDS = UPDATE_FIELDS | {"worktrees", "working_directory", "policy_version", "delivery_target"}
 
 
 def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: bool = False) -> dict[str, Any]:

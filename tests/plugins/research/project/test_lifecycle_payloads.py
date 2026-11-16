@@ -137,17 +137,20 @@ def test_default_instruction_payload_budget() -> None:
     chain stays below the 0.32.0 records-branch ceiling of 2442 words. At 0.37.0 the entry gained two
     pointers (tags at creation, follow-up at closure) and `--tag` in the `init` example, 16 words; the
     ceilings rose to the new measurement: 860 to 870, 1400 to 1410, 2190 to 2200, 2520 to 2540 and
-    2730 to 2740.
+    2730 to 2740. At 0.38.0 the delivery target changed what the entry, the routine commands and the
+    router say about when a worktree, MR, merge or release is owed: 20 words in the entry, a one-line
+    pointer in commands.md and a `retarget` row in automation.md. The ceilings rose to the new
+    measurement: 870 to 890, 1410 to 1440, 2200 to 2260, 2540 to 2600 and 2740 to 2800.
     """
     skill = REPO_ROOT / "plugins/research/skills/project"
     entry = (skill / "SKILL.md").read_text()
     routine = (skill / "references/commands.md").read_text()
-    assert len(entry.split()) <= 870
-    assert len((entry + routine).split()) <= 1410
+    assert len(entry.split()) <= 890
+    assert len((entry + routine).split()) <= 1440
     router = (skill / "references/automation.md").read_text()
     chain = len((entry + routine + router).split())
-    assert chain <= 2200 < 2442
-    ceilings = {"automation-context": 2540, "automation-execution": 2740}
+    assert chain <= 2260 < 2442
+    ceilings = {"automation-context": 2600, "automation-execution": 2800}
     for reference, ceiling in ceilings.items():
         selected = (skill / f"references/{reference}.md").read_text()
         assert len((entry + routine + router + selected).split()) <= ceiling
@@ -170,16 +173,24 @@ RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operati
 # scenario that counts SKILL.md rose to its new measurement: alignment-repository 7060 to 7080,
 # alignment-plain 6660 to 6680, alignment-and-handoff 7640 to 7660, resume 5080 to 5100,
 # resume-with-verifier 5270 to 5290, material-change-after-resume 8590 to 8600, closure 5540 to 5550.
+# At 0.38.0 worktrees.md gained the delivery-target table (about 330 words, the one place that says what
+# each target owes; the other references point to it), pull-requests.md gained what each target
+# changes at release, clean-up and commit, and the entry, commands and automation gained pointers and a
+# `retarget` row. Every ceiling below is that new measurement, still strictly below BASELINE:
+# alignment-repository 7080 to 7460, alignment-plain 6680 to 6750, resume 5100 to 5160,
+# resume-with-verifier 5290 to 5350, alignment-and-handoff 7660 to 8040, material-change-after-resume
+# 8600 to 8680, closure 5550 to 5990. The scenarios that load worktrees.md (alignment-repository,
+# alignment-and-handoff, closure) carry most of the growth.
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
-    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7080),
-    "alignment-plain": ((*CORE, *ALIGNMENT), 6680),
-    "resume": ((*CORE, *RESUME), 5100),
-    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5290),
-    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7660),
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7460),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6750),
+    "resume": ((*CORE, *RESUME), 5160),
+    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5350),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 8040),
     "material-change-after-resume": (
-        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8600),
+        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8680),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
-                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 5550),
+                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 5990),
 }
 BASELINE = {
     "alignment-repository": 8205, "alignment-plain": 7726, "resume": 5843, "resume-with-verifier": 6033,

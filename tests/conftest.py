@@ -54,6 +54,19 @@ def far_future_delivery_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def no_new_project_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start test projects without a policy_version, as the cutoffs above keep the date-gated rules off.
+
+    A policy-2 project needs a delivery_target to leave ALIGNING, which the older tests of the gates and
+    the lifecycle do not model. The tests of policy 2 set `NEW_PROJECT_POLICY` back to 2 themselves.
+    raising=False for a baseline build without the constant.
+    """
+    import workspace_lib
+
+    monkeypatch.setattr(workspace_lib, "NEW_PROJECT_POLICY", None, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def far_future_goldfish_instant(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the Goldfish gates off for every test project; the tests of the gates move the instant back.
 
@@ -110,4 +123,6 @@ def backdate_project(project_dir: Path, created: str = "2020-01-01T00:00:00+00:0
     path = project_dir / "project.json"
     state = json.loads(path.read_text(encoding="utf-8"))
     state["created"] = created
+    # A project made before policies existed carries none; init now writes policy 2.
+    state.pop("policy_version", None)
     path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
