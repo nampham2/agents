@@ -75,13 +75,22 @@ user agrees or declines. You never start work in it: it stays in `ALIGNING` unti
 
 Write a `## Follow-up` section in the reflection: one bullet for each piece of work, risk or open
 question that the project leaves behind, and why it matters. Do not list work that is done. A bullet
-may wrap onto the next line, and an indented line or a nested bullet joins the bullet above. A
-section with text and no bullet gives a warning, and a section with no bullets gives no items. The
-section is never stored as a lesson, whatever its title says. A fenced block that is indented four
-or more spaces inside a numbered item is not tracked as a fence (the same limit as headings). Name
-it `Follow-up` or `Follow-ups`: a title that only starts that way, such as `Follow-up work` or
-`Follow up`, is not read, and `finalize` warns about it. It also warns when a fenced block in the
-section is never closed, because that hides the bullets below it.
+starts with `-`, `*`, `+`, `1.` or `1)` at the start of the line. It may wrap onto the next line,
+and an indented line or a nested bullet joins the bullet above. A line holding only a marker is
+skipped. A section with text and no bullet gives a warning, and a section with no bullets gives no
+items. The section is never stored as a lesson, whatever its title says.
+
+Bullets inside a fenced block are not items. A fence may sit at the start of the line, or be
+indented under a bullet to that bullet's text. The reader does not track a fence in these cases:
+- it is indented more than three columns past the text of the top-level bullet, for example under
+  a nested bullet;
+- the bullet has five or more spaces after its marker, so its text starts unusually deep.
+
+Its lines then join the bullet as text.
+
+Name the section `Follow-up` or `Follow-ups`: a title that only starts that way, such as
+`Follow-up work` or `Follow up`, is not read, and `finalize` warns about it. It also warns when a
+fenced block in the section is never closed, because that hides the bullets below it.
 
 ### After `finalize`
 

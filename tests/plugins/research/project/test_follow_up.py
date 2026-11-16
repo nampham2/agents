@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import manage_workspace
 import pytest
+import workspace_documents as documents
 import workspace_lib as lib
 from workspace_documents import (
     follow_up_items,
@@ -830,3 +831,62 @@ def test_the_command_prints_its_warnings_on_stderr(source: Path, capsys: pytest.
     (broken / "project.json").write_text("{not json", encoding="utf-8")
     assert _manage(["follow-up", source, "--title", "Warned", "--agreement", AGREEMENT]) == 0
     assert "WARNING:" in capsys.readouterr().err
+
+
+# --- the reader against `_headings`: a seeded property test (project 2026-11-16-004) ---------------
+
+PIECES = [
+    "- item", "* star", "+ plus", "1. one", "1) paren", "10. ten", "-\ttab item", "-     wide", "  - nested", "",
+    "text", "    code", "        deep", "\t```", "    ```", "  ```", "```", "```py", "````", "~~~", "    ~~~", "~~~ ~",
+    "  ```text", "\t- tabbed", "1.", "-", "## Next",
+]
+
+
+def headings_in_fence_after_each_line(lines: list[str]) -> list[bool]:
+    """The reference: `_headings` is inside a fence after line i exactly when a heading appended there is hidden."""
+    states = []
+    for index in range(len(lines)):
+        probe = "\n".join(["# R", "## Follow-up", *lines[: index + 1], "## probe"]) + "\n"
+        states.append("probe" not in [title for _, title, _ in documents._headings(probe)])
+    return states
+
+
+def reader_in_fence_after_each_line(lines: list[str]) -> list[bool]:
+    """The reader's state after line i, read from the public function: with a seed item, flagged means open fence."""
+    states = []
+    for index in range(len(lines)):
+        prefix = "\n".join(["# R", "## Follow-up", "- seed", *lines[: index + 1]]) + "\n"
+        states.append(follow_up_items(prefix)[1])
+    return states
+
+
+def first_counterexample(seed: int, cases: int) -> "list[str] | None":
+    import random
+
+    generator = random.Random(seed)
+    checked = 0
+    for _ in range(cases):
+        lines = [generator.choice(PIECES) for _ in range(generator.randint(1, 10))]
+        if "## Next" in lines:
+            lines = lines[: lines.index("## Next")]  # a real heading would end the section the probe reads
+        if not lines:
+            continue
+        checked += 1
+        # The seed item shifts nothing for `_headings`, which ignores list items.
+        reference = headings_in_fence_after_each_line(lines)
+        reader = reader_in_fence_after_each_line(lines)
+        if any(inside and not read for inside, read in zip(reference, reader, strict=True)):
+            return lines
+    assert checked > cases // 2, f"the generator produced too few sections: {checked}"
+    return None
+
+
+def test_the_reader_is_inside_a_fence_whenever_headings_is() -> None:
+    assert first_counterexample(seed=20261116, cases=1500) is None
+
+
+def test_the_property_test_finds_a_reader_that_opens_outer_fences_too_deep(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Negative control: with the outer-fence limit raised to 8 the reader opens fences `_headings` does not see
+    # and then disagrees about which run closes them, so the same check must find a counterexample.
+    monkeypatch.setattr(documents, "_OUTER_FENCE_MAX_INDENT", 8, raising=True)
+    assert first_counterexample(seed=20261116, cases=1500) is not None
