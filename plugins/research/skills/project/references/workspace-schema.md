@@ -21,8 +21,8 @@ way and carry the same rule; see [Workspace root files](#workspace-root-files).
 
 ## Canonical v4 state
 
-Every listed field is required except `predecessor`, `worktrees` and the v4-only task `reads`,
-`started_at` and `finished_at`
+Every listed field is required except `predecessor`, `worktrees`, `tags` and the v4-only task
+`reads`, `started_at` and `finished_at`
 declaration:
 
 ```json
@@ -50,6 +50,7 @@ declaration:
     "attempts": {}
   },
   "predecessor": "2026-08-20-001",
+  "tags": ["research-plugin", "dashboard"],
   "worktrees": [
     {
       "repository": "/absolute/path/to/main-checkout",
@@ -102,6 +103,18 @@ declaration:
 
 Unknown fields are rejected so misspellings cannot silently disable a guarantee. Timestamps must be
 timezone-aware ISO-8601 values. `working_directory` must be an existing absolute directory.
+
+`tags` is an optional v4 list of 1 to 5 distinct strings, each lowercase words joined by single
+hyphens and at most 24 characters. Validation checks the form and the maximum and never requires the
+field, so a project from before tags stays valid; a v3 project is closed to it. `init` and `start
+--create` need 1 to 5 tags, and `tag` is the only later way to change them: see
+[tags-and-follow-up.md](tags-and-follow-up.md). A launcher older than 0.37.0 rejects a project that
+has `tags` and names a newer plugin as the likely cause.
+
+`predecessor` names the project this one continues, and nothing checks that it exists. A follow-up
+sets it to its finished source, and its `briefing.md` starts with `Follow-up of: <source-id>`; that
+first line, not `predecessor` alone, is what marks a follow-up. A maintenance ancestor is named the
+same way with no such line. See [tags-and-follow-up.md](tags-and-follow-up.md).
 
 `revision` is a non-negative integer changed only by transactional commit. `current_tasks` is always
 an array and must equal the set of tasks in `RUNNING` state.
@@ -660,10 +673,11 @@ The command:
 On conflict, reload and reconcile. A lock directory contains `owner.json`; inspect it before
 manually removing a lock believed to be stale. Never automatically steal a lock.
 
-Three locks exist, each scoped to what it protects: `.project.lock` in a project directory,
-`.index.lock` at the root for regenerating both caches, and `.memory.lock` at the root for the
-read-modify-write that amends a topic file. None is reentrant, so `.memory.lock` is never held
-across a call that regenerates the caches.
+Four locks exist, each scoped to what it protects: `.project.lock` in a project directory,
+`.index.lock` at the root for regenerating both caches, `.memory.lock` at the root for the
+read-modify-write that amends a topic file, and `.follow-up-<source-id>.lock` at the root, held by
+`follow-up` for one source while it checks and creates (`research-project unlock` clears a stale
+one). None is reentrant, so `.memory.lock` is never held across a call that regenerates the caches.
 
 ## Compatibility and migration
 

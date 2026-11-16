@@ -86,6 +86,30 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.37.0 project tags, a tag-aware dashboard and follow-up projects
+
+Every new project has 1 to 5 tags. The dashboard shows and filters by them and uses a wide monitor,
+and a finished project can seed one follow-up project on the user's agreement.
+
+- **Tags.** An optional v4 `tags` list in `project.json`: lowercase words joined by hyphens, at most
+  24 characters. `init` and `start --create` need `--tag` 1 to 5 times and refuse to create anything
+  otherwise. `research-project suggest-tags` ranks tags used on the same repository, then on
+  projects with a similar title, then words of the title. `research-project tag <dir> add|remove` is
+  the only later way to change them. A launcher older than 0.37.0 rejects a project that has `tags`;
+  the projects from before tags stay valid, and `tag` refuses schema v3 projects.
+- **Dashboard.** A tag bar with counts that show how many projects would remain, match-all
+  filtering, an `untagged` filter and removable filter chips. From 1680 pixels the header becomes a
+  sticky rail and the cards use up to four columns, up to 1920 pixels; narrower screens are
+  unchanged.
+- **Follow-up.** `finalize` returns `follow_up`: the reflection's `## Follow-up` bullets and the
+  Blocker or Major findings that a Goldfish round accepted as residual and nobody fixed.
+  `research-project follow-up <dir> --title ... --agreement ...` creates one `ALIGNING` project
+  beside the source, with no tasks and no worktree, and records the agreement word for word. It
+  refuses a source that is not `DONE`, a second follow-up of the same source and a dangerous
+  agreement.
+- **Docs.** The procedures live in `references/tags-and-follow-up.md`, which `SKILL.md` points to,
+  so the always-loaded text grew by 16 words.
+
 ### 0.36.0 committable workspace records
 
 `INDEX.md`, `MEMORY.md`, `POSTMORTEMS.md` and `RETRO.md` are now derived views that a workspace can

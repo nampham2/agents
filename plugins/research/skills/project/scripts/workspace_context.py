@@ -650,6 +650,7 @@ def start_project(
     briefing: bool = False,
     lock_timeout: float = 5.0,
     limit: int = 5,
+    tags: list[str] | None = None,
 ) -> tuple[dict[str, Any], int]:
     """Find, create or resume a project and return its compact context with the exit code.
 
@@ -676,11 +677,13 @@ def start_project(
         elif not create:
             return {"candidates": []}, 0
         else:
-            from workspace_operations import init_project
+            from workspace_operations import init_project, require_new_tags
 
+            # Only the branch that creates needs tags: a resumed project, or a list of candidates, ignores them.
+            new_tags = require_new_tags(tags or [])
             project_dir, warnings = init_project(
                 root, title, working_directory, lock_timeout=lock_timeout, create_root=create_root,
-                briefing=briefing,
+                briefing=briefing, tags=new_tags,
             )
     project_dir = project_dir.resolve()
     payload = validated_project_context(project_dir, limit=limit)

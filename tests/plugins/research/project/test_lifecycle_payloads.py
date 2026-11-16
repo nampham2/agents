@@ -134,17 +134,20 @@ def test_default_instruction_payload_budget() -> None:
 
     automation-records.md is merged into automation.md (0.33.0), so no branch needs a records
     file. Each ceiling is the measured words rounded up to the next 10, and the always-loaded
-    chain stays below the 0.32.0 records-branch ceiling of 2442 words.
+    chain stays below the 0.32.0 records-branch ceiling of 2442 words. At 0.37.0 the entry gained two
+    pointers (tags at creation, follow-up at closure) and `--tag` in the `init` example, 16 words; the
+    ceilings rose to the new measurement: 860 to 870, 1400 to 1410, 2190 to 2200, 2520 to 2540 and
+    2730 to 2740.
     """
     skill = REPO_ROOT / "plugins/research/skills/project"
     entry = (skill / "SKILL.md").read_text()
     routine = (skill / "references/commands.md").read_text()
-    assert len(entry.split()) <= 860
-    assert len((entry + routine).split()) <= 1400
+    assert len(entry.split()) <= 870
+    assert len((entry + routine).split()) <= 1410
     router = (skill / "references/automation.md").read_text()
     chain = len((entry + routine + router).split())
-    assert chain <= 2190 < 2442
-    ceilings = {"automation-context": 2520, "automation-execution": 2730}
+    assert chain <= 2200 < 2442
+    ceilings = {"automation-context": 2540, "automation-execution": 2740}
     for reference, ceiling in ceilings.items():
         selected = (skill / f"references/{reference}.md").read_text()
         assert len((entry + routine + router + selected).split()) <= ceiling
@@ -161,17 +164,22 @@ RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operati
 # order SKILL.md reaches them. Documents reached only conditionally are classified in CONDITIONAL,
 # below, not left out silently. Each ceiling is the measured words of the set at 0.33.0 rounded up
 # to the next 10, so a ceiling is a measurement, not an allowance; BASELINE is what the same stage
-# cost at 0.32.0, and every ceiling must stay strictly below it.
+# cost at 0.32.0, and every ceiling must stay strictly below it. At 0.37.0 the entry gained 16 words:
+# two pointers to the on-demand tags-and-follow-up.md (tags at creation, follow-up at closure) and
+# `--tag` in the `init` example. The procedures live in that reference, which no scenario loads. Every
+# scenario that counts SKILL.md rose to its new measurement: alignment-repository 7060 to 7080,
+# alignment-plain 6660 to 6680, alignment-and-handoff 7640 to 7660, resume 5080 to 5100,
+# resume-with-verifier 5270 to 5290, material-change-after-resume 8590 to 8600, closure 5540 to 5550.
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
-    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7060),
-    "alignment-plain": ((*CORE, *ALIGNMENT), 6660),
-    "resume": ((*CORE, *RESUME), 5080),
-    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5270),
-    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7640),
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7080),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6680),
+    "resume": ((*CORE, *RESUME), 5100),
+    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5290),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 7660),
     "material-change-after-resume": (
-        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8590),
+        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8600),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
-                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 5540),
+                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 5550),
 }
 BASELINE = {
     "alignment-repository": 8205, "alignment-plain": 7726, "resume": 5843, "resume-with-verifier": 6033,
@@ -206,6 +214,7 @@ CONDITIONAL = {
     "report-execution": "only when an execution report is requested",
     "report-html": "only when an HTML report is requested",
     "session-handoff": "only for handoff or interruption recovery",
+    "tags-and-follow-up": "only when creating a project, changing its tags or closing one that may leave a follow-up",
     "stopping": "only when deciding whether the work may stop after a task",
     "task-workers": "only when delegating to workers",
     "versioning": "only when proposing a base, recording an alpha line, moving a base or recording a release",

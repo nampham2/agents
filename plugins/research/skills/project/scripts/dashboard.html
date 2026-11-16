@@ -222,6 +222,46 @@ body.has-drawer .drawer { transform: none; visibility: visible; transition: tran
   h1 { font-size: 24px; }
   .root { display: none; }
 }
+
+/* Tags: a luggage-tag label. Neutral on purpose: colour already means status, and the tint means repository. */
+.tags { display: flex; flex-wrap: wrap; gap: 5px; min-width: 0; }
+.tagchip { position: relative; display: inline-flex; align-items: center; min-height: 24px; padding: 1px 10px 1px 22px; margin: 0; border: 1px solid var(--edge); border-radius: 4px 10px 10px 4px; background: color-mix(in srgb, var(--ink) 4%, var(--surface)); color: var(--ink); font-size: 13px; line-height: 1.25; cursor: pointer; white-space: nowrap; }
+.tagchip::before { content: ""; position: absolute; left: 8px; top: 50%; width: 6px; height: 6px; margin-top: -3.5px; border-radius: 50%; border: 1.5px solid var(--edge); background: var(--surface); }
+.tagchip:hover { border-color: var(--ink); }
+.tagchip[aria-pressed="true"] { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+.tagchip[aria-pressed="true"]::before { background: var(--bg); border-color: var(--bg); }
+.tagchip .n { margin-left: 7px; color: var(--muted); font-size: 12px; }
+.tagchip[aria-pressed="true"] .n { color: inherit; opacity: .8; }
+.tagchip.zero:not([aria-pressed="true"]) { opacity: .5; }
+.tagchip.untagged { border-style: dashed; }
+.tagchip.untagged::before { border-style: dashed; }
+.tags.inline .tagchip { min-height: 22px; font-size: 12.5px; }
+.sub .tags { display: inline-flex; }
+.tag-bar { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; }
+.tag-bar .fl { padding-top: 3px; }
+.tag-list { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.tag-empty { color: var(--muted); font-size: 14px; padding-top: 1px; }
+.pastname { display: flex; flex-wrap: wrap; align-items: center; gap: 3px 12px; min-width: 0; }
+.dtags { margin-top: 8px; }
+.untag { margin-top: 8px; color: var(--muted); font-size: 14px; }
+
+/* Wide screens: the header becomes a rail that stays in view, and the cards fill the rest. Below 1680px nothing changes. */
+@media (min-width: 1680px) {
+  .wrap { max-width: 1920px; display: grid; grid-template-columns: 340px minmax(0, 1fr); column-gap: 36px; align-items: start; padding: 0 32px 72px; }
+  .notice { grid-column: 1 / -1; }
+  .top { grid-column: 1; position: sticky; top: 0; max-height: 100vh; overflow-y: auto; padding: 24px 6px 24px 0; scrollbar-width: thin; }
+  #register { grid-column: 2; padding-top: 8px; }
+  .root { display: none; }
+  .status-bar, .tag-bar { flex-direction: column; align-items: stretch; gap: 6px; }
+  .tag-bar .fl { padding-top: 0; }
+  .filters select, .filters input[type="date"] { width: 100%; }
+  .filters-more { display: grid; gap: 10px; }
+  .radios { flex-wrap: wrap; }
+  .datefield { flex-direction: column; align-items: stretch; gap: 4px; }
+  .section:first-child { margin-top: 18px; }
+  .cards { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 16px; }
+  .drawer { width: min(620px, 100vw); }
+}
 </style>
 </head>
 <body>
@@ -254,6 +294,7 @@ body.has-drawer .drawer { transform: none; visibility: visible; transition: tran
     </div>
     <p class="tally" id="tally"></p>
     <div class="status-bar"><span class="fl">Status</span><div class="chips" id="status-chips" role="group" aria-label="Filter by status"></div></div>
+    <div class="tag-bar"><span class="fl">Tags</span><div class="tag-list" id="tag-list" role="group" aria-label="Filter by tag"></div></div>
     <div class="filters" id="filters">
       <div class="filters-main">
         <input type="search" id="q" placeholder="Search id, title or path" aria-label="Search projects">
@@ -304,9 +345,39 @@ const ORDER = ["EXECUTING", "BLOCKED", "REVIEW", "PLANNING", "ALIGNING", "DONE",
 const FLIGHT_ORDER = ["EXECUTING", "REVIEW", "PLANNING", "ALIGNING"];
 const TERMINAL = new Set(["DONE", "CANCELLED"]);
 const POLL_MS = 3000;
+const TAG_LIMIT = 12;
 const BAND_LIMIT = 5;
-const state = { statuses: new Set(), from: "", field: "updated", repo: "", q: "", open: new Set(), last: null, focus: null, focusDrawer: false, showAllNeeds: false, archiveOpen: false, filtersOpen: false, hashId: "" };
+const state = { statuses: new Set(), from: "", field: "updated", repo: "", q: "", open: new Set(), last: null, focus: null, focusDrawer: false, showAllNeeds: false, archiveOpen: false, filtersOpen: false, hashId: "", tags: new Set(), untagged: false, moreTags: false };
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+const tagsOf = p => Array.isArray(p.tags) ? p.tags : [];
+function tagChip(t) { const on = state.tags.has(t); return `<button class="tagchip" data-tag="${esc(t)}" aria-pressed="${on}" title="${on ? "Remove the filter for" : "Show only projects tagged"} ${esc(t)}">${esc(t)}</button>`; }
+function tagsHtml(p, inline) { const t = tagsOf(p); return t.length ? `<div class="tags${inline ? " inline" : ""}">${t.map(tagChip).join("")}</div>` : ""; }
+// Match all: a project must carry every chosen tag. Untagged is its own choice and excludes the others.
+function matchesTags(p) { return state.untagged ? !tagsOf(p).length : [...state.tags].every(t => tagsOf(p).includes(t)); }
+function tagFilterOn() { return Boolean(state.tags.size || state.untagged); }
+function toggleTag(t, fromDrawer) {
+  state.untagged = false;
+  state.tags.has(t) ? state.tags.delete(t) : state.tags.add(t);
+  // A tag chosen inside the drawer is meant to change the list behind it, so the drawer steps aside.
+  if (fromDrawer) { state.open.clear(); state.last = null; }
+  render();
+}
+function toggleUntagged() { state.untagged = !state.untagged; state.tags.clear(); render(); }
+function tagBarHtml(all, tagBase) {
+  const totals = new Map(), facet = new Map();
+  all.forEach(p => tagsOf(p).forEach(t => totals.set(t, (totals.get(t) || 0) + 1)));
+  if (!totals.size) return `<span class="tag-empty">No tags yet. New projects get 1 to 5 tags when they start.</span>`;
+  tagBase.forEach(p => tagsOf(p).forEach(t => facet.set(t, (facet.get(t) || 0) + 1)));
+  const names = [...totals.keys()].sort((a, b) => totals.get(b) - totals.get(a) || a.localeCompare(b));
+  const shown = state.moreTags ? names : names.filter((t, i) => i < TAG_LIMIT || state.tags.has(t));
+  const chip = t => `<button class="tagchip${facet.get(t) ? "" : " zero"}" data-tag="${esc(t)}" aria-pressed="${state.tags.has(t)}">${esc(t)}<span class="n">${facet.get(t) || 0}</span></button>`;
+  const none = tagBase.filter(p => !tagsOf(p).length).length;
+  const untagged = `<button class="tagchip untagged${none ? "" : " zero"}" data-untagged="1" aria-pressed="${state.untagged}">untagged<span class="n">${none}</span></button>`;
+  const more = names.length > TAG_LIMIT ? `<button class="linkbtn" data-moretags="1">${state.moreTags ? "Show fewer tags" : `Show all ${names.length} tags`}</button>` : "";
+  return shown.map(chip).join("") + untagged + more;
+}
+
 // Workspace files are data, not code: only a web address becomes a link.
 const safeUrl = u => /^https?:\/\//i.test(String(u || "")) ? String(u) : "";
 const link = (u, text) => safeUrl(u) ? `<a href="${esc(safeUrl(u))}" target="_blank" rel="noopener">${text}</a>` : esc(text);
@@ -395,7 +466,7 @@ function holdHtml(p) {
   const wait = firstWait(p);
   return `<article class="hold r-${esc(p.needs_you_reason)}" data-id="${esc(p.id)}">
     <div class="what"><button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>
-      <div class="sub">${pidHtml(p)}${repoHtml(p)}<span>${ic("clock")}${esc(stamp(p))}</span>${p.task_total ? `<span>${p.task_done} of ${p.task_total} tasks</span>` : ""}${wait ? `<span>${wait}</span>` : ""}</div></div>
+      <div class="sub">${pidHtml(p)}${repoHtml(p)}<span>${ic("clock")}${esc(stamp(p))}</span>${p.task_total ? `<span>${p.task_done} of ${p.task_total} tasks</span>` : ""}${wait ? `<span>${wait}</span>` : ""}${tagsHtml(p, true)}</div></div>
     <div>${copyBtn(p)}</div></article>`;
 }
 function cardHtml(p) {
@@ -405,13 +476,14 @@ function cardHtml(p) {
     <div class="top-line">${pidHtml(p)}<span title="${esc(p[state.field] || p.updated)}">${esc(stamp(p))}</span></div>
     <button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>
     <div class="meta">${repoHtml(p)}${progressHtml(p)}</div>
+    ${tagsHtml(p)}
     ${wait ? `<div class="waitline">${wait}</div>` : ""}
     <div class="cardfoot">${gatesHtml(p, true) ? `<div class="gates">${gatesHtml(p, true)}</div>` : ""}${copyBtn(p)}</div></article>`;
 }
 function pastHtml(p) {
   return `<article class="past s-${esc(p.status)}" data-id="${esc(p.id)}">
     ${pidHtml(p)}
-    <button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>
+    <div class="pastname"><button class="rowbtn name" aria-expanded="${isOpen(p.id)}">${esc(p.title)}</button>${tagsHtml(p, true)}</div>
     ${p.status === "DONE" ? `<span class="stat" role="img" aria-label="done" title="done">${ic("check")}</span>` : statusHtml(p)}<span class="when">${repoHtml(p)} ${esc(stamp(p))}</span></article>`;
 }
 
@@ -466,7 +538,7 @@ function drawerParts(p) {
       ${active.map(w => `<button class="copybtn" data-copy="${esc(w.path)}">${ic("copy")}Worktree path</button>${safeUrl(w.mr) ? `<button class="copybtn" data-copy="${esc(safeUrl(w.mr))}">${ic("copy")}Merge request link</button>` : ""}`).join("")}
     </div>
     <h3>Files</h3><div class="btnrow">${files}</div>`;
-  return { head: `<div class="idline">${pidHtml(p)} ${statusHtml(p)}</div><h2>${esc(p.title)}</h2><div class="dmeta">${repoHtml(p)} moved ${esc(exact(p.updated))}, created ${esc(exact(p.created))}</div>`, rc: `var(--c-${p.status.toLowerCase()})`, body };
+  return { head: `<div class="idline">${pidHtml(p)} ${statusHtml(p)}</div><h2>${esc(p.title)}</h2><div class="dmeta">${repoHtml(p)} moved ${esc(exact(p.updated))}, created ${esc(exact(p.created))}</div>${tagsHtml(p).replace('class="tags"', 'class="tags dtags"') || '<div class="untag">Untagged</div>'}`, rc: `var(--c-${p.status.toLowerCase()})`, body };
 }
 
 // Every filter except status: status is applied after it, so the status chips can show what each would add.
@@ -476,7 +548,7 @@ function matchesBase(p) {
   if (state.q) { const q = state.q.toLowerCase(); if (![p.id, p.title, p.working_directory].some(v => (v || "").toLowerCase().includes(q))) return false; }
   return true;
 }
-function isFiltered() { return Boolean(state.statuses.size || state.q || state.repo || state.from); }
+function isFiltered() { return Boolean(state.statuses.size || state.q || state.repo || state.from || tagFilterOn()); }
 const FIELD_NAME = { updated: "last update", created: "creation" };
 function appliedFilters() {
   // A chosen status is already shown pressed in the status bar, so it is not listed twice.
@@ -484,17 +556,22 @@ function appliedFilters() {
   if (state.repo) out.push(["repo", `Repository: ${state.repo}`]);
   if (state.from) out.push(["from", `Since ${state.from} by ${FIELD_NAME[state.field] || state.field}`]);
   if (state.q) out.push(["q", `Search: "${state.q}"`]);
+  [...state.tags].forEach(t => out.push(["tag:" + t, `Tag: ${t}`]));
+  if (state.untagged) out.push(["untagged", "Untagged projects only"]);
   return out;
 }
 function removeFilter(key) {
   if (key === "repo") { state.repo = ""; document.getElementById("repo").value = ""; }
   else if (key === "from") { state.from = ""; document.getElementById("from").value = ""; }
   else if (key === "q") { state.q = ""; document.getElementById("q").value = ""; }
+  else if (key === "untagged") state.untagged = false;
+  else if (key.startsWith("tag:")) state.tags.delete(key.slice(4));
   render();
 }
 function clearFilters() {
-  Object.assign(state, { from: "", repo: "", q: "" });
+  Object.assign(state, { from: "", repo: "", q: "", untagged: false });
   state.statuses.clear();
+  state.tags.clear();
   for (const id of ["from", "repo", "q"]) document.getElementById(id).value = "";
   render();
 }
@@ -527,7 +604,7 @@ function archiveHtml(archive) {
   return [...groups.keys()].sort().reverse().map(k => `<div class="day"><h3>${esc(dayLabel(k))}</h3>${groups.get(k).sort(byMoved).map(pastHtml).join("")}</div>`).join("");
 }
 
-const FOCUS_REGIONS = ["band", "flight", "archive", "empty", "status-chips", "applied", "drawer-body"];
+const FOCUS_REGIONS = ["band", "flight", "archive", "empty", "status-chips", "tag-list", "applied", "drawer-body"];
 const CONTROLS = "button, a, input, select";
 // Writing identical markup would drop focus and any text selection, so an unchanged region is left alone.
 // Only setHtml writes these regions: a direct write would leave the cache stale and a later identical write would be skipped.
@@ -580,7 +657,12 @@ function render() {
   // One result set feeds every section. A section that cannot hold a match disappears while a filter is on.
   const filtered = isFiltered();
   const base = all.filter(matchesBase);
-  const shown = state.statuses.size ? base.filter(p => state.statuses.has(p.status)) : base;
+  // Status and tag counts each follow every other filter, so a count says what choosing it would show.
+  const scope = base.filter(matchesTags);
+  const shown = state.statuses.size ? scope.filter(p => state.statuses.has(p.status)) : scope;
+  // With tags chosen, a tag's count is what would remain if it were added (match all). Untagged excludes tags, so it counts against all.
+  const countScope = state.untagged ? base : scope;
+  const tagBase = state.statuses.size ? countScope.filter(p => state.statuses.has(p.status)) : countScope;
   // The band is ordered by how much the reason blocks (an unreadable project first), then newest first.
   const band = shown.filter(p => p.needs_you_reason).sort((a, b) => reasonRank(a) - reasonRank(b) || byMoved(a, b));
   const flight = shown.filter(p => !p.needs_you_reason && !TERMINAL.has(p.status));
@@ -597,7 +679,7 @@ function render() {
   setHtml(get("band"), bandHtml(band));
   setHtml(get("flight"), flightHtml(flight));
   // A finished-status filter or a search that matches a finished project opens the archive and the toggle cannot close it.
-  const forced = Boolean([...state.statuses].some(s => TERMINAL.has(s)) || (state.q && archive.length > 0));
+  const forced = Boolean([...state.statuses].some(s => TERMINAL.has(s)) || ((state.q || tagFilterOn()) && archive.length > 0));
   const expanded = state.archiveOpen || forced;
   const toggle = get("archive-toggle");
   toggle.setAttribute("aria-expanded", String(expanded));
@@ -612,8 +694,9 @@ function render() {
 
   // Status chips count what each status would show under the other filters.
   const byStatus = {}; all.forEach(p => byStatus[p.status] = (byStatus[p.status] || 0) + 1);
-  const facet = {}; base.forEach(p => facet[p.status] = (facet[p.status] || 0) + 1);
+  const facet = {}; scope.forEach(p => facet[p.status] = (facet[p.status] || 0) + 1);
   setHtml(get("status-chips"), ORDER.filter(s => byStatus[s]).map(s => `<button class="chip s-${s}${facet[s] ? "" : " zero"}" data-status="${s}" aria-pressed="${state.statuses.has(s)}"><span class="dot"></span>${s.toLowerCase()}<span class="n">${facet[s] || 0}</span></button>`).join(""));
+  setHtml(get("tag-list"), tagBarHtml(all, tagBase));
   const repos = [...new Set(all.map(p => p.repo).filter(Boolean))].sort();
   const select = get("repo");
   if (select.dataset.key !== repos.join("\n")) {
@@ -707,6 +790,9 @@ function paintThemeButton() {
 }
 
 document.addEventListener("click", e => {
+  const tagBtn = e.target.closest("[data-tag]"); if (tagBtn) return toggleTag(tagBtn.dataset.tag, Boolean(e.target.closest("#drawer")));
+  if (e.target.closest("[data-untagged]")) return toggleUntagged();
+  if (e.target.closest("[data-moretags]")) { state.moreTags = !state.moreTags; return render(); }
   const chip = e.target.closest(".chip"); if (chip) { const s = chip.dataset.status; state.statuses.has(s) ? state.statuses.delete(s) : state.statuses.add(s); return render(); }
   const copy = e.target.closest("[data-copy]");
   if (copy) { navigator.clipboard.writeText(copy.dataset.copy).then(() => toast(copy.dataset.what ? `Copied ${copy.dataset.what}` : "Copied"), () => toast("Copy failed")); return; }

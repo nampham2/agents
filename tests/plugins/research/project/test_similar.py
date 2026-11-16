@@ -194,7 +194,9 @@ def test_init_creates_nothing_when_a_live_project_looks_alike(
 ) -> None:
     _row(root, "2026-10-01-001", "Wiki refresh agent: cut cost per refresh", "EXECUTING", repository)
     before = sorted(path.name for path in root.iterdir())
-    code = _manage(["init", root, "--title", "Cut wiki refresh cost per run", "--working-directory", repository])
+    code = _manage(
+        ["init", "--tag", "test", root, "--title", "Cut wiki refresh cost per run", "--working-directory", repository]
+    )
     assert code != 0
     assert sorted(path.name for path in root.iterdir()) == before
     assert "2026-10-01-001" in capsys.readouterr().err
@@ -206,7 +208,7 @@ def test_init_proceeds_after_the_acknowledgment_and_records_it(
     _row(root, "2026-10-01-001", "Wiki refresh agent: cut cost per refresh", "EXECUTING", repository)
     _row(root, "2026-10-01-002", "Wiki refresh agent: cut cost per refresh", "DONE", repository)
     code = _manage([
-        "init", root, "--title", "Cut wiki refresh cost per run", "--working-directory", repository,
+        "init", "--tag", "test", root, "--title", "Cut wiki refresh cost per run", "--working-directory", repository,
         "--acknowledge-duplicates", "2026-10-01-001", "--json",
     ])
     assert code == 0
@@ -220,7 +222,9 @@ def test_init_of_an_unrelated_title_needs_no_acknowledgment(
     root: Path, repository: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     _row(root, "2026-10-01-001", "Wiki refresh agent: cut cost per refresh", "EXECUTING", repository)
-    code = _manage(["init", root, "--title", "Dashboard for bidding", "--working-directory", repository, "--json"])
+    code = _manage(
+        ["init", "--tag", "test", root, "--title", "Dashboard for bidding", "--working-directory", repository, "--json"]
+    )
     assert code == 0
     result = json.loads(capsys.readouterr().out)
     assert "acknowledged" not in (Path(result["project_directory"]) / "spec.md").read_text(encoding="utf-8")
@@ -228,7 +232,8 @@ def test_init_of_an_unrelated_title_needs_no_acknowledgment(
 
 def test_init_with_a_new_root_has_nothing_to_compare(tmp_path: Path, repository: Path) -> None:
     root = tmp_path / "fresh"
-    assert _manage(["init", root, "--create-root", "--title", "First", "--working-directory", repository]) == 0
+    arguments = ["init", "--tag", "test", root, "--create-root", "--title", "First", "--working-directory", repository]
+    assert _manage(arguments) == 0
 
 
 def test_find_similar_prints_both_lists(root: Path, repository: Path, capsys: pytest.CaptureFixture[str]) -> None:

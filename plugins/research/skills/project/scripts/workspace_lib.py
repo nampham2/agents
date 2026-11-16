@@ -101,10 +101,69 @@ PROJECT_FIELDS = {
     "predecessor",
     "worktrees",
 }
-PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution"}
-# Fields a valid project may omit: `predecessor` names a maintenance ancestor and `worktrees` is
-# only present once a repository worktree, or its absence, has been recorded.
-OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees"}
+# `tags` is v4 only: schema v3 shares PROJECT_FIELDS and stays closed to it.
+PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags"}
+# Fields a valid project may omit: `predecessor` names the project this one continues (a maintenance
+# ancestor, or the finished source of a follow-up, whose briefing starts `Follow-up of: <id>`) and `worktrees` is
+# only present once a repository worktree, or its absence, has been recorded. `tags` is absent from
+# every project created before tags existed, so validation never requires it.
+OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags"}
+
+# A project carries 1 to 5 tags. Creation and the `tag` command enforce the minimum; validation checks
+# the form and the maximum only, so the projects that predate tags stay valid.
+MAX_TAGS = 5
+MAX_TAG_LENGTH = 24
+TAG_PATTERN = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+
+
+def normalize_tag(text: str) -> str:
+    """One tag in its stored form: trimmed, lowercase, runs of spaces and underscores as one hyphen.
+
+    A result that is empty, longer than 24 characters or not lowercase ASCII words joined by single hyphens
+    is refused, never truncated or repaired further.
+    """
+    if not isinstance(text, str):
+        raise WorkspaceError(f"a tag must be text, not {type(text).__name__}")
+    cleaned = re.sub(r"[\s_]+", "-", text.strip().lower())
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-")
+    if not cleaned:
+        raise WorkspaceError(f"tag {text!r} is empty after cleaning")
+    if not TAG_PATTERN.fullmatch(cleaned):
+        raise WorkspaceError(f"tag {text!r} must use only letters a-z, digits and single hyphens (got {cleaned!r})")
+    if len(cleaned) > MAX_TAG_LENGTH:
+        raise WorkspaceError(f"tag {cleaned!r} is longer than {MAX_TAG_LENGTH} characters")
+    return cleaned
+
+
+def normalize_tags(values: "list[str]", *, minimum: int = 0) -> "list[str]":
+    """The normalized tags in input order. Refuses a duplicate, more than 5 tags or fewer than `minimum`."""
+    tags = [normalize_tag(value) for value in values]
+    for position, tag in enumerate(tags):
+        if tag in tags[:position]:
+            raise WorkspaceError(f"duplicate tag {tag!r}")
+    if len(tags) > MAX_TAGS:
+        raise WorkspaceError(f"a project has at most {MAX_TAGS} tags, got {len(tags)}")
+    if len(tags) < minimum:
+        raise WorkspaceError(f"a new project needs at least {minimum} tag, got {len(tags)}")
+    return tags
+
+
+def _valid_tag_list(value: object) -> bool:
+    """Whether a stored `tags` value is a list of distinct, well-formed tags within the maximum."""
+    return (
+        isinstance(value, list)
+        and len(value) <= MAX_TAGS
+        and all(isinstance(tag, str) and len(tag) <= MAX_TAG_LENGTH and TAG_PATTERN.fullmatch(tag) for tag in value)
+        and len(set(value)) == len(value)
+    )
+
+
+def tags_of(state: "dict[str, Any]") -> "list[str]":
+    """The project's tags, read leniently: a missing or malformed value gives `[]` and never raises."""
+    value = state.get("tags") if isinstance(state, dict) else None
+    if isinstance(value, list) and _valid_tag_list(value):
+        return list(value)
+    return []
 WORKTREE_FIELDS = {
     "repository",
     "path",
@@ -271,6 +330,10 @@ class WorkspaceError(RuntimeError):
 
 class WorkspaceConflict(WorkspaceError):
     """Raised when a lock, a revision or a document token prevents a safe write."""
+
+
+class IndexNotRebuilt(WorkspaceError):
+    """The write landed but the index rebuild failed: nothing is lost and nothing needs redoing."""
 
 
 def document_conflict_message(
@@ -2464,6 +2527,28 @@ def validate_v3_state(
 EXECUTION_FIELDS = {"protocol_version", "coordinator_run", "ownership_generation", "attempts"}
 
 
+def _validate_tags(value: object, report: ValidationReport) -> None:
+    """Findings for a stored `tags` value. The minimum is not checked: projects from before tags are valid."""
+    if not isinstance(value, list):
+        report.errors.append("project: tags must be a list of strings")
+        return
+    for tag in value:
+        if not isinstance(tag, str):
+            report.errors.append(f"project: tags must hold strings, found {type(tag).__name__}")
+        elif not TAG_PATTERN.fullmatch(tag):
+            try:
+                hint = f"; write it as {normalize_tag(tag)!r}"
+            except WorkspaceError:
+                hint = ""
+            report.errors.append(f"project: tag {tag!r} must be lowercase words joined by single hyphens{hint}")
+        elif len(tag) > MAX_TAG_LENGTH:
+            report.errors.append(f"project: tag {tag!r} is longer than {MAX_TAG_LENGTH} characters")
+    if len(set(map(repr, value))) != len(value):
+        report.errors.append("project: tags hold a duplicate tag")
+    if len(value) > MAX_TAGS:
+        report.errors.append(f"project: a project has at most {MAX_TAGS} tags, found {len(value)}")
+
+
 def validate_v4_state(
     state: dict[str, Any],
     project_dir: Path,
@@ -2477,6 +2562,8 @@ def validate_v4_state(
     report = ValidationReport()
     _missing_fields(state, PROJECT_V4_FIELDS - OPTIONAL_PROJECT_FIELDS, "project", report)
     _unexpected_fields(state, PROJECT_V4_FIELDS, "project", report)
+    if "tags" in state:
+        _validate_tags(state["tags"], report)
 
     if state.get("schema_version") != 4:
         report.errors.append("schema_version must be 4")
@@ -4143,6 +4230,9 @@ def render_index(workspace_root: Path) -> str:
     return header + body
 
 
+INDEX_NOT_REBUILT = ", but INDEX.md was not rebuilt"
+
+
 def _rebuild_index_after_commit(workspace_root: Path, committed: str, lock_timeout: float) -> None:
     """Rebuild the index, making clear that a failure here did not undo the committed write.
 
@@ -4158,8 +4248,8 @@ def _rebuild_index_after_commit(workspace_root: Path, committed: str, lock_timeo
     try:
         rebuild_index(workspace_root, lock_timeout=lock_timeout)
     except WorkspaceError as error:
-        raise WorkspaceError(
-            f"{committed}, but INDEX.md was not rebuilt: {error}\n"
+        raise IndexNotRebuilt(
+            f"{committed}{INDEX_NOT_REBUILT}: {error}\n"
             f"nothing is lost and nothing needs redoing: finish with "
             f"'manage_workspace.py rebuild-index {workspace_root}'"
         ) from error
@@ -5812,6 +5902,61 @@ def commit_state(
     return candidate
 
 
+def tag_project(
+    project_dir: Path,
+    action: str,
+    tags: "list[str]",
+    *,
+    expected_revision: int,
+    lock_timeout: float = 5.0,
+) -> "dict[str, Any]":
+    """Add or remove tags through the guarded commit path. Every refusal starts with `tag refused:`.
+
+    The candidate carries the whole new list, and `commit_state` takes a whole state: nothing is merged,
+    and `tags` is in no update whitelist, so this is the only way to change tags after creation. The
+    commit path adds its own refusals (a set `coordinator_run`, a non-empty `attempts`, a stale revision).
+    """
+    try:
+        project_dir = project_dir.resolve()
+        if action not in ("add", "remove"):
+            raise WorkspaceError(f"unknown tag action {action!r}; use add or remove")
+        state = load_json(project_dir / "project.json")
+        if state.get("schema_version") != 4:
+            raise WorkspaceError(
+                f"only schema v4 projects take tags; run `research-project migrate {project_dir}` first"
+            )
+        if "tags" in state and not _valid_tag_list(state["tags"]):
+            raise WorkspaceError("the stored tags field in project.json is malformed; fix it by hand first")
+        current = tags_of(state)
+        given = normalize_tags(tags)
+        if not given:
+            raise WorkspaceError("name at least one tag")
+        if action == "add":
+            repeated = [tag for tag in given if tag in current]
+            if repeated:
+                raise WorkspaceError(f"already tagged {', '.join(repeated)}")
+            updated = normalize_tags(current + given)
+        else:
+            missing = [tag for tag in given if tag not in current]
+            if missing:
+                raise WorkspaceError(f"not tagged {', '.join(missing)}")
+            updated = [tag for tag in current if tag not in given]
+            if not updated:
+                raise WorkspaceError("a project keeps at least 1 tag")
+        candidate = copy.deepcopy(state)
+        candidate["tags"] = updated
+        return commit_state(project_dir, candidate, expected_revision=expected_revision, lock_timeout=lock_timeout)
+    except WorkspaceConflict as error:
+        raise WorkspaceConflict(f"tag refused: {error}") from error
+    except WorkspaceError as error:
+        message = str(error)
+        if message == READER_ONLY_REFUSAL:
+            message += "; the project records legacy executor ownership: resolve it first (references/legacy-executor.md)"
+        raise WorkspaceError(f"tag refused: {message}") from error
+    except OSError as error:
+        raise WorkspaceError(f"tag refused: {error}") from error
+
+
 def _commit_state_locked(
     project_dir: Path, candidate: dict[str, Any], expected_revision: int,
     locked_guard: Callable[[dict[str, Any]], None] | None = None,
@@ -5871,12 +6016,29 @@ def allocate_project(
     working_directory: Path,
     lock_timeout: float = 5.0,
     create_root: bool = False,
-    briefing: bool = False,
+    briefing: "bool | str" = False,
     acknowledged_duplicates: "list[str] | None" = None,
+    tags: "list[str] | None" = None,
+    predecessor: "str | None" = None,
+    history_entries: "list[str] | None" = None,
 ) -> Path:
+    """Create a project directory and return it. `project.json` is written last.
+
+    `briefing` is False for none, True for the empty skeleton, or the text to write as `briefing.md`.
+    `history_entries` is markdown appended to the new `spec.md` decision history after the usual bullets.
+    """
     workspace_root = workspace_root.expanduser()
     if not _non_empty_string(title):
         raise WorkspaceError("title must be non-empty")
+    # The title is written as a heading line of spec.md and briefing.md: a second line could plant a record
+    # marker or a heading outside any fence.
+    if len(title.strip().splitlines()) != 1:
+        raise WorkspaceError("title must be one line")
+    # The record markers of spec.md are matched anywhere in the text, so one line is enough to forge one.
+    if "<!--" in title:
+        raise WorkspaceError("title must not contain '<!--', which could forge a record marker")
+    # Before any directory exists: a bad tag leaves nothing behind. None records no `tags` field at all.
+    stored_tags = None if tags is None else normalize_tags(tags)
     working_directory = working_directory.resolve()
     if not working_directory.is_dir():
         raise WorkspaceError(f"working directory does not exist: {working_directory}")
@@ -5926,6 +6088,10 @@ def allocate_project(
                 "attempts": {},
             },
         }
+        if stored_tags is not None:
+            state["tags"] = stored_tags
+        if predecessor is not None:
+            state["predecessor"] = predecessor
         # project.json is the commit point: write the skeleton first so an interrupted init leaves
         # an inert directory that detect_schema does not recognise and render_index skips, rather
         # than a project that reports schema v4 while missing the files v4 requires.
@@ -5935,11 +6101,15 @@ def allocate_project(
                 "- The user acknowledged these live projects as possible duplicates at init: "
                 + ", ".join(acknowledged_duplicates) + ".\n"
             )
+        for entry in history_entries or []:
+            history += f"\n{entry.rstrip(chr(10))}\n"
         atomic_write_text(
             project_dir / "spec.md",
             f"# {title.strip()}\n\n## Current specification\n\nAlignment in progress.\n\n## Decision history\n\n{history}",
         )
-        if briefing:
+        if isinstance(briefing, str):
+            atomic_write_text(project_dir / "briefing.md", briefing)
+        elif briefing:
             atomic_write_text(project_dir / "briefing.md", _briefing_skeleton(title.strip()))
         atomic_write_text(project_dir / "evidence.md", f"# Evidence\n\n{EVIDENCE_PLACEHOLDER}")
         atomic_write_text(project_dir / MEMORY_STAGING_FILENAME, MEMORY_STAGING_SKELETON)

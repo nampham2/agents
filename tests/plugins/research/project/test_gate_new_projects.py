@@ -319,8 +319,8 @@ class TestGateThroughTheLaunchers:
         for label, created in (("new", "2100-01-01T00:00:00+00:00"), ("legacy", "2020-01-01T00:00:00+00:00")):
             root = tmp_path / f"ws-{label}"
             created_json = subprocess.run(
-                [str(launcher), "init", str(root), "--title", label, "--working-directory", str(target),
-                 "--create-root", "--json"],
+                [str(launcher), "init", "--tag", "test", str(root), "--title", label,
+                 "--working-directory", str(target), "--create-root", "--json"],
                 capture_output=True, text=True, check=True,
             ).stdout
             project = Path(json.loads(created_json)["project_directory"])

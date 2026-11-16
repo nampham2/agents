@@ -97,6 +97,7 @@ class VcsWarningReachesTheToolsTests(unittest.TestCase):
                 sys.executable,
                 str(MANAGER),
                 "init",
+                "--tag", "test",
                 str(workspace),
                 "--title",
                 "VCS",
@@ -137,6 +138,7 @@ class VcsWarningReachesTheToolsTests(unittest.TestCase):
             [
                 "manage",
                 "init",
+                "--tag", "test",
                 str(workspace),
                 "--title",
                 "VCS",

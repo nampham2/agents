@@ -36,6 +36,7 @@ from workspace_lib import (
     planning_status,
     read_text,
     resolve_workspace_root,
+    tags_of,
 )
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 PAGE = Path(__file__).with_name("dashboard.html")
 COMMENT = re.compile(r"<!--.*?-->", re.DOTALL)
+FENCE = re.compile(r"(`{3,}|~{3,})")
 
 
 def _text(value: Any) -> str:
@@ -80,7 +82,21 @@ def _decisions(markdown: str) -> list[str]:
     match = re.search(r"^## Decision history[ \t]*\n(.*)\Z", markdown, re.DOTALL | re.MULTILINE)
     if not match:
         return []
-    entries = [COMMENT.sub("", line[2:]).strip() for line in match.group(1).splitlines() if line.startswith("- ")]
+    entries: list[str] = []
+    fence = ""  # the opening run of a fenced block while one is open: its lines are text, not decisions
+    for line in match.group(1).splitlines():
+        stripped = line.lstrip()
+        run = FENCE.match(stripped)
+        if fence:
+            # A closing fence repeats the character, is at least as long as the opening one, and has no text after it.
+            closes = bool(run) and run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence)
+            if closes and not stripped[len(run.group(1)):].strip():
+                fence = ""
+            continue
+        if run:
+            fence = run.group(1)
+        elif line.startswith("- "):
+            entries.append(COMMENT.sub("", line[2:]).strip())
     return [entry for entry in entries if entry][-DECISION_LIMIT:][::-1]
 
 
@@ -173,6 +189,7 @@ def _handoff(project_dir: Path) -> dict[str, Any]:
 def _defaults() -> dict[str, Any]:
     """The keys the page reads beyond the project's own fields, as an unreadable project has them."""
     return {
+        "tags": [],
         "needs_you_reason": "",
         "agreement": "none",
         "goldfish": {"rounds": 0, "last_outcome": ""},
@@ -279,6 +296,7 @@ def build_project(project_dir: Path) -> dict[str, Any]:
             "schema": state.get("schema_version"),
             "working_directory": working_directory,
             "repo": _repository(working_directory),
+            "tags": tags_of(state),
             "task_total": len(tasks),
             "task_done": counts.get("DONE", 0),
             "task_counts": counts,

@@ -665,6 +665,74 @@ def _at_or_after_instant(value: object) -> bool:
     return at_or_after(value, workspace_lib.GOLDFISH_FROM)
 
 
+FINDING_SEVERITY = re.compile(r", (Blocker|Major|Nit), ")
+FINDING_TRIAGE = re.compile(r" Triage: (FIX|CONTEST|ESCALATE|DECLINE)\.")
+
+
+def residual_findings(project: Path) -> "list[dict[str, str]]":
+    """Findings a finished project leaves standing, one item each, for a follow-up to carry over.
+
+    For each series (target and worktree) the latest round whose outcome is `accepted-residual` counts, even
+    when a later round passed: a delta round can pass without listing the residual, so this errs toward
+    carrying an item. An item is a Blocker or Major whose triage is not FIX, so a finding the user accepted as
+    residual risk and not one that was fixed. Finding lines are free text (`_finding_line`), so the parser
+    fails closed: a line with several severity or triage tokens reads as a Major with no triage, and is carried.
+    """
+    latest: "dict[tuple[str, str | None], Round]" = {}
+    rounds = round_documents(project)
+    for item in rounds:
+        if item.outcome == "accepted-residual":
+            latest[item.key] = item
+    items: "list[dict[str, str]]" = []
+    # `round_documents` skips a round file it cannot read or whose marker does not parse. That may be a damaged
+    # accepted-residual round, so a file that is unreadable, or that starts like a round marker, is carried as an
+    # item that says so. A file that never was a round (a stub, a legacy review) is left out.
+    parsed = {found.number for found in rounds}
+    for number in round_numbers(project):
+        if number in parsed:
+            continue
+        document = f"{round_name(number)}.md"
+        try:
+            damaged = read_text(project / document).startswith("<!-- research-goldfish")
+            note = f"{document} could not be read as a round; open it for the findings it holds"
+        except WorkspaceError:
+            damaged = True
+            note = f"{document} could not be read; open it for the findings it holds"
+        if damaged:
+            items.append({"kind": "residual", "text": note, "pointer": document})
+    for round_ in sorted(latest.values(), key=lambda found: found.number):
+        document = f"{round_name(round_.number)}.md"
+        try:
+            text = read_text(project / document)
+        except WorkspaceError:
+            note = f"{document} could not be read; open it for the findings it holds"
+            items.append({"kind": "residual", "text": note, "pointer": document})
+            continue
+        in_findings = False
+        unread = 0  # lines of the findings section that are not finding lines: fail closed, say so once
+        for line in text.splitlines():
+            if line.startswith("## "):
+                in_findings = line.strip() == "## Findings"
+                continue
+            if not in_findings or not line.strip() or line.strip() == "None.":
+                continue
+            if not line.startswith("- ") or " (" not in line:
+                unread += 1
+                continue
+            identifier, rest = line[2:].split(" (", 1)
+            severities = FINDING_SEVERITY.findall(rest)
+            severity = severities[0] if len(severities) == 1 else "Major"
+            triages = FINDING_TRIAGE.findall(line)
+            triage = triages[0] if len(triages) == 1 else ""
+            if severity in ("Blocker", "Major") and triage != "FIX":
+                items.append({"kind": "residual", "text": line[2:], "pointer": f"{document}#{identifier}"})
+        if unread:
+            plural = "s" if unread != 1 else ""
+            note = f"{unread} line{plural} of {document} could not be read as findings; open it"
+            items.append({"kind": "residual", "text": note, "pointer": document})
+    return items
+
+
 def goldfish_findings(project: Path) -> "list[str]":
     """Warnings from the round documents alone, for the latest round of each target; no Git is read."""
     latest: "dict[tuple[str, str | None], Round]" = {}

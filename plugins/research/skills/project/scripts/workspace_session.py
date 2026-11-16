@@ -20,6 +20,7 @@ from workspace_lib import (
     load_json,
     planning_path,
     read_text,
+    tags_of,
     validate_project,
     validate_v3_state,
     validate_v4_state,
@@ -427,6 +428,9 @@ def list_projects(
             if not directory.is_dir() or directory.name.startswith("."):
                 continue
             times: dict[str, str] = {}
+            # Kept apart from `row`: the row is joined for the query match and sliced to 500 characters,
+            # and a list breaks both.
+            extras: dict[str, Any] = {"tags": []}
             if (directory / "project.json").is_file():
                 try:
                     state = load_json(directory / "project.json")
@@ -435,6 +439,10 @@ def list_projects(
                         raise WorkspaceError("missing or malformed discovery fields")
                     row = {key: state[key] for key in fields}
                     times = {key: state[key] for key in ("created", "updated") if isinstance(state.get(key), str)}
+                    extras["tags"] = tags_of(state)
+                    predecessor = state.get("predecessor")
+                    if isinstance(predecessor, str) and predecessor.strip():
+                        extras["predecessor"] = predecessor
                 except WorkspaceError:
                     row = {"project": directory.name, "title": "Unreadable project.json", "status": "INVALID"}
             elif (directory / "00_meta.yaml").is_file() and (directory / "02_task_plan.md").is_file():
@@ -449,7 +457,8 @@ def list_projects(
             ):
                 continue
             rows.append({
-                **{key: value[:500] for key, value in row.items() if key != "path"}, **times, "path": row["path"],
+                **{key: value[:500] for key, value in row.items() if key != "path"}, **times, **extras,
+                "path": row["path"],
                 "truncated_fields": [key for key, value in row.items() if key != "path" and len(value) > 500],
             })
     except OSError as error:

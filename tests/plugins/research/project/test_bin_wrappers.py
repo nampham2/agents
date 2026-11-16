@@ -87,6 +87,7 @@ class WrapperExecutionTests(unittest.TestCase):
             [
                 str(SKILL_SCRIPTS / "research-project"),
                 "init",
+                "--tag", "test",
                 str(workspace),
                 "--title",
                 "Wrapper project",
