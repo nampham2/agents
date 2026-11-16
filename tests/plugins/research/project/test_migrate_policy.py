@@ -373,3 +373,14 @@ def test_the_preview_reports_what_the_closure_check_would() -> None:
     state = plan_state(worktrees=[entry()])
     hypothetical = {**state, "policy_version": 2, "delivery_target": "release"}
     assert migration_plan(state, "release")["unsatisfied"] == closure_findings(hypothetical)
+
+
+def test_a_filesystem_failure_is_reported_not_a_traceback(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import workspace_workflows
+
+    def broken(*arguments: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(workspace_workflows, "_migrate_policy", broken)
+    with pytest.raises(WorkspaceError, match="migrate-policy filesystem failure: disk full"):
+        migrate_policy(project, target="pr")
