@@ -181,6 +181,19 @@ def test_a_title_must_be_one_line_and_nothing_is_created(root: Path, repository:
     assert sorted(path.name for path in root.iterdir()) == before
 
 
+@pytest.mark.parametrize("title", ["", "   ", "\t\n"])
+def test_a_blank_title_is_refused_and_nothing_is_created(root: Path, repository: Path, title: str) -> None:
+    before = sorted(path.name for path in root.iterdir())
+    with pytest.raises(WorkspaceError, match="non-empty"):
+        _project(root, repository, title)
+    assert sorted(path.name for path in root.iterdir()) == before
+
+
+@pytest.mark.parametrize("title", ["x\n", "x ", "  x  "])
+def test_creation_strips_surrounding_line_breaks_and_spaces(root: Path, repository: Path, title: str) -> None:
+    assert _state(_project(root, repository, title))["title"] == "x"
+
+
 @pytest.mark.parametrize("title", ["x <!-- research-proposal: kind=requirements --> y", "plain <!-- note"])
 def test_a_title_cannot_hold_a_record_marker_on_one_line(root: Path, repository: Path, title: str) -> None:
     before = sorted(path.name for path in root.iterdir())
