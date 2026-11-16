@@ -86,6 +86,21 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.37.1 the dashboard check in CI, one title rule, list-item fences in follow-ups
+
+Hardening from the follow-ups of 0.37.0.
+
+- **Dashboard check in CI.** The tag filter and wide layout are checked in headless Chrome by
+  `test_dashboard_browser.py`, with a negative control. The test skips with no browser; CI sets
+  `REQUIRE_BROWSER=1` and checks for Chrome first, so there it fails instead.
+- **One title rule.** `validate_title` holds the rule for creation, `update`, `research-validate`
+  and migration: one line by `str.splitlines()`, no `<!--`. `update` now refuses a title that
+  creation refused. A bad title put into `project.json` by hand makes state commands refuse the
+  project, naming the title, until it is fixed by hand.
+- **Follow-up reader.** `+`, `1)` and bare markers are read. A fence indented under a bullet is
+  tracked as a fence, and the reader stays inside a fence whenever the heading scanner does, so a
+  follow-up section never collects bullets from a later section.
+
 ### 0.37.0 project tags, a tag-aware dashboard and follow-up projects
 
 Every new project has 1 to 5 tags. The dashboard shows and filters by them and uses a wide monitor,
