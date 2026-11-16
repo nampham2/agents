@@ -542,7 +542,9 @@ def update_project_data(
 UPDATE_FIELDS = {"title", "status", "review", "cancellation_reason", "predecessor", "tasks"}
 # Fields only a verifying operation may patch: `update` must not be able to declare a worktree or
 # move the target root without the Git observations the `worktree` action insists on.
-INTERNAL_UPDATE_FIELDS = UPDATE_FIELDS | {"worktrees", "working_directory", "policy_version", "delivery_target"}
+INTERNAL_UPDATE_FIELDS = UPDATE_FIELDS | {
+    "worktrees", "working_directory", "policy_version", "delivery_target", "review_risk", "review_fallback", "options",
+}
 
 
 def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: bool = False) -> dict[str, Any]:
@@ -570,6 +572,15 @@ def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: 
             _merge(by_id[task_id], change)
         else:
             state["tasks"].append(_new_task(change))
+    if internal:
+        # `settings` replaces a risk or fallback and merges options per key; a null leaves the field unset.
+        for key in ("review_risk", "review_fallback"):
+            if key in changes:
+                state.pop(key, None)
     _merge(state, changes)
+    if internal:
+        for key in ("review_risk", "review_fallback", "options"):
+            if key in state and state[key] is None:
+                del state[key]
     state["current_tasks"] = [task["id"] for task in state["tasks"] if task.get("status") == "RUNNING"]
     return state

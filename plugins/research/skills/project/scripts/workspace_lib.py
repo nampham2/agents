@@ -102,12 +102,17 @@ PROJECT_FIELDS = {
     "worktrees",
 }
 # `tags`, `policy_version` and `delivery_target` are v4 only: schema v3 shares PROJECT_FIELDS and stays closed to them.
-PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags", "policy_version", "delivery_target"}
+PROJECT_V4_FIELDS = PROJECT_FIELDS | {
+    "execution", "tags", "policy_version", "delivery_target", "review_risk", "review_fallback", "options",
+}
 # Fields a valid project may omit: `predecessor` names the project this one continues (a maintenance
 # ancestor, or the finished source of a follow-up, whose briefing starts `Follow-up of: <id>`) and `worktrees` is
 # only present once a repository worktree, or its absence, has been recorded. `tags` is absent from
 # every project created before tags existed, so validation never requires it.
-OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags", "policy_version", "delivery_target"}
+OPTIONAL_PROJECT_FIELDS = {
+    "predecessor", "worktrees", "tags", "policy_version", "delivery_target", "review_risk", "review_fallback",
+    "options",
+}
 
 # A project carries 1 to 5 tags. Creation and the `tag` command enforce the minimum; validation checks
 # the form and the maximum only, so the projects that predate tags stay valid.
@@ -483,11 +488,30 @@ NEW_PROJECT_POLICY: "int | None" = 3
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
 POLICY_VERSIONS = (0, 1, 2, 3)
 DEFAULT_OPTIONS: "dict[str, bool]" = {"style_advice": True, "memory_staging": True, "reports": False}
+# The policy-3 settings, written only by `workflow settings`: how hard a review looks, what stands in for a
+# review on a host with no fresh agents, and the optional policies.
+SETTINGS_FIELDS = ("review_risk", "review_fallback", "options")
+REVIEW_RISKS = ("low", "standard", "high")
+FALLBACK_MODES = ("ask", "waive-recorded")
 
 
 def has_target_rules(policy: int) -> bool:
     """Whether `policy` records a delivery target and takes its obligations from it: policy 2 and 3."""
     return policy >= 2
+
+
+def review_risk(state: dict[str, Any]) -> str:
+    """The recorded review risk of `state`; unset or unrecognised reads as `standard`."""
+    value = state.get("review_risk") if isinstance(state, dict) else None
+    return value if isinstance(value, str) and value in REVIEW_RISKS else "standard"
+
+
+def review_fallback(state: dict[str, Any]) -> "dict[str, str]":
+    """The standing review fallback of `state`: `{"mode": "ask"}` unless a valid one is stored."""
+    value = state.get("review_fallback") if isinstance(state, dict) else None
+    if isinstance(value, dict) and value.get("mode") == "waive-recorded" and isinstance(value.get("reason"), str):
+        return {"mode": "waive-recorded", "reason": value["reason"]}
+    return {"mode": "ask"}
 
 
 def project_options(state: dict[str, Any]) -> "dict[str, bool]":
@@ -2718,6 +2742,7 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
             report.errors.append(
                 f"project: delivery_target needs policy_version 2 or 3, but the project is at policy {policy}"
             )
+    _validate_settings(state, policy if valid else None, report)
     # BLOCKED may follow ALIGNING, so it is let through here: leaving it for PLANNING or beyond is refused.
     unaligned = ("ALIGNING", "BLOCKED", "CANCELLED")
     if valid and has_target_rules(policy) and "delivery_target" not in state and state.get("status") not in unaligned:
@@ -2725,6 +2750,44 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
             f"project: a policy-{policy} project past ALIGNING needs a delivery_target "
             f"({', '.join(DELIVERY_TARGETS)}); record it with 'workflow retarget'"
         )
+
+
+def _validate_settings(state: dict[str, Any], policy: "int | None", report: ValidationReport) -> None:
+    """`review_risk`, `review_fallback` and `options`: policy 3 only, closed values."""
+    for name in SETTINGS_FIELDS:
+        if name in state and policy is not None and policy != 3:
+            report.errors.append(f"project: {name} needs policy_version 3, but the project is at policy {policy}")
+    if "review_risk" in state and state["review_risk"] not in REVIEW_RISKS:
+        report.errors.append(
+            f"project: review_risk must be one of {', '.join(REVIEW_RISKS)}, found {state['review_risk']!r}"
+        )
+    if "review_fallback" in state:
+        report.errors.extend(f"project: {text}" for text in fallback_errors(state["review_fallback"]))
+    if "options" in state:
+        report.errors.extend(f"project: {text}" for text in options_errors(state["options"]))
+
+
+def fallback_errors(value: object) -> "list[str]":
+    """What is wrong with a `review_fallback` value: a closed mode and, to waive, a reason."""
+    if not isinstance(value, dict) or set(value) - {"mode", "reason"}:
+        return ["review_fallback must be an object with only mode and reason"]
+    if value.get("mode") not in FALLBACK_MODES:
+        return [f"review_fallback mode must be one of {', '.join(FALLBACK_MODES)}"]
+    if value["mode"] == "waive-recorded" and not (isinstance(value.get("reason"), str) and value["reason"].strip()):
+        return ["review_fallback needs a reason to waive"]
+    return []
+
+
+def options_errors(value: object) -> "list[str]":
+    """What is wrong with an `options` value: only the known keys, each a boolean."""
+    if not isinstance(value, dict):
+        return ["options must be an object"]
+    errors = [f"options has an unknown key: {key}" for key in sorted(value.keys() - DEFAULT_OPTIONS.keys(), key=str)]
+    errors += [
+        f"options.{key} must be true or false" for key in sorted(value)
+        if key in DEFAULT_OPTIONS and type(value[key]) is not bool
+    ]
+    return errors
 
 
 def _validate_tags(value: object, report: ValidationReport) -> None:
@@ -5969,8 +6032,9 @@ def _revision_conflicts(current: dict[str, Any], candidate: dict[str, Any], expe
 
 # Fields only a named journaled action may change. The exemption comes from the action name stored in
 # the journal record, never from request data, so preflight, commit and replay agree.
-GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target")
+GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target", *SETTINGS_FIELDS)
 GUARDED_WRITERS: "dict[str, set[str]]" = {
+    "settings": set(SETTINGS_FIELDS),
     "confirm": {"delivery_target"},
     "retarget": {"delivery_target"},
     "migrate_policy": {"policy_version", "delivery_target"},

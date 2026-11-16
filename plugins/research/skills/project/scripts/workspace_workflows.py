@@ -58,6 +58,7 @@ from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
 from workspace_goldfish import (
     OPERATION_FIELDS,
     OPERATION_REQUIRED,
+    amendment_details,
     confirm_gate_errors,
     delivery_gate_errors,
     goldfish_findings,
@@ -81,6 +82,7 @@ from workspace_lib import (
     DELIVERY_TARGETS,
     PLANNING_STATUS_PATTERN,
     PROJECT_TRANSITIONS,
+    REVIEW_RISKS,
     DeliveryRules,
     WorkspaceConflict,
     WorkspaceError,
@@ -89,12 +91,14 @@ from workspace_lib import (
     delivery_rules,
     document_conflict_message,
     document_sha256,
+    fallback_errors,
     has_target_rules,
     is_legacy_planning_layout,
     is_retro_gated,
     load_json,
     memory_staging_warnings,
     now_iso,
+    options_errors,
     planning_path,
     proposal_digest,
     proposal_marker,
@@ -119,6 +123,7 @@ FIELDS = {
         "response", "source", "scope", "continuation", "delivery_target",
     },
     "retarget": {"delivery_target", "reason", "confirmation"},
+    "settings": {"review_risk", "review_fallback", "options", "confirmation"},
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
     "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
@@ -155,6 +160,7 @@ READ_ACTIONS = set(READ_INPUTS)
 CONFIRM_REQUIRED = frozenset({"kind", "review_id", "response", "scope", "source"})
 WORKTREE_REQUIRED = frozenset({"confirmation", "operation", "path"})
 RETARGET_REQUIRED = frozenset({"confirmation", "delivery_target", "reason"})
+SETTINGS_REQUIRED = frozenset({"confirmation"})
 CONFIRM_REQUIRED_BY = {
     "kind=requirements": frozenset({"proposal_sha256"}),
     "kind=planning": frozenset({"proposal_sha256"}),
@@ -187,7 +193,7 @@ EFFECT_REQUIRED_BY = {"operation=intent": frozenset({"effect"}), "operation=reso
 WAIT_REQUIRED = frozenset({"task", "on"})
 ALWAYS_REQUIRED = {
     "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
-    "retarget": RETARGET_REQUIRED,
+    "retarget": RETARGET_REQUIRED, "settings": SETTINGS_REQUIRED,
     "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED, "wait": WAIT_REQUIRED,
 }
 REQUIRED_BY = {
@@ -692,6 +698,39 @@ def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
     return {"delivery_target": target}, body, outcome
 
 
+def _settings(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str, Any], str, dict[str, Any]]":
+    """The patch, decision body and result of a settings change, after its refusals."""
+    policy = delivery_rules(state).policy
+    if policy != 3:
+        raise WorkspaceError(f"settings needs policy_version 3, but this project is at policy {policy}")
+    if state["status"] in ("DONE", "CANCELLED"):
+        raise WorkspaceError(f"a {state['status']} project keeps its settings")
+    confirmation = _confirmation(request.get("confirmation"))
+    patch: dict[str, Any] = {}
+    if "review_risk" in request:
+        risk = request["review_risk"]
+        if risk is not None and (not isinstance(risk, str) or risk not in REVIEW_RISKS):
+            raise WorkspaceError(f"review_risk must be one of {', '.join(REVIEW_RISKS)}, or null to unset it")
+        patch["review_risk"] = risk
+    if "review_fallback" in request:
+        fallback = request["review_fallback"]
+        problems = [] if fallback is None else fallback_errors(fallback)
+        if problems:
+            raise WorkspaceError(problems[0])
+        patch["review_fallback"] = fallback
+    if "options" in request:
+        options = request["options"]
+        problems = [] if options is None else options_errors(options)
+        if problems:
+            raise WorkspaceError(problems[0])
+        patch["options"] = options
+    if not patch:
+        raise WorkspaceError("settings needs at least one of review_risk, review_fallback and options")
+    changes = "; ".join(f"{key} = {json.dumps(value, sort_keys=True)}" for key, value in patch.items())
+    body = f"kind: settings\n{changes}\nsource: {confirmation['source']}\nresponse: {confirmation['response']}"
+    return patch, body, {"settings": patch}
+
+
 def _build(
     project: Path, action: str, request: dict[str, Any], state: dict[str, Any]
 ) -> tuple[dict[str, str], dict[str, Any] | None, dict[str, Any]]:
@@ -817,10 +856,17 @@ def _build(
         notes = goldfish_findings(project)
         if notes:
             result["goldfish_findings"] = notes
+        amendments = amendment_details(project)
+        if amendments:
+            result["amendments"] = amendments
     elif action == "retarget":
         patch, body, outcome = _retarget(state, request)
         decision(body)
         result.update(outcome)
+    elif action == "settings":
+        patch, body, outcome = _settings(state, request)
+        decision(body)
+        result.update(outcome["settings"])
     elif action == "correct":
         old = _task(state, string_input(request.get("task"), "task"))
         if old["status"] not in ("DONE", "SKIPPED"):

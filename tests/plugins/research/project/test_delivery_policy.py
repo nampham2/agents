@@ -235,6 +235,7 @@ def test_guarded_writers_are_a_code_constant() -> None:
         "confirm": {"delivery_target"},
         "retarget": {"delivery_target"},
         "migrate_policy": {"policy_version", "delivery_target"},
+        "settings": {"review_risk", "review_fallback", "options"},
     }
 
 
