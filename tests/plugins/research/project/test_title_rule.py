@@ -21,6 +21,7 @@ from workspace_lib import (
     migrate_v2_state,
     validate_project,
     validate_v3_state,
+    validate_v4_state,
 )
 from workspace_session import project_context, update_project_data
 
@@ -28,8 +29,8 @@ BAD_TITLES = [
     pytest.param("two\nlines", "one line", id="newline"),
     pytest.param("trailing\n", "one line", id="trailing-newline"),
     pytest.param("trailing\r\n", "one line", id="trailing-crlf"),
-    pytest.param("a b", "one line", id="line-separator"),
-    pytest.param("x ", "one line", id="trailing-line-separator"),
+    pytest.param("a\u2028b", "one line", id="line-separator"),
+    pytest.param("x\u2028", "one line", id="trailing-line-separator"),
     pytest.param("x\x85y", "one line", id="next-line"),
     pytest.param("plain <!-- note", "marker", id="marker"),
     pytest.param("   ", "non-empty string", id="whitespace-only"),
@@ -91,6 +92,20 @@ def test_an_empty_title_gives_exactly_one_error(project: Path) -> None:
     _hand_edit_title(project, "")
     report = validate_project(project)
     assert [error for error in report.errors if "title" in error] == ["project: title must be a non-empty string"]
+
+
+@pytest.mark.parametrize("schema", [3, 4])
+def test_the_other_identity_fields_keep_their_own_non_empty_check(project: Path, schema: int) -> None:
+    # The title left the shared non-empty loop; the fields that stayed in it must still be checked.
+    state = _state(project)
+    state["working_directory"] = " "
+    if schema == 3:
+        state["schema_version"] = 3
+        state.pop("tags", None)
+        state.pop("predecessor", None)
+    errors = (validate_v3_state if schema == 3 else validate_v4_state)(state, project, check_files=False).errors
+    assert "project: working_directory must be a non-empty string" in errors
+    assert not [error for error in errors if "title must" in error]
 
 
 def test_a_hand_edited_bad_title_stops_update_and_context_by_name(project: Path) -> None:

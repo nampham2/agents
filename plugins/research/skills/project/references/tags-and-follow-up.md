@@ -33,9 +33,13 @@ refuse a tag that is still not in that form, a duplicate and a sixth tag. They n
      --working-directory <target> --tag <tag> --tag <tag>
    ```
 
-   A title is one line and cannot contain `<!--`. `init <root> ... --tag <tag>` takes the same
-   flag. With 0 tags, more than 5, a duplicate or a bad tag the command prints `init created
-   nothing` and writes nothing.
+   A title is one line and cannot contain `<!--`. Creation strips the title first, so a trailing
+   newline is dropped. `update` refuses a title with any line break, trailing ones included, and
+   `research-validate` reports one in a v3 or v4 `project.json`. A bad title that gets into
+   `project.json` by hand makes every state command refuse the project, naming the title, and
+   blocks migration of a v1 or v2 project. Fix it in `project.json` (or the v1 plan heading) by
+   hand. `init <root> ... --tag <tag>` takes the same flag. With 0 tags, more than 5, a duplicate
+   or a bad tag the command prints `init created nothing` and writes nothing.
 
 ## Change tags later
 

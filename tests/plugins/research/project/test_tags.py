@@ -189,7 +189,7 @@ def test_a_blank_title_is_refused_and_nothing_is_created(root: Path, repository:
     assert sorted(path.name for path in root.iterdir()) == before
 
 
-@pytest.mark.parametrize("title", ["x\n", "x ", "  x  "])
+@pytest.mark.parametrize("title", ["x\n", "x\u2028", "  x  "])
 def test_creation_strips_surrounding_line_breaks_and_spaces(root: Path, repository: Path, title: str) -> None:
     assert _state(_project(root, repository, title))["title"] == "x"
 
