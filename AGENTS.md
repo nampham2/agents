@@ -26,7 +26,9 @@ uv lock --check
 ```
 
 Run lint and type checks over the whole repository, tests included. The test suite enforces 100%
-coverage of `plugins/research/skills/project/scripts`.
+coverage of `plugins/research/skills/project/scripts`. The dashboard browser test needs headless
+Chrome: it skips when none is found, `REQUIRE_BROWSER=1` (set in CI) makes that a failure, and
+`DASHBOARD_BROWSER` names a browser to use.
 
 ## Cross-host plugin contract
 

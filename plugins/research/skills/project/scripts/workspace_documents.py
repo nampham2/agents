@@ -439,8 +439,9 @@ FOLLOW_UP_TITLES = frozenset({"follow-up", "follow-ups"})
 BULLET = re.compile(rf"({MARKER})([ \t]+)(.*)")
 BARE_MARKER = re.compile(MARKER)
 FENCE_RUN = re.compile(r"(`{3,}|~{3,})(.*)")  # the run and whatever follows it, info string included
-# The deepest indent at which `_headings` sees a fence. Outer fences open and close at this limit, and an item
-# fence ends at a fence run within it, which keeps the reader inside a fence whenever `_headings` is.
+# The deepest indent at which `_headings` sees a fence. Outer fences open and close at this limit, an item fence
+# ends at a fence run within it, and item fences live only beyond it; that keeps the reader inside a fence
+# whenever `_headings` is. A module constant so the property test's negative control can move it.
 _OUTER_FENCE_MAX_INDENT = 3
 FOLLOW_UP_START = re.compile(r"follow[\s_-]?ups?\b")
 
@@ -476,11 +477,12 @@ def follow_up_items(reflection: str) -> "tuple[list[str], bool]":
     for index, (level, title, offset) in enumerate(headings):
         if level == 2 and is_follow_up_title(title):
             end = next((position for depth, _, position in headings[index + 1 :] if depth <= level), len(reflection))
-            body = reflection[_line_end(reflection, offset) : end]
+            # The heading line ends where `_headings` ends it: at any `str.splitlines` boundary, not only `\n`.
+            heading_line = reflection[offset:].splitlines(keepends=True)[0]
+            body = reflection[offset + len(heading_line) : end]
             break
     if body is None:
         return [], False
-    outer_limit = _OUTER_FENCE_MAX_INDENT  # read at call time
     items: list[str] = []
     loose = False
     fence = ""  # the opening run of the open fenced block, or empty
@@ -495,23 +497,25 @@ def follow_up_items(reflection: str) -> "tuple[list[str], bool]":
             closes = bool(run) and run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence)
             closes = closes and not run.group(2).strip()
             if not item_fence:
-                if closes and indent <= outer_limit:
+                if closes and indent <= _OUTER_FENCE_MAX_INDENT:
                     fence = ""
                 continue
-            if closes and indent >= 4 and 0 <= indent - content <= 3:
+            if closes and indent > _OUTER_FENCE_MAX_INDENT and 0 <= indent - content <= 3:
                 fence = ""
                 continue
-            if blank or not (indent < content or (run and indent <= outer_limit)):
+            if blank or not (indent < content or (run and indent <= _OUTER_FENCE_MAX_INDENT)):
                 continue
             fence = ""  # the item ends here; read this line again below
-        if run and indent <= outer_limit:
+        if run and indent <= _OUTER_FENCE_MAX_INDENT:
             fence, item_fence = run.group(1), False
             continue
-        if run and indent >= 4 and 0 <= indent - content <= 3:
+        if run and indent > _OUTER_FENCE_MAX_INDENT and 0 <= indent - content <= 3:
             fence, item_fence = run.group(1), True
             continue
         stripped = line.strip()
-        if blank or BARE_MARKER.fullmatch(stripped):
+        # An empty item: a marker alone at column 0, or a bare `-`, `*` or `+` anywhere. An indented `2025.`
+        # is text that continues the bullet above.
+        if blank or BARE_MARKER.fullmatch(line.rstrip()) or stripped in ("-", "*", "+"):
             continue
         top = BULLET.fullmatch(line)
         if top:

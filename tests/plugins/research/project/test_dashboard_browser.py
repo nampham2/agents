@@ -6,9 +6,11 @@ the real `dashboard.html` with that payload served by a `fetch` shim, clicks thr
 measures the layout at five widths.
 
 With no browser the test skips, unless `REQUIRE_BROWSER=1`, which CI sets: then it fails and names every
-place it looked. A browser that is found but exits non-zero, runs past its timeout or reports nothing fails;
-it never skips. Chrome runs in its own process group, killed on every path, and writes to files, never to a
-pipe, so neither a large DOM dump nor a helper process can hang the run.
+place it looked (pytest reports that as an error in the module's `browser` fixture, which fails the run).
+`DASHBOARD_BROWSER` names a browser to use instead of the search. A browser that is found but exits
+non-zero, runs past its timeout or reports nothing fails; it never skips. Chrome runs in its own process
+group, killed on every path, and writes to files, never to a pipe, so neither a large DOM dump nor a helper
+process can hang the run.
 """
 
 from __future__ import annotations
@@ -113,7 +115,8 @@ setTimeout(() => {
   document.getElementById("clear").click();
   qa(".card").find(c => !c.querySelector(".tagchip")).click();
   check("an untagged project's drawer says Untagged", Boolean(q("#drawer-title .untag")), "");
-  document.body.insertAdjacentHTML("beforeend", '<pre id="__out">' + JSON.stringify(out) + "</pre>");
+  const pre = document.createElement("pre"); pre.id = "__out"; pre.textContent = JSON.stringify(out);
+  document.body.append(pre);
 }, 800);
 </script>"""
 
@@ -127,7 +130,8 @@ setTimeout(() => {
     rail: getComputedStyle(q(".top")).position === "sticky",
     scrolls: document.documentElement.scrollWidth > innerWidth,
   };
-  document.body.insertAdjacentHTML("beforeend", '<pre id="__out">' + JSON.stringify(r) + "</pre>");
+  const pre = document.createElement("pre"); pre.id = "__out"; pre.textContent = JSON.stringify(r);
+  document.body.append(pre);
 }, 800);
 </script>"""
 
@@ -333,13 +337,14 @@ def test_discovery_order(tmp_path: Path) -> None:
 
 
 def test_a_browser_that_exits_non_zero_fails(tmp_path: Path) -> None:
-    with pytest.raises(pytest.fail.Exception, match="exited 3"):
+    with pytest.raises(pytest.fail.Exception, match="exited 3 at width 800: crashed"):
         run_page(_stub(tmp_path, "echo crashed >&2; exit 3"), _blank_page(tmp_path), 800)
 
 
-def test_a_browser_that_reports_nothing_fails(tmp_path: Path) -> None:
+@pytest.mark.parametrize("body", ["exit 0", "echo '<pre id=\"__out\"></pre>'; exit 0"], ids=["silent", "empty-block"])
+def test_a_browser_that_reports_nothing_fails(tmp_path: Path, body: str) -> None:
     with pytest.raises(pytest.fail.Exception, match="no result"):
-        run_page(_stub(tmp_path, "echo '<pre id=\"__out\"></pre>'; exit 0"), _blank_page(tmp_path), 800)
+        run_page(_stub(tmp_path, body), _blank_page(tmp_path), 800)
 
 
 def _gone(pid: int) -> bool:

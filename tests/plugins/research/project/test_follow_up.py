@@ -204,6 +204,22 @@ def test_a_dedented_bullet_ends_an_item_fence_and_is_an_item() -> None:
     assert section(body) == (["item", "next item", "third"], False)
 
 
+@pytest.mark.parametrize("ending", ["\n", "\r\n", "\r", "\x0c", "\x85", "\u2028"])
+def test_the_section_starts_after_the_heading_line_whatever_ends_it(ending: str) -> None:
+    # `_headings` ends a line at every `str.splitlines` boundary, so the section must start there too: a
+    # fence opened on the next line hides the bullets after it, and the first bullet is never dropped.
+    fenced = f"# R\n\n## Follow-up{ending}{FENCE}\n- hidden\n- also\n"
+    items, flagged = follow_up_items(fenced)
+    assert items == [] and flagged is True
+    assert follow_up_items(f"# R\n\n## Follow-up{ending}- a\n- b\n") == (["a", "b"], False)
+
+
+def test_a_wrapped_line_that_is_only_a_number_and_a_dot_joins_the_item() -> None:
+    # Only a marker at column 0 (or a bare `-`, `*` or `+` anywhere) is an empty item; an indented `2025.`
+    # continues the bullet above.
+    assert section("- shipped in\n  2025.\n- b") == (["shipped in 2025.", "b"], False)
+
+
 def test_five_spaces_after_a_marker_put_a_fence_at_four_into_the_item_text() -> None:
     # A documented limit: every space counts toward the content indent (6 here), so a fence at 4 is neither
     # an outer nor an item fence. `_headings` ignores it too, so nothing is harvested.
@@ -838,24 +854,26 @@ def test_the_command_prints_its_warnings_on_stderr(source: Path, capsys: pytest.
 PIECES = [
     "- item", "* star", "+ plus", "1. one", "1) paren", "10. ten", "-\ttab item", "-     wide", "  - nested", "",
     "text", "    code", "        deep", "\t```", "    ```", "  ```", "```", "```py", "````", "~~~", "    ~~~", "~~~ ~",
-    "  ```text", "\t- tabbed", "1.", "-", "## Next",
+    "  ```text", "\t- tabbed", "1.", "-", "## Next", "a\x0cb", "x\u2028```", "\r```", "- c\x85d",
 ]
+# Heading-line endings: `_headings` ends a line at every `str.splitlines` boundary.
+ENDINGS = ["\n", "\r\n", "\r", "\x0c", "\x85", "\u2028"]
 
 
-def headings_in_fence_after_each_line(lines: list[str]) -> list[bool]:
+def headings_in_fence_after_each_line(lines: list[str], ending: str = "\n") -> list[bool]:
     """The reference: `_headings` is inside a fence after line i exactly when a heading appended there is hidden."""
     states = []
     for index in range(len(lines)):
-        probe = "\n".join(["# R", "## Follow-up", *lines[: index + 1], "## probe"]) + "\n"
+        probe = f"# R\n## Follow-up{ending}" + "\n".join([*lines[: index + 1], "## probe"]) + "\n"
         states.append("probe" not in [title for _, title, _ in documents._headings(probe)])
     return states
 
 
-def reader_in_fence_after_each_line(lines: list[str]) -> list[bool]:
+def reader_in_fence_after_each_line(lines: list[str], ending: str = "\n") -> list[bool]:
     """The reader's state after line i, read from the public function: with a seed item, flagged means open fence."""
     states = []
     for index in range(len(lines)):
-        prefix = "\n".join(["# R", "## Follow-up", "- seed", *lines[: index + 1]]) + "\n"
+        prefix = f"# R\n## Follow-up{ending}" + "\n".join(["- seed", *lines[: index + 1]]) + "\n"
         states.append(follow_up_items(prefix)[1])
     return states
 
@@ -872,9 +890,11 @@ def first_counterexample(seed: int, cases: int) -> "list[str] | None":
         if not lines:
             continue
         checked += 1
-        # The seed item shifts nothing for `_headings`, which ignores list items.
-        reference = headings_in_fence_after_each_line(lines)
-        reader = reader_in_fence_after_each_line(lines)
+        ending = generator.choice(ENDINGS)
+        # The seed item is the first line after the heading; `_headings` ignores list items, so the reference
+        # starts the same lines straight after the heading.
+        reference = headings_in_fence_after_each_line(lines, ending)
+        reader = reader_in_fence_after_each_line(lines, ending)
         if any(inside and not read for inside, read in zip(reference, reader, strict=True)):
             return lines
     assert checked > cases // 2, f"the generator produced too few sections: {checked}"

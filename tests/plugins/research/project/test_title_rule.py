@@ -17,6 +17,7 @@ import pytest
 from workspace_lib import (
     WorkspaceError,
     allocate_project,
+    apply_migration,
     load_json,
     migrate_v2_state,
     validate_project,
@@ -143,3 +144,14 @@ def test_a_v2_project_with_a_multi_line_title_does_not_migrate_to_valid_v3(proje
 def test_a_v2_project_with_a_good_title_still_migrates(project: Path, tmp_path: Path) -> None:
     migrated = migrate_v2_state(_v2_state(project, tmp_path / "repo", "Legacy project"), project)
     assert not [error for error in validate_v3_state(migrated, project).errors if "title" in error]
+
+
+def test_apply_migration_refuses_a_v2_project_with_a_multi_line_title_and_writes_nothing(
+    project: Path, tmp_path: Path
+) -> None:
+    v2 = _v2_state(project, tmp_path / "repo", "Legacy\n## forged")
+    (project / "project.json").write_text(json.dumps(v2, indent=2) + "\n", encoding="utf-8")
+    before = (project / "project.json").read_bytes()
+    with pytest.raises(WorkspaceError, match="title must be one line"):
+        apply_migration(project)
+    assert (project / "project.json").read_bytes() == before

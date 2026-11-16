@@ -94,9 +94,10 @@ Hardening from the follow-ups of 0.37.0.
   `test_dashboard_browser.py`, with a negative control. The test skips with no browser; CI sets
   `REQUIRE_BROWSER=1` and checks for Chrome first, so there it fails instead.
 - **One title rule.** `validate_title` holds the rule for creation, `update`, `research-validate`
-  and migration: one line by `str.splitlines()`, no `<!--`. `update` now refuses a title that
-  creation refused. A bad title put into `project.json` by hand makes state commands refuse the
-  project, naming the title, until it is fixed by hand.
+  and migration: one line by `str.splitlines()`, no `<!--`. `update` refuses any title with a line
+  break, a trailing one included; creation strips the title first. A bad title put into
+  `project.json` by hand makes state commands refuse the project, naming the title, until it is
+  fixed by hand.
 - **Follow-up reader.** `+`, `1)` and bare markers are read. A fence indented under a bullet is
   tracked as a fence, and the reader stays inside a fence whenever the heading scanner does, so a
   follow-up section never collects bullets from a later section.
