@@ -68,8 +68,9 @@ first record update.
 Review [lessons](references/memory-operations.md) before agreement; reassess after direction
 changes; resolve staged lessons at closure. Every project requires [grill](references/grill.md),
 then [planning review](references/planning-review.md); follow both before planning. Clear
-requirements need confirmation even with zero question rounds. Write these sections under `##
-Current specification`, in order:
+requirements need confirmation even with zero question rounds; the alignment confirmation also
+records the delivery target ([worktrees.md](references/worktrees.md)). Write these sections under
+`## Current specification`, in order:
 
 ```markdown
 ### Objective and audience
@@ -109,7 +110,8 @@ allocates correction tasks for terminal work without copying acceptance or conse
 and roots. Start before writing; `finish --backfill --note` records earlier work. Dependencies must
 be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization (existing counts)
 and an optional intent ([durability.md](references/durability.md)). A repository target needs a
-recorded worktree and MR before its first write ([worktrees.md](references/worktrees.md)).
+recorded worktree, and an MR where the delivery target demands one, before its first write
+([worktrees.md](references/worktrees.md)).
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
 [legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs startup
@@ -131,8 +133,9 @@ deploy, follow [pull-requests.md](references/pull-requests.md).
 
 Delivery [reviews](references/durable-context.md#delivery-review-checkpoints) are conditional;
 `workflow ... review` saves findings and review state together. When tasks are `DONE` or justified
-`SKIPPED`, required reviews accepted, receipts present, and each recorded worktree has its release,
-merge and the user's keep/remove choice ([pull-requests.md](references/pull-requests.md)), close:
+`SKIPPED`, required reviews accepted, receipts present, and each recorded worktree has the records
+its delivery target demands and the user's keep/remove choice
+([pull-requests.md](references/pull-requests.md)), close:
 
 ```sh
 research-project workflow <project-dir> finalize -

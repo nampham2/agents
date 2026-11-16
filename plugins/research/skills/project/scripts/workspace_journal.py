@@ -284,7 +284,7 @@ def _advance(project: Path, path: Path, journal: dict[str, Any]) -> dict[str, An
             journal["saved"] = list(dict.fromkeys([*journal["saved"], name]))
             atomic_write_json(path, journal)
         if candidate is not None:
-            _commit_state_locked(project, copy.deepcopy(candidate), expected)
+            _commit_state_locked(project, copy.deepcopy(candidate), expected, action=journal["result"].get("operation"))
             landed = True
     journal["state_committed"] = landed or journal["state_committed"]
     atomic_write_json(path, journal)
@@ -363,7 +363,9 @@ def _run_operation(
                     prepared[name] = {"before": before, "text": body}
                 candidate = prepare_update(state, patch, internal=True) if patch is not None else None
                 if candidate is not None:
-                    report = check_state_candidate(project, candidate, expected_revision=expected, check_files=False)
+                    report = check_state_candidate(
+                        project, candidate, expected_revision=expected, check_files=False, action=action
+                    )
                     if report.errors:
                         raise WorkspaceError("; ".join(report.errors))
                     from workspace_lib import transition_gate_errors

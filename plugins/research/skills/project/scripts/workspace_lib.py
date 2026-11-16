@@ -20,7 +20,7 @@ from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
 from workspace_fields import NESTED_INPUTS, WORKTREE_OPTIONAL_FIELDS, field_errors
@@ -101,13 +101,13 @@ PROJECT_FIELDS = {
     "predecessor",
     "worktrees",
 }
-# `tags` is v4 only: schema v3 shares PROJECT_FIELDS and stays closed to it.
-PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags"}
+# `tags`, `policy_version` and `delivery_target` are v4 only: schema v3 shares PROJECT_FIELDS and stays closed to them.
+PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags", "policy_version", "delivery_target"}
 # Fields a valid project may omit: `predecessor` names the project this one continues (a maintenance
 # ancestor, or the finished source of a follow-up, whose briefing starts `Follow-up of: <id>`) and `worktrees` is
 # only present once a repository worktree, or its absence, has been recorded. `tags` is absent from
 # every project created before tags existed, so validation never requires it.
-OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags"}
+OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags", "policy_version", "delivery_target"}
 
 # A project carries 1 to 5 tags. Creation and the `tag` command enforce the minimum; validation checks
 # the form and the maximum only, so the projects that predate tags stay valid.
@@ -471,6 +471,98 @@ def needs_merge(entry: object) -> bool:
         return False
     exemption = entry.get("pr_exemption")
     return "pull_request" in entry or (isinstance(exemption, dict) and exemption.get("reason") == "local_only")
+
+
+# The policy a new project starts at: target-based delivery. Read at call time so tests, which keep
+# the date-gated rules off by moving cutoffs, can start projects without one.
+NEW_PROJECT_POLICY: "int | None" = 2
+DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
+POLICY_VERSIONS = (0, 1, 2)
+DiffEvent = Literal["closure", "closure_exempt", "merge", "release"]
+_ALL_DIFF_EVENTS: frozenset = frozenset({"closure_exempt", "merge", "release"})
+
+
+@dataclass(frozen=True)
+class DeliveryRules:
+    """What a project owes for delivery; the one value every delivery check reads.
+
+    `policy` is the stored or derived value (raw: policy 2 with no valid target stays 2). `target` is
+    the delivery target, None when unset or invalid. Policy 2 without a valid target takes policy 1
+    values, so no obligation silently disappears.
+    """
+
+    policy: int
+    target: "str | None"
+    warn_unrecorded_worktree: bool
+    mr_required: bool
+    release_demanded: bool
+    warn_unrecorded_merge: bool
+    diff_events: frozenset
+    merge_required: bool  # closure needs a merge record or decision for an entry with a merge basis
+    removal_merge_required: bool  # removing a worktree needs its merge record (true at every policy 0-1)
+
+    @property
+    def forbids_target_writes(self) -> bool:
+        return self.target == "research"
+
+    @property
+    def accepts_new_local_only(self) -> bool:
+        return self.policy < 2
+
+
+# target: (warn worktree, mr_required, release_demanded, warn merge, diff events, merge_required);
+# removal_merge_required is true for merged and release only.
+_TARGET_RULES: "dict[str, tuple[bool, bool, bool, bool, frozenset, bool]]" = {
+    "research": (False, False, False, False, frozenset(), False),
+    "local": (True, False, False, False, frozenset(), False),
+    "pr": (True, True, False, False, frozenset({"closure"}), False),
+    "merged": (True, True, False, True, frozenset({"merge", "closure_exempt"}), True),
+    "release": (True, True, True, True, frozenset({"merge", "release", "closure_exempt"}), True),
+}
+
+
+def _policy_value(state: dict[str, Any]) -> "tuple[int, bool]":
+    """(policy, valid): an explicit valid value wins; invalid means 1; absent derives from `created`."""
+    if "policy_version" not in state:
+        return (1 if is_delivery_gated(state) else 0), True
+    value = state["policy_version"]
+    if type(value) is int and value in POLICY_VERSIONS:
+        return value, True
+    return 1, False
+
+
+def delivery_rules(state: dict[str, Any]) -> DeliveryRules:
+    """The delivery obligations of `state`; never raises on malformed JSON."""
+    state = state if isinstance(state, dict) else {}
+    policy, _ = _policy_value(state)
+    if policy == 2:
+        target = state.get("delivery_target")
+        if isinstance(target, str) and target in _TARGET_RULES:
+            warn_worktree, mr, release, warn_merge, events, merge = _TARGET_RULES[target]
+            return DeliveryRules(2, target, warn_worktree, mr, release, warn_merge, events, merge, merge)
+        return DeliveryRules(2, None, True, True, True, True, _ALL_DIFF_EVENTS, True, True)
+    if policy == 0:
+        return DeliveryRules(0, None, True, False, False, True, _ALL_DIFF_EVENTS, False, True)
+    return DeliveryRules(1, None, True, True, True, True, _ALL_DIFF_EVENTS, True, True)
+
+
+def merge_demanded(entry: object, rules: DeliveryRules) -> bool:
+    """Whether the closure must see a merge record or decision for this entry under `rules`."""
+    return rules.merge_required and needs_merge(entry)
+
+
+def merge_warned(entry: object, rules: DeliveryRules) -> bool:
+    """Whether a closed worktree with no merge record is worth a warning under `rules`."""
+    return rules.warn_unrecorded_merge and needs_merge(entry)
+
+
+def removal_merge(entry: object, rules: DeliveryRules) -> str:
+    """What removing a worktree needs for `entry`: "merged", "decision" or "none"."""
+    if not rules.removal_merge_required or not isinstance(entry, dict):
+        return "none"
+    if "pull_request" in entry:
+        return "merged"
+    return "decision" if needs_merge(entry) else "none"
 
 
 # Projects created on or after this instant close only with a `## Retro` section in the reflection:
@@ -1455,9 +1547,21 @@ def alignment_gate_errors(project_dir: Path, previous: dict[str, Any], candidate
     """
     if previous.get("status") not in GATE_FROM or candidate.get("status") not in GATE_TO:
         return []
+    # Keyed on the raw policy, and before the legacy return: a policy-2 project never leaves ALIGNING
+    # without a delivery target, whatever its creation date.
+    rules = delivery_rules(candidate)
+    target_problem = (
+        f"a policy-2 project may not leave {previous.get('status')} without a delivery_target "
+        f"({', '.join(DELIVERY_TARGETS)}); record it with 'workflow confirm' (kind alignment, delivery_target) "
+        "or 'workflow retarget'"
+        if rules.policy == 2 and rules.target is None
+        else None
+    )
     if not is_new_project(candidate):
-        return []
+        return [target_problem] if target_problem else []
     missing: list[str] = []
+    if target_problem:
+        missing.append(target_problem)
     spec_path = project_dir / "spec.md"
     spec_text = read_text(spec_path) if spec_path.is_file() else ""
     sections = spec_section_warnings(spec_text) if spec_text else ["spec.md is missing"]
@@ -2547,6 +2651,31 @@ def validate_v3_state(
 EXECUTION_FIELDS = {"protocol_version", "coordinator_run", "ownership_generation", "attempts"}
 
 
+def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -> None:
+    """`policy_version` and `delivery_target`: form, the policy they need, and a target once aligned."""
+    policy, valid = _policy_value(state)
+    if not valid:
+        report.errors.append(
+            f"project: policy_version must be one of {', '.join(str(v) for v in POLICY_VERSIONS)} (an integer), "
+            f"found {state['policy_version']!r}"
+        )
+    if "delivery_target" in state:
+        target = state["delivery_target"]
+        if not isinstance(target, str) or target not in DELIVERY_TARGETS:
+            report.errors.append(
+                f"project: delivery_target must be one of {', '.join(DELIVERY_TARGETS)}, found {target!r}"
+            )
+        if valid and policy != 2:
+            report.errors.append(
+                f"project: delivery_target needs policy_version 2, but the project is at policy {policy}"
+            )
+    if valid and policy == 2 and "delivery_target" not in state and state.get("status") not in ("ALIGNING", "CANCELLED"):
+        report.errors.append(
+            "project: a policy-2 project past ALIGNING needs a delivery_target "
+            f"({', '.join(DELIVERY_TARGETS)}); record it with 'workflow retarget'"
+        )
+
+
 def _validate_tags(value: object, report: ValidationReport) -> None:
     """Findings for a stored `tags` value. The minimum is not checked: projects from before tags are valid."""
     if not isinstance(value, list):
@@ -2584,6 +2713,7 @@ def validate_v4_state(
     _unexpected_fields(state, PROJECT_V4_FIELDS, "project", report)
     if "tags" in state:
         _validate_tags(state["tags"], report)
+    _validate_delivery_policy(state, report)
 
     if state.get("schema_version") != 4:
         report.errors.append("schema_version must be 4")
@@ -5768,6 +5898,7 @@ READER_ONLY_REFUSAL = (
     "mutating commands are refused while execution.attempts is non-empty or coordinator_run is set"
 )
 IMMUTABLE_PROJECT_FIELDS = ("schema_version", "project", "created")
+_ABSENT = object()
 
 
 def _revision_conflicts(current: dict[str, Any], candidate: dict[str, Any], expected_revision: int) -> "list[str]":
@@ -5785,13 +5916,32 @@ def _revision_conflicts(current: dict[str, Any], candidate: dict[str, Any], expe
     return conflicts
 
 
-def _immutable_field_changes(current: dict[str, Any], candidate: dict[str, Any]) -> "list[str]":
-    """Identity fields the candidate would rewrite, in declaration order."""
-    return [
+# Fields only a named journaled action may change. The exemption comes from the action name stored in
+# the journal record, never from request data, so preflight, commit and replay agree.
+GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target")
+GUARDED_WRITERS: "dict[str, set[str]]" = {
+    "confirm": {"delivery_target"},
+    "retarget": {"delivery_target"},
+    "migrate_policy": {"policy_version", "delivery_target"},
+}
+
+
+def _immutable_field_changes(
+    current: dict[str, Any], candidate: dict[str, Any], action: "str | None" = None
+) -> "list[str]":
+    """Identity and guarded fields the candidate would rewrite, in declaration order."""
+    allowed = GUARDED_WRITERS.get(action or "", set())
+    changes = [
         f"candidate cannot change immutable field: {immutable}"
         for immutable in IMMUTABLE_PROJECT_FIELDS
         if candidate.get(immutable) != current.get(immutable)
     ]
+    changes.extend(
+        f"candidate cannot change guarded field: {guarded}"
+        for guarded in GUARDED_PROJECT_FIELDS
+        if guarded not in allowed and candidate.get(guarded, _ABSENT) != current.get(guarded, _ABSENT)
+    )
+    return changes
 
 
 def check_candidate(
@@ -5830,7 +5980,7 @@ def transition_gate_errors(
 
 def check_state_candidate(
     project_dir: Path, candidate: dict[str, Any], *, expected_revision: int | None = None,
-    check_files: bool = True,
+    check_files: bool = True, action: "str | None" = None,
 ) -> ValidationReport:
     """Validate an in-memory candidate using the same preview guards."""
     current = load_json(project_dir / "project.json")
@@ -5855,7 +6005,7 @@ def check_state_candidate(
             return report
         expected_revision = current_revision
     report.errors.extend(_revision_conflicts(current, candidate, expected_revision))
-    report.errors.extend(_immutable_field_changes(current, candidate))
+    report.errors.extend(_immutable_field_changes(current, candidate, action))
     report.errors.extend(check_state_transition(current, candidate))
     if check_files:
         report.errors.extend(alignment_gate_errors(project_dir, current, candidate))
@@ -5984,6 +6134,7 @@ def _commit_state_locked(
     project_dir: Path, candidate: dict[str, Any], expected_revision: int,
     locked_guard: Callable[[dict[str, Any]], None] | None = None,
     warnings: list[str] | None = None,
+    action: "str | None" = None,
 ) -> dict[str, Any]:
     """Commit under an already-held project lock; the caller rebuilds indexes afterward."""
     current = load_json(project_dir / "project.json")
@@ -6001,7 +6152,7 @@ def _commit_state_locked(
         raise WorkspaceConflict(conflicts[0])
     if locked_guard is not None:
         locked_guard(current)
-    immutable_changes = _immutable_field_changes(current, candidate)
+    immutable_changes = _immutable_field_changes(current, candidate, action)
     if immutable_changes:
         raise WorkspaceError(immutable_changes[0])
     transition_errors = check_state_transition(current, candidate) + alignment_gate_errors(project_dir, current, candidate)
@@ -6107,6 +6258,8 @@ def allocate_project(
                 "attempts": {},
             },
         }
+        if NEW_PROJECT_POLICY is not None:
+            state["policy_version"] = NEW_PROJECT_POLICY
         if stored_tags is not None:
             state["tags"] = stored_tags
         if predecessor is not None:

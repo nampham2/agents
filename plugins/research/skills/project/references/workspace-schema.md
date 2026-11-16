@@ -111,6 +111,14 @@ field, so a project from before tags stays valid; a v3 project is closed to it. 
 [tags-and-follow-up.md](tags-and-follow-up.md). A launcher older than 0.37.0 rejects a project that
 has `tags` and names a newer plugin as the likely cause.
 
+`policy_version` (0, 1 or 2) and `delivery_target` (`research`, `local`, `pr`, `merged` or
+`release`) are optional v4 fields that only `workflow confirm` (kind `alignment`), `workflow
+retarget` and `migrate-policy` write; `update` refuses them. Absent `policy_version` derives from
+`created`: 0 before `DELIVERY_GATES_FROM`, 1 on or after it; a present one wins, and an invalid one
+reads as 1. Policy 2 needs a `delivery_target` once the project leaves `ALIGNING`, and policies 0
+and 1 carry none. `delivery_rules(state)` in `workspace_lib.py` is the one function every delivery
+check reads. A launcher older than 0.38.0 rejects a project that has either field.
+
 `predecessor` names the project this one continues, and nothing checks that it exists. A follow-up
 sets it to its finished source, and its `briefing.md` starts with `Follow-up of: <source-id>`; that
 first line, not `predecessor` alone, is what marks a follow-up. A maintenance ancestor is named the
@@ -273,7 +281,9 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
 - `pull_request`: `host` (`github` or `gitlab`), `url`, `number`, `recorded_at`. The URL host equals
   the host of the `origin` remote. `pr_exemption` (`reason` `no_remote` or `local_only`, `source`,
   `response`) replaces it: `no_remote` for a repository with no remote, `local_only` for a project
-  that is never pushed.
+  that is never pushed (recorded only at policy 0 and 1; policy 2 uses target `local`, and an
+  existing `local_only` entry stays valid). A local entry needs neither a `pull_request` nor a
+  `pr_exemption`.
 - `version_line`: `files` (`path`, `style` `pep440` or `semver`), `base` (plain `X.Y.Z`), `alpha`,
   `history` (`alpha`, `base`, `recorded_at`, `reason`), `release` (null or `version`, `recorded_at`)
   and `base_moves` (`from`, `to`, `reason`, `recorded_at`). A release on a worktree with no alpha
@@ -301,15 +311,19 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
 - `merge`: `state` (`merged` or `declined`), `method` (`squash`, `merge`, `rebase`; null if
   declined), `evidence`, `source`, `response`, `recorded_at`, and an optional `merged_head` (a full
   lowercase hex commit, 40 or 64 digits, only on a merged record). A `pull_request` or a
-  `local_only` `pr_exemption` can hold a merge record. `merged` needs the release when a
-  `version_line` exists. A merged record is final. `close` with `remove` needs a merged record when
-  a `pull_request` exists, and a merged or declined record when a `local_only` exemption exists.
+  `local_only` `pr_exemption` can hold a merge record under any target. `merged` needs the release
+  when a `version_line` exists. A merged record is final. `close` with `remove` needs a merged
+  record when a `pull_request` exists, and a merged or declined record when a `local_only` exemption
+  exists.
 
-`DELIVERY_GATES_FROM` in `workspace_lib.py` turns on two gates for projects created at or after it.
-`task start` refuses a task with `target` outputs while the active target worktree lacks an MR or
-exemption; an alpha line is optional. `finalize`, `close` and an update to DONE refuse a worktree
-with no MR or exemption, no merge decision for its MR or `local_only` exemption, or no release
-record or version exemption.
+The delivery gates follow `delivery_rules`. At policy 1 (created at or after `DELIVERY_GATES_FROM`)
+and for targets `pr`, `merged` and `release`, `task start` refuses a task with `target` outputs
+while the active target worktree lacks an MR or exemption; an alpha line is optional. Target
+`research` refuses such a task always. `finalize`, `close` and an update to DONE refuse a worktree
+with no MR or exemption (`pr`, `merged`, `release`, policy 1), no merge decision for its MR or
+`local_only` exemption (`merged`, `release`, policy 1), or no release record or version exemption
+(`release`, policy 1). Target `local` and `research` demand only the keep/remove decision. Policy 0
+demands none of these records.
 
 ## Effects and authorization
 

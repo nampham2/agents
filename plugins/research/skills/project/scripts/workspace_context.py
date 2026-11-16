@@ -24,7 +24,14 @@ from workspace_journal import (
     snapshot,
     string_input,
 )
-from workspace_lib import DirectoryLock, WorkspaceError, document_sha256, now_iso, resolve_workspace_root
+from workspace_lib import (
+    DirectoryLock,
+    WorkspaceError,
+    delivery_rules,
+    document_sha256,
+    now_iso,
+    resolve_workspace_root,
+)
 from workspace_session import (
     STOP_REASONS,
     _headings,
@@ -212,7 +219,7 @@ def worktree_status(state: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     if not seen["available"]:
         warnings.append(f"Git could not be consulted for {target}; worktree state is unknown")
-    elif seen["is_repository"] and recorded is None:
+    elif seen["is_repository"] and recorded is None and delivery_rules(state).warn_unrecorded_worktree:
         kind = "linked worktree" if seen["is_worktree"] else "repository"
         warnings.append(f"target {target} is a Git {kind} with no recorded worktree; {WORKTREE_GUIDANCE}")
     return {

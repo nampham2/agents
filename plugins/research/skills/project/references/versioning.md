@@ -3,7 +3,8 @@
 Read this before proposing a base, recording an alpha line, moving a base or recording a release.
 `workflow <project-dir> worktree` records each step.
 
-A repository project closes with a release record or an exemption (see Close). An alpha line is
+A repository project with target `release` (or policy 1) closes with a release record or an
+exemption (see Close); other targets owe neither. An alpha line is
 optional: record one only for a build that differs from the release (test deploy, plugin refresh,
 experiment).
 
@@ -36,7 +37,7 @@ release checks. A lock with no such entry states no version.
 
 ## Close
 
-Before `finalize`, a repository project needs one of:
+Under target `release` (and policy 1), a repository project needs one of these before `finalize`:
 
 - A release record. Write the plain `X.Y.Z` into each version file. Record `"operation":"release"`
   with `version`. With no alpha line, also send `files` (`path`, `style`); the release then starts

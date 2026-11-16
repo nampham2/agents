@@ -44,6 +44,13 @@ Objects merge; lists/scalars replace. Tasks merge by ID. Project fields: `title`
 `review`, `cancellation_reason`, `predecessor`, `tasks`. Include `block_reason` for `BLOCKED`,
 `skip_reason` for `SKIPPED`; null them when leaving. Use `commit` only for other fields.
 
+## Delivery target
+
+Policy-2 projects record `delivery_target` (`research`, `local`, `pr`, `merged`, `release`) on the
+alignment `confirm` and change it with `workflow <project-dir> retarget`. `migrate-policy
+<project-dir> --to 2 --target <t>` previews; `--apply --expected-revision N --confirm "<words>"`
+writes ([worktrees.md](worktrees.md)).
+
 ## Documents and records
 
 Initial `--sections-json -` maps the seven headings to bodies; later batches replace non-overlapping

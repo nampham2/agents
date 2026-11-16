@@ -99,6 +99,7 @@ def test_lazy_task_notes_and_retired_commands_through_both_hosts(tmp_path: Path,
     assert {path.name for path in project.iterdir()} == {
         "project.json", "spec.md", "evidence.md", "memory-staging.md",
     }
+    backdate_project(project)  # this test plans without alignment, which a policy-2 project cannot do
     plan(project)
     # Definitions and bounded reads do not create empty note files or directories.
     result = subprocess.run(

@@ -1,8 +1,29 @@
 # Repository worktrees
 
-Every repository a project writes to gets its own git worktree and a draft merge request (MR; a
-GitHub pull request or GitLab merge request). Both are recorded in `project.json` before the
-first write. The agent runs Git and host commands only after the user confirms them.
+Every repository a project writes to gets its own git worktree, recorded in `project.json` before
+the first write. What else it needs depends on the project's delivery target (below); where the
+target demands one, a draft merge request (MR; a GitHub pull request or GitLab merge request) too.
+The agent runs Git and host commands only after the user confirms them.
+
+## Delivery target
+
+A project created from 0.38.0 starts at `policy_version` 2 and records its `delivery_target` with
+the alignment confirmation (`delivery_target` on `workflow confirm`, kind `alignment`); it cannot
+leave `ALIGNING` without one. `workflow <project-dir> retarget` changes it later, with the user's
+words and a reason, and lists the obligations gained and dropped. Ask the user which target fits:
+
+| Target | Before a write to the target | At closure |
+| --- | --- | --- |
+| `research` | refused: it writes nothing to the target; no worktree warning | each recorded worktree still needs its keep/remove decision |
+| `local` | worktree warning only; no MR | keep/remove decision |
+| `pr` | draft MR or `no_remote` exemption | keep/remove decision and a diff Goldfish round at the head; no merge or release record |
+| `merged` | draft MR or `no_remote` exemption | merge record or decision, plus the diff round at the merge |
+| `release` | as `merged` | as `merged`, plus a release record or version exemption and the diff round at the release |
+
+A project from before 0.38.0 keeps `policy_version` 0 (owes none of this) or 1 (owes what `release`
+owes, plus the diff round for a `no_remote` or `local_only` worktree). `research-project
+migrate-policy <project-dir> --to 2 --target <target>` previews the move and writes nothing;
+`--apply --expected-revision N --confirm "<user's words>"` applies it and keeps existing records.
 
 ## Before the first write
 
@@ -32,9 +53,10 @@ first write. The agent runs Git and host commands only after the user confirms t
    `"kind":"existing"` records a target that already is a linked worktree; `"kind":"none"` records
    a non-repository target once. Fix refusals in the worktree, not the request.
 6. Record the MR with `"operation":"pull_request"`, `host` (`github` or `gitlab`), `url` and
-   `number`. A repository with no remote records `"exempt":"no_remote"` instead; a project never
-   pushed records `"exempt":"local_only"`, with the user's words. A non-repository target needs
-   neither.
+   `number`. A repository with no remote records `"exempt":"no_remote"` instead. A project never
+   pushed uses target `local`, which needs no MR; only policy 0 and 1 projects still record
+   `"exempt":"local_only"` (with the user's words), and a legacy `local_only` entry stays valid.
+   A non-repository target needs neither.
 7. Record an alpha line only for a test or experiment build, and the version decision before
    closing ([versioning.md](versioning.md)).
 
@@ -44,7 +66,9 @@ refused while the release or merge is unrecorded.
 Every record takes `path` and a quoted `confirmation`; `workflow <project-dir> worktree --schema`
 prints each operation's keys.
 
-After the gate cutoff, `task start` refuses a task with `target` outputs until step 6 is recorded.
+For targets `pr`, `merged` and `release` (and policy 1), `task start` refuses a task with `target`
+outputs until step 6 is recorded. Target `research` refuses such a task whether or not a worktree
+exists; target `local` does not need step 6.
 
 ## Never
 

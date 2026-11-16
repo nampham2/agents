@@ -13,7 +13,7 @@ from unittest.mock import patch
 import pytest
 import workspace_context
 from workspace_context import git_observation, worktree_observation, worktree_registered
-from workspace_lib import allocate_project, validate_v3_state, validate_v4_state
+from workspace_lib import allocate_project, delivery_rules, validate_v3_state, validate_v4_state
 
 GIT_ENV = {
     **os.environ,
@@ -931,6 +931,9 @@ class TestAcceptedDirtyIsScopedToWhatTheUserSaw:
         assert any("beyond the accepted" in error for error in validate_project(recorded, close=True).errors)
 
 
+POLICY_ZERO = delivery_rules({"policy_version": 0})
+
+
 class TestReadinessListsDeliveryRecords:
     """c8: `readiness` names, per worktree, whether it exists and which delivery records removal still lacks."""
 
@@ -938,7 +941,6 @@ class TestReadinessListsDeliveryRecords:
         self, tmp_path: Path, repository: Path, linked: Path
     ) -> None:
         from workspace_delivery import removal_findings
-        from workspace_lib import is_delivery_gated
         from workspace_workflows import workflow
 
         project = make_project(tmp_path, repository)
@@ -947,7 +949,7 @@ class TestReadinessListsDeliveryRecords:
 
         result = workflow(project, "readiness", {})
 
-        expected = removal_findings(state["worktrees"][0], gated=is_delivery_gated(state))
+        expected = removal_findings(state["worktrees"][0], rules=delivery_rules(state))
         assert result["worktrees"] == [{"path": str(linked), "exists": True, "missing": expected}]
         assert set(result) == {"valid", "groups", "worktrees", "checks"}
 
@@ -986,13 +988,14 @@ class TestReadinessListsDeliveryRecords:
             ]
         }
         with patch("workspace_workflows.worktree_observation", return_value={"available": True, "exists": True}):
-            assert [item["path"] for item in readiness_worktrees(state, gated=False)] == ["/a", "/b"]
+            listed = readiness_worktrees(state, rules=POLICY_ZERO)
+            assert [item["path"] for item in listed] == ["/a", "/b"]
 
     def test_a_state_without_a_worktree_list_gives_an_empty_list(self) -> None:
         from workspace_workflows import readiness_worktrees
 
-        assert readiness_worktrees({}, gated=False) == []
-        assert readiness_worktrees({"worktrees": "x"}, gated=False) == []
+        assert readiness_worktrees({}, rules=POLICY_ZERO) == []
+        assert readiness_worktrees({"worktrees": "x"}, rules=POLICY_ZERO) == []
 
     def test_unreadable_project_state_still_reports_and_lists_no_worktrees(
         self, tmp_path: Path, repository: Path
@@ -1010,7 +1013,8 @@ class TestReadinessListsDeliveryRecords:
         from workspace_workflows import readiness_worktrees
 
         with patch("workspace_workflows.worktree_observation", return_value={"available": False, "exists": False}):
-            assert [item["exists"] for item in readiness_worktrees({"worktrees": [entry()]}, gated=False)] == [None]
+            listed = readiness_worktrees({"worktrees": [entry()]}, rules=POLICY_ZERO)
+            assert [item["exists"] for item in listed] == [None]
 
     def test_the_checkpoint_summary_carries_exists_and_none_for_kind_none_and_removed(
         self, tmp_path: Path, repository: Path, linked: Path

@@ -14,6 +14,7 @@ from workspace_goldfish import residual_findings
 from workspace_journal import OperationError, snapshot
 from workspace_lib import (
     BRIEFING_CANONICAL_SECTIONS,
+    DELIVERY_TARGETS,
     DirectoryLock,
     IndexNotRebuilt,
     WorkspaceConflict,
@@ -21,7 +22,9 @@ from workspace_lib import (
     allocate_project,
     authorization_findings,
     commit_state,
+    delivery_rules,
     load_json,
+    merge_demanded,
     normalize_tags,
     now_iso,
     read_text,
@@ -43,6 +46,120 @@ class CloseOperationError(WorkspaceError):
     def __init__(self, message: str, result: dict[str, Any]) -> None:
         super().__init__(message)
         self.result = result
+
+
+def rules_diff(old: Any, new: Any) -> dict[str, list[str]]:
+    """Obligations gained and dropped between two `DeliveryRules`, in plain words."""
+    flags = (
+        ("warn_unrecorded_worktree", "a warning for work in an unrecorded worktree"),
+        ("mr_required", "a merge request (or exemption) before work in a repository"),
+        ("release_demanded", "a release record or version exemption before closure"),
+        ("merge_required", "a merge record or decision before closure"),
+        ("warn_unrecorded_merge", "a warning when closed with no merge recorded"),
+    )
+    gained = [text for name, text in flags if getattr(new, name) and not getattr(old, name)]
+    dropped = [text for name, text in flags if getattr(old, name) and not getattr(new, name)]
+    gained += [f"a diff round at {event}" for event in sorted(new.diff_events - old.diff_events)]
+    dropped += [f"a diff round at {event}" for event in sorted(old.diff_events - new.diff_events)]
+    if new.forbids_target_writes and not old.forbids_target_writes:
+        gained.append("no writes to the target")
+    return {"gained": gained, "dropped": dropped}
+
+
+def target_conflicts(state: dict[str, Any], target: str, new: Any) -> list[str]:
+    """Records on the worktrees that the rules of `target` would not require."""
+    found: list[str] = []
+    for entry in state.get("worktrees", []):
+        path = entry.get("path")
+        if "pull_request" in entry and not new.mr_required:
+            found.append(f"worktree {path} has a pull_request that {target} would not require")
+        if isinstance(entry.get("merge"), dict) and not new.merge_required:
+            found.append(f"worktree {path} has a merge record that {target} would not require")
+        line = entry.get("version_line")
+        if isinstance(line, dict) and line.get("release") is not None and not new.release_demanded:
+            found.append(f"worktree {path} has a release record that {target} would not require")
+        if target == "research" and entry.get("kind") not in (None, "none"):
+            found.append(f"worktree {path} is a {entry.get('kind')} worktree, which research does not use")
+    return found
+
+
+def research_task_conflicts(state: dict[str, Any]) -> list[str]:
+    """Open tasks that still write to the target, which a research target forbids."""
+    return [
+        f"task {task['id']} still writes to the target"
+        for task in state.get("tasks", [])
+        if task.get("status") not in ("DONE", "SKIPPED")
+        and any(isinstance(output, dict) and output.get("root") == "target" for output in task.get("outputs", []))
+    ]
+
+
+def migration_plan(state: dict[str, Any], target: object) -> dict[str, Any]:
+    """What moving a project to policy 2 with `target` would change, or the refusal; reads state only.
+
+    The preview builds a hypothetical state (policy 2 plus the target) and diffs its rules against the stored
+    ones. Records the new rules would not require are listed, never removed; obligations that existing entries
+    do not yet satisfy are listed too, and the gates catch them later.
+    """
+    if not isinstance(target, str) or target not in DELIVERY_TARGETS:
+        raise WorkspaceError(f"target must be one of: {', '.join(DELIVERY_TARGETS)}")
+    if state.get("schema_version") != 4:
+        raise WorkspaceError(
+            f"migrate-policy needs schema_version 4, but this project has {state.get('schema_version')}"
+        )
+    old = delivery_rules(state)
+    if old.policy == 2:
+        raise WorkspaceError("this project is already at policy 2; change its target with 'workflow retarget'")
+    if state.get("status") in ("ALIGNING", "DONE", "CANCELLED"):
+        raise WorkspaceError(
+            f"a {state.get('status')} project cannot migrate: finish alignment first, "
+            "and a closed project keeps its policy"
+        )
+    busy = [
+        f"{item['id']} ({item['status']})"
+        for item in state.get("tasks", [])
+        if item.get("status") in ("RUNNING", "BLOCKED")
+    ]
+    if busy:
+        raise WorkspaceError("migrate-policy needs no RUNNING or BLOCKED task: " + ", ".join(busy))
+    execution = state.get("execution")
+    if isinstance(execution, dict) and (execution.get("attempts") or execution.get("coordinator_run") is not None):
+        raise WorkspaceError("migrate-policy is refused while an attempt is open or a coordinator run is set")
+    if target == "research":
+        writing = research_task_conflicts(state)
+        if writing:
+            raise WorkspaceError("a research target forbids writes to the target: " + "; ".join(writing))
+    new = delivery_rules({**state, "policy_version": 2, "delivery_target": target})
+    unsatisfied: list[str] = []
+    notes: list[str] = []
+    for item in state.get("worktrees", []):
+        if item.get("kind") in (None, "none") or item.get("status") == "removed":
+            continue
+        path = item.get("path")
+        if new.mr_required and "pull_request" not in item and "pr_exemption" not in item:
+            unsatisfied.append(f"worktree {path} has no merge request or exemption, which {target} requires")
+        if new.release_demanded and "version_exemption" not in item:
+            line = item.get("version_line")
+            if not isinstance(line, dict) or line.get("release") is None:
+                unsatisfied.append(
+                    f"worktree {path} has no release record or version exemption, which {target} requires"
+                )
+        if merge_demanded(item, new) and "merge" not in item:
+            unsatisfied.append(f"worktree {path} has no merge decision, which {target} requires")
+        exemption = item.get("pr_exemption")
+        if isinstance(exemption, dict) and exemption.get("reason") == "local_only":
+            notes.append(
+                f"worktree {path} keeps its local_only exemption, which stays valid; "
+                "policy 2 only refuses recording a new one"
+            )
+    return {
+        "from_policy": old.policy,
+        "to_policy": 2,
+        "delivery_target": target,
+        **rules_diff(old, new),
+        "unsatisfied": unsatisfied,
+        "contradictions": target_conflicts(state, target, new),
+        "notes": notes,
+    }
 
 
 def _task(state: dict[str, Any], task_id: str) -> dict[str, Any]:

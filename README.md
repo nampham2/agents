@@ -86,6 +86,25 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.38.0 delivery targets decide what a project owes at closure
+
+A project no longer owes one fixed software-delivery ritual.
+
+- **A delivery target.** A project created from this release starts at `policy_version` 2 and
+  records `delivery_target` (`research`, `local`, `pr`, `merged` or `release`) with its alignment
+  confirmation; it cannot leave `ALIGNING` without one. `workflow retarget` changes it later with
+  the user's words and lists the obligations gained and dropped.
+- **What each target owes.** A research project has no worktree warning and refuses writes to the
+  target. `local` needs no merge request. `pr` needs the MR and a diff Goldfish round at closure,
+  with the merge deferred. `merged` and `release` keep today's merge and release records.
+- **One rule function.** `delivery_rules(state)` replaces the creation-date test for delivery
+  obligations; every check reads it. Older projects keep policy 0 or 1 and behave as before.
+- **`migrate-policy`.** `research-project migrate-policy <project-dir> --to 2 --target <target>`
+  previews the move and writes nothing; `--apply --expected-revision N --confirm "<words>"` applies
+  it and leaves existing records in place. There is no revert command.
+- **A `local_only` exemption** is no longer recorded at policy 2; an existing one stays valid.
+- A launcher older than 0.38.0 rejects a project that has either new field.
+
 ### 0.37.1 the dashboard check in CI, one title rule, list-item fences in follow-ups
 
 Hardening from the follow-ups of 0.37.0.

@@ -71,6 +71,7 @@ ACTION_NESTED: dict[str, tuple[tuple[str, str], ...]] = {
     "checkpoint": (("continuation", "continuation"),),
     "round": (("continuation", "continuation"),),
     "confirm": (("continuation", "continuation"),),
+    "retarget": (("confirmation", "confirmation"),),
     "correct": (("continuation", "continuation"),),
     "reconcile": (("continuation", "continuation"),),
     "finalize": (("continuation", "continuation"),),
@@ -79,7 +80,10 @@ ACTION_NESTED: dict[str, tuple[tuple[str, str], ...]] = {
 }
 
 # Nested objects an action cannot do without: absent, they are refused as `key: expected a JSON object`.
-NESTED_REQUIRED: dict[str, frozenset[str]] = {"worktree": frozenset({"confirmation"})}
+NESTED_REQUIRED: dict[str, frozenset[str]] = {
+    "worktree": frozenset({"confirmation"}),
+    "retarget": frozenset({"confirmation"}),
+}
 
 
 @dataclass(frozen=True)

@@ -12,7 +12,7 @@ from unittest.mock import patch
 import pytest
 import workspace_lib
 from workspace_delivery import closure_findings, delivery_errors, spelling, start_findings
-from workspace_lib import WorkspaceError, is_delivery_gated
+from workspace_lib import WorkspaceError, delivery_rules, is_delivery_gated
 from workspace_operations import task_operation
 from workspace_session import update_project_data
 from workspace_workflows import workflow
@@ -35,6 +35,8 @@ from tests.plugins.research.project.test_worktrees import (
 )
 
 URL = "https://github.com/o/r/pull/7"
+POLICY_ZERO = delivery_rules({"policy_version": 0})
+POLICY_ONE = delivery_rules({"policy_version": 1})
 FILES = [{"path": "pyproject.toml", "style": "pep440"}, {"path": "plugin.json", "style": "semver"}]
 
 
@@ -1156,18 +1158,18 @@ class TestLocalOnly:
         from workspace_delivery import removal_findings
 
         local = {**entry(), "pr_exemption": self.LOCAL, "version_exemption": {"source": "s", "response": "r"}}
-        assert any("merge" in f for f in removal_findings(local, gated=True))
+        assert any("merge" in f for f in removal_findings(local, rules=POLICY_ONE))
         declined = {**MERGE, "state": "declined", "method": None, "evidence": None}
-        assert removal_findings({**local, "merge": declined}, gated=True) == []
-        assert removal_findings({**local, "merge": MERGE}, gated=True) == []
+        assert removal_findings({**local, "merge": declined}, rules=POLICY_ONE) == []
+        assert removal_findings({**local, "merge": MERGE}, rules=POLICY_ONE) == []
         pull = {**entry(), "pull_request": PR, "version_exemption": {"source": "s", "response": "r"}}
-        assert any("is not merged" in f for f in removal_findings({**pull, "merge": declined}, gated=True))
+        assert any("is not merged" in f for f in removal_findings({**pull, "merge": declined}, rules=POLICY_ONE))
 
     def test_removal_survives_a_malformed_merge_record(self) -> None:
         from workspace_delivery import removal_findings
 
         for owner in ({"pull_request": PR}, {"pr_exemption": self.LOCAL}):
-            assert removal_findings({**entry(), **owner, "merge": "x"}, gated=False)
+            assert removal_findings({**entry(), **owner, "merge": "x"}, rules=POLICY_ZERO)
 
     def test_the_start_message_names_the_exemption(self, recorded: Path, gated: None) -> None:
         findings = start_findings(load_state(recorded))

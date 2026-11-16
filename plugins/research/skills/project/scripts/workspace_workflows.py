@@ -29,6 +29,7 @@ from workspace_delivery import (
     DELIVERY_OPERATIONS,
     KEY_HINTS,
     PATH_HINT,
+    RETARGET_HINTS,
     abandoned_note,
     delivery_operation,
     removal_findings,
@@ -77,15 +78,17 @@ from workspace_journal import (
     string_input,
 )
 from workspace_lib import (
+    DELIVERY_TARGETS,
     PLANNING_STATUS_PATTERN,
     PROJECT_TRANSITIONS,
+    DeliveryRules,
     WorkspaceConflict,
     WorkspaceError,
     check_state_candidate,
     confirmation_marker,
+    delivery_rules,
     document_conflict_message,
     document_sha256,
-    is_delivery_gated,
     is_legacy_planning_layout,
     is_retro_gated,
     load_json,
@@ -99,7 +102,7 @@ from workspace_lib import (
     stale_confirmations,
     validate_project,
 )
-from workspace_operations import _task
+from workspace_operations import _task, migration_plan, research_task_conflicts, rules_diff, target_conflicts
 from workspace_session import _headings, _load_state, prepare_update
 
 # Shortest reflection `finalize` accepts: enough for an outcome and a limitation, not a bare token.
@@ -112,8 +115,9 @@ FIELDS = {
     "round": {"sections", "decisions", "planning", "architecture", "continuation"},
     "confirm": {
         "kind", "proposal_sha256", "requirements_sha256", "planning_sha256", "architecture_sha256", "review_id",
-        "response", "source", "scope", "continuation",
+        "response", "source", "scope", "continuation", "delivery_target",
     },
+    "retarget": {"delivery_target", "reason", "confirmation"},
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
     "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
@@ -149,6 +153,7 @@ READ_ACTIONS = set(READ_INPUTS)
 # current one.
 CONFIRM_REQUIRED = frozenset({"kind", "review_id", "response", "scope", "source"})
 WORKTREE_REQUIRED = frozenset({"confirmation", "operation", "path"})
+RETARGET_REQUIRED = frozenset({"confirmation", "delivery_target", "reason"})
 CONFIRM_REQUIRED_BY = {
     "kind=requirements": frozenset({"proposal_sha256"}),
     "kind=planning": frozenset({"proposal_sha256"}),
@@ -181,6 +186,7 @@ EFFECT_REQUIRED_BY = {"operation=intent": frozenset({"effect"}), "operation=reso
 WAIT_REQUIRED = frozenset({"task", "on"})
 ALWAYS_REQUIRED = {
     "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
+    "retarget": RETARGET_REQUIRED,
     "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED, "wait": WAIT_REQUIRED,
 }
 REQUIRED_BY = {
@@ -303,7 +309,7 @@ def impact(project: Path, request: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def readiness_worktrees(state: dict[str, Any], *, gated: bool) -> list[dict[str, Any]]:
+def readiness_worktrees(state: dict[str, Any], *, rules: DeliveryRules) -> list[dict[str, Any]]:
     """Active or kept repository worktrees with whether they exist and which delivery records removal lacks.
 
     Only well-formed entries are read: readiness reports on a project whose state may be malformed.
@@ -320,7 +326,7 @@ def readiness_worktrees(state: dict[str, Any], *, gated: bool) -> list[dict[str,
         listed.append({
             "path": item["path"],
             "exists": seen["exists"] if seen["available"] else None,
-            "missing": removal_findings(item, gated=gated),
+            "missing": removal_findings(item, rules=rules),
         })
     return listed
 
@@ -371,7 +377,7 @@ def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str,
     return {
         "valid": report.valid,
         "groups": groups,
-        "worktrees": readiness_worktrees(state, gated=is_delivery_gated(state)),
+        "worktrees": readiness_worktrees(state, rules=delivery_rules(state)),
         "checks": readiness_checks(state, (request or {}).get("required_checks")),
     }
 
@@ -489,7 +495,7 @@ def _worktree(
     if operation in DELIVERY_OPERATIONS:
         entry, notes = delivery_operation(
             worktrees, path, operation, request, confirmation, workspace_root=workspace_root, project=state["project"],
-            gate=gate,
+            gate=gate, rules=delivery_rules(state),
         )
         return {"worktrees": worktrees}, {"worktree": entry, **({"notes": notes} if notes else {})}
     if operation != "close":
@@ -507,7 +513,7 @@ def _worktree(
     if entry["status"] == "active" or decision == "remove":
         gate("closure", entry)
     if decision == "remove":
-        missing = removal_findings(entry, gated=is_delivery_gated(state))
+        missing = removal_findings(entry, rules=delivery_rules(state))
         if missing:
             raise WorkspaceError(
                 "the worktree cannot be removed before its delivery records are complete:\n- "
@@ -612,6 +618,68 @@ def _wait(state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
     return "tasks/" + task["id"], "<!-- research-wait " + json.dumps(entry).replace(">", "\\u003e") + " -->"
 
 
+def _alignment_target(state: dict[str, Any], kind: str, request: dict[str, Any]) -> "str | None":
+    """The target an alignment confirmation records, after its refusals; None when it records none."""
+    rules = delivery_rules(state)
+    supplied = request.get("delivery_target")
+    if kind != "alignment":
+        if "delivery_target" in request:
+            raise WorkspaceError(
+                "only kind alignment takes delivery_target; set it with 'workflow retarget' after this confirmation"
+            )
+        return None
+    if rules.policy != 2:
+        if "delivery_target" in request:
+            raise WorkspaceError(
+                f"delivery_target needs policy_version 2, but this project is at policy {rules.policy}"
+            )
+        return None
+    if "delivery_target" not in request:
+        if rules.target is None:
+            raise WorkspaceError(
+                f"an alignment confirmation records the delivery_target: {', '.join(DELIVERY_TARGETS)}"
+            )
+        return None
+    if supplied not in DELIVERY_TARGETS:
+        raise WorkspaceError(f"delivery_target must be one of: {', '.join(DELIVERY_TARGETS)}")
+    if "delivery_target" in state:
+        raise WorkspaceError("this project already has a delivery_target; change it with 'workflow retarget'")
+    return str(supplied)
+
+
+def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str, Any], str, dict[str, Any]]":
+    """The patch, decision body and result of a target change, after its refusals."""
+    old = delivery_rules(state)
+    if old.policy != 2:
+        raise WorkspaceError(f"retarget needs policy_version 2, but this project is at policy {old.policy}")
+    if state["status"] in ("DONE", "CANCELLED"):
+        raise WorkspaceError(f"a {state['status']} project keeps its delivery_target")
+    target = request.get("delivery_target")
+    if target not in DELIVERY_TARGETS:
+        raise WorkspaceError(f"delivery_target must be one of: {', '.join(DELIVERY_TARGETS)}")
+    if target == state.get("delivery_target"):
+        raise WorkspaceError(f"the delivery_target is already {target}")
+    reason = string_input(request.get("reason"), "reason")
+    confirmation = _confirmation(request.get("confirmation"))
+    new = delivery_rules({**state, "delivery_target": target})
+    blockers = target_conflicts(state, target, new)
+    if target == "research":
+        blockers += research_task_conflicts(state)
+    if blockers:
+        raise WorkspaceError("retarget would drop records: " + "; ".join(blockers))
+    diff = rules_diff(old, new)
+    body = "\n".join(
+        [
+            f"kind: retarget\nfrom: {state.get('delivery_target') or 'unset'}\nto: {target}\nreason: {reason}",
+            f"response: {confirmation['response']}\nsource: {confirmation['source']}",
+            "gained: " + ("; ".join(diff["gained"]) or "none"),
+            "dropped: " + ("; ".join(diff["dropped"]) or "none"),
+        ]
+    )
+    outcome = {"delivery_target": {"from": state.get("delivery_target"), "to": target}, **diff}
+    return {"delivery_target": target}, body, outcome
+
+
 def _build(
     project: Path, action: str, request: dict[str, Any], state: dict[str, Any]
 ) -> tuple[dict[str, str], dict[str, Any] | None, dict[str, Any]]:
@@ -688,6 +756,7 @@ def _build(
                 )
         for field in ("review_id", "response", "source", "scope"):
             string_input(request.get(field), field)
+        confirmed_target = _alignment_target(state, kind, request)
         gate_errors = confirm_gate_errors(project, tuple(tokens), read("spec"), read("planning"))
         if gate_errors:
             raise WorkspaceError(" | ".join(gate_errors))
@@ -705,6 +774,11 @@ def _build(
                         ("kind", confirmed), ("review_id", review_id), ("proposal_sha256", token),
                         ("response", request["response"]), ("source", request["source"]),
                         ("scope", request["scope"]),
+                        *(
+                            (("delivery_target", confirmed_target),)
+                            if confirmed_target and confirmed == "planning"
+                            else ()
+                        ),
                     )
                 )
             )
@@ -725,9 +799,16 @@ def _build(
                         + f"\n\nAgreed planning: [revision {review_id}]({planning_path(project).name})."
                     },
                 )
+        if confirmed_target:
+            patch = {"delivery_target": confirmed_target}
+            result["delivery_target"] = confirmed_target
         notes = goldfish_findings(project)
         if notes:
             result["goldfish_findings"] = notes
+    elif action == "retarget":
+        patch, body, outcome = _retarget(state, request)
+        decision(body)
+        result.update(outcome)
     elif action == "correct":
         old = _task(state, string_input(request.get("task"), "task"))
         if old["status"] not in ("DONE", "SKIPPED"):
@@ -944,6 +1025,58 @@ def _build(
     return documents, patch, result
 
 
+def migrate_policy(
+    project: Path,
+    *,
+    target: object,
+    apply: bool = False,
+    expected_revision: "int | None" = None,
+    confirm: "str | None" = None,
+) -> dict[str, Any]:
+    """Preview, or with `apply` commit, the move of a project to policy 2 with a delivery target.
+
+    The preview writes nothing. Apply is one journaled operation named `migrate_policy`, which is what lets
+    it write the two guarded fields, and it records the user's words in the decision history.
+    """
+    project = project.resolve()
+    state = _load_state(project)
+    plan = migration_plan(state, target)
+    if not apply:
+        return {**plan, "applied": False, "revision": state["revision"]}
+    words = confirm.strip() if isinstance(confirm, str) else ""
+    if not words:
+        raise WorkspaceError("apply needs --confirm with the user's words approving the migration")
+    if expected_revision is None:
+        raise WorkspaceError("apply needs --expected-revision, the revision the preview was read at")
+    operation_id = f"migrate-policy-r{expected_revision}"
+    request: dict[str, Any] = {
+        "id": operation_id,
+        "expected_revision": expected_revision,
+        "tokens": {"spec": snapshot(document_path(project, "spec"))[1]},
+        "delivery_target": plan["delivery_target"],
+        "confirmation": {"source": "migrate-policy --confirm", "response": words},
+    }
+
+    def build(current: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
+        fresh = migration_plan(current, plan["delivery_target"])
+        body = "\n".join(
+            [
+                f"kind: migrate-policy\nfrom: policy {fresh['from_policy']}\nto: policy 2",
+                f"delivery_target: {fresh['delivery_target']}",
+                f"response: {words}\nsource: migrate-policy --confirm",
+                "gained: " + ("; ".join(fresh["gained"]) or "none"),
+                "dropped: " + ("; ".join(fresh["dropped"]) or "none"),
+                "unsatisfied: " + ("; ".join(fresh["unsatisfied"]) or "none"),
+            ]
+        )
+        spec = snapshot(document_path(project, "spec"))[0]
+        documents = {"spec": _entry(spec, operation_id, body, decision=True)}
+        patch = {"policy_version": 2, "delivery_target": fresh["delivery_target"]}
+        return documents, patch, {**fresh, "applied": True}
+
+    return run_operation(project, "migrate_policy", request, build)
+
+
 def workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, Any]:
     """Dispatch a closed vocabulary of operations; never evaluate workspace instructions."""
     try:
@@ -997,7 +1130,8 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
             where=f"workflow {action}",
             nested=ACTION_NESTED.get(action),
             nested_required=NESTED_REQUIRED.get(action, frozenset()),
-            hints=KEY_HINTS if action == "worktree" else CONFIRM_HINTS if action == "confirm" else None,
+            hints=KEY_HINTS if action == "worktree" else CONFIRM_HINTS if action == "confirm"
+            else RETARGET_HINTS if action == "retarget" else None,
         )
         if action in TASK_NOTED_ACTIONS and isinstance(request.get("task"), str):
             note(task=request["task"])
