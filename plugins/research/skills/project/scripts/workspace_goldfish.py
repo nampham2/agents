@@ -543,9 +543,11 @@ def round_errors(project: Path, target: str, worktree: "str | None", version: st
     return []
 
 
-def confirm_gate_errors(project: Path, kinds: "tuple[str, ...]", spec_text: str, planning_text: str) -> "list[str]":
+def confirm_gate_errors(
+    project: Path, state: "dict[str, Any]", kinds: "tuple[str, ...]", spec_text: str, planning_text: str
+) -> "list[str]":
     """The spec and planning gates: a confirmation needs a current round for each document it confirms."""
-    if not workspace_lib.is_goldfish_gated():
+    if not workspace_lib.is_goldfish_gated(state):
         return []
     errors: "list[str]" = []
     if "requirements" in kinds:
@@ -571,7 +573,7 @@ def design_gate_errors(project: Path, previous: "dict[str, Any]", candidate: "di
     Each state is classified from its own data, so a task that becomes a code task by an outputs edit
     while running fires the gate, and a started task that resumes (`BLOCKED` to `RUNNING`) does not.
     """
-    if not workspace_lib.is_goldfish_gated() or _code_started(previous):
+    if not workspace_lib.is_goldfish_gated(candidate) or _code_started(previous):
         return []
     running = any(
         is_code_task(task) and task.get("status") in ("RUNNING", "DONE") for task in _objects(candidate.get("tasks"))
@@ -610,7 +612,7 @@ def delivery_gate_errors(
     A project with no delivery target (policy 0 and 1, or policy 2 before one is set) keeps the 0.37 order:
     the record check runs first, whatever the event. With a target, an event that owes nothing returns first.
     """
-    if not workspace_lib.is_goldfish_gated() or not has_code_task(state) or not entry.get("repository"):
+    if not workspace_lib.is_goldfish_gated(state) or not has_code_task(state) or not entry.get("repository"):
         return []
     rules = workspace_lib.delivery_rules(state)
     events = rules.diff_events
@@ -633,7 +635,7 @@ def delivery_gate_errors(
         if _object(entry.get("merge")).get("state") == "declined":
             return []  # a declined local merge abandons the work: no round is owed for code that is not delivered
         closed_at = _object(entry.get("closure")).get("observed_at")
-        if entry.get("status") == "kept" and not _at_or_after_instant(closed_at):
+        if entry.get("status") == "kept" and not _at_or_after_instant(closed_at, rules.policy):
             return []  # kept before the instant: that closure counts as passed
         head = _query(repository, "rev-parse", ref)
         if head is None:
@@ -675,9 +677,15 @@ def delivery_gate_errors(
 # --- reporting -----------------------------------------------------------------------------------
 
 
-def _at_or_after_instant(value: object) -> bool:
-    """Whether a recorded time is at or after the Goldfish instant; a missing or unreadable time is not."""
-    return at_or_after(value, workspace_lib.GOLDFISH_FROM)
+POLICY_THREE_INSTANT = "1970-01-01T00:00:00+00:00"
+
+
+def _at_or_after_instant(value: object, policy: int) -> bool:
+    """Whether a recorded time is at or after the Goldfish instant; a missing or unreadable time is not.
+
+    At policy 3 the gates are always on, so any recorded time counts.
+    """
+    return at_or_after(value, POLICY_THREE_INSTANT if policy >= 3 else workspace_lib.GOLDFISH_FROM)
 
 
 FINDING_SEVERITY = re.compile(r", (Blocker|Major|Nit), ")
@@ -796,10 +804,11 @@ def _worktree_event_warnings(
     found = [
         f"the {name} of {path} at {stamp} has no Goldfish diff round"
         for name, stamp in events
-        if _at_or_after_instant(stamp) and not any(item[0] == "diff" and item[1] == path for item in passed)
+        if _at_or_after_instant(stamp, rules.policy)
+        and not any(item[0] == "diff" and item[1] == path for item in passed)
     ]
     closed = _object(entry.get("closure")).get("observed_at")
-    if workspace_lib.merge_warned(entry, rules) and not merge and _at_or_after_instant(closed):
+    if workspace_lib.merge_warned(entry, rules) and not merge and _at_or_after_instant(closed, rules.policy):
         found.append(f"worktree {path} was closed at {closed} with no merge recorded")
     return found
 
@@ -810,8 +819,9 @@ def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str
     Confirmations are matched to a round by digest. A task start and a release or merge are matched only to
     the presence of a passing design or diff round, because the project records no version for them.
     """
-    if not workspace_lib.is_goldfish_gated():
+    if not workspace_lib.is_goldfish_gated(state):
         return []
+    policy = workspace_lib.delivery_rules(state).policy
     rounds = round_documents(project)
     passed = {(item.target, item.worktree, item.resolved) for item in rounds if item.outcome in PASSING}
     found: "list[str]" = []
@@ -821,7 +831,7 @@ def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str
     for marker in PROPOSAL_MARKER.finditer(spec_text):
         stamp = next((value for position, value in reversed(headings) if position < marker.start()), None)
         target = "spec" if marker.group("kind") == "requirements" else "planning"
-        if _at_or_after_instant(stamp) and not any(
+        if _at_or_after_instant(stamp, policy) and not any(
             item[0] == target and item[2] == marker.group("sha") for item in passed
         ):
             found.append(
@@ -831,7 +841,7 @@ def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str
     if has_code_task(state):
         designed = any(item[0] == "design" for item in passed)
         for task in _objects(state.get("tasks")):
-            if is_code_task(task) and _at_or_after_instant(task.get("started_at")) and not designed:
+            if is_code_task(task) and _at_or_after_instant(task.get("started_at"), policy) and not designed:
                 found.append(f"code task {task.get('id')} started at {task['started_at']} with no design round")
         rules = workspace_lib.delivery_rules(state)
         for entry in _objects(state.get("worktrees")):

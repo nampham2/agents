@@ -89,6 +89,7 @@ from workspace_lib import (
     delivery_rules,
     document_conflict_message,
     document_sha256,
+    has_target_rules,
     is_legacy_planning_layout,
     is_retro_gated,
     load_json,
@@ -628,10 +629,10 @@ def _alignment_target(state: dict[str, Any], kind: str, request: dict[str, Any])
                 "only kind alignment takes delivery_target; set it with 'workflow retarget' after this confirmation"
             )
         return None
-    if rules.policy != 2:
+    if not has_target_rules(rules.policy):
         if "delivery_target" in request:
             raise WorkspaceError(
-                f"delivery_target needs policy_version 2, but this project is at policy {rules.policy}"
+                f"delivery_target needs policy_version 2 or 3, but this project is at policy {rules.policy}"
             )
         return None
     if "delivery_target" not in request:
@@ -663,8 +664,8 @@ def _policy_body(head: str, response: str, source: str, diff: dict[str, list[str
 def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str, Any], str, dict[str, Any]]":
     """The patch, decision body and result of a target change, after its refusals."""
     old = delivery_rules(state)
-    if old.policy != 2:
-        raise WorkspaceError(f"retarget needs policy_version 2, but this project is at policy {old.policy}")
+    if not has_target_rules(old.policy):
+        raise WorkspaceError(f"retarget needs policy_version 2 or 3, but this project is at policy {old.policy}")
     if state["status"] in ("DONE", "CANCELLED"):
         raise WorkspaceError(f"a {state['status']} project keeps its delivery_target")
     target = request.get("delivery_target")
@@ -768,7 +769,7 @@ def _build(
         for field in ("review_id", "response", "source", "scope"):
             string_input(request.get(field), field)
         confirmed_target = _alignment_target(state, kind, request)
-        gate_errors = confirm_gate_errors(project, tuple(tokens), read("spec"), read("planning"))
+        gate_errors = confirm_gate_errors(project, state, tuple(tokens), read("spec"), read("planning"))
         if gate_errors:
             raise WorkspaceError(" | ".join(gate_errors))
         review_id = str(request["review_id"])

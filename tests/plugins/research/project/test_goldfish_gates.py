@@ -159,9 +159,9 @@ def test_a_waiver_passes_the_gate(gated: None, project: Path) -> None:
 
 def test_the_gates_are_off_before_the_instant(project: Path) -> None:
     assert workspace_lib.GOLDFISH_FROM == workspace_lib.GOLDFISH_PLACEHOLDER
-    assert workspace_lib.is_goldfish_gated() is False
+    assert workspace_lib.is_goldfish_gated({}) is False
     assert confirm(project, "requirements")["complete"] is True
-    assert confirm_gate_errors(project, ("requirements",), "text", "text") == []
+    assert confirm_gate_errors(project, {}, ("requirements",), "text", "text") == []
 
 
 def test_the_shipped_instant_is_a_real_one_in_the_past() -> None:
@@ -180,9 +180,9 @@ def test_the_shipped_instant_is_a_real_one_in_the_past() -> None:
 
 def test_the_instant_is_read_when_the_gate_runs(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(workspace_lib, "GOLDFISH_FROM", "2999-01-01T00:00:00+00:00")
-    assert workspace_lib.is_goldfish_gated() is False
+    assert workspace_lib.is_goldfish_gated({}) is False
     monkeypatch.setattr(workspace_lib, "GOLDFISH_FROM", PAST)
-    assert workspace_lib.is_goldfish_gated() is True
+    assert workspace_lib.is_goldfish_gated({}) is True
 
 
 # --- the design: the first code task ------------------------------------------------------------

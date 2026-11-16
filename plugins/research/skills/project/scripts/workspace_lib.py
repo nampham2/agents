@@ -476,11 +476,27 @@ def needs_merge(entry: object) -> bool:
 
 # The policy a new project starts at: target-based delivery. `allocate_project` reads it at call time and
 # writes it to `policy_version`; None starts a project with no policy (derived from `created`). Production
-# keeps 2. The test suite moves it to None because it also moves the date cutoffs, so its projects would
-# otherwise need a delivery target to leave ALIGNING.
-NEW_PROJECT_POLICY: "int | None" = 2
+# starts at 3: policy 2's target rules, the Goldfish gates always on, and the optional policies. The test
+# suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
+# delivery target to leave ALIGNING.
+NEW_PROJECT_POLICY: "int | None" = 3
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
-POLICY_VERSIONS = (0, 1, 2)
+POLICY_VERSIONS = (0, 1, 2, 3)
+DEFAULT_OPTIONS: "dict[str, bool]" = {"style_advice": True, "memory_staging": True, "reports": False}
+
+
+def has_target_rules(policy: int) -> bool:
+    """Whether `policy` records a delivery target and takes its obligations from it: policy 2 and 3."""
+    return policy >= 2
+
+
+def project_options(state: dict[str, Any]) -> "dict[str, bool]":
+    """The optional policies of `state`: the stored booleans over the defaults; anything else is ignored."""
+    stored = state.get("options") if isinstance(state, dict) else None
+    merged = dict(DEFAULT_OPTIONS)
+    if isinstance(stored, dict):
+        merged.update({key: value for key, value in stored.items() if key in merged and type(value) is bool})
+    return merged
 _ALL_DIFF_EVENTS: frozenset = frozenset({"closure_exempt", "merge", "release"})
 
 
@@ -567,11 +583,11 @@ def delivery_rules(state: dict[str, Any]) -> DeliveryRules:
     """The delivery obligations of `state`; never raises on malformed JSON."""
     state = state if isinstance(state, dict) else {}
     policy, _ = _policy_value(state)
-    if policy == 2:
+    if has_target_rules(policy):
         target = state.get("delivery_target")
         if isinstance(target, str) and target in _TARGET_RULES:
-            return _rules(2, target, **_TARGET_RULES[target])
-        return _rules(2, None, **_POLICY_ONE)
+            return _rules(policy, target, **_TARGET_RULES[target])
+        return _rules(policy, None, **_POLICY_ONE)
     return _rules(policy, None, **(_POLICY_ZERO if policy == 0 else _POLICY_ONE))
 
 
@@ -614,8 +630,10 @@ GOLDFISH_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
 GOLDFISH_FROM = "2026-10-27T12:13:54+01:00"
 
 
-def is_goldfish_gated() -> bool:
-    """Whether the Goldfish gates apply now: the clock is at or after `GOLDFISH_FROM`."""
+def is_goldfish_gated(state: dict[str, Any]) -> bool:
+    """Whether the Goldfish gates apply: always at policy 3, else the clock is at or after `GOLDFISH_FROM`."""
+    if _policy_value(state if isinstance(state, dict) else {})[0] >= 3:
+        return True
     return at_or_after(now_iso(), GOLDFISH_FROM)
 
 
@@ -647,7 +665,9 @@ def _add_retro_section_findings(state: dict[str, Any], reflection: str, report: 
 
 
 def is_style_checked(state: dict[str, Any]) -> bool:
-    """Whether `state` was created on or after `STYLE_CHECKED_FROM`; unjudgeable means no."""
+    """Whether style advice applies: the option at policy 3, else `state` was created on or after the cutoff."""
+    if _policy_value(state)[0] >= 3:
+        return project_options(state)["style_advice"]
     return _created_on_or_after(state, STYLE_CHECKED_FROM)
 
 
@@ -1580,10 +1600,10 @@ def alignment_gate_errors(project_dir: Path, previous: dict[str, Any], candidate
     # without a delivery target, whatever its creation date.
     rules = delivery_rules(candidate)
     target_problem = (
-        f"a policy-2 project may not leave {previous.get('status')} without a delivery_target "
+        f"a policy-{rules.policy} project may not leave {previous.get('status')} without a delivery_target "
         f"({', '.join(DELIVERY_TARGETS)}); record it with 'workflow confirm' (kind alignment, delivery_target) "
         "or 'workflow retarget'"
-        if rules.policy == 2 and rules.target is None
+        if has_target_rules(rules.policy) and rules.target is None
         else None
     )
     if not is_new_project(candidate):
@@ -2694,15 +2714,15 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
             report.errors.append(
                 f"project: delivery_target must be one of {', '.join(DELIVERY_TARGETS)}, found {target!r}"
             )
-        if valid and policy != 2:
+        if valid and not has_target_rules(policy):
             report.errors.append(
-                f"project: delivery_target needs policy_version 2, but the project is at policy {policy}"
+                f"project: delivery_target needs policy_version 2 or 3, but the project is at policy {policy}"
             )
     # BLOCKED may follow ALIGNING, so it is let through here: leaving it for PLANNING or beyond is refused.
     unaligned = ("ALIGNING", "BLOCKED", "CANCELLED")
-    if valid and policy == 2 and "delivery_target" not in state and state.get("status") not in unaligned:
+    if valid and has_target_rules(policy) and "delivery_target" not in state and state.get("status") not in unaligned:
         report.errors.append(
-            "project: a policy-2 project past ALIGNING needs a delivery_target "
+            f"project: a policy-{policy} project past ALIGNING needs a delivery_target "
             f"({', '.join(DELIVERY_TARGETS)}); record it with 'workflow retarget'"
         )
 
