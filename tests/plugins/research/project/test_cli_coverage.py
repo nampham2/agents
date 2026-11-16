@@ -45,6 +45,7 @@ class ManageCLIInitTests(unittest.TestCase):
         result = _call_manage(
             [
                 "init",
+                "--tag", "test",
                 str(self.workspace),
                 "--title",
                 "Test Project",
@@ -63,6 +64,7 @@ class ManageCLIInitTests(unittest.TestCase):
             result = _call_manage(
                 [
                     "init",
+                    "--tag", "test",
                     str(self.workspace),
                     "--title",
                     "",
@@ -475,6 +477,7 @@ class CLIMainBlockTest(unittest.TestCase):
                     sys.executable,
                     str(MANAGER),
                     "init",
+                    "--tag", "test",
                     str(workspace),
                     "--title",
                     "SubprocessTest",

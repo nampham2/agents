@@ -37,23 +37,36 @@ By hand the launcher listens on port 8765 and opens the browser: `research-dashb
   its count follows the other filters. While a filter is on, only the sections that hold a match
   stay on screen, so Done shows Finished and Blocked shows the board; a finished project that
   still waits on you stays on the board.
+- A tag bar under the status bar: one small luggage-tag chip per tag with a count, the 12 most used
+  first ("Show all N tags" for the rest), and an `untagged` chip. A project must carry every chosen
+  tag, so each one narrows the list. A count says how many projects would remain if that tag were
+  added, and a tag that would leave none is dimmed. `untagged` excludes the other tags, and a tag
+  filter opens the finished list when a finished project matches. Where no project has a tag the
+  bar says so. Tags come from `project.json`: see
+  [tags-and-follow-up.md](../project/references/tags-and-follow-up.md).
 - A "Waiting on you" board first: every project that needs you, grouped by reason (blocked, needs
   your approval, review is waiting, waiting for your reply, or a `project.json` that cannot be
   read or has no status), five rows at first and "Show all" for the rest. That control names any
   group the first five rows do not reach.
 - Projects in flight as cards grouped by status, each with a five-stop route (hover a stop for its
-  name and state), task progress and a chip for each plan or review gate that has something to say.
+  name and state), task progress, the project's tags and a chip for each plan or review gate that
+  has something to say.
 - Finished and cancelled projects behind a toggle. A done or cancelled filter, or a search that
   matches one, opens them.
-- Filters: search, repository, a date since (by last update or by creation) and the status chips.
-  A line under them says how many projects remain and offers a button to remove each repository,
-  date or search filter; a status is removed by unpressing its chip. A combination with no match
-  says so and offers to clear it.
+- Filters: search, repository, a date since (by last update or by creation), the status chips and
+  the tag chips. A line under them says how many projects remain and offers a button to remove each
+  repository, date, search or tag filter; a status is removed by unpressing its chip. A combination
+  with no match says so and offers to clear it. Clicking a tag anywhere, in a card, a row or the
+  drawer, filters by it; a tag chosen in the drawer also closes the drawer.
 - Board rows, in-flight cards and the drawer have a "Resume prompt" button that copies
   `Use the project skill to resume <path>.` (a project that cannot be read offers its path
   instead). Click a project id to copy it; finished rows hide the id on a phone. A session adds
   a "Resume command" button in the drawer, which copies `cd <directory> && claude --resume <id>`.
-- A drawer per project: phase and gates, next step, open questions, blockers and waits, tasks with
-  evidence and receipts, counts, decisions, worktrees and merge request, and the sessions.
+- A drawer per project: its tags (or "Untagged"), phase and gates, next step, open questions,
+  blockers and waits, tasks with evidence and receipts, counts, decisions, worktrees and merge
+  request, and the sessions.
+- Wide screens: from 1680 pixels the header becomes a sticky rail on the left (status, tags and
+  filters) and the projects fill the rest in more columns. The page stops growing at 1920 pixels and
+  centers. Narrower screens keep one column, as before.
 - Light and dark themes, a theme button, and keyboard use: Enter opens a project, Escape closes it.
 - The page refreshes itself when a project file changes.

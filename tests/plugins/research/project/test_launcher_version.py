@@ -138,7 +138,7 @@ class LauncherProcessTests(_CacheFixture):
         target = base / f"target-{name}"
         target.mkdir()
         return self.run_tool(
-            "research-project", "init", str(base / f"workspace-{name}"), "--title", "t",
+            "research-project", "init", "--tag", "test", str(base / f"workspace-{name}"), "--title", "t",
             "--working-directory", str(target), "--create-root", "--json",
         )
 

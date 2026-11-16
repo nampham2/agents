@@ -433,6 +433,78 @@ def names_only_staged(body: str, staged_titles: list[str]) -> bool:
     return bool(items) and all(_names_only(item, patterns) for item in items)
 
 
+FOLLOW_UP_TITLES = frozenset({"follow-up", "follow-ups"})
+BULLET = re.compile(r"(?:[-*]|\d+\.)[ \t]+(.*)")
+FENCE_LINE = re.compile(r" {0,3}(`{3,}|~{3,})")  # the same indent limit as `_headings`
+FOLLOW_UP_START = re.compile(r"follow[\s_-]?ups?\b")
+
+
+def is_follow_up_title(title: str) -> bool:
+    """Whether a level-two reflection title names the follow-up section: `Follow-up` or `Follow-ups`, any case."""
+    return title.strip().lower() in FOLLOW_UP_TITLES
+
+
+def follow_up_items(reflection: str) -> "tuple[list[str], bool]":
+    """The items of the reflection's `## Follow-up` section, and whether it holds text but no bullet.
+
+    Each top-level bullet (`-`, `*` or `1.`) is one item. A wrapped line, an indented line and a nested
+    bullet join the item above, separated by one space. The first such section wins, a level-three heading
+    is not the section, and bullets inside a fenced block are not items. A missing or empty section gives
+    no items and no flag. The flag is set for text with no bullet at all, and for a fenced block that is
+    never closed (it hides what follows), so `finalize` can say so.
+    """
+    headings = _headings(reflection)
+    body = None
+    for index, (level, title, offset) in enumerate(headings):
+        if level == 2 and is_follow_up_title(title):
+            end = next((position for depth, _, position in headings[index + 1 :] if depth <= level), len(reflection))
+            body = reflection[_line_end(reflection, offset) : end]
+            break
+    if body is None:
+        return [], False
+    items: list[str] = []
+    loose = False
+    fence = ""  # the opening run of a fenced block while one is open
+    for line in body.splitlines():
+        stripped = line.strip()
+        run = FENCE_LINE.match(line)
+        if fence:
+            # A closing fence repeats the character, is at least as long as the opening one, and has no text after it.
+            closes = bool(run) and run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence)
+            if closes and not line[run.end() :].strip():
+                fence = ""
+            continue
+        if run:
+            fence = run.group(1)
+            continue
+        if not stripped or stripped in ("-", "*"):
+            continue
+        top = BULLET.fullmatch(line)
+        if top:
+            if top.group(1).strip():  # an empty bullet is not an item
+                items.append(top.group(1).strip())
+        elif items:
+            nested = BULLET.fullmatch(stripped)
+            items[-1] += " " + (nested.group(1).strip() if nested else stripped)
+        else:
+            loose = True
+    # A fence that is never closed hides every bullet below it: flag that even when some items were read.
+    return items, (loose and not items) or bool(fence)
+
+
+def near_follow_up_titles(reflection: str) -> "list[str]":
+    """Level-two titles that start with `Follow-up` but are not the section, such as `Follow-up work`.
+
+    Their bullets are not read as follow-up items and the title is never staged as a lesson, so `finalize`
+    names them in a warning rather than lose the carry-over silently.
+    """
+    return [
+        title.strip()
+        for level, title, _ in _headings(reflection)
+        if level == 2 and FOLLOW_UP_START.match(title.strip().lower()) and not is_follow_up_title(title)
+    ]
+
+
 def reflection_lesson_sections(reflection: str) -> list[tuple[str, str]]:
     """The reflection's level-two sections whose title names a lesson, in document order.
 
@@ -443,7 +515,10 @@ def reflection_lesson_sections(reflection: str) -> list[tuple[str, str]]:
     headings = _headings(reflection)
     sections: list[tuple[str, str]] = []
     for index, (level, title, offset) in enumerate(headings):
-        if level != 2 or not any(token in title.lower() for token in LESSON_TITLE_TOKENS):
+        # A follow-up section lists work left over, not what the project taught, whatever words its title has.
+        if level != 2 or FOLLOW_UP_START.match(title.strip().lower()):
+            continue
+        if not any(token in title.lower() for token in LESSON_TITLE_TOKENS):
             continue
         end = next((position for depth, _, position in headings[index + 1 :] if depth <= level), len(reflection))
         sections.append((title.strip(), reflection[_line_end(reflection, offset) : end].strip()))

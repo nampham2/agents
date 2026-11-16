@@ -111,6 +111,56 @@ def test_decisions_keep_the_latest_six_newest_first(tmp_path: Path) -> None:
     assert dash.build_project(directory)["decisions"] == [f"decision {number}" for number in range(9, 3, -1)]
 
 
+def test_a_row_carries_its_tags(tmp_path: Path) -> None:
+    assert dash.build_project(write_project(tmp_path, tags=["dashboard", "design"]))["tags"] == ["dashboard", "design"]
+    assert dash.build_project(write_project(tmp_path, OTHER))["tags"] == []  # a project from before tags
+
+
+@pytest.mark.parametrize("value", ["oops", ["Bad Tag"], ["a", "a"], [1], [f"t{n}" for n in range(6)]])
+def test_malformed_tags_read_as_none_and_do_not_break_the_row(tmp_path: Path, value: Any) -> None:
+    row = dash.build_project(write_project(tmp_path, tags=value))
+    assert row["tags"] == [] and row["unreadable"] is False
+
+
+def test_an_unreadable_project_has_no_tags_but_the_key_exists(tmp_path: Path) -> None:
+    directory = tmp_path / OTHER
+    directory.mkdir()
+    (directory / "project.json").write_text("{not json", encoding="utf-8")
+    assert dash.build_project(directory)["tags"] == []
+
+
+def test_a_fenced_block_in_the_decision_history_is_one_decision_not_many(tmp_path: Path) -> None:
+    directory = write_project(tmp_path)
+    history = (
+        "- first decision\n"
+        "- Follow-up agreed on 2026-11-16.\n\n"
+        "````\n- a bullet inside the quoted text\n```\n- another bullet <!-- hidden -->\n````\n\n"
+        "~~~\n- tilde fenced bullet\n~~~\n"
+        "- last decision\n"
+    )
+    (directory / "spec.md").write_text(f"# T\n\n## Decision history\n\n{history}", encoding="utf-8")
+    assert dash.build_project(directory)["decisions"] == [
+        "last decision", "Follow-up agreed on 2026-11-16.", "first decision",
+    ]
+
+
+def test_a_shorter_fence_does_not_close_a_longer_one(tmp_path: Path) -> None:
+    directory = write_project(tmp_path)
+    history = "- kept\n````\n- inside\n```\n- still inside\n````\n- after\n"
+    (directory / "spec.md").write_text(f"# T\n\n## Decision history\n\n{history}", encoding="utf-8")
+    assert dash.build_project(directory)["decisions"] == ["after", "kept"]
+
+
+def test_the_page_keeps_its_tag_hooks() -> None:
+    """The page is not run by the unit tests: a guard against an edit that drops the tag behavior."""
+    page = dash.PAGE.read_text(encoding="utf-8")
+    markers = ("matchesTags", "data-tag", "data-untagged", 'key.startsWith("tag:")', "tagBarHtml", "min-width: 1680px")
+    for marker in markers:
+        assert marker in page, marker
+    # The design mockup's sample data and preset parser must not ship in the real page.
+    assert "buildSample" not in page and "URLSearchParams" not in page
+
+
 def test_a_version_3_project_without_optional_parts_shows_empty_fields(tmp_path: Path) -> None:
     row = dash.build_project(write_project(tmp_path, schema_version=3, status="DONE"))
     assert row["has_handoff"] is False

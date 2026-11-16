@@ -84,7 +84,7 @@ def run_lifecycle(tmp_path: Path, surface: str) -> list[tuple[str, bool]]:
     cli = Cli(surface)
     repository = make_repository(tmp_path)
     created = json.loads(cli.ok(
-        "init", tmp_path / "workspace", "--create-root", "--title", "Current lifecycle",
+        "init", "--tag", "test", tmp_path / "workspace", "--create-root", "--title", "Current lifecycle",
         "--working-directory", repository, "--json",
     ).stdout)
     project = Path(created["project_directory"])
@@ -235,7 +235,8 @@ def test_a_legacy_project_keeps_the_old_permissive_behaviour(tmp_path: Path, sur
     target = tmp_path / "target"
     target.mkdir()
     project = Path(json.loads(cli.ok(
-        "init", tmp_path / "workspace", "--create-root", "--title", "Legacy", "--working-directory", target, "--json",
+        "init", "--tag", "test", tmp_path / "workspace", "--create-root", "--title", "Legacy",
+        "--working-directory", target, "--json",
     ).stdout)["project_directory"])
     backdate_project(project)
     sections = {heading: f"Content for {heading}." for heading, _ in lib.SPEC_CANONICAL_SECTIONS}

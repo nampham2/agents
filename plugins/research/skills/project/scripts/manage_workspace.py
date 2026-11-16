@@ -43,6 +43,7 @@ from workspace_lib import (
     find_workspace_roots,
     index_headroom,
     launcher_version_warning,
+    load_json,
     load_memory_topics,
     memory_entry_marker,
     migration_candidate,
@@ -57,11 +58,20 @@ from workspace_lib import (
     render_task_graph,
     resolve_workspace_root,
     retire_memory_topic,
+    tag_project,
     unlock_lock,
     validate_v3_state,
     verification_order_warnings,
 )
-from workspace_operations import CloseOperationError, close_project, finish_and_checkpoint, init_project, task_operation
+from workspace_operations import (
+    CloseOperationError,
+    close_project,
+    finish_and_checkpoint,
+    follow_up_project,
+    init_project,
+    require_new_tags,
+    task_operation,
+)
 from workspace_retro import record_run, record_schema, retro_batch
 from workspace_session import (
     _load_state,
@@ -72,7 +82,7 @@ from workspace_session import (
     update_project_data,
     validated_project_context,
 )
-from workspace_similar import find_similar
+from workspace_similar import find_similar, suggest_tags
 from workspace_workflows import FIELDS, READ_ACTIONS, input_schema, preview, workflow
 
 
@@ -96,6 +106,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     initialize.add_argument("--lock-timeout", type=float, default=5.0)
     initialize.add_argument("--briefing", action="store_true", help="also scaffold an optional discovery briefing")
+    initialize.add_argument(
+        "--tag", action="append", default=[],
+        help="project tag, 1 to 5 times (lowercase words joined by hyphens); see suggest-tags",
+    )
     initialize.add_argument(
         "--acknowledge-duplicates",
         nargs="+",
@@ -122,6 +136,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     start.add_argument("--create-root", action="store_true", help="with --create: create a missing workspace root")
     start.add_argument("--briefing", action="store_true", help="with --create: scaffold an optional briefing")
+    start.add_argument(
+        "--tag", action="append", default=[],
+        help="with --create: project tag, 1 to 5 times; ignored when start resumes a project",
+    )
     start.add_argument("--lock-timeout", type=float, default=5.0)
 
     automation = subparsers.add_parser("workflow", help="Named lifecycle automation with closed JSON input schemas")
@@ -181,6 +199,31 @@ def _build_parser() -> argparse.ArgumentParser:
     similar.add_argument("workspace_root", nargs="?", type=Path)
     similar.add_argument("--title", required=True)
     similar.add_argument("--working-directory", required=True, type=Path)
+
+    suggest = subparsers.add_parser("suggest-tags", help="Suggest tags for a new project from related projects")
+    suggest.add_argument("workspace_root", nargs="?", type=Path)
+    suggest.add_argument("--title", required=True)
+    suggest.add_argument("--working-directory", required=True, type=Path)
+    suggest.add_argument("--limit", type=int, default=10, help="1 to 50 suggestions")
+
+    follow = subparsers.add_parser(
+        "follow-up", help="Create the follow-up of a finished project, on the user's agreement"
+    )
+    follow.add_argument("project_directory", type=Path, help="the finished project; the new project lands beside it")
+    follow.add_argument("--title", required=True)
+    follow.add_argument("--agreement", required=True, help="the user's own words agreeing to the follow-up")
+    follow.add_argument("--tag", action="append", default=[], help="tag, 1 to 5 times; default: the source's tags")
+    follow.add_argument("--working-directory", type=Path, help="default: the source's repository")
+    follow.add_argument("--lock-timeout", type=float, default=5.0)
+    follow.add_argument("--json", action="store_true", help="print a compact structured result")
+
+    tagger = subparsers.add_parser("tag", help="Add or remove project tags through the guarded commit path")
+    tagger.add_argument("project_directory", type=Path)
+    tagger.add_argument("action", choices=("add", "remove"))
+    tagger.add_argument("tags", nargs="+")
+    tagger.add_argument("--expected-revision", type=int, required=True)
+    tagger.add_argument("--lock-timeout", type=float, default=5.0)
+    tagger.add_argument("--json", action="store_true", help="print a compact structured result")
 
     update = subparsers.add_parser("update", help="Merge a small JSON patch through the guarded commit path")
     update.add_argument("project_directory", type=Path)
@@ -592,16 +635,19 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
     """Run one parsed command and return its exit code; workspace errors propagate to `main`."""
     if args.command == "init":
         workspace_root = resolve_workspace_root(args.workspace_root)
+        # Before anything is written: a new project needs 1 to 5 valid tags, and a refusal creates nothing.
+        new_tags = require_new_tags(args.tag)
         project_dir, warnings = init_project(
             workspace_root, args.title, args.working_directory, acknowledged=args.acknowledge_duplicates,
-            lock_timeout=args.lock_timeout, create_root=args.create_root, briefing=args.briefing,
+            lock_timeout=args.lock_timeout, create_root=args.create_root, briefing=args.briefing, tags=new_tags,
         )
         for warning in warnings:
             print(f"WARNING: {warning}", file=sys.stderr)
         if args.json:
             initial = validated_project_context(project_dir)
             print(json.dumps({"project_directory": str(project_dir), "revision": initial["revision"],
-                "roots": initial["roots"], "documents": initial["documents"], "warnings": warnings}, indent=2))
+                "roots": initial["roots"], "documents": initial["documents"], "tags": new_tags,
+                "warnings": warnings}, indent=2))
         else:
             print(project_dir)
         return 0
@@ -610,7 +656,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         result, code = start_project(
             args.workspace_root, project_dir=args.project_dir, title=args.title,
             working_directory=args.working_directory, create=args.create, create_root=args.create_root,
-            briefing=args.briefing, lock_timeout=args.lock_timeout,
+            briefing=args.briefing, lock_timeout=args.lock_timeout, tags=args.tag or None,
         )
         for warning in result.get("warnings", []):
             print(f"WARNING: {warning}", file=sys.stderr)
@@ -685,6 +731,43 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
         print(json.dumps(find_similar(
             resolve_workspace_root(args.workspace_root), args.title, args.working_directory,
         ), indent=2))
+        return 0
+
+    if args.command == "suggest-tags":
+        print(json.dumps({"suggestions": suggest_tags(
+            resolve_workspace_root(args.workspace_root), args.title, args.working_directory, args.limit,
+        )}, indent=2))
+        return 0
+
+    if args.command == "follow-up":
+        new_dir, warnings = follow_up_project(
+            args.project_directory, title=args.title, agreement=args.agreement, tags=args.tag or None,
+            working_directory=args.working_directory, lock_timeout=args.lock_timeout,
+        )
+        for warning in warnings:
+            print(f"WARNING: {warning}", file=sys.stderr)
+        created = load_json(new_dir / "project.json")
+        if args.json:
+            print(json.dumps({
+                "operation": "follow-up", "project_directory": str(new_dir), "revision": created["revision"],
+                "predecessor": created["predecessor"], "tags": created["tags"], "warnings": warnings,
+            }, indent=2))
+        else:
+            print(new_dir)
+        return 0
+
+    if args.command == "tag":
+        state = tag_project(
+            args.project_directory, args.action, args.tags,
+            expected_revision=args.expected_revision, lock_timeout=args.lock_timeout,
+        )
+        if args.json:
+            print(json.dumps({
+                "operation": "tag", "project_directory": str(args.project_directory),
+                "revision": state["revision"], "tags": state["tags"],
+            }, indent=2))
+        else:
+            print(f"Committed revision {state['revision']}: tags {', '.join(state['tags'])}")
         return 0
 
     if args.command == "list-projects":

@@ -116,13 +116,13 @@ def test_start_without_a_match_returns_no_candidates_unless_asked_to_create(
     assert (code, result) == (0, {"candidates": []})
     code, created, _ = cli(
         capsys, "start", "--workspace-root", str(workspace), "--title", "Something unrelated entirely",
-        "--working-directory", str(target), "--create",
+        "--working-directory", str(target), "--create", "--tag", "test",
     )
     assert code == 0 and KEYS <= set(created) and Path(created["project_dir"]).is_dir()
     # A retry (the first call's resume might have failed) finds the project and resumes it.
     code, again, _ = cli(
         capsys, "start", "--workspace-root", str(workspace), "--title", "Something unrelated entirely",
-        "--working-directory", str(target), "--create",
+        "--working-directory", str(target), "--create", "--tag", "test",
     )
     assert code == 0 and again["project_dir"] == created["project_dir"] and again["matched"]["project"]
 
@@ -136,8 +136,10 @@ def test_start_creates_a_missing_workspace_root_only_when_told(
     )
     assert (code, result) == (0, {"candidates": []}) and not root.exists()
     with pytest.raises(WorkspaceError):
-        start_project(root, title="A new thing", working_directory=target, create=True)
-    result, code = start_project(root, title="A new thing", working_directory=target, create=True, create_root=True)
+        start_project(root, title="A new thing", working_directory=target, create=True, tags=["test"])
+    result, code = start_project(
+        root, title="A new thing", working_directory=target, create=True, create_root=True, tags=["test"]
+    )
     assert code == 0 and root.is_dir() and isinstance(result["warnings"], list)
 
 
@@ -157,7 +159,7 @@ def test_start_prints_the_warnings_of_a_created_project(
     with patch("workspace_operations.vcs_warnings", return_value=["no version control here"]):
         _, result, err = cli(
             capsys, "start", "--workspace-root", str(workspace), "--title", "A warned project",
-            "--working-directory", str(target), "--create",
+            "--working-directory", str(target), "--create", "--tag", "test",
         )
     assert result["warnings"] == ["no version control here"] and "WARNING: no version control here" in err
 

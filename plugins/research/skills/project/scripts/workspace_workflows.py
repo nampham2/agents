@@ -39,7 +39,9 @@ from workspace_documents import (
     _replace_sections,
     _section_span,
     append_staged_section,
+    follow_up_items,
     names_only_staged,
+    near_follow_up_titles,
     reflection_lesson_sections,
 )
 from workspace_durability import (
@@ -59,6 +61,7 @@ from workspace_goldfish import (
     delivery_gate_errors,
     goldfish_findings,
     goldfish_operation,
+    residual_findings,
 )
 from workspace_invocations import note
 from workspace_journal import (
@@ -826,6 +829,22 @@ def _build(
             raise WorkspaceError("; ".join(retro_findings) + "; nothing was committed")
         result["retro_warnings"] = retro_findings
         documents["reflection"] = reflection + "\n"
+        # What this project leaves for a follow-up: the reflection's `## Follow-up` bullets, then the findings
+        # a Goldfish round accepted as residual. The skill suggests a follow-up only when the list is not empty.
+        bullets, loose = follow_up_items(reflection)
+        result["follow_up"] = [{"kind": "reflection", "text": text, "pointer": "reflection.md"} for text in bullets]
+        result["follow_up"] += residual_findings(project)
+        result["follow_up_warnings"] = (
+            [
+                "the reflection's Follow-up section could not be read in full (text with no bullet, or a fenced "
+                "block that is never closed); write one bullet per item and close every fence"
+            ]
+            if loose else []
+        ) + [
+            f"the reflection title {title!r} is not read as the follow-up section, so its bullets are not "
+            "carried over; name it 'Follow-up' or 'Follow-ups'"
+            for title in near_follow_up_titles(reflection)
+        ]
         # Stage what the reflection taught while this operation still holds the project lock, so a
         # concurrent `stage` cannot be lost by the merge and the close warning can describe content
         # it has not committed yet. Nothing staged means nothing to write.

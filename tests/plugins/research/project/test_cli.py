@@ -59,7 +59,8 @@ class _CliFixture(unittest.TestCase):
 class CliIntegrationTests(_CliFixture):
     def test_initialize_execute_close_and_validate(self) -> None:
         initialized = self.run_cli(
-            MANAGER, "init", self.workspace_root, "--title", "CLI project", "--working-directory", self.target
+            MANAGER, "init", "--tag", "test", self.workspace_root, "--title", "CLI project",
+            "--working-directory", self.target,
         )
         project_dir = Path(initialized.stdout.strip())
         backdate_project(project_dir)  # these are legacy-lifecycle tests: they plan without alignment
@@ -103,7 +104,8 @@ class DryRunCommitTests(_CliFixture):
     def setUp(self) -> None:
         super().setUp()
         initialized = self.run_cli(
-            MANAGER, "init", self.workspace_root, "--title", "Dry run", "--working-directory", self.target
+            MANAGER, "init", "--tag", "test", self.workspace_root, "--title", "Dry run",
+            "--working-directory", self.target,
         )
         self.project_dir = Path(initialized.stdout.strip())
         # Legacy-lifecycle fixture: plans without alignment. Not the helper's default date, which one

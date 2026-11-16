@@ -113,7 +113,7 @@ class ManageCLIRootResolutionTests(unittest.TestCase):
         self.target.mkdir()
 
     def _init(self, *args: str) -> int:
-        return _call_manage(["init", *args, "--title", "T", "--working-directory", str(self.target)])
+        return _call_manage(["init", "--tag", "test", *args, "--title", "T", "--working-directory", str(self.target)])
 
     def test_init_reads_the_environment_when_no_root_is_passed(self) -> None:
         with patch.dict(os.environ, {WORKSPACE_ROOT_ENV_VAR: str(self.workspace)}):

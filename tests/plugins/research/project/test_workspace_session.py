@@ -275,7 +275,10 @@ def test_both_host_launchers_support_small_updates(tmp_path: Path, surface: str)
     workspace = tmp_path / "ws"
     workspace.mkdir()
     initialized = subprocess.run(
-        [str(launcher), "init", str(workspace), "--title", "Small", "--working-directory", str(tmp_path)],
+        [
+            str(launcher), "init", "--tag", "test", str(workspace), "--title", "Small",
+            "--working-directory", str(tmp_path),
+        ],
         text=True,
         capture_output=True,
         check=True,

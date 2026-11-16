@@ -8,25 +8,33 @@ import re
 from pathlib import Path
 from typing import Any
 
-from workspace_documents import append_record, edit_document
+from workspace_documents import append_record, edit_document, follow_up_items
 from workspace_evidence import evidence_entries, evidence_findings, selected_evidence_references
+from workspace_goldfish import residual_findings
 from workspace_journal import OperationError, snapshot
 from workspace_lib import (
+    BRIEFING_CANONICAL_SECTIONS,
+    DirectoryLock,
+    IndexNotRebuilt,
     WorkspaceConflict,
     WorkspaceError,
     allocate_project,
     authorization_findings,
     commit_state,
+    load_json,
+    normalize_tags,
     now_iso,
+    read_text,
     reason_reference_warnings,
     receipt_findings,
     staged_lesson_lines,
+    tags_of,
     task_stamps_enabled,
     validate_project,
     vcs_warnings,
 )
 from workspace_session import _load_state, document_tokens, next_move
-from workspace_similar import check_new_project
+from workspace_similar import _rows, check_new_project, repository_of
 
 
 class CloseOperationError(WorkspaceError):
@@ -437,8 +445,12 @@ def init_project(
     lock_timeout: float = 5.0,
     create_root: bool = False,
     briefing: bool = False,
+    tags: list[str] | None = None,
 ) -> tuple[Path, list[str]]:
-    """Allocate a project and return its directory with the warnings to show; `init` and `start` share it."""
+    """Allocate a project and return its directory with the warnings to show; `init` and `start` share it.
+
+    `tags` are recorded when given. The CLI requires 1 to 5 of them for a new project before it calls here.
+    """
     acknowledged = acknowledged or []
     # Before the directory exists: a refused init leaves nothing behind, and only the user's answer
     # lets a live look-alike pass.
@@ -451,11 +463,167 @@ def init_project(
         create_root=create_root,
         briefing=briefing,
         acknowledged_duplicates=acknowledged,
+        tags=tags,
     )
     # Warned at init as well as at validation, because this is the moment someone chooses where the record
     # of the work will live. Checked after allocation, since create_root means the directory to check may not
     # have existed a moment ago.
     return project_dir, [*similar_warnings, *vcs_warnings(workspace_root)]
+
+
+def require_new_tags(tags: list[str]) -> list[str]:
+    """The 1 to 5 tags a new project needs, normalized, or a refusal that says nothing was created."""
+    try:
+        return normalize_tags(tags, minimum=1)
+    except WorkspaceError as error:
+        raise WorkspaceError(f"init created nothing: {error}; see `research-project suggest-tags`") from error
+
+
+def _follow_up_agreement_entry(source_id: str, agreement: str) -> str:
+    """The decision-history entry for the user's agreement: a bullet, then the text verbatim in a fenced block.
+
+    The fence is one backtick longer than the longest run in the text (three at least), so the text cannot close
+    it, and every character of the text is kept.
+    """
+    longest = max((len(run) for run in re.findall(r"`+", agreement)), default=0)
+    fence = "`" * max(3, longest + 1)
+    return f"- Follow-up of {source_id}: the user agreed on {now_iso()[:10]}.\n\n{fence}\n{agreement}\n{fence}"
+
+
+def _follow_up_briefing(source_id: str, title: str, items: list[dict[str, str]]) -> str:
+    """The briefing of a follow-up: the marker line, then every contract heading written, never a placeholder."""
+    carried = "\n".join(f"- [{item['kind']}] {' '.join(item['text'].split())} ({item['pointer']})" for item in items)
+    sections = {
+        "Stated requirements": f"See {source_id}/spec.md.",
+        "Verified facts": "None carried over.",
+        "Corrected assumptions": "None carried over.",
+        "Background": f"See {source_id}/reflection.md.",
+        "Open questions for grill": carried or "None carried over.",
+    }
+    body = "".join(f"## {name}\n\n{sections[name]}\n\n" for name, _ in BRIEFING_CANONICAL_SECTIONS)
+    return f"Follow-up of: {source_id}\n\n# {title.strip()} \u2014 briefing\n\n{body}"
+
+
+def follow_up_project(
+    source_dir: Path,
+    *,
+    title: str,
+    agreement: str,
+    tags: list[str] | None = None,
+    working_directory: Path | None = None,
+    lock_timeout: float = 5.0,
+) -> tuple[Path, list[str]]:
+    """Create the follow-up of a finished project and return its directory with the warnings to show.
+
+    The source is only read, and nothing is written into it, not even a lock. The new project starts in
+    ALIGNING with no tasks, no worktree and no repository write, beside the source, with `predecessor` set.
+    A project that is not DONE, a blank or dangerous agreement, a working directory that is gone, no tags and
+    an existing follow-up are each refused before anything is written; every refusal starts with
+    `follow-up refused:`. A failure after the project exists says so instead.
+    """
+    project_dir: Path | None = None
+    warnings: list[str] = []
+    try:
+        source_dir = Path(source_dir).resolve()
+        root = source_dir.parent
+        # A mistyped path must not create a lock directory in some other folder: check for a project first.
+        if not (source_dir / "project.json").is_file():
+            raise WorkspaceError(f"{source_dir} holds no project.json")
+        # One lock for this source, held outside the source, covers every read, the scan and the creation: two
+        # follow-ups of one source cannot both pass the scan, and the finished project is not written to.
+        # The lock is a directory that is removed on release.
+        with DirectoryLock(root / f".follow-up-{source_dir.name}.lock", timeout=lock_timeout):
+            state = load_json(source_dir / "project.json")
+            if state.get("project") != source_dir.name:
+                raise WorkspaceError("the project field does not match the directory name")
+            if state.get("status") != "DONE":
+                raise WorkspaceError(f"the source project is {state.get('status')}, not DONE")
+            if not isinstance(agreement, str) or not agreement.strip():
+                raise WorkspaceError("the agreement text is blank; pass the user's own words with --agreement")
+            if any(line.lstrip().startswith("#") for line in agreement.splitlines()):
+                raise WorkspaceError(
+                    "the agreement text has a line that starts with '#', which would add a heading to the record; "
+                    "ask the user to rephrase"
+                )
+            if "<!--" in agreement:
+                raise WorkspaceError(
+                    "the agreement text contains '<!--', which could forge a record marker; ask the user to rephrase"
+                )
+            if working_directory is not None:
+                directory = Path(working_directory).resolve()
+            else:
+                recorded = state.get("working_directory")
+                if not isinstance(recorded, str) or not recorded.strip():
+                    raise WorkspaceError("the source has no working directory; pass --working-directory <dir>")
+                directory = Path(repository_of(str(Path(recorded).resolve())))
+            if not directory.is_dir():
+                raise WorkspaceError(f"working directory {directory} does not exist; pass --working-directory <dir>")
+            stored_tags = state.get("tags")
+            if tags:
+                new_tags = normalize_tags(tags, minimum=1)
+            elif tags_of(state):
+                new_tags = tags_of(state)
+            elif stored_tags not in (None, []):
+                raise WorkspaceError("the source's tags field is malformed; pass 1 to 5 --tag values")
+            else:
+                raise WorkspaceError("the source has no tags; pass 1 to 5 --tag values")
+            rows = _rows(root)
+            for row in rows:
+                if row.get("predecessor") != source_dir.name:
+                    continue
+                briefing = Path(row["path"]) / "briefing.md"
+                if not briefing.exists():
+                    continue  # a maintenance successor has no briefing: only the marker line makes a follow-up
+                try:
+                    first = read_text(briefing).split("\n", 1)[0]
+                except WorkspaceError:
+                    warnings.append(
+                        f"the briefing of {row['project']} could not be read, so it was not checked as a follow-up"
+                    )
+                    continue
+                if first.rstrip("\r") == f"Follow-up of: {source_dir.name}":
+                    raise WorkspaceError(
+                        f"{row['project']} is already a follow-up of this project; there is one per project"
+                    )
+            invalid = sum(1 for row in rows if row.get("status") == "INVALID")
+            if invalid:
+                plural = "s" if invalid != 1 else ""
+                warnings.append(f"{invalid} unreadable project{plural} could not be checked for an existing follow-up")
+            bullets: list[str] = []
+            reflection_file = source_dir / "reflection.md"
+            if reflection_file.exists():  # a legacy project may have none
+                try:
+                    bullets, incomplete = follow_up_items(read_text(reflection_file))
+                except WorkspaceError:
+                    warnings.append("reflection.md could not be read, so its follow-up bullets were not carried over")
+                else:
+                    if incomplete:
+                        warnings.append(
+                            "the Follow-up section of reflection.md could not be read in full (text with no bullet, "
+                            "or a fenced block that is never closed), so some items may not be carried over"
+                        )
+            items = [{"kind": "reflection", "text": text, "pointer": "reflection.md"} for text in bullets]
+            items += residual_findings(source_dir)
+            project_dir = allocate_project(
+                root,
+                title=title,
+                working_directory=directory,
+                lock_timeout=lock_timeout,
+                briefing=_follow_up_briefing(source_dir.name, title, items),
+                tags=new_tags,
+                predecessor=source_dir.name,
+                history_entries=[_follow_up_agreement_entry(source_dir.name, agreement)],
+            )
+    except IndexNotRebuilt:
+        raise  # the project exists and the message already says what to run
+    except (WorkspaceError, OSError, ValueError) as error:
+        if project_dir is not None:  # only a failure to release the lock can come this late
+            shown = f" Warnings: {'; '.join(warnings)}." if warnings else ""
+            raise WorkspaceError(
+                f"the follow-up project {project_dir} was created, but then: {error}.{shown}"
+            ) from error
+        raise WorkspaceError(f"follow-up refused: {error}") from error
+    return project_dir, warnings
 
 
 VALIDATION_FAILED = "candidate validation failed:"

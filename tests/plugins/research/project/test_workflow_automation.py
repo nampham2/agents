@@ -91,7 +91,7 @@ def launcher(request: pytest.FixtureRequest) -> Path:
 
 def test_lazy_task_notes_and_retired_commands_through_both_hosts(tmp_path: Path, launcher: Path) -> None:
     initialized = subprocess.run(
-        [str(launcher), "init", str(tmp_path / "workspace"), "--create-root",
+        [str(launcher), "init", "--tag", "test", str(tmp_path / "workspace"), "--create-root",
          "--title", "Lean layout", "--working-directory", str(tmp_path)],
         text=True, capture_output=True, check=True,
     )

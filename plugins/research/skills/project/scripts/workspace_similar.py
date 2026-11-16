@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from workspace_lib import WorkspaceError
+from workspace_lib import WorkspaceError, normalize_tag
 from workspace_session import list_projects
 
 # Statuses that mean the project is still being worked on: a match is blocking.
@@ -116,12 +116,58 @@ def find_similar(workspace_root: Path, title: str, working_directory: Path) -> d
             continue
         match = {
             "project": row["project"], "title": row["title"], "status": status, "score": round(score, 2),
-            "same_repository": same, "path": row["path"],
+            "same_repository": same, "path": row["path"], "tags": row.get("tags", []),
         }
         (blocking if status in LIVE_STATUSES else related).append(match)
     for matches in (blocking, related):
         matches.sort(key=lambda match: (-match["score"], match["project"]))
     return {"blocking": blocking, "related": related}
+
+
+def suggest_tags(
+    workspace_root: Path, title: str, working_directory: Path, limit: int = 10
+) -> list[dict[str, Any]]:
+    """Tags to offer for a new project, best first, each once and every one valid.
+
+    Three ordered groups: tags of projects on the same repository (most used first), tags of projects with a
+    similar title (best score first; `find_similar` scored them), then the significant words of the title in
+    the order they appear. A tag appears in the first group that has it. Unreadable and legacy rows have no
+    working directory and no tags, so they are skipped like `find_similar` skips them.
+    """
+    if not 1 <= limit <= 50:
+        raise WorkspaceError("limit must be between 1 and 50")
+    repository = repository_of(str(Path(working_directory).resolve()))
+    rows = [row for row in _rows(workspace_root) if row.get("status") in LIVE_STATUSES | TERMINAL_STATUSES]
+    suggestions: dict[str, dict[str, Any]] = {}
+
+    def offer(tag: str, source: str, projects: list[str]) -> None:
+        if tag not in suggestions:
+            suggestions[tag] = {"tag": tag, "source": source, "projects": projects[:5]}
+
+    on_repository: dict[str, list[str]] = {}
+    for row in rows:
+        if repository_of(row.get("working_directory", "")) == repository:
+            for tag in row.get("tags", []):
+                on_repository.setdefault(tag, []).append(row["project"])
+    for tag in sorted(on_repository, key=lambda name: (-len(on_repository[name]), name)):
+        offer(tag, "repository", on_repository[tag])
+
+    found = find_similar(workspace_root, title, working_directory)
+    similar: dict[str, list[str]] = {}
+    for match in sorted(found["blocking"] + found["related"], key=lambda item: (-item["score"], item["project"])):
+        for tag in match["tags"]:
+            similar.setdefault(tag, []).append(match["project"])
+    for tag, projects in similar.items():
+        offer(tag, "title-similar", projects)
+
+    for word in re.findall(r"[a-z0-9]+", title.casefold()):
+        if len(word) < MINIMUM_TOKEN_LENGTH or word in STOP_WORDS:
+            continue
+        try:
+            offer(normalize_tag(word), "title-word", [])
+        except WorkspaceError:
+            continue
+    return list(suggestions.values())[:limit]
 
 
 def check_new_project(

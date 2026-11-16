@@ -41,12 +41,13 @@ coordinator writes canonical state and shared records.
 
 ## Start or resume
 
-Find or create (`--create`) a project in one call:
+Find or create (`--create`) a project:
 
 ```sh
 research-project start --workspace-root <root> --title "<objective>" --working-directory <target>
 ```
 
+`--create` needs 1 to 5 `--tag`s ([tags-and-follow-up.md](references/tags-and-follow-up.md)).
 `--project-dir` resumes a supplied path. One look-alike on the same repository resumes; other
 matches list candidates. Check objective and ownership, then run:
 
@@ -57,8 +58,8 @@ research-project workflow <project-dir> resume -
 Send `{}` or selections. Resolve validation errors and contradictions; follow truncation with
 targeted reads.
 
-`research-project init <root> --title "<title>" --working-directory <target> --json` creates one
-directly; it refuses a likely duplicate, so ask the user. Report version-control warnings; never
+`research-project init <root> --title "<title>" --working-directory <target> --tag <tag> --json`
+creates one; it refuses a likely duplicate, so ask the user. Report version-control warnings; never
 initialize or commit repositories implicitly. Read [commands.md](references/commands.md) before the
 first record update.
 
@@ -137,9 +138,10 @@ merge and the user's keep/remove choice ([pull-requests.md](references/pull-requ
 research-project workflow <project-dir> finalize -
 ```
 
-Supply reflection, continuation, retry ID, revision and tokens. Fix closure errors; use reported
-same-ID recovery for partial writes, never replay effects. Report result and path, then commit the
-project ([pull-requests.md](references/pull-requests.md)).
+Supply reflection, continuation, retry ID, revision and tokens; list follow-up work in the
+reflection and act on `follow_up` ([tags-and-follow-up.md](references/tags-and-follow-up.md)). Fix
+closure errors; use reported same-ID recovery for partial writes, never replay effects. Report
+result and path, then commit the project ([pull-requests.md](references/pull-requests.md)).
 
 Load [reports](references/report-design.md), [layout](references/durable-context.md) and
 [maintenance](references/maintenance.md) only when needed.
