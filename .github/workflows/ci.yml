@@ -37,12 +37,20 @@ jobs:
       - name: Type check
         run: uv run ty check .
 
+      # The dashboard browser test drives headless Chrome. ubuntu-latest ships it; if an image ever stops
+      # doing so, this step fails with the cause named instead of the test failing later. Install a browser
+      # here rather than dropping REQUIRE_BROWSER below.
+      - name: Browser available
+        run: google-chrome --version
+
       - name: Test
         run: uv run pytest
         env:
           # Tests that create repositories must not inherit a developer or runner Git identity.
           GIT_CONFIG_GLOBAL: /dev/null
           GIT_CONFIG_NOSYSTEM: "1"
+          # The browser test skips when no browser is found; in CI that must be a failure, not a skip.
+          REQUIRE_BROWSER: "1"
 
       # An alpha version belongs to a project branch. It never reaches main, so a PR to main and a
       # push to main must carry a plain release version. This step runs last so that a branch on an
