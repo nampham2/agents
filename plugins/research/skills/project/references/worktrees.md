@@ -15,9 +15,9 @@ words and a reason, and lists the obligations gained and dropped. Ask the user w
 | Target | Before a write to the target | At closure |
 | --- | --- | --- |
 | `research` | refused: it writes nothing to the target; no worktree warning | each recorded worktree still needs its keep/remove decision |
-| `local` | worktree warning only; no MR | keep/remove decision |
-| `pr` | draft MR or `no_remote` exemption | keep/remove decision and a diff Goldfish round at the head; no merge or release record |
-| `merged` | draft MR or `no_remote` exemption | merge record or decision, plus the diff round at the merge |
+| `local` | record the worktree (steps 1-3, 5); no MR, so skip 4 and 6 | keep/remove decision |
+| `pr` | draft MR or `no_remote` exemption | keep/remove decision and a diff Goldfish round at closure (a recorded merge excuses it); no merge or release |
+| `merged` | draft MR or `no_remote` exemption | merge record or decision, and the diff round at the merge |
 | `release` | as `merged` | as `merged`, plus a release record or version exemption and the diff round at the release |
 
 A project from before 0.38.0 keeps `policy_version` 0 (owes none of this) or 1 (owes what `release`

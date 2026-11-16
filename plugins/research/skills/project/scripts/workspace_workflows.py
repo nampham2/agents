@@ -647,6 +647,19 @@ def _alignment_target(state: dict[str, Any], kind: str, request: dict[str, Any])
     return str(supplied)
 
 
+def _policy_body(head: str, response: str, source: str, diff: dict[str, list[str]], *extra: str) -> str:
+    """The decision-history text of a target change: what changed, the user's words, obligations gained and dropped."""
+    return "\n".join(
+        [
+            head,
+            f"response: {response}\nsource: {source}",
+            "gained: " + ("; ".join(diff["gained"]) or "none"),
+            "dropped: " + ("; ".join(diff["dropped"]) or "none"),
+            *extra,
+        ]
+    )
+
+
 def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str, Any], str, dict[str, Any]]":
     """The patch, decision body and result of a target change, after its refusals."""
     old = delivery_rules(state)
@@ -668,13 +681,11 @@ def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
     if blockers:
         raise WorkspaceError("retarget would drop records: " + "; ".join(blockers))
     diff = rules_diff(old, new)
-    body = "\n".join(
-        [
-            f"kind: retarget\nfrom: {state.get('delivery_target') or 'unset'}\nto: {target}\nreason: {reason}",
-            f"response: {confirmation['response']}\nsource: {confirmation['source']}",
-            "gained: " + ("; ".join(diff["gained"]) or "none"),
-            "dropped: " + ("; ".join(diff["dropped"]) or "none"),
-        ]
+    body = _policy_body(
+        f"kind: retarget\nfrom: {state.get('delivery_target') or 'unset'}\nto: {target}\nreason: {reason}",
+        confirmation["response"],
+        confirmation["source"],
+        diff,
     )
     outcome = {"delivery_target": {"from": state.get("delivery_target"), "to": target}, **diff}
     return {"delivery_target": target}, body, outcome
@@ -1036,43 +1047,59 @@ def migrate_policy(
     """Preview, or with `apply` commit, the move of a project to policy 2 with a delivery target.
 
     The preview writes nothing. Apply is one journaled operation named `migrate_policy`, which is what lets
-    it write the two guarded fields, and it records the user's words in the decision history.
+    it write the two guarded fields, and it records the user's words in the decision history. A retry of the
+    same apply finishes or replays its journal, so the plan is checked only when no journal exists yet.
     """
-    project = project.resolve()
+    try:
+        return _migrate_policy(project.resolve(), target, apply, expected_revision, confirm)
+    except OSError as error:
+        raise WorkspaceError(f"migrate-policy filesystem failure: {error}") from error
+
+
+def _migrate_policy(
+    project: Path, target: object, apply: bool, expected_revision: "int | None", confirm: "str | None"
+) -> dict[str, Any]:
     state = _load_state(project)
-    plan = migration_plan(state, target)
     if not apply:
-        return {**plan, "applied": False, "revision": state["revision"]}
+        if expected_revision is not None or confirm is not None:
+            raise WorkspaceError("--expected-revision and --confirm are read only with --apply; add --apply to write")
+        return {**migration_plan(state, target), "applied": False, "revision": state["revision"]}
     words = confirm.strip() if isinstance(confirm, str) else ""
     if not words:
         raise WorkspaceError("apply needs --confirm with the user's words approving the migration")
     if expected_revision is None:
         raise WorkspaceError("apply needs --expected-revision, the revision the preview was read at")
-    operation_id = f"migrate-policy-r{expected_revision}"
+    if not isinstance(target, str) or target not in DELIVERY_TARGETS:
+        raise WorkspaceError(f"target must be one of: {', '.join(DELIVERY_TARGETS)}")
+    operation_id = f"migrate-policy-r{expected_revision}-{target}"
+    stored = journal_path(project, operation_id)
+    # A retry has the journal's own spec token: the first run changed spec.md, and the journal's signature
+    # covers the request, so a fresh token would read as different input.
+    token = snapshot(document_path(project, "spec"))[1]
+    if stored.exists():
+        token = load_json(stored).get("documents", {}).get("spec", {}).get("before", token)
+    plan = None if stored.exists() else migration_plan(state, target)
     request: dict[str, Any] = {
         "id": operation_id,
         "expected_revision": expected_revision,
-        "tokens": {"spec": snapshot(document_path(project, "spec"))[1]},
-        "delivery_target": plan["delivery_target"],
+        "tokens": {"spec": token},
+        "delivery_target": target,
         "confirmation": {"source": "migrate-policy --confirm", "response": words},
     }
 
     def build(current: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
-        fresh = migration_plan(current, plan["delivery_target"])
-        body = "\n".join(
-            [
-                f"kind: migrate-policy\nfrom: policy {fresh['from_policy']}\nto: policy 2",
-                f"delivery_target: {fresh['delivery_target']}",
-                f"response: {words}\nsource: migrate-policy --confirm",
-                "gained: " + ("; ".join(fresh["gained"]) or "none"),
-                "dropped: " + ("; ".join(fresh["dropped"]) or "none"),
-                "unsatisfied: " + ("; ".join(fresh["unsatisfied"]) or "none"),
-            ]
+        fresh = plan if plan is not None else migration_plan(current, target)
+        body = _policy_body(
+            f"kind: migrate-policy\nfrom: policy {fresh['from_policy']}\nto: policy 2\n"
+            f"delivery_target: {fresh['delivery_target']}",
+            words,
+            "migrate-policy --confirm",
+            fresh,
+            "unsatisfied: " + ("; ".join(fresh["unsatisfied"]) or "none"),
         )
         spec = snapshot(document_path(project, "spec"))[0]
         documents = {"spec": _entry(spec, operation_id, body, decision=True)}
-        patch = {"policy_version": 2, "delivery_target": fresh["delivery_target"]}
-        return documents, patch, {**fresh, "applied": True}
+        return documents, {"policy_version": 2, "delivery_target": fresh["delivery_target"]}, {**fresh, "applied": True}
 
     return run_operation(project, "migrate_policy", request, build)
 

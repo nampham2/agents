@@ -46,10 +46,7 @@ Objects merge; lists/scalars replace. Tasks merge by ID. Project fields: `title`
 
 ## Delivery target
 
-Policy-2 projects record `delivery_target` (`research`, `local`, `pr`, `merged`, `release`) on the
-alignment `confirm` and change it with `workflow <project-dir> retarget`. `migrate-policy
-<project-dir> --to 2 --target <t>` previews; `--apply --expected-revision N --confirm "<words>"`
-writes ([worktrees.md](worktrees.md)).
+`delivery_target`, `retarget` and `migrate-policy`: [worktrees.md](worktrees.md).
 
 ## Documents and records
 

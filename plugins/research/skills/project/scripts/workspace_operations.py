@@ -15,6 +15,7 @@ from workspace_journal import OperationError, snapshot
 from workspace_lib import (
     BRIEFING_CANONICAL_SECTIONS,
     DELIVERY_TARGETS,
+    TERMINAL_TASK_STATUSES,
     DirectoryLock,
     IndexNotRebuilt,
     WorkspaceConflict,
@@ -24,7 +25,6 @@ from workspace_lib import (
     commit_state,
     delivery_rules,
     load_json,
-    merge_demanded,
     normalize_tags,
     now_iso,
     read_text,
@@ -78,7 +78,7 @@ def target_conflicts(state: dict[str, Any], target: str, new: Any) -> list[str]:
         line = entry.get("version_line")
         if isinstance(line, dict) and line.get("release") is not None and not new.release_demanded:
             found.append(f"worktree {path} has a release record that {target} would not require")
-        if target == "research" and entry.get("kind") not in (None, "none"):
+        if target == "research" and entry.get("kind") not in (None, "none") and entry.get("status") != "removed":
             found.append(f"worktree {path} is a {entry.get('kind')} worktree, which research does not use")
     return found
 
@@ -88,7 +88,7 @@ def research_task_conflicts(state: dict[str, Any]) -> list[str]:
     return [
         f"task {task['id']} still writes to the target"
         for task in state.get("tasks", [])
-        if task.get("status") not in ("DONE", "SKIPPED")
+        if task.get("status") not in TERMINAL_TASK_STATUSES
         and any(isinstance(output, dict) and output.get("root") == "target" for output in task.get("outputs", []))
     ]
 
@@ -129,28 +129,17 @@ def migration_plan(state: dict[str, Any], target: object) -> dict[str, Any]:
         if writing:
             raise WorkspaceError("a research target forbids writes to the target: " + "; ".join(writing))
     new = delivery_rules({**state, "policy_version": 2, "delivery_target": target})
-    unsatisfied: list[str] = []
-    notes: list[str] = []
-    for item in state.get("worktrees", []):
-        if item.get("kind") in (None, "none") or item.get("status") == "removed":
-            continue
-        path = item.get("path")
-        if new.mr_required and "pull_request" not in item and "pr_exemption" not in item:
-            unsatisfied.append(f"worktree {path} has no merge request or exemption, which {target} requires")
-        if new.release_demanded and "version_exemption" not in item:
-            line = item.get("version_line")
-            if not isinstance(line, dict) or line.get("release") is None:
-                unsatisfied.append(
-                    f"worktree {path} has no release record or version exemption, which {target} requires"
-                )
-        if merge_demanded(item, new) and "merge" not in item:
-            unsatisfied.append(f"worktree {path} has no merge decision, which {target} requires")
-        exemption = item.get("pr_exemption")
-        if isinstance(exemption, dict) and exemption.get("reason") == "local_only":
-            notes.append(
-                f"worktree {path} keeps its local_only exemption, which stays valid; "
-                "policy 2 only refuses recording a new one"
-            )
+    # The closure check itself, run on the hypothetical state, so the preview and the gate cannot drift.
+    from workspace_delivery import closure_findings
+
+    unsatisfied = closure_findings({**state, "policy_version": 2, "delivery_target": target})
+    notes = [
+        f"worktree {item.get('path')} keeps its local_only exemption, which stays valid; "
+        "policy 2 only refuses recording a new one"
+        for item in state.get("worktrees", [])
+        if isinstance(item.get("pr_exemption"), dict) and item["pr_exemption"].get("reason") == "local_only"
+        and item.get("kind") not in (None, "none") and item.get("status") != "removed"
+    ]
     return {
         "from_policy": old.policy,
         "to_policy": 2,

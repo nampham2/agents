@@ -1050,7 +1050,7 @@ class TestGoneWorktreeHint:
         with pytest.raises(WorkspaceError) as caught:
             delivery_operation(
                 [item], item["path"], "pull_request", {"exempt": "local_only"}, self.CONFIRMATION,
-                workspace_root=tmp_path, project="p",
+                workspace_root=tmp_path, project="p", rules=POLICY_ZERO,
             )
         return str(caught.value)
 
@@ -1113,7 +1113,7 @@ class TestGoneWorktreeHint:
 
         recorded, _ = delivery_operation(
             [item], item["path"], "merge", {"merge_state": "declined"}, self.CONFIRMATION,
-            workspace_root=tmp_path, project="p",
+            workspace_root=tmp_path, project="p", rules=POLICY_ZERO,
         )
         assert recorded["merge"]["state"] == "declined"
 
@@ -1122,5 +1122,5 @@ class TestGoneWorktreeHint:
             delivery_operation(
                 [again], again["path"], "merge",
                 {"merge_state": "merged", "method": "merge", "evidence": "c" * 40}, self.CONFIRMATION,
-                workspace_root=tmp_path, project="p",
+                workspace_root=tmp_path, project="p", rules=POLICY_ZERO,
             )

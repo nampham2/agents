@@ -20,7 +20,7 @@ from contextlib import AbstractContextManager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 from workspace_fields import NESTED_INPUTS, WORKTREE_OPTIONAL_FIELDS, field_errors
@@ -449,8 +449,8 @@ def is_new_project(state: dict[str, Any]) -> bool:
 STYLE_CHECKED_FROM = "2026-10-05T10:40:00+00:00"
 
 
-# Projects created on or after this instant get the delivery gates: a merge request and an alpha line
-# before work in a repository, and a merge decision and release version before closure. Set to the
+# Projects with no `policy_version` created on or after this instant are policy 1 (`delivery_rules`):
+# a merge request before work in a repository, and a merge decision and release version before closure. Set to the
 # release instant of the version that ships the gates (0.24.0); the placeholder in the future kept
 # them off until then. Read at call time so tests can move it.
 DELIVERY_GATES_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
@@ -463,8 +463,9 @@ def is_delivery_gated(state: dict[str, Any]) -> bool:
 
 
 def needs_merge(entry: object) -> bool:
-    """Whether a worktree entry delivers by a merge: a pull request, or a `local_only` exemption.
+    """Whether a worktree entry has a merge basis: a pull request, or a `local_only` exemption.
 
+    Not policy-sensitive: what a project must record is `merge_demanded` and `removal_merge`.
     The gates that read it run before the state validator, so it never raises on malformed JSON.
     """
     if not isinstance(entry, dict):
@@ -473,12 +474,13 @@ def needs_merge(entry: object) -> bool:
     return "pull_request" in entry or (isinstance(exemption, dict) and exemption.get("reason") == "local_only")
 
 
-# The policy a new project starts at: target-based delivery. Read at call time so tests, which keep
-# the date-gated rules off by moving cutoffs, can start projects without one.
+# The policy a new project starts at: target-based delivery. `allocate_project` reads it at call time and
+# writes it to `policy_version`; None starts a project with no policy (derived from `created`). Production
+# keeps 2. The test suite moves it to None because it also moves the date cutoffs, so its projects would
+# otherwise need a delivery target to leave ALIGNING.
 NEW_PROJECT_POLICY: "int | None" = 2
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
 POLICY_VERSIONS = (0, 1, 2)
-DiffEvent = Literal["closure", "closure_exempt", "merge", "release"]
 _ALL_DIFF_EVENTS: frozenset = frozenset({"closure_exempt", "merge", "release"})
 
 
@@ -510,14 +512,44 @@ class DeliveryRules:
         return self.policy < 2
 
 
-# target: (warn worktree, mr_required, release_demanded, warn merge, diff events, merge_required);
-# removal_merge_required is true for merged and release only.
-_TARGET_RULES: "dict[str, tuple[bool, bool, bool, bool, frozenset, bool]]" = {
-    "research": (False, False, False, False, frozenset(), False),
-    "local": (True, False, False, False, frozenset(), False),
-    "pr": (True, True, False, False, frozenset({"closure"}), False),
-    "merged": (True, True, False, True, frozenset({"merge", "closure_exempt"}), True),
-    "release": (True, True, True, True, frozenset({"merge", "release", "closure_exempt"}), True),
+def _rules(policy: int, target: "str | None", **fields: Any) -> DeliveryRules:
+    return DeliveryRules(policy=policy, target=target, **fields)
+
+
+# What each policy before 2 owed, reproducing the date-gated behaviour of 0.37: policy 0 demanded no MR,
+# release or merge record at closure but still required a merged record to remove a worktree that has an MR;
+# policy 1 (and policy 2 with no valid target, so no obligation disappears) demands all of them.
+_POLICY_ZERO = {
+    "warn_unrecorded_worktree": True, "mr_required": False, "release_demanded": False, "warn_unrecorded_merge": True,
+    "diff_events": _ALL_DIFF_EVENTS, "merge_required": False, "removal_merge_required": True,
+}
+_POLICY_ONE = {
+    "warn_unrecorded_worktree": True, "mr_required": True, "release_demanded": True, "warn_unrecorded_merge": True,
+    "diff_events": _ALL_DIFF_EVENTS, "merge_required": True, "removal_merge_required": True,
+}
+# One row per target, from the matrix in the design (12.1). `removal_merge_required` follows `merge_required`.
+_TARGET_RULES: "dict[str, dict[str, Any]]" = {
+    "research": {
+        "warn_unrecorded_worktree": False, "mr_required": False, "release_demanded": False, "warn_unrecorded_merge": False,
+        "diff_events": frozenset(), "merge_required": False, "removal_merge_required": False,
+    },
+    "local": {
+        "warn_unrecorded_worktree": True, "mr_required": False, "release_demanded": False, "warn_unrecorded_merge": False,
+        "diff_events": frozenset(), "merge_required": False, "removal_merge_required": False,
+    },
+    "pr": {
+        "warn_unrecorded_worktree": True, "mr_required": True, "release_demanded": False, "warn_unrecorded_merge": False,
+        "diff_events": frozenset({"closure"}), "merge_required": False, "removal_merge_required": False,
+    },
+    "merged": {
+        "warn_unrecorded_worktree": True, "mr_required": True, "release_demanded": False, "warn_unrecorded_merge": True,
+        "diff_events": frozenset({"merge", "closure_exempt"}), "merge_required": True, "removal_merge_required": True,
+    },
+    "release": {
+        "warn_unrecorded_worktree": True, "mr_required": True, "release_demanded": True, "warn_unrecorded_merge": True,
+        "diff_events": frozenset({"merge", "release", "closure_exempt"}), "merge_required": True,
+        "removal_merge_required": True,
+    },
 }
 
 
@@ -538,12 +570,9 @@ def delivery_rules(state: dict[str, Any]) -> DeliveryRules:
     if policy == 2:
         target = state.get("delivery_target")
         if isinstance(target, str) and target in _TARGET_RULES:
-            warn_worktree, mr, release, warn_merge, events, merge = _TARGET_RULES[target]
-            return DeliveryRules(2, target, warn_worktree, mr, release, warn_merge, events, merge, merge)
-        return DeliveryRules(2, None, True, True, True, True, _ALL_DIFF_EVENTS, True, True)
-    if policy == 0:
-        return DeliveryRules(0, None, True, False, False, True, _ALL_DIFF_EVENTS, False, True)
-    return DeliveryRules(1, None, True, True, True, True, _ALL_DIFF_EVENTS, True, True)
+            return _rules(2, target, **_TARGET_RULES[target])
+        return _rules(2, None, **_POLICY_ONE)
+    return _rules(policy, None, **(_POLICY_ZERO if policy == 0 else _POLICY_ONE))
 
 
 def merge_demanded(entry: object, rules: DeliveryRules) -> bool:
@@ -2669,7 +2698,9 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
             report.errors.append(
                 f"project: delivery_target needs policy_version 2, but the project is at policy {policy}"
             )
-    if valid and policy == 2 and "delivery_target" not in state and state.get("status") not in ("ALIGNING", "CANCELLED"):
+    # BLOCKED may follow ALIGNING, so it is let through here: leaving it for PLANNING or beyond is refused.
+    unaligned = ("ALIGNING", "BLOCKED", "CANCELLED")
+    if valid and policy == 2 and "delivery_target" not in state and state.get("status") not in unaligned:
         report.errors.append(
             "project: a policy-2 project past ALIGNING needs a delivery_target "
             f"({', '.join(DELIVERY_TARGETS)}); record it with 'workflow retarget'"
@@ -5930,7 +5961,9 @@ def _immutable_field_changes(
     current: dict[str, Any], candidate: dict[str, Any], action: "str | None" = None
 ) -> "list[str]":
     """Identity and guarded fields the candidate would rewrite, in declaration order."""
-    allowed = GUARDED_WRITERS.get(action or "", set())
+    allowed = set(GUARDED_WRITERS.get(action or "", set()))
+    if action == "confirm" and "delivery_target" in current:
+        allowed.discard("delivery_target")  # a confirmation only sets the target from absent
     changes = [
         f"candidate cannot change immutable field: {immutable}"
         for immutable in IMMUTABLE_PROJECT_FIELDS

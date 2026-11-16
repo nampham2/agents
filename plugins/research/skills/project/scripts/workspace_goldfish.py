@@ -605,25 +605,33 @@ def _descends(repository: Path, ancestor: str, commit: str) -> bool:
 def delivery_gate_errors(
     project: Path, state: "dict[str, Any]", entry: "dict[str, Any]", event: str, request: "dict[str, Any]"
 ) -> "list[str]":
-    """The diff gate at a release, a merge record, or the first closure of a worktree with a pr_exemption."""
+    """The diff gate at a release, a merge record, or a closure; which events owe a round is `rules.diff_events`.
+
+    A project with no delivery target (policy 0 and 1, or policy 2 before one is set) keeps the 0.37 order:
+    the record check runs first, whatever the event. With a target, an event that owes nothing returns first.
+    """
     if not workspace_lib.is_goldfish_gated() or not has_code_task(state) or not entry.get("repository"):
         return []
-    events = workspace_lib.delivery_rules(state).diff_events
+    rules = workspace_lib.delivery_rules(state)
+    events = rules.diff_events
+    incomplete = not entry.get("branch") or not entry.get("path")
+    if incomplete and rules.target is None:
+        return [f"{DIFF_GATE}: the worktree record has no branch or path"]
     if event == "closure":
         # `closure` (a reviewable PR) covers every entry; `closure_exempt` only an entry with a pr_exemption.
         if "closure" not in events and not ("closure_exempt" in events and "pr_exemption" in entry):
             return []
+        if "closure" in events and _object(entry.get("merge")).get("state") in ("merged", "declined"):
+            return []  # the PR is merged, or its work abandoned: the round exists to hand over an open PR
     elif event not in events:
         return []
-    if not entry.get("branch") or not entry.get("path"):
+    if incomplete:
         return [f"{DIFF_GATE}: the worktree record has no branch or path"]
     worktree = entry["path"]
     repository, ref = Path(entry["repository"]), f"refs/heads/{entry['branch']}"
     if event == "closure":
         if _object(entry.get("merge")).get("state") == "declined":
             return []  # a declined local merge abandons the work: no round is owed for code that is not delivered
-        if "closure" in events and _object(entry.get("merge")).get("state") == "merged":
-            return []  # the PR is merged: the round exists to hand over an open PR
         closed_at = _object(entry.get("closure")).get("observed_at")
         if entry.get("status") == "kept" and not _at_or_after_instant(closed_at):
             return []  # kept before the instant: that closure counts as passed

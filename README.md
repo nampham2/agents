@@ -103,7 +103,8 @@ A project no longer owes one fixed software-delivery ritual.
   previews the move and writes nothing; `--apply --expected-revision N --confirm "<words>"` applies
   it and leaves existing records in place. There is no revert command.
 - **A `local_only` exemption** is no longer recorded at policy 2; an existing one stays valid.
-- A launcher older than 0.38.0 rejects a project that has either new field.
+- A launcher older than 0.38.0 rejects a project that has either new field, and every project created
+  from this release carries `policy_version`, so update both hosts together.
 
 ### 0.37.1 the dashboard check in CI, one title rule, list-item fences in follow-ups
 

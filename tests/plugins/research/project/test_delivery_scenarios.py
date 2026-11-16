@@ -458,3 +458,43 @@ def test_populations_zero_and_one_keep_every_diff_event_and_the_merge_warning(
 def test_a_stored_policy_beats_the_creation_date(policy: int) -> None:
     for created in ("2020-01-01T00:00:00+00:00", "2026-11-16T10:00:00+00:00"):
         assert delivery_rules({"created": created, "policy_version": policy}).policy == policy
+
+
+# --- review findings: ordering of the record check, the confirm guard, BLOCKED ----------------------
+
+
+def test_a_policy_one_entry_without_a_branch_keeps_the_record_error_at_closure(goldfish_on: None) -> None:
+    bare = entry(branch=None)
+    state = population(1, bare)
+    assert "no branch or path" in " ".join(delivery_gate_errors(Path("/nowhere"), state, bare, "closure", {}))
+
+
+def test_a_target_that_owes_nothing_ignores_an_entry_without_a_branch(goldfish_on: None) -> None:
+    bare = entry(branch=None)
+    assert delivery_gate_errors(Path("/nowhere"), state_for("local", bare), bare, "closure", {}) == []
+
+
+def test_a_merged_or_declined_pr_entry_without_a_branch_owes_no_closure_round(goldfish_on: None) -> None:
+    for merge in (MERGED, {"state": "declined"}):
+        item = entry(branch=None, pull_request={"number": 1}, merge=merge)
+        assert delivery_gate_errors(Path("/nowhere"), state_for("pr", item), item, "closure", {}) == []
+    open_pr = entry(branch=None, pull_request={"number": 1})
+    assert delivery_gate_errors(Path("/nowhere"), state_for("pr", open_pr), open_pr, "closure", {})
+
+
+def test_a_confirmation_may_only_set_the_target_from_absent() -> None:
+    from workspace_lib import _immutable_field_changes
+
+    assert _immutable_field_changes({}, {"delivery_target": "pr"}, "confirm") == []
+    changes = _immutable_field_changes({"delivery_target": "pr"}, {"delivery_target": "local"}, "confirm")
+    assert changes == ["candidate cannot change guarded field: delivery_target"]
+    assert _immutable_field_changes({"delivery_target": "pr"}, {"delivery_target": "local"}, "retarget") == []
+
+
+def test_a_blocked_policy_two_project_without_a_target_is_valid_but_planning_is_not() -> None:
+    from workspace_lib import ValidationReport, _validate_delivery_policy
+
+    for status, ok in (("ALIGNING", True), ("BLOCKED", True), ("CANCELLED", True), ("PLANNING", False)):
+        report = ValidationReport()
+        _validate_delivery_policy({"policy_version": 2, "status": status}, report)
+        assert (report.errors == []) is ok, status

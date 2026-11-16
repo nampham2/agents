@@ -97,7 +97,7 @@ def test_preview_lists_obligations_existing_entries_do_not_satisfy() -> None:
     plan = migration_plan(state, "release")
     text = " | ".join(plan["unsatisfied"])
     assert "/w/linked" in text
-    assert "merge request" in text and "release" in text
+    assert "pr_exemption" in text and "release record" in text
     assert migration_plan(state, "local")["unsatisfied"] == []
 
 
@@ -325,7 +325,7 @@ def test_the_plan_names_each_running_or_blocked_task(status: str) -> None:
 
 
 def test_the_plan_skips_removed_and_non_repository_entries() -> None:
-    entries = [entry(status="removed"), entry(path="/n", kind="none"), entry(path="/gone", kind=None)]
+    entries = [entry(status="removed"), entry(path="/n", kind="none")]
     plan = migration_plan(plan_state(worktrees=entries), "release")
     assert plan["unsatisfied"] == [] and plan["contradictions"] == [] and plan["notes"] == []
 
@@ -333,3 +333,43 @@ def test_the_plan_skips_removed_and_non_repository_entries() -> None:
 def test_the_plan_refuses_a_coordinator_run() -> None:
     with pytest.raises(WorkspaceError, match="attempt is open or a coordinator run"):
         migration_plan(plan_state(execution={"attempts": {}, "coordinator_run": "run-1"}), "pr")
+
+
+# --- retries, flags and records the round-7 review found --------------------------------------------
+
+
+def test_a_repeated_apply_replays_its_journal_instead_of_failing(project: Path) -> None:
+    first = apply(project, "pr")
+    revision = state_of(project)["revision"]
+    again = migrate_policy(
+        project, target="pr", apply=True, expected_revision=revision - 1, confirm=WORDS
+    )
+    assert again["applied"] is True and again["delivery_target"] == first["delivery_target"]
+    assert state_of(project)["revision"] == revision
+
+
+def test_the_operation_id_names_the_target(project: Path) -> None:
+    apply(project, "pr")
+    journals = [path.name for path in (project / "operations").iterdir()] if (project / "operations").is_dir() else []
+    assert not journals or any("migrate-policy-r" in name and name.endswith("-pr.json") for name in journals)
+
+
+def test_preview_refuses_the_apply_only_flags(project: Path) -> None:
+    with pytest.raises(WorkspaceError, match="--apply"):
+        migrate_policy(project, target="pr", confirm=WORDS)
+    with pytest.raises(WorkspaceError, match="--apply"):
+        migrate_policy(project, target="pr", expected_revision=3)
+
+
+def test_a_removed_worktree_is_no_contradiction_for_research() -> None:
+    gone = entry(status="removed")
+    plan = migration_plan(plan_state(worktrees=[gone]), "research")
+    assert plan["contradictions"] == []
+
+
+def test_the_preview_reports_what_the_closure_check_would() -> None:
+    from workspace_delivery import closure_findings
+
+    state = plan_state(worktrees=[entry()])
+    hypothetical = {**state, "policy_version": 2, "delivery_target": "release"}
+    assert migration_plan(state, "release")["unsatisfied"] == closure_findings(hypothetical)

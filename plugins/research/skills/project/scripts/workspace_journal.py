@@ -388,7 +388,7 @@ def _run_operation(
                     "state_committed": False,
                     "complete": False,
                     "after_commit": result.pop("_after_commit", []),
-                    "result": {"operation": action, **result},
+                    "result": {**result, "operation": action},
                 }
                 atomic_write_json(path, journal)
             result = _advance(project, path, journal)

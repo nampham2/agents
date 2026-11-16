@@ -323,7 +323,8 @@ while the active target worktree lacks an MR or exemption; an alpha line is opti
 with no MR or exemption (`pr`, `merged`, `release`, policy 1), no merge decision for its MR or
 `local_only` exemption (`merged`, `release`, policy 1), or no release record or version exemption
 (`release`, policy 1). Target `local` and `research` demand only the keep/remove decision. Policy 0
-demands none of these records.
+demands none of these at `finalize` or `close`; removing a worktree that has an MR still needs its
+merged record, at every policy before 2 and under `merged` and `release`.
 
 ## Effects and authorization
 

@@ -2,8 +2,9 @@
 
 The tools never call a Git host and never write to Git. They record what the agent reports and
 check only what a local read can show: the host of the remote, the version strings inside the
-recorded files, and the order of the steps. The gates turn on for projects created on or after
-`DELIVERY_GATES_FROM`.
+recorded files, and the order of the steps. What a project owes is `delivery_rules(state)`: the
+policy (from `policy_version`, else from the creation date against `DELIVERY_GATES_FROM`) and, at
+policy 2, the delivery target.
 """
 
 from __future__ import annotations
@@ -116,14 +117,14 @@ def _pull_request(
     request: dict[str, Any],
     root: Path,
     confirmation: dict[str, str],
-    rules: "DeliveryRules | None" = None,
+    rules: DeliveryRules,
 ) -> None:
     if "pull_request" in entry or "pr_exemption" in entry:
         raise WorkspaceError("the worktree already has a pull_request or a pr_exemption")
     if "exempt" in request:
         exempt = request["exempt"]
         if exempt == "local_only":
-            if rules is not None and not rules.accepts_new_local_only:
+            if not rules.accepts_new_local_only:
                 raise WorkspaceError(
                     "a local_only exemption is no longer recorded at policy 2; a local implementation target "
                     "needs no merge request, so change the target with 'workflow retarget' instead"
@@ -375,7 +376,7 @@ def gone_worktree_hint(entry: dict[str, Any]) -> str | None:
 
 def delivery_operation(
     worktrees: list[dict[str, Any]], path: str, operation: str, request: dict[str, Any], confirmation: dict[str, str],
-    *, workspace_root: Path, project: str, gate: Gate | None = None, rules: "DeliveryRules | None" = None,
+    *, workspace_root: Path, project: str, gate: Gate | None = None, rules: DeliveryRules,
 ) -> tuple[dict[str, Any], list[str]]:
     """Apply one delivery operation to the active entry at `path`; returns the entry and any notes.
 
