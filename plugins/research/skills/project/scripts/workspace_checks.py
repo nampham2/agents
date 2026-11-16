@@ -21,7 +21,9 @@ from workspace_lib import (
     WorkspaceError,
     _append_evidence_entry,
     atomic_write_json,
+    delivery_rules,
     document_sha256,
+    is_code_task,
     load_json,
     record_evidence_result,
 )
@@ -217,8 +219,10 @@ def verify(project: Path, request: dict[str, Any]) -> dict[str, Any]:
         ) from error
 
 
-def control_warnings(project: Path) -> list[str]:
+def control_warnings(project: Path, state: "dict[str, Any] | None" = None) -> list[str]:
     """Warn at finalize when a project verified content but never observed a control failing.
+
+    At policy 3 the warning applies only when `state` has a code task running or done.
 
     Like memory_staging_warnings, this is a non-blocking warning, not an error: it tells the
     caller the gate the project never exercised, without refusing closure that is otherwise
@@ -226,6 +230,10 @@ def control_warnings(project: Path) -> list[str]:
     rejection carries no exit code, and journals without a control slot (legacy layouts) count
     as never observed. Unreadable journals are skipped rather than repaired at finalize.
     """
+    if state is not None and delivery_rules(state).policy == 3 and not any(
+        is_code_task(task) and task.get("status") in ("RUNNING", "DONE") for task in state.get("tasks", [])
+    ):
+        return []  # policy 3: a project with no code task started or done has no check to prove can fail
     project = project.resolve()
     batches = 0
     for path in sorted((project / ".operations").glob("*.json")):

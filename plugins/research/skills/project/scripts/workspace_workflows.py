@@ -100,10 +100,12 @@ from workspace_lib import (
     now_iso,
     options_errors,
     planning_path,
+    project_options,
     proposal_digest,
     proposal_marker,
     reason_reference_warnings,
     retro_section_findings,
+    staging_enabled,
     stale_confirmations,
     validate_project,
 )
@@ -992,7 +994,7 @@ def _build(
         skipped: list[dict[str, str]] = []
         # Titles staged before this close: a section that only lists them is a pointer, not a lesson.
         staged_titles = [name for level, name, _ in _headings(planned) if level == 2]
-        for title, body in reflection_lesson_sections(reflection):
+        for title, body in reflection_lesson_sections(reflection) if staging_enabled(state) else []:
             if names_only_staged(body, staged_titles):
                 skipped.append({"title": title, "reason": "names only items already staged"})
                 continue
@@ -1015,7 +1017,7 @@ def _build(
         # finalize surfaces that gap as a warning - same non-blocking shape as the staging warning.
         from workspace_checks import control_warnings
 
-        result["control_warnings"] = control_warnings(project)
+        result["control_warnings"] = control_warnings(project, state)
         # c3: a task whose only evidence is a deliberately failing control proved the guard fires but
         # not that the real check passes. Warning, not refusal: the task may legitimately finish on it.
         from workspace_evidence import failing_evidence_warnings
@@ -1063,7 +1065,13 @@ def _build(
     elif action == "report":
         from workspace_reports import render_report
 
-        documents["artifacts/report"], result = render_report(project, state, request)
+        if delivery_rules(state).policy == 3 and not project_options(state)["reports"]:
+            result["notice"] = (
+                "reports are off for this project (options.reports); the report was not written. "
+                "Turn them on with 'workflow settings' and the user's words"
+            )
+        else:
+            documents["artifacts/report"], result = render_report(project, state, request)
     if "continuation" in request or action in ("checkpoint", "finalize", "maintenance", "cancel", "reconcile"):
         target = prepare_update(state, patch, internal=True) if patch else copy.deepcopy(state)
         target["revision"] += int(patch is not None)

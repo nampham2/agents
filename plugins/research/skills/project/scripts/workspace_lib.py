@@ -4240,6 +4240,20 @@ def retire_memory_topic(
     return {"path": str(path), "status": topic.status, "superseded_by": topic.superseded_by}
 
 
+def _stored_state(project_dir: Path) -> "dict[str, Any]":
+    """The saved project state, or an empty one when it cannot be read: a caller asking only about an option."""
+    try:
+        state = load_json(project_dir / "project.json")
+    except (OSError, WorkspaceError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def staging_enabled(state: "dict[str, Any]") -> bool:
+    """Whether closing stages lessons and warns about them: always below policy 3, else `options.memory_staging`."""
+    return delivery_rules(state).policy != 3 or project_options(state)["memory_staging"]
+
+
 def memory_staging_warnings(project_dir: Path, *, content: "str | None" = None) -> "list[str]":
     """Warn when a project closes with candidate lessons still staged and untriaged.
 
@@ -4251,7 +4265,7 @@ def memory_staging_warnings(project_dir: Path, *, content: "str | None" = None) 
     the lessons it staged in the same result. Unset, this reads the file as it stands.
     """
     path = project_dir / MEMORY_STAGING_FILENAME
-    if not staged_lesson_lines(project_dir, content=content):
+    if not staging_enabled(_stored_state(project_dir)) or not staged_lesson_lines(project_dir, content=content):
         return []
     return [
         f"{path} still holds staged lessons at close; promote each one into "
