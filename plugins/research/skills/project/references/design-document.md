@@ -47,7 +47,7 @@ the design task confirms them on the `Profiles:` line, comma separated.
 
 - Lead with diagrams; names match real code paths and modules.
 - Cite sources with `file:line`, read from numbered output.
-- Give no time estimates.
+- By convention, give no time estimates.
 - Remove stale text rather than add a contradiction.
 - A code task that departs from the design edits the affected section, adds a section 12 entry
   and sets its section 13 row, and moves `Reconciled through`.
