@@ -124,10 +124,10 @@ research-project record-evidence <project-dir> --task T01 --json -- <command>
 ```
 
 Commands run in the target: use absolute paths and an explicit shell for pipelines. Inspect failures
-with `read ... evidence --entry <record-id>`; never rewrite them as passes. Show a new check failing
-on bad input first. Finish with passing record IDs only when success criteria are met, not on zero
-exit alone. Prose goes in `append ... finding --task T01`, not evidence. Before review or test
-deploy, follow [pull-requests.md](references/pull-requests.md).
+with `read ... evidence --entry <record-id>`; never rewrite them as passes. Show a check for new
+code behaviour or a regression fix failing first. Finish with passing record IDs only when success
+criteria are met, not on zero exit alone. Prose goes in `append ... finding --task T01`, not
+evidence. Before review or test deploy, follow [pull-requests.md](references/pull-requests.md).
 
 ## Review and close
 

@@ -101,13 +101,16 @@ PROJECT_FIELDS = {
     "predecessor",
     "worktrees",
 }
+# The policy-3 settings, written only by `workflow settings`: how hard a review looks, what stands in for a
+# review on a host with no fresh agents, and the optional policies.
+SETTINGS_FIELDS = ("review_risk", "review_fallback", "options")
 # `tags`, `policy_version` and `delivery_target` are v4 only: schema v3 shares PROJECT_FIELDS and stays closed to them.
-PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags", "policy_version", "delivery_target"}
+PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS}
 # Fields a valid project may omit: `predecessor` names the project this one continues (a maintenance
 # ancestor, or the finished source of a follow-up, whose briefing starts `Follow-up of: <id>`) and `worktrees` is
 # only present once a repository worktree, or its absence, has been recorded. `tags` is absent from
 # every project created before tags existed, so validation never requires it.
-OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags", "policy_version", "delivery_target"}
+OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS}
 
 # A project carries 1 to 5 tags. Creation and the `tag` command enforce the minimum; validation checks
 # the form and the maximum only, so the projects that predate tags stay valid.
@@ -476,11 +479,43 @@ def needs_merge(entry: object) -> bool:
 
 # The policy a new project starts at: target-based delivery. `allocate_project` reads it at call time and
 # writes it to `policy_version`; None starts a project with no policy (derived from `created`). Production
-# keeps 2. The test suite moves it to None because it also moves the date cutoffs, so its projects would
-# otherwise need a delivery target to leave ALIGNING.
-NEW_PROJECT_POLICY: "int | None" = 2
+# starts at 3: policy 2's target rules, the Goldfish gates always on, and the optional policies. The test
+# suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
+# delivery target to leave ALIGNING.
+NEW_PROJECT_POLICY: "int | None" = 3
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
-POLICY_VERSIONS = (0, 1, 2)
+POLICY_VERSIONS = (0, 1, 2, 3)
+DEFAULT_OPTIONS: "dict[str, bool]" = {"style_advice": True, "memory_staging": True, "reports": False}
+REVIEW_RISKS = ("low", "standard", "high")
+FALLBACK_MODES = ("ask", "waive-recorded")
+
+
+def has_target_rules(policy: int) -> bool:
+    """Whether `policy` records a delivery target and takes its obligations from it: policy 2 and 3."""
+    return policy >= 2
+
+
+def review_risk(state: dict[str, Any]) -> str:
+    """The recorded review risk of `state`; unset or unrecognised reads as `standard`."""
+    value = state.get("review_risk") if isinstance(state, dict) else None
+    return value if isinstance(value, str) and value in REVIEW_RISKS else "standard"
+
+
+def review_fallback(state: dict[str, Any]) -> "dict[str, str]":
+    """The standing review fallback of `state`: `{"mode": "ask"}` unless a valid one is stored."""
+    value = state.get("review_fallback") if isinstance(state, dict) else None
+    if isinstance(value, dict) and value.get("mode") == "waive-recorded" and isinstance(value.get("reason"), str):
+        return {"mode": "waive-recorded", "reason": value["reason"]}
+    return {"mode": "ask"}
+
+
+def project_options(state: dict[str, Any]) -> "dict[str, bool]":
+    """The optional policies of `state`: the stored booleans over the defaults; anything else is ignored."""
+    stored = state.get("options") if isinstance(state, dict) else None
+    merged = dict(DEFAULT_OPTIONS)
+    if isinstance(stored, dict):
+        merged.update({key: value for key, value in stored.items() if key in merged and type(value) is bool})
+    return merged
 _ALL_DIFF_EVENTS: frozenset = frozenset({"closure_exempt", "merge", "release"})
 
 
@@ -567,11 +602,11 @@ def delivery_rules(state: dict[str, Any]) -> DeliveryRules:
     """The delivery obligations of `state`; never raises on malformed JSON."""
     state = state if isinstance(state, dict) else {}
     policy, _ = _policy_value(state)
-    if policy == 2:
+    if has_target_rules(policy):
         target = state.get("delivery_target")
         if isinstance(target, str) and target in _TARGET_RULES:
-            return _rules(2, target, **_TARGET_RULES[target])
-        return _rules(2, None, **_POLICY_ONE)
+            return _rules(policy, target, **_TARGET_RULES[target])
+        return _rules(policy, None, **_POLICY_ONE)
     return _rules(policy, None, **(_POLICY_ZERO if policy == 0 else _POLICY_ONE))
 
 
@@ -614,8 +649,10 @@ GOLDFISH_PLACEHOLDER = "2099-01-01T00:00:00+00:00"
 GOLDFISH_FROM = "2026-10-27T12:13:54+01:00"
 
 
-def is_goldfish_gated() -> bool:
-    """Whether the Goldfish gates apply now: the clock is at or after `GOLDFISH_FROM`."""
+def is_goldfish_gated(state: dict[str, Any]) -> bool:
+    """Whether the Goldfish gates apply: always at policy 3, else the clock is at or after `GOLDFISH_FROM`."""
+    if _policy_value(state if isinstance(state, dict) else {})[0] >= 3:
+        return True
     return at_or_after(now_iso(), GOLDFISH_FROM)
 
 
@@ -647,7 +684,9 @@ def _add_retro_section_findings(state: dict[str, Any], reflection: str, report: 
 
 
 def is_style_checked(state: dict[str, Any]) -> bool:
-    """Whether `state` was created on or after `STYLE_CHECKED_FROM`; unjudgeable means no."""
+    """Whether style advice applies: the option at policy 3, else `state` was created on or after the cutoff."""
+    if _policy_value(state)[0] >= 3:
+        return project_options(state)["style_advice"]
     return _created_on_or_after(state, STYLE_CHECKED_FROM)
 
 
@@ -1580,10 +1619,10 @@ def alignment_gate_errors(project_dir: Path, previous: dict[str, Any], candidate
     # without a delivery target, whatever its creation date.
     rules = delivery_rules(candidate)
     target_problem = (
-        f"a policy-2 project may not leave {previous.get('status')} without a delivery_target "
+        f"a policy-{rules.policy} project may not leave {previous.get('status')} without a delivery_target "
         f"({', '.join(DELIVERY_TARGETS)}); record it with 'workflow confirm' (kind alignment, delivery_target) "
         "or 'workflow retarget'"
-        if rules.policy == 2 and rules.target is None
+        if has_target_rules(rules.policy) and rules.target is None
         else None
     )
     if not is_new_project(candidate):
@@ -2694,17 +2733,68 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
             report.errors.append(
                 f"project: delivery_target must be one of {', '.join(DELIVERY_TARGETS)}, found {target!r}"
             )
-        if valid and policy != 2:
+        if valid and not has_target_rules(policy):
             report.errors.append(
-                f"project: delivery_target needs policy_version 2, but the project is at policy {policy}"
+                f"project: delivery_target needs policy_version 2 or 3, but the project is at policy {policy}"
             )
+    _validate_settings(state, policy if valid else None, report)
     # BLOCKED may follow ALIGNING, so it is let through here: leaving it for PLANNING or beyond is refused.
     unaligned = ("ALIGNING", "BLOCKED", "CANCELLED")
-    if valid and policy == 2 and "delivery_target" not in state and state.get("status") not in unaligned:
+    if valid and has_target_rules(policy) and "delivery_target" not in state and state.get("status") not in unaligned:
         report.errors.append(
-            "project: a policy-2 project past ALIGNING needs a delivery_target "
+            f"project: a policy-{policy} project past ALIGNING needs a delivery_target "
             f"({', '.join(DELIVERY_TARGETS)}); record it with 'workflow retarget'"
         )
+
+
+def _validate_settings(state: dict[str, Any], policy: "int | None", report: ValidationReport) -> None:
+    """`review_risk`, `review_fallback` and `options`: policy 3 only, closed values."""
+    for name in SETTINGS_FIELDS:
+        if name in state and policy is not None and policy != 3:
+            report.errors.append(f"project: {name} needs policy_version 3, but the project is at policy {policy}")
+    if "review_risk" in state:
+        report.errors.extend(f"project: {text}" for text in risk_errors(state["review_risk"]))
+    if "review_fallback" in state:
+        report.errors.extend(f"project: {text}" for text in fallback_errors(state["review_fallback"]))
+    if "options" in state:
+        report.errors.extend(f"project: {text}" for text in options_errors(state["options"]))
+
+
+def risk_errors(value: object) -> "list[str]":
+    """What is wrong with a `review_risk` value: one of the closed levels."""
+    if not isinstance(value, str) or value not in REVIEW_RISKS:
+        return [f"review_risk must be one of {', '.join(REVIEW_RISKS)}, found {value!r}"]
+    return []
+
+
+def fallback_errors(value: object) -> "list[str]":
+    """What is wrong with a `review_fallback` value: a closed mode and, to waive, a reason."""
+    if not isinstance(value, dict) or set(value) - {"mode", "reason"}:
+        return ["review_fallback must be an object with only mode and reason"]
+    if value.get("mode") not in FALLBACK_MODES:
+        return [f"review_fallback mode must be one of {', '.join(FALLBACK_MODES)}"]
+    if value["mode"] == "ask" and "reason" in value:
+        return ["review_fallback takes a reason only to waive"]
+    if value["mode"] == "waive-recorded" and not (isinstance(value.get("reason"), str) and value["reason"].strip()):
+        return ["review_fallback needs a reason to waive"]
+    return []
+
+
+def options_errors(value: object) -> "list[str]":
+    """What is wrong with an `options` value: only the known keys, each a boolean."""
+    if not isinstance(value, dict):
+        return ["options must be an object"]
+    if not value:
+        return ["options is empty; name at least one of " + ", ".join(DEFAULT_OPTIONS) + ", or use null to unset"]
+    errors = [
+        f"options has an unknown key: {key}" + (" (reserved, not an option)" if key == "delegating" else "")
+        for key in sorted(value.keys() - DEFAULT_OPTIONS.keys(), key=str)
+    ]
+    errors += [
+        f"options.{key} must be true or false" for key in sorted(value)
+        if key in DEFAULT_OPTIONS and type(value[key]) is not bool
+    ]
+    return errors
 
 
 def _validate_tags(value: object, report: ValidationReport) -> None:
@@ -4157,7 +4247,23 @@ def retire_memory_topic(
     return {"path": str(path), "status": topic.status, "superseded_by": topic.superseded_by}
 
 
-def memory_staging_warnings(project_dir: Path, *, content: "str | None" = None) -> "list[str]":
+def _stored_state(project_dir: Path) -> "dict[str, Any]":
+    """The saved project state, or an empty one when it cannot be read: a caller asking only about an option."""
+    try:
+        state = load_json(project_dir / "project.json")
+    except (OSError, WorkspaceError, ValueError):
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def staging_enabled(state: "dict[str, Any]") -> bool:
+    """Whether closing stages lessons and warns about them: always below policy 3, else `options.memory_staging`."""
+    return delivery_rules(state).policy != 3 or project_options(state)["memory_staging"]
+
+
+def memory_staging_warnings(
+    project_dir: Path, *, content: "str | None" = None, state: "dict[str, Any] | None" = None
+) -> "list[str]":
     """Warn when a project closes with candidate lessons still staged and untriaged.
 
     A warning and never an error. "Triaged" is not mechanically checkable, and refusing to close a
@@ -4165,10 +4271,11 @@ def memory_staging_warnings(project_dir: Path, *, content: "str | None" = None) 
     would punish exactly the discipline this file exists to encourage.
 
     `content` is text a caller plans to write rather than text already on disk, so a close can name
-    the lessons it staged in the same result. Unset, this reads the file as it stands.
+    the lessons it staged in the same result. Unset, this reads the file as it stands. `state` is the project
+    state the caller holds; without it the saved one is read, and an unreadable one reads as staging on.
     """
     path = project_dir / MEMORY_STAGING_FILENAME
-    if not staged_lesson_lines(project_dir, content=content):
+    if not staging_enabled(state if state is not None else _stored_state(project_dir)) or not staged_lesson_lines(project_dir, content=content):
         return []
     return [
         f"{path} still holds staged lessons at close; promote each one into "
@@ -5949,8 +6056,9 @@ def _revision_conflicts(current: dict[str, Any], candidate: dict[str, Any], expe
 
 # Fields only a named journaled action may change. The exemption comes from the action name stored in
 # the journal record, never from request data, so preflight, commit and replay agree.
-GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target")
+GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target", *SETTINGS_FIELDS)
 GUARDED_WRITERS: "dict[str, set[str]]" = {
+    "settings": set(SETTINGS_FIELDS),
     "confirm": {"delivery_target"},
     "retarget": {"delivery_target"},
     "migrate_policy": {"policy_version", "delivery_target"},

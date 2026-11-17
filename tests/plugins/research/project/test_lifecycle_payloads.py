@@ -140,7 +140,10 @@ def test_default_instruction_payload_budget() -> None:
     2730 to 2740. At 0.38.0 the delivery target changed what the entry, the routine commands and the
     router say about when a worktree, MR, merge or release is owed: 20 words in the entry, a one-line
     pointer in commands.md and a `retarget` row in automation.md. The ceilings rose to the new
-    measurement: 870 to 890, 1410 to 1440, 2200 to 2260, 2540 to 2600 and 2740 to 2800.
+    measurement: 870 to 890, 1410 to 1440, 2200 to 2260, 2540 to 2600 and 2740 to 2800. At 0.39.0 the
+    router gained a `settings` row, an `amend` pointer and a policy-3 `retarget` note (27 words); the
+    entry gained none. The chain and the two selected-reference ceilings rose to the new measurement:
+    2260 to 2290, 2600 to 2630 and 2800 to 2840.
     """
     skill = REPO_ROOT / "plugins/research/skills/project"
     entry = (skill / "SKILL.md").read_text()
@@ -149,8 +152,8 @@ def test_default_instruction_payload_budget() -> None:
     assert len((entry + routine).split()) <= 1440
     router = (skill / "references/automation.md").read_text()
     chain = len((entry + routine + router).split())
-    assert chain <= 2260 < 2442
-    ceilings = {"automation-context": 2600, "automation-execution": 2800}
+    assert chain <= 2290 < 2442
+    ceilings = {"automation-context": 2630, "automation-execution": 2840}
     for reference, ceiling in ceilings.items():
         selected = (skill / f"references/{reference}.md").read_text()
         assert len((entry + routine + router + selected).split()) <= ceiling
@@ -180,17 +183,22 @@ RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operati
 # alignment-repository 7080 to 7460, alignment-plain 6680 to 6750, resume 5100 to 5160,
 # resume-with-verifier 5290 to 5350, alignment-and-handoff 7660 to 8040, material-change-after-resume
 # 8600 to 8680, closure 5550 to 5990. The scenarios that load worktrees.md (alignment-repository,
-# alignment-and-handoff, closure) carry most of the growth.
+# alignment-and-handoff, closure) carry most of the growth. At 0.39.0 automation.md gained a `settings`
+# row and an `amend` pointer, goldfish-review.md a pointer to the on-demand review-risk.md (which no
+# scenario loads) and planning-review.md and the entry a failing-first clause. Every scenario that counts
+# those files rose to its new measurement: alignment-repository 7460 to 7510, alignment-plain 6750 to
+# 6800, resume 5160 to 5190, resume-with-verifier 5350 to 5380, alignment-and-handoff 8040 to 8090,
+# material-change-after-resume 8680 to 8730, closure 5990 to 6020.
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
-    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7460),
-    "alignment-plain": ((*CORE, *ALIGNMENT), 6750),
-    "resume": ((*CORE, *RESUME), 5160),
-    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5350),
-    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 8040),
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7510),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6800),
+    "resume": ((*CORE, *RESUME), 5190),
+    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5380),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 8090),
     "material-change-after-resume": (
-        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8680),
+        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8730),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
-                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 5990),
+                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 6020),
 }
 BASELINE = {
     "alignment-repository": 8205, "alignment-plain": 7726, "resume": 5843, "resume-with-verifier": 6033,
@@ -221,6 +229,7 @@ CONDITIONAL = {
     "records-layout": "only for the workspace records layout, doctor and migrate --layout",
     "memory-promotion": "only when closing with a promotion, compaction or retirement",
     "pull-requests": "only before a review ask or test deploy in a repository, and at repository closure",
+    "review-risk": "only when review risk, fallback, amendments or options are set or changed",
     "report-design": "only when a report is requested",
     "report-execution": "only when an execution report is requested",
     "report-html": "only when an HTML report is requested",

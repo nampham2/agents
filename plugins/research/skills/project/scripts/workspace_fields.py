@@ -25,11 +25,13 @@ OPERATION_FIELDS = {
     "open": frozenset({"operation", "target", "worktree", "commit", "stages"}),
     "close": frozenset({"operation", "round", "reports", "findings", "confirmation"}),
     "waive": frozenset({"operation", "target", "worktree", "commit", "reason", "confirmation", "reuses"}),
+    "amend": frozenset({"operation", "target", "kind", "reason", "confirmation"}),
 }
 OPERATION_REQUIRED = {
     "open": frozenset({"target", "stages"}),
     "close": frozenset({"round", "reports", "findings"}),
     "waive": frozenset({"target", "reason", "confirmation"}),
+    "amend": frozenset({"target", "kind", "reason"}),
 }
 
 _PROMOTION = frozenset({"topic", "body", "description", "kind", "scope", "expected_sha256"})
@@ -72,6 +74,7 @@ ACTION_NESTED: dict[str, tuple[tuple[str, str], ...]] = {
     "round": (("continuation", "continuation"),),
     "confirm": (("continuation", "continuation"),),
     "retarget": (("confirmation", "confirmation"),),
+    "settings": (("confirmation", "confirmation"),),
     "correct": (("continuation", "continuation"),),
     "reconcile": (("continuation", "continuation"),),
     "finalize": (("continuation", "continuation"),),
@@ -83,6 +86,7 @@ ACTION_NESTED: dict[str, tuple[tuple[str, str], ...]] = {
 NESTED_REQUIRED: dict[str, frozenset[str]] = {
     "worktree": frozenset({"confirmation"}),
     "retarget": frozenset({"confirmation"}),
+    "settings": frozenset({"confirmation"}),
 }
 
 

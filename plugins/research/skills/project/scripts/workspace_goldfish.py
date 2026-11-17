@@ -43,7 +43,9 @@ OUTCOMES = ("open", "accepted", "accepted-residual", "reaudit-required", "waived
 PASSING = frozenset({"accepted", "accepted-residual", "waived"})
 SEVERITIES = ("Blocker", "Major", "Nit")
 TRIAGES = ("FIX", "CONTEST", "ESCALATE", "DECLINE")
-OPERATIONS = ("open", "close", "waive")
+OPERATIONS = ("open", "close", "waive", "amend")
+AMEND_KINDS = ("editorial", "reviewer-requested")
+LADDER = ("comprehension", "design-critic", "zoom-out", "readiness")
 ROUND_FILE = re.compile(r"goldfish_([0-9]{2}|[1-9][0-9]{2,})\.md")
 MARKER = re.compile(r"<!-- research-goldfish (\{.*\}) -->")
 COMMIT = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
@@ -282,7 +284,26 @@ def _stages(value: object) -> "tuple[str, ...]":
     return tuple(stages)
 
 
-def _check_stage_rules(target: str, stages: "tuple[str, ...]", delta: bool) -> None:
+def _risk_of(state: "dict[str, Any]") -> "str | None":
+    """The recorded review risk at policy 3; None at policy 0 to 2, where the effort rules stand."""
+    return workspace_lib.review_risk(state) if workspace_lib.delivery_rules(state).policy == 3 else None
+
+
+def _check_risk_stages(target: str, stages: "tuple[str, ...]", risk: str) -> None:
+    """The policy-3 stage table: one combined reviewer, except the ladder for design and diff at `high`."""
+    if risk == "high" and target in ("design", "diff"):
+        if set(stages) != set(LADDER):
+            raise WorkspaceError(
+                f"a {target} round at review risk high lists exactly the stages {', '.join(LADDER)}"
+            )
+    elif stages != ("combined",):
+        raise WorkspaceError(f"a {target} round at review risk {risk} lists exactly the combined stage")
+
+
+def _check_stage_rules(target: str, stages: "tuple[str, ...]", delta: bool, risk: "str | None" = None) -> None:
+    if risk is not None:
+        _check_risk_stages(target, stages, risk)
+        return
     if "combined" not in stages and "design-critic" not in stages:
         raise WorkspaceError("every round lists the combined stage or the design-critic stage")
     if delta and target in ("design", "diff") and not {"comprehension", "combined"} <= set(stages):
@@ -317,7 +338,7 @@ def open_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]"
         passing = [item for item in closed if item.outcome in PASSING]
         if passing and passing[-1].resolved != reviewed:
             delta_of = passing[-1].number
-    _check_stage_rules(target, stages, delta_of is not None)
+    _check_stage_rules(target, stages, delta_of is not None, _risk_of(state))
     number = max(_round_numbers(project), default=0) + 1
     round_ = Round(number, target, worktree, commit is not None, reviewed, None, "open", stages, reaudit_of, delta_of)
     documents = _write(number, round_, f"# Goldfish round {number:02d}: {target}\n\nOpen. No report yet.")
@@ -408,8 +429,21 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
     else:
         resolved = version_for(project, state, current.target, current.worktree)
     changed = resolved != current.reviewed
+    risk = _risk_of(state)  # None below policy 3; the risk now, not the risk at `open`, decides the outcome
+    if risk == "high" and current.target not in LIGHT_TARGETS and set(current.stages) != set(LADDER):
+        raise WorkspaceError(
+            f"the review risk is now high, so a {current.target} round lists the stages {', '.join(LADDER)}; "
+            "open a new round"
+        )
     important = [item for item in findings if item["severity"] in ("Blocker", "Major")]
-    fixed = [item for item in important if item["triage"] == "FIX"]
+    # Only a Blocker forces a re-audit or holds one open for a spec or planning round, and, at review risk `low`
+    # (policy 3), for every target. A design or diff round otherwise counts Blockers and Majors alike. At `low`
+    # a Major FIX on an unchanged target needs no artifact either: the check follows the decisive findings.
+    decisive = important
+    if current.target in LIGHT_TARGETS or risk == "low":
+        decisive = [item for item in important if item["severity"] == "Blocker"]
+    artifact_checked = decisive if risk == "low" else important
+    fixed = [item for item in artifact_checked if item["triage"] == "FIX"]
     if changed and not any(item["triage"] == "FIX" for item in findings):
         raise WorkspaceError("the target changed after the review, so at least one finding must be a FIX")
     for item in fixed:
@@ -419,11 +453,6 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
             )
     if confirmation is None and any(item["triage"] in ("ESCALATE", "CONTEST") for item in important):
         raise WorkspaceError("a Blocker or Major that is contested or escalated needs the user's confirmation")
-    # A spec or planning round is lighter: only a Blocker forces a re-audit or holds one open. Design and
-    # diff rounds keep the rule for Blockers and Majors alike.
-    decisive = important
-    if current.target in LIGHT_TARGETS:
-        decisive = [item for item in important if item["severity"] == "Blocker"]
     fixed_decisive = [item for item in decisive if item["triage"] == "FIX"]
     if current.reaudit_of is not None and decisive:
         if confirmation is None:
@@ -448,23 +477,146 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
 
 def waive_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
     target, worktree, commit = _target_fields(state, request)
-    reason = string_input(request.get("reason"), "reason")
-    confirmation = _confirmation(request.get("confirmation"))
+    standing = _standing_applies(state, request)
+    reason = string_input(request.get("reason") if "reason" in request else (
+        workspace_lib.review_fallback(state)["reason"] if standing else None), "reason")
+    confirmation = None if standing else _confirmation(request.get("confirmation"))
     reused = _reused(project, request, target, worktree) if "reuses" in request else None
     version = version_for(project, state, target, worktree, commit)
     number = max(_round_numbers(project), default=0) + 1
     round_ = Round(number, target, worktree, commit is not None, version, version, "waived", (), None, None)
     lines = [f"# Goldfish round {number:02d}: {target} (waived)", "", "## Waiver", "", f"Reason: {_flat(reason)}", ""]
+    if standing:
+        lines += [
+            "## Standing waiver", "",
+            "The coordinator asserted that no fresh agent was available, under the standing review fallback "
+            "recorded at alignment. The tool cannot detect this.", "",
+        ]
     if reused is not None:
         # In the body, never in the marker: a 0.33.0 reader parses the marker's exact key set.
         shown = f"Reuses: round {reused.number:02d} ({reused.outcome}, resolved {reused.resolved})"
         lines += ["## Reuses", "", shown, ""]
-    lines += _confirmation_lines(confirmation)
+    if confirmation is not None:
+        lines += _confirmation_lines(confirmation)
     documents = _write(number, round_, "\n".join(lines))
     result = {"round": number, "document": round_name(number), "outcome": "waived", "resolved": version}
     if reused is not None:
         result["reuses"] = reused.number
     return documents, result
+
+
+def _standing_applies(state: "dict[str, Any]", request: "dict[str, Any]") -> bool:
+    """Whether a waiver rests on the standing fallback: policy 3, a spec or planning target, below `high`, and
+    the user's per-round words left out. Design and diff rounds always need them."""
+    return (
+        workspace_lib.delivery_rules(state).policy == 3
+        and request.get("target") in LIGHT_TARGETS
+        and "confirmation" not in request
+        and workspace_lib.review_fallback(state)["mode"] == "waive-recorded"
+        and workspace_lib.review_risk(state) != "high"
+    )
+
+
+def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
+    """Record an explicit editorial or reviewer-requested edit after a passing close as a bookkeeping round."""
+    if workspace_lib.delivery_rules(state).policy != 3:
+        raise WorkspaceError("amend needs policy_version 3; policies 0 to 2 record an edit with a round or a waiver")
+    target = _choice(request.get("target"), TARGETS, "target")
+    if target not in LIGHT_TARGETS:
+        raise WorkspaceError("amend applies to spec and planning only; a design or diff change needs a round")
+    kind = _choice(request.get("kind"), AMEND_KINDS, "kind")
+    reason = string_input(request.get("reason"), "reason")
+    version = version_for(project, state, target, None, None)
+    series = [item for item in round_documents(project) if item.key == (target, None)]
+    reviewed = [item for item in series if item.outcome != "waived"]
+    if not reviewed:
+        raise WorkspaceError(f"amend needs a passing review of the {target} to stand on; none exists")
+    base = reviewed[-1]
+    if base.outcome not in ("accepted", "accepted-residual"):
+        raise WorkspaceError(
+            f"amend needs a passing review of the {target} to stand on; round {base.number:02d} is {base.outcome}"
+        )
+    if unamended_waivers(project, target):
+        raise WorkspaceError(
+            f"amend cannot follow a waiver of the {target}; run a round to review the whole text"
+        )
+    if series[-1].resolved == version:
+        raise WorkspaceError(f"nothing to amend: the {target} matches round {series[-1].number:02d}")
+    # The coordinator's own attestation covers one small edit only: at risk high, without a standing fallback,
+    # or once an amendment already stands since the last review, the user's words are needed.
+    confirmation = None
+    standing = amendment_rounds(project, target)
+    cause = None
+    if workspace_lib.review_risk(state) == "high":
+        cause = "the review risk is high"
+    elif workspace_lib.review_fallback(state)["mode"] != "waive-recorded":
+        cause = "no standing review fallback is recorded"
+    elif standing:
+        cause = f"an amendment already stands since the last review (round {standing[0]:02d})"
+    if cause is not None and "confirmation" not in request:
+        raise WorkspaceError(f"amend needs the user's confirmation: {cause}")
+    if "confirmation" in request:
+        confirmation = _confirmation(request.get("confirmation"))
+    number = max(_round_numbers(project), default=0) + 1
+    round_ = Round(number, target, None, False, version, version, "waived", (), None, None)
+    lines = [
+        f"# Goldfish round {number:02d}: {target} (amended)", "", "## Amendment", "",
+        f"Kind: {kind}", f"Reason: {_flat(reason)}", f"Previous resolved: {series[-1].resolved}", "",
+        "## Reuses", "", f"Reuses: round {base.number:02d} ({base.outcome}, resolved {base.resolved})",
+    ]
+    if confirmation is not None:
+        lines += ["", *_confirmation_lines(confirmation)]
+    result = {"round": number, "document": round_name(number), "outcome": "waived", "resolved": version,
+              "reuses": base.number, "kind": kind}
+    return _write(number, round_, "\n".join(lines)), result
+
+
+def _section_rounds(project: Path, target: str, heading: str) -> "list[int]":
+    """Waived rounds of `target` after its latest passing review that carry the body section `heading`."""
+    series = [item for item in round_documents(project) if item.key == (target, None)]
+    passed = [item.number for item in series if item.outcome in ("accepted", "accepted-residual")]
+    since = passed[-1] if passed else 0
+    found: "list[int]" = []
+    for item in series:
+        if item.number > since and item.outcome == "waived":
+            text = read_text(project / f"{round_name(item.number)}.md")  # round_documents just read it
+            if any(line.strip() == heading for line in text.splitlines()):
+                found.append(item.number)
+    return found
+
+
+def amendment_rounds(project: Path, target: str) -> "list[int]":
+    """Amendment rounds of `target` since its latest passing review, oldest first."""
+    return _section_rounds(project, target, "## Amendment")
+
+
+def amendment_details(project: Path) -> "list[dict[str, Any]]":
+    """Every amendment since the latest passing review of its target: round, target, kind, reason, previous digest."""
+    found: "list[dict[str, Any]]" = []
+    for target in LIGHT_TARGETS:
+        for number in amendment_rounds(project, target):
+            fields = {"round": number, "target": target}
+            for line in read_text(project / f"{round_name(number)}.md").splitlines():
+                for label, key in (("Kind: ", "kind"), ("Reason: ", "reason"), ("Previous resolved: ", "previous")):
+                    if line.startswith(label):
+                        fields[key] = line[len(label):]
+            found.append(fields)
+    return sorted(found, key=lambda item: item["round"])
+
+
+def unamended_waivers(project: Path, target: str) -> "list[int]":
+    """Waived rounds of `target` since its latest passing review that are not amendments, oldest first."""
+    series = [item for item in round_documents(project) if item.key == (target, None)]
+    passed = [item.number for item in series if item.outcome in ("accepted", "accepted-residual")]
+    since = passed[-1] if passed else 0
+    amended = set(amendment_rounds(project, target))
+    return [item.number for item in series if item.number > since and item.outcome == "waived"
+            and item.number not in amended]
+
+
+def standing_waivers(project: Path, target: str) -> "list[int]":
+    """Standing-waiver rounds of `target` since its latest passing review, oldest first."""
+    return _section_rounds(project, target, "## Standing waiver")
 
 
 def _reused(project: Path, request: "dict[str, Any]", target: str, worktree: "str | None") -> Round:
@@ -503,8 +655,10 @@ def goldfish_operation(project: Path, state: "dict[str, Any]", request: "dict[st
     operation = _choice(request.get("operation"), OPERATIONS, "operation")
     allowed = OPERATION_FIELDS[operation] | UNIVERSAL
     required = OPERATION_REQUIRED[operation] | {"operation"}
+    if operation == "waive" and _standing_applies(state, request):
+        required = required - {"reason", "confirmation"}
     object_input(request, allowed, required, where=f"workflow goldfish {operation}")
-    handler = {"open": open_round, "close": close_round, "waive": waive_round}[operation]
+    handler = {"open": open_round, "close": close_round, "waive": waive_round, "amend": amend_round}[operation]
     return handler(project, state, request)
 
 
@@ -543,9 +697,11 @@ def round_errors(project: Path, target: str, worktree: "str | None", version: st
     return []
 
 
-def confirm_gate_errors(project: Path, kinds: "tuple[str, ...]", spec_text: str, planning_text: str) -> "list[str]":
+def confirm_gate_errors(
+    project: Path, state: "dict[str, Any]", kinds: "tuple[str, ...]", spec_text: str, planning_text: str
+) -> "list[str]":
     """The spec and planning gates: a confirmation needs a current round for each document it confirms."""
-    if not workspace_lib.is_goldfish_gated():
+    if not workspace_lib.is_goldfish_gated(state):
         return []
     errors: "list[str]" = []
     if "requirements" in kinds:
@@ -571,7 +727,7 @@ def design_gate_errors(project: Path, previous: "dict[str, Any]", candidate: "di
     Each state is classified from its own data, so a task that becomes a code task by an outputs edit
     while running fires the gate, and a started task that resumes (`BLOCKED` to `RUNNING`) does not.
     """
-    if not workspace_lib.is_goldfish_gated() or _code_started(previous):
+    if not workspace_lib.is_goldfish_gated(candidate) or _code_started(previous):
         return []
     running = any(
         is_code_task(task) and task.get("status") in ("RUNNING", "DONE") for task in _objects(candidate.get("tasks"))
@@ -610,7 +766,7 @@ def delivery_gate_errors(
     A project with no delivery target (policy 0 and 1, or policy 2 before one is set) keeps the 0.37 order:
     the record check runs first, whatever the event. With a target, an event that owes nothing returns first.
     """
-    if not workspace_lib.is_goldfish_gated() or not has_code_task(state) or not entry.get("repository"):
+    if not workspace_lib.is_goldfish_gated(state) or not has_code_task(state) or not entry.get("repository"):
         return []
     rules = workspace_lib.delivery_rules(state)
     events = rules.diff_events
@@ -633,7 +789,7 @@ def delivery_gate_errors(
         if _object(entry.get("merge")).get("state") == "declined":
             return []  # a declined local merge abandons the work: no round is owed for code that is not delivered
         closed_at = _object(entry.get("closure")).get("observed_at")
-        if entry.get("status") == "kept" and not _at_or_after_instant(closed_at):
+        if entry.get("status") == "kept" and not _at_or_after_instant(closed_at, rules.policy):
             return []  # kept before the instant: that closure counts as passed
         head = _query(repository, "rev-parse", ref)
         if head is None:
@@ -675,9 +831,15 @@ def delivery_gate_errors(
 # --- reporting -----------------------------------------------------------------------------------
 
 
-def _at_or_after_instant(value: object) -> bool:
-    """Whether a recorded time is at or after the Goldfish instant; a missing or unreadable time is not."""
-    return at_or_after(value, workspace_lib.GOLDFISH_FROM)
+POLICY_THREE_INSTANT = "1970-01-01T00:00:00+00:00"
+
+
+def _at_or_after_instant(value: object, policy: int) -> bool:
+    """Whether a recorded time is at or after the Goldfish instant; a missing or unreadable time is not.
+
+    At policy 3 the gates are always on, so any recorded time counts.
+    """
+    return at_or_after(value, POLICY_THREE_INSTANT if policy >= 3 else workspace_lib.GOLDFISH_FROM)
 
 
 FINDING_SEVERITY = re.compile(r", (Blocker|Major|Nit), ")
@@ -767,6 +929,18 @@ def goldfish_findings(project: Path) -> "list[str]":
                     f"Goldfish round {item.number:02d} covers an earlier version of {SUBJECT[target]}; "
                     "the next confirmation needs a delta round"
                 )
+    for target in LIGHT_TARGETS:
+        if standing_waivers(project, target):
+            found.append(
+                f"the {SUBJECT[target]} rests on a standing waiver, not a review; "
+                "run a round when a fresh agent is available"
+            )
+        amended = amendment_rounds(project, target)
+        if amended:
+            found.append(
+                f"the {SUBJECT[target]} was amended after its review (round "
+                f"{', '.join(f'{number:02d}' for number in amended)}); run a round to review the whole text"
+            )
     return found
 
 
@@ -796,10 +970,11 @@ def _worktree_event_warnings(
     found = [
         f"the {name} of {path} at {stamp} has no Goldfish diff round"
         for name, stamp in events
-        if _at_or_after_instant(stamp) and not any(item[0] == "diff" and item[1] == path for item in passed)
+        if _at_or_after_instant(stamp, rules.policy)
+        and not any(item[0] == "diff" and item[1] == path for item in passed)
     ]
     closed = _object(entry.get("closure")).get("observed_at")
-    if workspace_lib.merge_warned(entry, rules) and not merge and _at_or_after_instant(closed):
+    if workspace_lib.merge_warned(entry, rules) and not merge and _at_or_after_instant(closed, rules.policy):
         found.append(f"worktree {path} was closed at {closed} with no merge recorded")
     return found
 
@@ -810,8 +985,9 @@ def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str
     Confirmations are matched to a round by digest. A task start and a release or merge are matched only to
     the presence of a passing design or diff round, because the project records no version for them.
     """
-    if not workspace_lib.is_goldfish_gated():
+    if not workspace_lib.is_goldfish_gated(state):
         return []
+    policy = workspace_lib.delivery_rules(state).policy
     rounds = round_documents(project)
     passed = {(item.target, item.worktree, item.resolved) for item in rounds if item.outcome in PASSING}
     found: "list[str]" = []
@@ -821,7 +997,7 @@ def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str
     for marker in PROPOSAL_MARKER.finditer(spec_text):
         stamp = next((value for position, value in reversed(headings) if position < marker.start()), None)
         target = "spec" if marker.group("kind") == "requirements" else "planning"
-        if _at_or_after_instant(stamp) and not any(
+        if _at_or_after_instant(stamp, policy) and not any(
             item[0] == target and item[2] == marker.group("sha") for item in passed
         ):
             found.append(
@@ -831,7 +1007,7 @@ def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str
     if has_code_task(state):
         designed = any(item[0] == "design" for item in passed)
         for task in _objects(state.get("tasks")):
-            if is_code_task(task) and _at_or_after_instant(task.get("started_at")) and not designed:
+            if is_code_task(task) and _at_or_after_instant(task.get("started_at"), policy) and not designed:
                 found.append(f"code task {task.get('id')} started at {task['started_at']} with no design round")
         rules = workspace_lib.delivery_rules(state)
         for entry in _objects(state.get("worktrees")):

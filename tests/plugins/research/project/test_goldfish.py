@@ -612,7 +612,9 @@ def test_an_unknown_operation_or_field_is_refused(project: Path) -> None:
 def test_the_schema_names_each_operations_keys() -> None:
     schema = input_schema("goldfish")
     assert schema["required"] == ["expected_revision", "id", "operation"]
-    assert set(schema["required_by"]) == {"operation=open", "operation=close", "operation=waive"}
+    assert set(schema["required_by"]) == {
+        "operation=open", "operation=close", "operation=waive", "operation=amend",
+    }
     assert "stages" in schema["required_by"]["operation=open"]
     assert "reports" in schema["required_by"]["operation=close"]
     assert "confirmation" in schema["required_by"]["operation=waive"]

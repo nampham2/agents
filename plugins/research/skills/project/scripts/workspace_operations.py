@@ -24,6 +24,7 @@ from workspace_lib import (
     authorization_findings,
     commit_state,
     delivery_rules,
+    has_target_rules,
     load_json,
     normalize_tags,
     now_iso,
@@ -107,8 +108,10 @@ def migration_plan(state: dict[str, Any], target: object) -> dict[str, Any]:
             f"migrate-policy needs schema_version 4, but this project has {state.get('schema_version')}"
         )
     old = delivery_rules(state)
-    if old.policy == 2:
-        raise WorkspaceError("this project is already at policy 2; change its target with 'workflow retarget'")
+    if has_target_rules(old.policy):
+        raise WorkspaceError(
+            f"this project is already at policy {old.policy}; change its target with 'workflow retarget'"
+        )
     if state.get("status") in ("ALIGNING", "DONE", "CANCELLED"):
         raise WorkspaceError(
             f"a {state.get('status')} project cannot migrate: finish alignment first, "

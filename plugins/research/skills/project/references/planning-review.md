@@ -31,7 +31,9 @@ Medium and high effort keep full coverage and separate confirmations.
 ## Make effort reviewable
 
 Rate effort per workstream and overall as low, medium or high before creating tasks.
-Never estimate in hours, days or other time units. Name external waits as dependencies.
+Project convention. Never estimate in hours, days or other time units. Name external waits as
+dependencies. At policy 3, propose the review risk with its reasons
+([review-risk.md](review-risk.md)).
 
 - Low: one module or file family, existing patterns, no new interface, migration or external
   system, one or two tasks, no open unknowns.
@@ -91,7 +93,8 @@ unrelated changes. It must stand without the chat transcript, with these section
    opens it; for `local` nothing; `research` writes none.
 5. Effort per workstream and overall: implementer, reuse, confidence, exclusions, uncertainty.
 6. Edge cases and recovery: case, expected behavior, owner and verification.
-7. Verification plan: each success criterion mapped to a check and to its failing-first control.
+7. Verification plan: each success criterion mapped to a check; a new code check or regression
+   fix also gets a failing-first control.
 8. Risks and unknowns: the smallest investigation for each blocking one, accepted residual risk
    with its validation or contingency.
 9. Open questions.

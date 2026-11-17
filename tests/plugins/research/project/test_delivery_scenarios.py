@@ -247,7 +247,7 @@ def test_readiness_lists_what_removal_lacks_by_rules(monkeypatch: pytest.MonkeyP
 
 @pytest.fixture
 def goldfish_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(workspace_lib, "is_goldfish_gated", lambda: True)
+    monkeypatch.setattr(workspace_lib, "is_goldfish_gated", lambda state: True)
     monkeypatch.setattr(workspace_goldfish, "has_code_task", lambda state: True)
 
 

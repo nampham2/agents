@@ -37,9 +37,9 @@ The `control` is a check declared to fail on the current content; it runs last a
 same pre-pass; a malformed batch records nothing. The response carries `controls_fired` as `n/m`;
 the control fires only on a recorded non-zero exit, so timeout, launch error and rejection report
 `0/1` and fail the batch. Without a control it reports `0/0` and passes when every check records
-zero. A control recording zero proves nothing and fails the batch. Give each acceptance batch a
-control the content fails; `finalize` warns when verify batches exist but no control was ever
-observed failing.
+zero. A control recording zero proves nothing and fails the batch. Give each acceptance batch of new
+code behaviour or a regression fix a control the content fails; `finalize` warns when verify
+batches exist but no control was ever observed failing.
 
 ## Staged lessons and recovery
 

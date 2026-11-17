@@ -58,6 +58,7 @@ from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
 from workspace_goldfish import (
     OPERATION_FIELDS,
     OPERATION_REQUIRED,
+    amendment_details,
     confirm_gate_errors,
     delivery_gate_errors,
     goldfish_findings,
@@ -89,16 +90,22 @@ from workspace_lib import (
     delivery_rules,
     document_conflict_message,
     document_sha256,
+    fallback_errors,
+    has_target_rules,
     is_legacy_planning_layout,
     is_retro_gated,
     load_json,
     memory_staging_warnings,
     now_iso,
+    options_errors,
     planning_path,
+    project_options,
     proposal_digest,
     proposal_marker,
     reason_reference_warnings,
     retro_section_findings,
+    risk_errors,
+    staging_enabled,
     stale_confirmations,
     validate_project,
 )
@@ -118,6 +125,7 @@ FIELDS = {
         "response", "source", "scope", "continuation", "delivery_target",
     },
     "retarget": {"delivery_target", "reason", "confirmation"},
+    "settings": {"review_risk", "review_fallback", "options", "confirmation"},
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
     "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
@@ -154,6 +162,7 @@ READ_ACTIONS = set(READ_INPUTS)
 CONFIRM_REQUIRED = frozenset({"kind", "review_id", "response", "scope", "source"})
 WORKTREE_REQUIRED = frozenset({"confirmation", "operation", "path"})
 RETARGET_REQUIRED = frozenset({"confirmation", "delivery_target", "reason"})
+SETTINGS_REQUIRED = frozenset({"confirmation"})
 CONFIRM_REQUIRED_BY = {
     "kind=requirements": frozenset({"proposal_sha256"}),
     "kind=planning": frozenset({"proposal_sha256"}),
@@ -186,7 +195,7 @@ EFFECT_REQUIRED_BY = {"operation=intent": frozenset({"effect"}), "operation=reso
 WAIT_REQUIRED = frozenset({"task", "on"})
 ALWAYS_REQUIRED = {
     "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
-    "retarget": RETARGET_REQUIRED,
+    "retarget": RETARGET_REQUIRED, "settings": SETTINGS_REQUIRED,
     "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED, "wait": WAIT_REQUIRED,
 }
 REQUIRED_BY = {
@@ -628,10 +637,10 @@ def _alignment_target(state: dict[str, Any], kind: str, request: dict[str, Any])
                 "only kind alignment takes delivery_target; set it with 'workflow retarget' after this confirmation"
             )
         return None
-    if rules.policy != 2:
+    if not has_target_rules(rules.policy):
         if "delivery_target" in request:
             raise WorkspaceError(
-                f"delivery_target needs policy_version 2, but this project is at policy {rules.policy}"
+                f"delivery_target needs policy_version 2 or 3, but this project is at policy {rules.policy}"
             )
         return None
     if "delivery_target" not in request:
@@ -663,8 +672,8 @@ def _policy_body(head: str, response: str, source: str, diff: dict[str, list[str
 def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str, Any], str, dict[str, Any]]":
     """The patch, decision body and result of a target change, after its refusals."""
     old = delivery_rules(state)
-    if old.policy != 2:
-        raise WorkspaceError(f"retarget needs policy_version 2, but this project is at policy {old.policy}")
+    if not has_target_rules(old.policy):
+        raise WorkspaceError(f"retarget needs policy_version 2 or 3, but this project is at policy {old.policy}")
     if state["status"] in ("DONE", "CANCELLED"):
         raise WorkspaceError(f"a {state['status']} project keeps its delivery_target")
     target = request.get("delivery_target")
@@ -689,6 +698,40 @@ def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
     )
     outcome = {"delivery_target": {"from": state.get("delivery_target"), "to": target}, **diff}
     return {"delivery_target": target}, body, outcome
+
+
+def _settings(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str, Any], str, dict[str, Any]]":
+    """The patch, decision body and result of a settings change, after its refusals."""
+    policy = delivery_rules(state).policy
+    if policy != 3:
+        raise WorkspaceError(f"settings needs policy_version 3, but this project is at policy {policy}")
+    if state["status"] in ("DONE", "CANCELLED"):
+        raise WorkspaceError(f"a {state['status']} project keeps its settings")
+    confirmation = _confirmation(request.get("confirmation"))
+    patch: dict[str, Any] = {}
+    if "review_risk" in request:
+        risk = request["review_risk"]
+        problems = [] if risk is None else risk_errors(risk)
+        if problems:
+            raise WorkspaceError(problems[0])
+        patch["review_risk"] = risk
+    if "review_fallback" in request:
+        fallback = request["review_fallback"]
+        problems = [] if fallback is None else fallback_errors(fallback)
+        if problems:
+            raise WorkspaceError(problems[0])
+        patch["review_fallback"] = fallback
+    if "options" in request:
+        options = request["options"]
+        problems = [] if options is None else options_errors(options)
+        if problems:
+            raise WorkspaceError(problems[0])
+        patch["options"] = options
+    if not patch:
+        raise WorkspaceError("settings needs at least one of review_risk, review_fallback and options")
+    changes = "; ".join(f"{key} = {json.dumps(value, sort_keys=True)}" for key, value in patch.items())
+    body = f"kind: settings\n{changes}\nsource: {confirmation['source']}\nresponse: {confirmation['response']}"
+    return patch, body, {"settings": patch}
 
 
 def _build(
@@ -768,7 +811,7 @@ def _build(
         for field in ("review_id", "response", "source", "scope"):
             string_input(request.get(field), field)
         confirmed_target = _alignment_target(state, kind, request)
-        gate_errors = confirm_gate_errors(project, tuple(tokens), read("spec"), read("planning"))
+        gate_errors = confirm_gate_errors(project, state, tuple(tokens), read("spec"), read("planning"))
         if gate_errors:
             raise WorkspaceError(" | ".join(gate_errors))
         review_id = str(request["review_id"])
@@ -816,10 +859,17 @@ def _build(
         notes = goldfish_findings(project)
         if notes:
             result["goldfish_findings"] = notes
+        amendments = amendment_details(project)
+        if amendments:
+            result["amendments"] = amendments
     elif action == "retarget":
         patch, body, outcome = _retarget(state, request)
         decision(body)
         result.update(outcome)
+    elif action == "settings":
+        patch, body, outcome = _settings(state, request)
+        decision(body)
+        result.update(outcome["settings"])
     elif action == "correct":
         old = _task(state, string_input(request.get("task"), "task"))
         if old["status"] not in ("DONE", "SKIPPED"):
@@ -945,7 +995,7 @@ def _build(
         skipped: list[dict[str, str]] = []
         # Titles staged before this close: a section that only lists them is a pointer, not a lesson.
         staged_titles = [name for level, name, _ in _headings(planned) if level == 2]
-        for title, body in reflection_lesson_sections(reflection):
+        for title, body in reflection_lesson_sections(reflection) if staging_enabled(state) else []:
             if names_only_staged(body, staged_titles):
                 skipped.append({"title": title, "reason": "names only items already staged"})
                 continue
@@ -963,12 +1013,12 @@ def _build(
         if staged:
             documents["memory-staging"] = planned
         result["reflected_lessons"] = {"staged": staged, "skipped": skipped}
-        result["memory_staging_warnings"] = memory_staging_warnings(project, content=planned)
+        result["memory_staging_warnings"] = memory_staging_warnings(project, content=planned, state=state)
         # A verify batch without an observed-firing control never proved its checks can fail, so
         # finalize surfaces that gap as a warning - same non-blocking shape as the staging warning.
         from workspace_checks import control_warnings
 
-        result["control_warnings"] = control_warnings(project)
+        result["control_warnings"] = control_warnings(project, state)
         # c3: a task whose only evidence is a deliberately failing control proved the guard fires but
         # not that the real check passes. Warning, not refusal: the task may legitimately finish on it.
         from workspace_evidence import failing_evidence_warnings
@@ -1016,7 +1066,13 @@ def _build(
     elif action == "report":
         from workspace_reports import render_report
 
-        documents["artifacts/report"], result = render_report(project, state, request)
+        if delivery_rules(state).policy == 3 and not project_options(state)["reports"]:
+            result["notice"] = (
+                "reports are off for this project (options.reports); the report was not written. "
+                "Turn them on with 'workflow settings' and the user's words"
+            )
+        else:
+            documents["artifacts/report"], result = render_report(project, state, request)
     if "continuation" in request or action in ("checkpoint", "finalize", "maintenance", "cancel", "reconcile"):
         target = prepare_update(state, patch, internal=True) if patch else copy.deepcopy(state)
         target["revision"] += int(patch is not None)

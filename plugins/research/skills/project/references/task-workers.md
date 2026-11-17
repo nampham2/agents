@@ -62,3 +62,9 @@ nothing ran. Unknown ownership blocks conflicting work; preserve the record and 
 
 While a worker runs, record `observed` events so `silent_minutes` measures real silence; see
 [durability.md](durability.md).
+
+## Delegating coordinator mode
+
+A behavioural rule, reserved until a later release: the coordinator would plan, brief and review
+while workers write. It is not an option and `settings` refuses it. Until then the coordinator
+delegates under the rules above or works alone.
