@@ -429,14 +429,21 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
     else:
         resolved = version_for(project, state, current.target, current.worktree)
     changed = resolved != current.reviewed
+    risk = _risk_of(state)  # None below policy 3; the risk now, not the risk at `open`, decides the outcome
+    if risk == "high" and current.target not in LIGHT_TARGETS and set(current.stages) != set(LADDER):
+        raise WorkspaceError(
+            f"the review risk is now high, so a {current.target} round lists the stages {', '.join(LADDER)}; "
+            "open a new round"
+        )
     important = [item for item in findings if item["severity"] in ("Blocker", "Major")]
-    # A spec or planning round is lighter: only a Blocker forces a re-audit or holds one open. Design and
-    # diff rounds keep the rule for Blockers and Majors alike, except at review risk `low`, where a Blocker
-    # alone decides for every target (policy 3 only).
+    # Only a Blocker forces a re-audit or holds one open for a spec or planning round, and, at review risk `low`
+    # (policy 3), for every target. A design or diff round otherwise counts Blockers and Majors alike. At `low`
+    # a Major FIX on an unchanged target needs no artifact either: the check follows the decisive findings.
     decisive = important
-    if current.target in LIGHT_TARGETS or _risk_of(state) == "low":
+    if current.target in LIGHT_TARGETS or risk == "low":
         decisive = [item for item in important if item["severity"] == "Blocker"]
-    fixed = [item for item in (decisive if _risk_of(state) == "low" else important) if item["triage"] == "FIX"]
+    artifact_checked = decisive if risk == "low" else important
+    fixed = [item for item in artifact_checked if item["triage"] == "FIX"]
     if changed and not any(item["triage"] == "FIX" for item in findings):
         raise WorkspaceError("the target changed after the review, so at least one finding must be a FIX")
     for item in fixed:
@@ -446,8 +453,6 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
             )
     if confirmation is None and any(item["triage"] in ("ESCALATE", "CONTEST") for item in important):
         raise WorkspaceError("a Blocker or Major that is contested or escalated needs the user's confirmation")
-    # A spec or planning round is lighter: only a Blocker forces a re-audit or holds one open. Design and
-    # diff rounds keep the rule for Blockers and Majors alike.
     fixed_decisive = [item for item in decisive if item["triage"] == "FIX"]
     if current.reaudit_of is not None and decisive:
         if confirmation is None:
@@ -514,6 +519,8 @@ def _standing_applies(state: "dict[str, Any]", request: "dict[str, Any]") -> boo
 
 def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
     """Record an explicit editorial or reviewer-requested edit after a passing close as a bookkeeping round."""
+    if workspace_lib.delivery_rules(state).policy != 3:
+        raise WorkspaceError("amend needs policy_version 3; policies 0 to 2 record an edit with a round or a waiver")
     target = _choice(request.get("target"), TARGETS, "target")
     if target not in LIGHT_TARGETS:
         raise WorkspaceError("amend applies to spec and planning only; a design or diff change needs a round")
@@ -535,7 +542,7 @@ def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
     round_ = Round(number, target, None, False, version, version, "waived", (), None, None)
     lines = [
         f"# Goldfish round {number:02d}: {target} (amended)", "", "## Amendment", "",
-        f"Kind: {kind}", f"Reason: {_flat(reason)}", f"Previous resolved: {base.resolved}", "",
+        f"Kind: {kind}", f"Reason: {_flat(reason)}", f"Previous resolved: {series[-1].resolved}", "",
         "## Reuses", "", f"Reuses: round {base.number:02d} ({base.outcome}, resolved {base.resolved})",
     ]
     result = {"round": number, "document": round_name(number), "outcome": "waived", "resolved": version,

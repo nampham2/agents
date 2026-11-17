@@ -32,7 +32,8 @@ Medium and high effort keep full coverage and separate confirmations.
 
 Rate effort per workstream and overall as low, medium or high before creating tasks.
 Project convention. Never estimate in hours, days or other time units. Name external waits as
-dependencies.
+dependencies. At policy 3, propose the review risk with its reasons
+([review-risk.md](review-risk.md)).
 
 - Low: one module or file family, existing patterns, no new interface, migration or external
   system, one or two tasks, no open unknowns.

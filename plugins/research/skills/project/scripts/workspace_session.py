@@ -14,6 +14,7 @@ from memory_search import memory_candidates, objective_text
 from workspace_lib import (
     CLOSURE_STEPS,
     DESIGN_DOCUMENT,
+    SETTINGS_FIELDS,
     WorkspaceError,
     commit_state,
     document_sha256,
@@ -543,7 +544,7 @@ UPDATE_FIELDS = {"title", "status", "review", "cancellation_reason", "predecesso
 # Fields only a verifying operation may patch: `update` must not be able to declare a worktree or
 # move the target root without the Git observations the `worktree` action insists on.
 INTERNAL_UPDATE_FIELDS = UPDATE_FIELDS | {
-    "worktrees", "working_directory", "policy_version", "delivery_target", "review_risk", "review_fallback", "options",
+    "worktrees", "working_directory", "policy_version", "delivery_target", *SETTINGS_FIELDS,
 }
 
 
@@ -574,12 +575,12 @@ def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: 
             state["tasks"].append(_new_task(change))
     if internal:
         # `settings` replaces a risk or fallback and merges options per key; a null leaves the field unset.
-        for key in ("review_risk", "review_fallback"):
+        for key in SETTINGS_FIELDS[:2]:
             if key in changes:
                 state.pop(key, None)
     _merge(state, changes)
     if internal:
-        for key in ("review_risk", "review_fallback", "options"):
+        for key in SETTINGS_FIELDS:
             if key in state and state[key] is None:
                 del state[key]
     state["current_tasks"] = [task["id"] for task in state["tasks"] if task.get("status") == "RUNNING"]

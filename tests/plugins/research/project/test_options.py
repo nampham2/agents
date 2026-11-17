@@ -211,3 +211,57 @@ def test_finalize_passes_the_state_so_a_policy_three_project_closes_quietly(thre
     done(three)
     verified(three)
     assert finalize(three, LESSON_REFLECTION.replace("## Lessons", "## Notes"))["control_warnings"] == []
+
+
+# --- the round-06 review: style advice, staged lessons, the warning through finalize ---------------
+
+
+def test_style_advice_off_turns_the_style_check_off_at_policy_three(three: Path) -> None:
+    state = load_state(three)
+    assert lib.is_style_checked(state) is True
+    settings(three, options={"style_advice": False})
+    off = load_state(three)
+    assert lib.is_style_checked(off) is False
+    long_sentence = " ".join(["This sentence keeps adding words until it passes the limit"] * 4) + "."
+    spec = (three / "spec.md").read_text(encoding="utf-8")
+    marker = "## Current specification\n"
+    (three / "spec.md").write_text(spec.replace(marker, marker + "\n" + long_sentence + "\n", 1), encoding="utf-8")
+    assert not any("spec.md" in text and "[length]" in text for text in lib.validate_project(three).warnings)
+    settings(three, options={"style_advice": True})
+    assert any("spec.md" in text and "[length]" in text for text in lib.validate_project(three).warnings)
+
+
+def test_finalize_is_silent_about_lessons_staged_earlier_when_staging_is_off(three: Path) -> None:
+    done(three)
+    (three / "memory-staging.md").write_text(
+        (three / "memory-staging.md").read_text(encoding="utf-8") + "\n## An earlier lesson\n\nStaged by hand.\n",
+        encoding="utf-8",
+    )
+    settings(three, options={"memory_staging": False})
+    result = finalize(three, LESSON_REFLECTION)
+    assert result["memory_staging_warnings"] == [] and result["reflected_lessons"]["staged"] == []
+
+
+def test_an_unreadable_saved_state_reads_as_staging_on_when_no_state_is_passed(three: Path) -> None:
+    settings(three, options={"memory_staging": False})
+    off = load_state(three)
+    (three / "memory-staging.md").write_text(
+        (three / "memory-staging.md").read_text(encoding="utf-8") + "\n## A lesson\n\nStaged.\n", encoding="utf-8"
+    )
+    assert lib.memory_staging_warnings(three, state=off) == []
+    (three / "project.json").write_text("not json", encoding="utf-8")
+    assert lib.memory_staging_warnings(three)  # no state held: fail open, warn
+    assert lib.memory_staging_warnings(three, state=off) == []  # the caller's state still wins
+
+
+def test_finalize_still_warns_about_a_missing_control_when_a_code_task_is_done(three: Path) -> None:
+    done(three)
+    verified(three)
+    stored = json.loads((three / "project.json").read_text(encoding="utf-8"))
+    stored["tasks"].append({**CODE_TASK, "id": "T09", "name": "Code", "success_criteria": "ok",
+                            "verification": "check", "depends_on": [], "evidence": [], "receipts": [],
+                            "skip_reason": None, "block_reason": None,
+                            "authorization": {"required": False, "status": "not_required", "scope": None,
+                                              "source": None, "authorized_at": None}})
+    state = {**load_state(three), "tasks": stored["tasks"]}
+    assert len(control_warnings(three, state)) == 1

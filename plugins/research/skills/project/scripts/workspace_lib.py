@@ -101,18 +101,16 @@ PROJECT_FIELDS = {
     "predecessor",
     "worktrees",
 }
+# The policy-3 settings, written only by `workflow settings`: how hard a review looks, what stands in for a
+# review on a host with no fresh agents, and the optional policies.
+SETTINGS_FIELDS = ("review_risk", "review_fallback", "options")
 # `tags`, `policy_version` and `delivery_target` are v4 only: schema v3 shares PROJECT_FIELDS and stays closed to them.
-PROJECT_V4_FIELDS = PROJECT_FIELDS | {
-    "execution", "tags", "policy_version", "delivery_target", "review_risk", "review_fallback", "options",
-}
+PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS}
 # Fields a valid project may omit: `predecessor` names the project this one continues (a maintenance
 # ancestor, or the finished source of a follow-up, whose briefing starts `Follow-up of: <id>`) and `worktrees` is
 # only present once a repository worktree, or its absence, has been recorded. `tags` is absent from
 # every project created before tags existed, so validation never requires it.
-OPTIONAL_PROJECT_FIELDS = {
-    "predecessor", "worktrees", "tags", "policy_version", "delivery_target", "review_risk", "review_fallback",
-    "options",
-}
+OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS}
 
 # A project carries 1 to 5 tags. Creation and the `tag` command enforce the minimum; validation checks
 # the form and the maximum only, so the projects that predate tags stay valid.
@@ -488,9 +486,6 @@ NEW_PROJECT_POLICY: "int | None" = 3
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
 POLICY_VERSIONS = (0, 1, 2, 3)
 DEFAULT_OPTIONS: "dict[str, bool]" = {"style_advice": True, "memory_staging": True, "reports": False}
-# The policy-3 settings, written only by `workflow settings`: how hard a review looks, what stands in for a
-# review on a host with no fresh agents, and the optional policies.
-SETTINGS_FIELDS = ("review_risk", "review_fallback", "options")
 REVIEW_RISKS = ("low", "standard", "high")
 FALLBACK_MODES = ("ask", "waive-recorded")
 
@@ -2757,14 +2752,19 @@ def _validate_settings(state: dict[str, Any], policy: "int | None", report: Vali
     for name in SETTINGS_FIELDS:
         if name in state and policy is not None and policy != 3:
             report.errors.append(f"project: {name} needs policy_version 3, but the project is at policy {policy}")
-    if "review_risk" in state and state["review_risk"] not in REVIEW_RISKS:
-        report.errors.append(
-            f"project: review_risk must be one of {', '.join(REVIEW_RISKS)}, found {state['review_risk']!r}"
-        )
+    if "review_risk" in state:
+        report.errors.extend(f"project: {text}" for text in risk_errors(state["review_risk"]))
     if "review_fallback" in state:
         report.errors.extend(f"project: {text}" for text in fallback_errors(state["review_fallback"]))
     if "options" in state:
         report.errors.extend(f"project: {text}" for text in options_errors(state["options"]))
+
+
+def risk_errors(value: object) -> "list[str]":
+    """What is wrong with a `review_risk` value: one of the closed levels."""
+    if not isinstance(value, str) or value not in REVIEW_RISKS:
+        return [f"review_risk must be one of {', '.join(REVIEW_RISKS)}, found {value!r}"]
+    return []
 
 
 def fallback_errors(value: object) -> "list[str]":
@@ -2773,6 +2773,8 @@ def fallback_errors(value: object) -> "list[str]":
         return ["review_fallback must be an object with only mode and reason"]
     if value.get("mode") not in FALLBACK_MODES:
         return [f"review_fallback mode must be one of {', '.join(FALLBACK_MODES)}"]
+    if value["mode"] == "ask" and "reason" in value:
+        return ["review_fallback takes a reason only to waive"]
     if value["mode"] == "waive-recorded" and not (isinstance(value.get("reason"), str) and value["reason"].strip()):
         return ["review_fallback needs a reason to waive"]
     return []
@@ -2782,7 +2784,12 @@ def options_errors(value: object) -> "list[str]":
     """What is wrong with an `options` value: only the known keys, each a boolean."""
     if not isinstance(value, dict):
         return ["options must be an object"]
-    errors = [f"options has an unknown key: {key}" for key in sorted(value.keys() - DEFAULT_OPTIONS.keys(), key=str)]
+    if not value:
+        return ["options is empty; name at least one of " + ", ".join(DEFAULT_OPTIONS) + ", or use null to unset"]
+    errors = [
+        f"options has an unknown key: {key}" + (" (reserved, not an option)" if key == "delegating" else "")
+        for key in sorted(value.keys() - DEFAULT_OPTIONS.keys(), key=str)
+    ]
     errors += [
         f"options.{key} must be true or false" for key in sorted(value)
         if key in DEFAULT_OPTIONS and type(value[key]) is not bool
@@ -4254,7 +4261,9 @@ def staging_enabled(state: "dict[str, Any]") -> bool:
     return delivery_rules(state).policy != 3 or project_options(state)["memory_staging"]
 
 
-def memory_staging_warnings(project_dir: Path, *, content: "str | None" = None) -> "list[str]":
+def memory_staging_warnings(
+    project_dir: Path, *, content: "str | None" = None, state: "dict[str, Any] | None" = None
+) -> "list[str]":
     """Warn when a project closes with candidate lessons still staged and untriaged.
 
     A warning and never an error. "Triaged" is not mechanically checkable, and refusing to close a
@@ -4262,10 +4271,11 @@ def memory_staging_warnings(project_dir: Path, *, content: "str | None" = None) 
     would punish exactly the discipline this file exists to encourage.
 
     `content` is text a caller plans to write rather than text already on disk, so a close can name
-    the lessons it staged in the same result. Unset, this reads the file as it stands.
+    the lessons it staged in the same result. Unset, this reads the file as it stands. `state` is the project
+    state the caller holds; without it the saved one is read, and an unreadable one reads as staging on.
     """
     path = project_dir / MEMORY_STAGING_FILENAME
-    if not staging_enabled(_stored_state(project_dir)) or not staged_lesson_lines(project_dir, content=content):
+    if not staging_enabled(state if state is not None else _stored_state(project_dir)) or not staged_lesson_lines(project_dir, content=content):
         return []
     return [
         f"{path} still holds staged lessons at close; promote each one into "

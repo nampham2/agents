@@ -82,7 +82,6 @@ from workspace_lib import (
     DELIVERY_TARGETS,
     PLANNING_STATUS_PATTERN,
     PROJECT_TRANSITIONS,
-    REVIEW_RISKS,
     DeliveryRules,
     WorkspaceConflict,
     WorkspaceError,
@@ -105,6 +104,7 @@ from workspace_lib import (
     proposal_marker,
     reason_reference_warnings,
     retro_section_findings,
+    risk_errors,
     staging_enabled,
     stale_confirmations,
     validate_project,
@@ -711,8 +711,9 @@ def _settings(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
     patch: dict[str, Any] = {}
     if "review_risk" in request:
         risk = request["review_risk"]
-        if risk is not None and (not isinstance(risk, str) or risk not in REVIEW_RISKS):
-            raise WorkspaceError(f"review_risk must be one of {', '.join(REVIEW_RISKS)}, or null to unset it")
+        problems = [] if risk is None else risk_errors(risk)
+        if problems:
+            raise WorkspaceError(problems[0])
         patch["review_risk"] = risk
     if "review_fallback" in request:
         fallback = request["review_fallback"]
@@ -1012,7 +1013,7 @@ def _build(
         if staged:
             documents["memory-staging"] = planned
         result["reflected_lessons"] = {"staged": staged, "skipped": skipped}
-        result["memory_staging_warnings"] = memory_staging_warnings(project, content=planned)
+        result["memory_staging_warnings"] = memory_staging_warnings(project, content=planned, state=state)
         # A verify batch without an observed-firing control never proved its checks can fail, so
         # finalize surfaces that gap as a warning - same non-blocking shape as the staging warning.
         from workspace_checks import control_warnings

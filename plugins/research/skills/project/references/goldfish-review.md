@@ -28,4 +28,4 @@ merge records and, per target, before closure.
 7. A PR merged without a diff round: open one at the PR head (`commit`), then record the merge
    with `merged_head`.
 8. No fresh agent: `operation: waive` with `reason` and the user's `confirmation`; editorial
-   edits may add `reuses` ([durability.md](durability.md)). Policy 3: step 3.
+   edits may add `reuses` ([durability.md](durability.md)). Policy 3: see review-risk.md.

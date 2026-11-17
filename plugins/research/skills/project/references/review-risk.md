@@ -11,8 +11,9 @@ Policy 3 projects only. Policies 0 to 2 keep the effort rules in
 
 The coordinator proposes a level at planning and the user confirms it with the planning
 confirmation. Write down three reasons: consequence if wrong, reversibility, interface change.
-`high` when any reason is strong; `low` when the plan effort is low; otherwise `standard`.
-Unset reads as `standard`.
+`high` when any reason is strong (a costly failure, hard to undo, or a change to an interface
+others rely on); `low` when the plan effort is low and no reason is strong; otherwise `standard`.
+`high` wins over low effort. Unset reads as `standard`.
 
 | Risk | Spec and planning | Design and diff | Re-audit forced by |
 | --- | --- | --- | --- |
@@ -21,8 +22,10 @@ Unset reads as `standard`.
 | `high` | one `combined` | `comprehension`, `design-critic`, `zoom-out`, `readiness` | as `standard` |
 
 The tool refuses any other stage list. A delta or re-audit round follows the same table. The risk
-at `close` decides the outcome. At `low`, an unfixed Major in a design or diff round closes as
-`accepted` with no confirmation, unless it is contested or escalated.
+at `close` decides the outcome, and a design or diff round opened below `high` cannot close once
+the risk is `high`: open a new round. At `low`, a Major in a design or diff round neither forces a
+re-audit nor needs an `artifact` for a `FIX` on an unchanged target; it closes as `accepted` with
+no confirmation, unless it is contested or escalated.
 
 ## Standing fallback
 
@@ -43,9 +46,10 @@ editorial or a reviewer asked for it. Run `workflow goldfish` with `operation: a
 the current text itself and writes a new round that reuses the last passing one. It refuses design
 and diff, a target with no passing review, and text that matches the reviewed round.
 
-An amendment is your attestation that the edit is not substantive. A confirmation lists every
-amendment since the last review under `amendments`, and `validate` warns until a round passes.
-Any edit with no matching amendment still needs a round. Use a round for a substantive change.
+An amendment is your attestation that the edit is not substantive. The confirm result lists every
+amendment since the last review under `amendments`; show them to the user. `validate` warns until
+a round passes. Any edit with no matching amendment still needs a round. Use a round for a
+substantive change.
 
 ## Options
 
@@ -55,9 +59,10 @@ Any edit with no matching amendment still needs a round. Use a round for a subst
 | `memory_staging` | on | `finalize` stages no lessons and warns of none |
 | `reports` | off | the `report` action returns a notice and writes nothing |
 
-Other keys are refused. At policy 3 the `finalize` control warning applies only when a code task
-is running or done.
+Other keys are refused, an empty object too. Set a key back to its default by writing that
+value; `null` unsets all options. A fallback of `ask` takes no reason. At policy 3 the `finalize`
+control warning applies only when a code task is running or done.
 
 ## Delegating mode
 
-A reserved name. See [task-workers.md](task-workers.md). It is not an option and cannot be set.
+A reserved name. See [task-workers.md](task-workers.md). `settings` refuses it as an option.

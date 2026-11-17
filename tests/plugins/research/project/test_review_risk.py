@@ -455,3 +455,85 @@ def test_stored_settings_of_the_wrong_shape_are_findings(project: Path) -> None:
     ):
         errors = workspace_lib.validate_v4_state({**state, field: value}, project, check_files=False).errors
         assert any(fragment in text for text in errors), (field, value, errors)
+
+
+# --- the round-06 review: policy gate, close-time stages, guard, replay, chain ---------------------
+
+
+@pytest.mark.parametrize("policy", [None, 2])
+def test_amend_is_refused_below_policy_three(
+    tmp_path: Path, repository: Path, monkeypatch: pytest.MonkeyPatch, policy: "int | None"
+) -> None:
+    monkeypatch.setattr(workspace_lib, "NEW_PROJECT_POLICY", policy)
+    path = make_project(tmp_path, repository)
+    (path / "planning.md").write_text(PLANNING_BODY, encoding="utf-8")
+    spec = (path / "spec.md").read_text(encoding="utf-8")
+    (path / "spec.md").write_text(spec + "\n" + SPEC_BODY, encoding="utf-8")
+    with pytest.raises(WorkspaceError, match="amend needs policy_version 3"):
+        gold(path, operation="amend", target="spec", kind="editorial", reason="x")
+    assert not (path / "reviews").exists() or not list((path / "reviews").glob("*"))
+
+
+def test_a_round_opened_below_high_cannot_close_once_the_risk_is_high(project: Path) -> None:
+    settings(project, review_risk="standard")
+    opened = open_round(project, "design", ONE)
+    settings(project, review_risk="high")
+    with pytest.raises(WorkspaceError, match="review risk is now high"):
+        close(project, opened, reports=report(ONE))
+    assert rounds(project)[-1].outcome == "open"
+
+
+def test_a_ladder_round_may_still_close_after_the_risk_is_lowered(project: Path) -> None:
+    settings(project, review_risk="high")
+    opened = open_round(project, "design", LADDER)
+    settings(project, review_risk="standard")
+    assert close(project, opened, reports=report(LADDER))["outcome"] == "accepted"
+
+
+def test_the_guard_refuses_a_settings_change_from_any_other_action(project: Path) -> None:
+    current = load_state(project)
+    for field, value in (("review_risk", "low"), ("review_fallback", {"mode": "ask"}), ("options", {"reports": True})):
+        changed = {**current, field: value}
+        assert any(
+            f"cannot change guarded field: {field}" in text
+            for text in workspace_lib._immutable_field_changes(current, changed, "confirm")
+        )
+        assert not any(
+            "guarded field" in text for text in workspace_lib._immutable_field_changes(current, changed, "settings")
+        )
+
+
+def test_a_settings_retry_with_the_same_id_changes_nothing_twice(project: Path) -> None:
+    payload = {
+        "id": "s-retry", "expected_revision": load_state(project)["revision"],
+        "tokens": {"spec": snapshot(project / "spec.md")[1]}, "confirmation": USER,
+        "review_risk": "low", "options": {"reports": True},
+    }
+    first = workflow(project, "settings", payload)
+    revision = load_state(project)["revision"]
+    spec = (project / "spec.md").read_text(encoding="utf-8")
+    assert workflow(project, "settings", payload) == first
+    assert load_state(project)["revision"] == revision
+    assert (project / "spec.md").read_text(encoding="utf-8") == spec
+    assert spec.count("kind: settings") == 1
+
+
+def test_an_empty_options_object_and_a_reasoned_ask_are_refused(project: Path) -> None:
+    with pytest.raises(WorkspaceError, match="options is empty"):
+        settings(project, options={})
+    with pytest.raises(WorkspaceError, match="only to waive"):
+        settings(project, review_fallback={"mode": "ask", "reason": "stale"})
+    with pytest.raises(WorkspaceError, match="reserved"):
+        settings(project, options={"delegating": True})
+
+
+def test_a_chained_amendment_records_the_previous_amendments_digest(project: Path) -> None:
+    passing(project, "planning")
+    edit_planning(project, "One.\n")
+    first = amend(project, "planning")
+    one = goldfish.version_for(project, load_state(project), "planning", None)
+    edit_planning(project, "Two.\n")
+    second = amend(project, "planning", reason="second")
+    assert first["resolved"] == one
+    text = (project / "reviews" / f"goldfish_{second['round']:02d}.md").read_text(encoding="utf-8")
+    assert f"Previous resolved: {one}" in text

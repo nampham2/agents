@@ -186,17 +186,17 @@ RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operati
 # alignment-and-handoff, closure) carry most of the growth. At 0.39.0 automation.md gained a `settings`
 # row and an `amend` pointer, goldfish-review.md a pointer to the on-demand review-risk.md (which no
 # scenario loads) and planning-review.md and the entry a failing-first clause. Every scenario that counts
-# those files rose to its new measurement: alignment-repository 7460 to 7500, alignment-plain 6750 to
-# 6790, resume 5160 to 5190, resume-with-verifier 5350 to 5380, alignment-and-handoff 8040 to 8080,
-# material-change-after-resume 8680 to 8720, closure 5990 to 6020.
+# those files rose to its new measurement: alignment-repository 7460 to 7510, alignment-plain 6750 to
+# 6800, resume 5160 to 5190, resume-with-verifier 5350 to 5380, alignment-and-handoff 8040 to 8090,
+# material-change-after-resume 8680 to 8730, closure 5990 to 6020.
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
-    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7500),
-    "alignment-plain": ((*CORE, *ALIGNMENT), 6790),
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7510),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6800),
     "resume": ((*CORE, *RESUME), 5190),
     "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5380),
-    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 8080),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 8090),
     "material-change-after-resume": (
-        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8720),
+        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8730),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
                  "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 6020),
 }
