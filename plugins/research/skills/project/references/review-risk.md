@@ -44,7 +44,9 @@ After a passing close, an explicit edit to the spec or planning needs no new rou
 editorial or a reviewer asked for it. Run `workflow goldfish` with `operation: amend`, `target`
 (`spec` or `planning`), `kind` (`editorial` or `reviewer-requested`) and `reason`. The tool reads
 the current text itself and writes a new round that reuses the last passing one. It refuses design
-and diff, a target with no passing review, and text that matches the reviewed round.
+and diff, a target with no passing review, text that matches the reviewed round, and a target
+holding a standing waiver since its last review. At risk `high`, or without a standing fallback,
+it also needs the user's `confirmation` (`source`, `response`).
 
 An amendment is your attestation that the edit is not substantive. The confirm result lists every
 amendment since the last review under `amendments`; show them to the user. `validate` warns until

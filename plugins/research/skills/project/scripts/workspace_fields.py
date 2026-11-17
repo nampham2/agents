@@ -25,7 +25,7 @@ OPERATION_FIELDS = {
     "open": frozenset({"operation", "target", "worktree", "commit", "stages"}),
     "close": frozenset({"operation", "round", "reports", "findings", "confirmation"}),
     "waive": frozenset({"operation", "target", "worktree", "commit", "reason", "confirmation", "reuses"}),
-    "amend": frozenset({"operation", "target", "kind", "reason"}),
+    "amend": frozenset({"operation", "target", "kind", "reason", "confirmation"}),
 }
 OPERATION_REQUIRED = {
     "open": frozenset({"target", "stages"}),

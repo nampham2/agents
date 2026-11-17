@@ -93,7 +93,8 @@ def passing(project: Path, target: str = "spec") -> dict[str, Any]:
 
 
 def amend(project: Path, target: str = "spec", **fields: Any) -> dict[str, Any]:
-    request = {"operation": "amend", "target": target, "kind": "editorial", "reason": "fixed a typo", **fields}
+    request = {"operation": "amend", "target": target, "kind": "editorial", "reason": "fixed a typo",
+               "confirmation": USER, **fields}
     return gold(project, **request)
 
 
@@ -358,29 +359,31 @@ def test_amendments_chain_and_each_is_a_new_round(project: Path) -> None:
 
 def test_an_amendment_needs_a_passing_review_to_stand_on(project: Path) -> None:
     spec_edit(project)
-    refuses(project, "passing", operation="amend", target="spec", kind="editorial", reason="x")
+    refuses(project, "passing", operation="amend", target="spec", kind="editorial", reason="x", confirmation=USER)
 
 
 def test_a_waiver_alone_is_not_a_base_for_an_amendment(project: Path) -> None:
     gold(project, operation="waive", target="spec", reason="no agent", confirmation=CONFIRMATION)
     spec_edit(project)
-    refuses(project, "passing", operation="amend", target="spec", kind="editorial", reason="x")
+    refuses(project, "passing", operation="amend", target="spec", kind="editorial", reason="x", confirmation=USER)
 
 
 def test_nothing_to_amend_when_the_text_matches_the_reviewed_round(project: Path) -> None:
     passing(project, "spec")
-    refuses(project, "nothing to amend", operation="amend", target="spec", kind="editorial", reason="x")
+    refuses(project, "nothing to amend", operation="amend", target="spec", kind="editorial", reason="x",
+    confirmation=USER)
 
 
 @pytest.mark.parametrize("target", ["design", "diff"])
 def test_design_and_diff_cannot_be_amended(project: Path, target: str) -> None:
-    refuses(project, "spec and planning", operation="amend", target=target, kind="editorial", reason="x")
+    refuses(project, "spec and planning", operation="amend", target=target, kind="editorial", reason="x",
+    confirmation=USER)
 
 
 def test_an_amendment_kind_is_closed_and_the_digest_is_never_supplied(project: Path) -> None:
     passing(project, "spec")
     spec_edit(project)
-    refuses(project, "kind", operation="amend", target="spec", kind="cosmetic", reason="x")
+    refuses(project, "kind", operation="amend", target="spec", kind="cosmetic", reason="x", confirmation=USER)
     refuses(project, "unknown field", operation="amend", target="spec", kind="editorial", reason="x",
             version="a" * 64)
 
@@ -389,7 +392,7 @@ def test_an_amendment_is_refused_while_the_latest_round_is_not_passing(project: 
     passing(project, "spec")
     open_round(project, "spec", ONE)
     spec_edit(project)
-    refuses(project, "passing", operation="amend", target="spec", kind="editorial", reason="x")
+    refuses(project, "passing", operation="amend", target="spec", kind="editorial", reason="x", confirmation=USER)
 
 
 def test_amendments_are_listed_and_warned_until_a_review_passes(project: Path) -> None:
@@ -458,6 +461,28 @@ def test_stored_settings_of_the_wrong_shape_are_findings(project: Path) -> None:
 
 
 # --- the round-06 review: policy gate, close-time stages, guard, replay, chain ---------------------
+
+
+def test_amend_without_a_standing_fallback_needs_the_users_confirmation(project: Path) -> None:
+    passing(project, "spec")
+    spec_edit(project)
+    refuses(project, "confirmation", operation="amend", target="spec", kind="editorial", reason="x")
+
+
+def test_amend_at_high_risk_needs_the_users_confirmation(project: Path) -> None:
+    passing(project, "spec")
+    settings(project, review_risk="high", review_fallback={"mode": "waive-recorded", "reason": "no fresh agent"})
+    spec_edit(project)
+    refuses(project, "confirmation", operation="amend", target="spec", kind="editorial", reason="x")
+
+
+def test_amend_cannot_follow_a_standing_waiver(project: Path) -> None:
+    settings(project, review_fallback={"mode": "waive-recorded", "reason": "no fresh agent"})
+    passing(project, "spec")
+    spec_edit(project)
+    gold(project, operation="waive", target="spec")
+    refuses(project, "standing waiver", operation="amend", target="spec", kind="editorial", reason="x",
+    confirmation=USER)
 
 
 @pytest.mark.parametrize("policy", [None, 2])

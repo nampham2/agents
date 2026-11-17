@@ -526,6 +526,19 @@ def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
         raise WorkspaceError("amend applies to spec and planning only; a design or diff change needs a round")
     kind = _choice(request.get("kind"), AMEND_KINDS, "kind")
     reason = string_input(request.get("reason"), "reason")
+    confirmation = None
+    if workspace_lib.review_risk(state) == "high" or workspace_lib.review_fallback(state)["mode"] != "waive-recorded":
+        # The coordinator's own attestation is not enough where the standing fallback does not apply.
+        if "confirmation" not in request:
+            raise WorkspaceError(
+                "amend at risk high, or without a standing review fallback, needs the user's confirmation"
+            )
+    if "confirmation" in request:
+        confirmation = _confirmation(request.get("confirmation"))
+    if standing_waivers(project, target):
+        raise WorkspaceError(
+            f"amend cannot follow a standing waiver of the {target}; run a round to review the whole text"
+        )
     version = version_for(project, state, target, None, None)
     series = [item for item in round_documents(project) if item.key == (target, None)]
     reviewed = [item for item in series if item.outcome != "waived"]
@@ -545,6 +558,8 @@ def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
         f"Kind: {kind}", f"Reason: {_flat(reason)}", f"Previous resolved: {series[-1].resolved}", "",
         "## Reuses", "", f"Reuses: round {base.number:02d} ({base.outcome}, resolved {base.resolved})",
     ]
+    if confirmation is not None:
+        lines += ["", *_confirmation_lines(confirmation)]
     result = {"round": number, "document": round_name(number), "outcome": "waived", "resolved": version,
               "reuses": base.number, "kind": kind}
     return _write(number, round_, "\n".join(lines)), result
