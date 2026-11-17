@@ -526,19 +526,6 @@ def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
         raise WorkspaceError("amend applies to spec and planning only; a design or diff change needs a round")
     kind = _choice(request.get("kind"), AMEND_KINDS, "kind")
     reason = string_input(request.get("reason"), "reason")
-    confirmation = None
-    if workspace_lib.review_risk(state) == "high" or workspace_lib.review_fallback(state)["mode"] != "waive-recorded":
-        # The coordinator's own attestation is not enough where the standing fallback does not apply.
-        if "confirmation" not in request:
-            raise WorkspaceError(
-                "amend at risk high, or without a standing review fallback, needs the user's confirmation"
-            )
-    if "confirmation" in request:
-        confirmation = _confirmation(request.get("confirmation"))
-    if standing_waivers(project, target):
-        raise WorkspaceError(
-            f"amend cannot follow a standing waiver of the {target}; run a round to review the whole text"
-        )
     version = version_for(project, state, target, None, None)
     series = [item for item in round_documents(project) if item.key == (target, None)]
     reviewed = [item for item in series if item.outcome != "waived"]
@@ -549,8 +536,26 @@ def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
         raise WorkspaceError(
             f"amend needs a passing review of the {target} to stand on; round {base.number:02d} is {base.outcome}"
         )
+    if unamended_waivers(project, target):
+        raise WorkspaceError(
+            f"amend cannot follow a waiver of the {target}; run a round to review the whole text"
+        )
     if series[-1].resolved == version:
         raise WorkspaceError(f"nothing to amend: the {target} matches round {series[-1].number:02d}")
+    # The coordinator's own attestation covers one small edit only: at risk high, without a standing fallback,
+    # or once an amendment already stands since the last review, the user's words are needed.
+    confirmation = None
+    chained = bool(amendment_rounds(project, target))
+    if workspace_lib.review_risk(state) == "high" or chained or (
+        workspace_lib.review_fallback(state)["mode"] != "waive-recorded"
+    ):
+        if "confirmation" not in request:
+            raise WorkspaceError(
+                "amend needs the user's confirmation at risk high, without a standing review fallback, "
+                "or when an amendment already stands since the last review"
+            )
+    if "confirmation" in request:
+        confirmation = _confirmation(request.get("confirmation"))
     number = max(_round_numbers(project), default=0) + 1
     round_ = Round(number, target, None, False, version, version, "waived", (), None, None)
     lines = [
@@ -596,6 +601,16 @@ def amendment_details(project: Path) -> "list[dict[str, Any]]":
                         fields[key] = line[len(label):]
             found.append(fields)
     return sorted(found, key=lambda item: item["round"])
+
+
+def unamended_waivers(project: Path, target: str) -> "list[int]":
+    """Waived rounds of `target` since its latest passing review that are not amendments, oldest first."""
+    series = [item for item in round_documents(project) if item.key == (target, None)]
+    passed = [item.number for item in series if item.outcome in ("accepted", "accepted-residual")]
+    since = passed[-1] if passed else 0
+    amended = set(amendment_rounds(project, target))
+    return [item.number for item in series if item.number > since and item.outcome == "waived"
+            and item.number not in amended]
 
 
 def standing_waivers(project: Path, target: str) -> "list[int]":

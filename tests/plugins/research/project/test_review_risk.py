@@ -371,13 +371,13 @@ def test_a_waiver_alone_is_not_a_base_for_an_amendment(project: Path) -> None:
 def test_nothing_to_amend_when_the_text_matches_the_reviewed_round(project: Path) -> None:
     passing(project, "spec")
     refuses(project, "nothing to amend", operation="amend", target="spec", kind="editorial", reason="x",
-    confirmation=USER)
+            confirmation=USER)
 
 
 @pytest.mark.parametrize("target", ["design", "diff"])
 def test_design_and_diff_cannot_be_amended(project: Path, target: str) -> None:
     refuses(project, "spec and planning", operation="amend", target=target, kind="editorial", reason="x",
-    confirmation=USER)
+            confirmation=USER)
 
 
 def test_an_amendment_kind_is_closed_and_the_digest_is_never_supplied(project: Path) -> None:
@@ -481,8 +481,33 @@ def test_amend_cannot_follow_a_standing_waiver(project: Path) -> None:
     passing(project, "spec")
     spec_edit(project)
     gold(project, operation="waive", target="spec")
-    refuses(project, "standing waiver", operation="amend", target="spec", kind="editorial", reason="x",
-    confirmation=USER)
+    refuses(project, "waiver", operation="amend", target="spec", kind="editorial", reason="x", confirmation=USER)
+
+
+def test_amend_cannot_follow_a_confirmed_waiver(project: Path) -> None:
+    passing(project, "spec")
+    spec_edit(project)
+    gold(project, operation="waive", target="spec", reason="no fresh agent", confirmation=USER)
+    spec_edit(project, "Another sentence.\n")
+    refuses(project, "waiver", operation="amend", target="spec", kind="editorial", reason="x", confirmation=USER)
+
+
+def test_a_first_amendment_under_a_standing_fallback_needs_no_words_but_a_second_does(project: Path) -> None:
+    settings(project, review_fallback={"mode": "waive-recorded", "reason": "no fresh agent"})
+    passing(project, "spec")
+    spec_edit(project)
+    first = gold(project, operation="amend", target="spec", kind="editorial", reason="typo")
+    assert first["outcome"] == "waived"
+    spec_edit(project, "Another sentence.\n")
+    refuses(project, "confirmation", operation="amend", target="spec", kind="editorial", reason="typo two")
+    amend(project, "spec", reason="typo two")
+
+
+def test_amend_at_high_risk_succeeds_with_a_confirmation(project: Path) -> None:
+    passing(project, "spec")
+    settings(project, review_risk="high", review_fallback={"mode": "waive-recorded", "reason": "no fresh agent"})
+    spec_edit(project)
+    assert amend(project, "spec")["outcome"] == "waived"
 
 
 @pytest.mark.parametrize("policy", [None, 2])

@@ -45,8 +45,11 @@ editorial or a reviewer asked for it. Run `workflow goldfish` with `operation: a
 (`spec` or `planning`), `kind` (`editorial` or `reviewer-requested`) and `reason`. The tool reads
 the current text itself and writes a new round that reuses the last passing one. It refuses design
 and diff, a target with no passing review, text that matches the reviewed round, and a target
-holding a standing waiver since its last review. At risk `high`, or without a standing fallback,
-it also needs the user's `confirmation` (`source`, `response`).
+holding any waiver since its last review. It needs the user's `confirmation` (`source`, `response`;
+the coordinator supplies the words, so the tool cannot check them) at risk `high`, unless the
+project's `review_fallback` is `waive-recorded`, and for every amendment after the first since the
+last review. Only the first amendment under a standing fallback needs no words; use `waive` with
+`reuses` when you want a reuse record without an edit kind.
 
 An amendment is your attestation that the edit is not substantive. The confirm result lists every
 amendment since the last review under `amendments`; show them to the user. `validate` warns until
