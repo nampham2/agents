@@ -545,15 +545,16 @@ def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
     # The coordinator's own attestation covers one small edit only: at risk high, without a standing fallback,
     # or once an amendment already stands since the last review, the user's words are needed.
     confirmation = None
-    chained = bool(amendment_rounds(project, target))
-    if workspace_lib.review_risk(state) == "high" or chained or (
-        workspace_lib.review_fallback(state)["mode"] != "waive-recorded"
-    ):
-        if "confirmation" not in request:
-            raise WorkspaceError(
-                "amend needs the user's confirmation at risk high, without a standing review fallback, "
-                "or when an amendment already stands since the last review"
-            )
+    standing = amendment_rounds(project, target)
+    cause = None
+    if workspace_lib.review_risk(state) == "high":
+        cause = "the review risk is high"
+    elif workspace_lib.review_fallback(state)["mode"] != "waive-recorded":
+        cause = "no standing review fallback is recorded"
+    elif standing:
+        cause = f"an amendment already stands since the last review (round {standing[0]:02d})"
+    if cause is not None and "confirmation" not in request:
+        raise WorkspaceError(f"amend needs the user's confirmation: {cause}")
     if "confirmation" in request:
         confirmation = _confirmation(request.get("confirmation"))
     number = max(_round_numbers(project), default=0) + 1

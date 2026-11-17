@@ -499,8 +499,18 @@ def test_a_first_amendment_under_a_standing_fallback_needs_no_words_but_a_second
     first = gold(project, operation="amend", target="spec", kind="editorial", reason="typo")
     assert first["outcome"] == "waived"
     spec_edit(project, "Another sentence.\n")
-    refuses(project, "confirmation", operation="amend", target="spec", kind="editorial", reason="typo two")
+    refuses(project, "already stands", operation="amend", target="spec", kind="editorial", reason="typo two")
     amend(project, "spec", reason="typo two")
+    assert len(goldfish.amendment_rounds(project, "spec")) == 2
+
+
+def test_a_waiver_before_the_last_passing_review_does_not_block_amend(project: Path) -> None:
+    settings(project, review_fallback={"mode": "waive-recorded", "reason": "no fresh agent"})
+    spec_edit(project)
+    gold(project, operation="waive", target="spec")
+    passing(project, "spec")
+    spec_edit(project, "Another sentence.\n")
+    assert gold(project, operation="amend", target="spec", kind="editorial", reason="typo")["outcome"] == "waived"
 
 
 def test_amend_at_high_risk_succeeds_with_a_confirmation(project: Path) -> None:
