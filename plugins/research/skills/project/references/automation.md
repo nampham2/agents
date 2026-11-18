@@ -44,7 +44,7 @@ changed input with the same ID conflicts.
 | `checkpoint` | `continuation`; derives phase, revision, tokens and Git observations; returns tokens and a resume prompt. |
 | `round` | Saves optional `sections` (spec heading to body), `decisions` (`{id,body}`), `planning`, `continuation`; existing planning/handoff need tokens; `architecture` writes the design. |
 | `confirm` | `kind` (`requirements`, `planning` or `alignment`; old name `architecture`), exact `proposal_sha256` (`alignment`: `requirements_sha256` and `planning_sha256`), `review_id`, actual `response`, `source`, `scope`; optional `continuation`; a policy-2 `alignment` also `delivery_target`. Appends a marked confirmation; planning also updates its status and spec link. |
-| `retarget` | `delivery_target`, `reason`, `confirmation` (`source`, `response`); policy 2 or 3. Records the change and the obligations gained and dropped; refuses when a record would be dropped. |
+| `retarget` | `delivery_target`, `reason`, `confirmation` (`source`, `response`); policy 2+. Records the change and the obligations gained and dropped; refuses when a record would be dropped. |
 | `settings` | Policy 3: `review_risk`, `review_fallback`, `options`, `confirmation` (`source`, `response`); the one writer of those fields; see [review-risk.md](review-risk.md). |
 | `correct` | Terminal `task`, `reason`, `replacement` (new task fields except ID/status/evidence/authorization/receipts); optional `continuation`. Allocates a new ID without copying consent or acceptance. |
 | `reconcile` | Explicit `patch`, `decision`, `continuation`; saves dispositions, rewiring and pointers through commit guards. |

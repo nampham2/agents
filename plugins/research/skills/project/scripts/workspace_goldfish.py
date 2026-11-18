@@ -285,8 +285,9 @@ def _stages(value: object) -> "tuple[str, ...]":
 
 
 def _risk_of(state: "dict[str, Any]") -> "str | None":
-    """The recorded review risk at policy 3; None at policy 0 to 2, where the effort rules stand."""
-    return workspace_lib.review_risk(state) if workspace_lib.delivery_rules(state).policy == 3 else None
+    """The recorded review risk at policy 3 or later; None at policy 0 to 2, where the effort rules stand."""
+    rules = workspace_lib.delivery_rules(state)
+    return workspace_lib.review_risk(state) if workspace_lib.has_review_rules(rules.policy) else None
 
 
 def _check_risk_stages(target: str, stages: "tuple[str, ...]", risk: str) -> None:
@@ -437,7 +438,7 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
         )
     important = [item for item in findings if item["severity"] in ("Blocker", "Major")]
     # Only a Blocker forces a re-audit or holds one open for a spec or planning round, and, at review risk `low`
-    # (policy 3), for every target. A design or diff round otherwise counts Blockers and Majors alike. At `low`
+    # (policy 3 or later), for every target. A design or diff round otherwise counts Blockers and Majors alike. At `low`
     # a Major FIX on an unchanged target needs no artifact either: the check follows the decisive findings.
     decisive = important
     if current.target in LIGHT_TARGETS or risk == "low":
@@ -506,10 +507,10 @@ def waive_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
 
 
 def _standing_applies(state: "dict[str, Any]", request: "dict[str, Any]") -> bool:
-    """Whether a waiver rests on the standing fallback: policy 3, a spec or planning target, below `high`, and
+    """Whether a waiver rests on the standing fallback: policy 3 or later, a spec or planning target, below `high`, and
     the user's per-round words left out. Design and diff rounds always need them."""
     return (
-        workspace_lib.delivery_rules(state).policy == 3
+        workspace_lib.has_review_rules(workspace_lib.delivery_rules(state).policy)
         and request.get("target") in LIGHT_TARGETS
         and "confirmation" not in request
         and workspace_lib.review_fallback(state)["mode"] == "waive-recorded"
@@ -519,8 +520,10 @@ def _standing_applies(state: "dict[str, Any]", request: "dict[str, Any]") -> boo
 
 def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
     """Record an explicit editorial or reviewer-requested edit after a passing close as a bookkeeping round."""
-    if workspace_lib.delivery_rules(state).policy != 3:
-        raise WorkspaceError("amend needs policy_version 3; policies 0 to 2 record an edit with a round or a waiver")
+    if not workspace_lib.has_review_rules(workspace_lib.delivery_rules(state).policy):
+        raise WorkspaceError(
+            "amend needs policy_version 3 or later; policies 0 to 2 record an edit with a round or a waiver"
+        )
     target = _choice(request.get("target"), TARGETS, "target")
     if target not in LIGHT_TARGETS:
         raise WorkspaceError("amend applies to spec and planning only; a design or diff change needs a round")
@@ -837,7 +840,7 @@ POLICY_THREE_INSTANT = "1970-01-01T00:00:00+00:00"
 def _at_or_after_instant(value: object, policy: int) -> bool:
     """Whether a recorded time is at or after the Goldfish instant; a missing or unreadable time is not.
 
-    At policy 3 the gates are always on, so any recorded time counts.
+    At policy 3 or later the gates are always on, so any recorded time counts.
     """
     return at_or_after(value, POLICY_THREE_INSTANT if policy >= 3 else workspace_lib.GOLDFISH_FROM)
 

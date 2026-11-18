@@ -438,7 +438,7 @@ def test_a_confirmation_with_no_amendment_has_no_amendments_key(project: Path) -
 
 def test_settings_refuses_below_policy_three_a_finished_project_and_an_empty_request() -> None:
     created = {"created": "2026-11-16T10:00:00+00:00", "status": "PLANNING"}
-    with pytest.raises(WorkspaceError, match="needs policy_version 3, but this project is at policy 2"):
+    with pytest.raises(WorkspaceError, match="needs policy_version 3 or later, but this project is at policy 2"):
         _settings({**created, "policy_version": 2}, {"confirmation": USER, "review_risk": "low"})
     for status in ("DONE", "CANCELLED"):
         with pytest.raises(WorkspaceError, match=f"a {status} project keeps its settings"):

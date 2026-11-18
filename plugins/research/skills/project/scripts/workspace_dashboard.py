@@ -37,6 +37,7 @@ from workspace_lib import (
     read_text,
     resolve_workspace_root,
     tags_of,
+    task_durable_enabled,
 )
 
 if TYPE_CHECKING:
@@ -116,12 +117,16 @@ def _read_optional(path: Path) -> str:
 
 
 def _wait(project_dir: Path, task: dict[str, Any], lines: list[dict[str, Any]], now: datetime) -> Any:
-    """The task's active wait as the page shows it, or None."""
-    found = active_wait(project_dir, task, lines, now=now)
+    """The task's active wait as the page shows it, or None.
+
+    `_task_rows` puts `block_generation` on a row at policy 4 only (None when the task lacks it), so the key's
+    presence on the row is the project's policy, decided once there.
+    """
+    found = active_wait(project_dir, task, lines, now=now, durable="block_generation" in task)
     return {key: found[key] for key in ("on", "until", "due")} if found else None
 
 
-def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
+def _task_rows(tasks: list[Any], durable: bool = False) -> list[dict[str, Any]]:
     rows = []
     for task in tasks:
         if not isinstance(task, dict):
@@ -129,18 +134,20 @@ def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
         effect = task.get("effect")
         evidence = task.get("evidence")
         receipts = task.get("receipts")
-        rows.append(
-            {
-                "id": _text(task.get("id")),
-                "name": _text(task.get("name")),
-                "status": _text(task.get("status")),
-                "effect": _text(effect.get("kind")) if isinstance(effect, dict) else "",
-                "evidence": len(evidence) if isinstance(evidence, list) else 0,
-                "receipts": len(receipts) if isinstance(receipts, list) else 0,
-                "block_reason": _text(task.get("block_reason")),
-                "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
-            }
-        )
+        row = {
+            "id": _text(task.get("id")),
+            "name": _text(task.get("name")),
+            "status": _text(task.get("status")),
+            "effect": _text(effect.get("kind")) if isinstance(effect, dict) else "",
+            "evidence": len(evidence) if isinstance(evidence, list) else 0,
+            "receipts": len(receipts) if isinstance(receipts, list) else 0,
+            "block_reason": _text(task.get("block_reason")),
+            "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
+        }
+        if durable:
+            # Policy 4 only. A missing or malformed value stays on the row (as None or as found): no wait.
+            row["block_generation"] = task.get("block_generation")
+        rows.append(row)
     return rows
 
 
@@ -270,7 +277,7 @@ def build_project(project_dir: Path) -> dict[str, Any]:
             sessions=[],
         )
         return row
-    tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [])
+    tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [], task_durable_enabled(state))
     counts: dict[str, int] = {}
     for task in tasks:
         counts[task["status"]] = counts.get(task["status"], 0) + 1

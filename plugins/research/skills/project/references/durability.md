@@ -93,7 +93,34 @@ Manual cases need a person to check:
 Each `unresolved_workers` entry shows `silent_minutes` once its latest event is more than 30
 minutes old. Workers write no records, so the silence measures your observations: record a
 `worker-event` with `event: observed` while a worker runs, and check the host before treating a
-silent worker as gone.
+silent worker as gone. At policy 4 a held attempt is listed with its `attempt_id` and a
+`reason` (`failed` or `no terminal event`); record `stopped` once the host confirms it is gone.
+
+## Worker attempts (policy 4)
+
+Send `worker-event` with `event: intent` and no `attempt_id`: the task must be RUNNING and hold no
+attempt. The result returns `attempt_id` (`<task>-<counter>-<n>`, the counter being the task's
+`assignment_counter`). Every later event sends that id as `attempt_id`, still with `observation` and
+`assignment_revision`; `stopped` needs a non-blank `observation` like the rest. `--schema` lists
+`attempt_id` as optional because it cannot show that policy 4 requires it after `intent`.
+
+An attempt stays held until `completed` or `stopped`: `failed` is held, and a new `intent` is
+refused while any attempt is held. Held attempts stay listed after the task is DONE or SKIPPED,
+with `attempt_id`, `counter`, `reason` (`failed` or `no terminal event`) and `superseded`.
+`omitted_workers` counts only the unlisted items without an `attempt_id`: held attempts are never
+omitted. Entering RUNNING again (a start after a block) or editing the task's name, dependencies,
+outputs, criteria, verification, effect or reads raises its `assignment_counter` and supersedes its
+attempts: only `stopped` is accepted for them, and the hold remains, so record `stopped` before the
+next `intent`. Authorization, receipts and evidence do not supersede.
+
+A damaged `research-worker` line (not JSON, a missing field, an unknown event, another task,
+`counter` without `attempt_id`, a counter that is not an integer, or cut short) is skipped with a
+warning that names its line and cause, and `resume` lists the task first as `damaged notes`. Every
+worker event for that task, `stopped` included, refuses until you repair the line in the notes by
+hand: no command edits worker lines, and a skipped line could hide the attempt it names. A task
+record whose `block_generation` or `assignment_counter` is not an integer is repaired by hand in
+`project.json` the same way; the tools refuse to stamp from it. Example: `intent`, then
+`launched`, then `failed`, then `stopped`, then a new `intent`.
 
 ## Waits
 
@@ -108,8 +135,14 @@ to the task's `block_reason`.
 
 Resume, context and the dashboard show the wait. Once `until` passes, `move_detail` says
 `wait due`. The wait ends when the task leaves BLOCKED, and only a wait recorded after the task's
-latest `task block` counts. Block with `task block`: a re-block through `update` or `reconcile`
-writes no anchor, so an older wait can reappear. Record a new `wait` to replace it.
+latest `task block` counts. Block with `task block`: below policy 4 a re-block through `update` or
+`reconcile` writes no anchor, so an older wait can reappear; record a new `wait` to replace it.
+
+At policy 4 the wait line carries the task's `block_generation` as `generation` and counts only
+while it equals the task's. Every `task block` raises it, and so does an `update` or `reconcile`
+that moves the task into BLOCKED, so each retires the earlier wait. Editing only `block_reason` on a
+task that is already BLOCKED keeps it. A line without an integer `generation` is skipped with a
+warning.
 
 ## Reusing a Goldfish round
 

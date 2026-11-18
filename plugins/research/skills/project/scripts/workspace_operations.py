@@ -32,7 +32,9 @@ from workspace_lib import (
     reason_reference_warnings,
     receipt_findings,
     staged_lesson_lines,
+    stamp_transitions,
     tags_of,
+    task_durable_enabled,
     task_stamps_enabled,
     validate_project,
     vcs_warnings,
@@ -275,9 +277,13 @@ def task_operation(
     changed = [task_id]
     locked_guard = None
     stamps = task_stamps_enabled(state)
+    durable = task_durable_enabled(state)
+    before_by_id = {task["id"]: task for task in before_tasks}
     if action == "start":
         _refuse_unmet(task_id, "start", task_preconditions(state, selected, "start", None, [], []))
         selected.update(status="RUNNING", block_reason=None, skip_reason=None)
+        if durable:
+            selected.update(stamp_transitions(before_by_id[task_id], selected))
         # The first start only: a task restarted after BLOCKED keeps the moment work began.
         if stamps and stamp_start and "started_at" not in selected:
             selected["started_at"] = now_iso()
@@ -315,6 +321,8 @@ def task_operation(
                 selected["evidence"].append(reference)
         if successor is not None:
             successor.update(status="RUNNING", block_reason=None, skip_reason=None)
+            if durable:
+                successor.update(stamp_transitions(before_by_id[successor["id"]], successor))
             if stamps and "started_at" not in successor:
                 successor["started_at"] = now_iso()
             # Starting a task is what moves a project into EXECUTING, whether it is the command's
@@ -335,6 +343,11 @@ def task_operation(
             raise WorkspaceError(f"{action} requires a non-empty reason")
         if action == "block":
             selected.update(status="BLOCKED", block_reason=reason.strip(), skip_reason=None)
+            if durable:
+                selected.update(stamp_transitions(before_by_id[task_id], selected))
+                if before_by_id[task_id].get("status") == "BLOCKED":
+                    # An explicit block is a re-block: it retires any earlier wait, as at policy 3.
+                    selected["block_generation"] += 1
         else:
             selected.update(status="SKIPPED", skip_reason=reason.strip(), block_reason=None)
     else:

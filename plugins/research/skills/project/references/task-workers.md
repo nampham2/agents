@@ -26,8 +26,9 @@ conversation inheritance disabled (`fork_turns: "none"` or `fork_context: false`
 schema supports). Preserve the configured model. If fresh context, observation, or stopping is
 unavailable or delegation is prohibited, continue inline; do not launch a detached CLI workaround.
 
-Use [`workflow worker-event`](automation-execution.md) for launch intent, then the observed host
-handle/outcome in `tasks/<id>.md`. Keep this a current recovery note.
+Use [`workflow worker-event`](automation-execution.md) for launch intent (at policy 4 keep the
+returned `attempt_id`), then the observed host handle/outcome in `tasks/<id>.md`. Keep this a
+current recovery note.
 Native workers are not tracked by `execution_active`; never overlap legacy owners or edit a worker's
 assigned files concurrently.
 

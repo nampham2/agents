@@ -13,7 +13,7 @@ merge records and, per target, before closure.
    Codex: `fork_context: false`). Give each [goldfish-personas.md](goldfish-personas.md) whole,
    its persona, absolute paths to the target and its links. A diff reviewer also gets
    the `reviewed` commit and the base; a re-audit or delta reviewer, the previous round's document.
-3. Stages: policy 3 follows [review-risk.md](review-risk.md). Earlier: spec and planning
+3. Stages: policy 3+ follows [review-risk.md](review-risk.md). Earlier: spec and planning
    `combined`; design and diff by effort: low `combined`; medium `comprehension`, `design-critic`,
    `zoom-out`, `readiness`; high the same, two agents per critic, a merged report; a delta
    adds `comprehension`.

@@ -111,13 +111,16 @@ field, so a project from before tags stays valid; a v3 project is closed to it. 
 [tags-and-follow-up.md](tags-and-follow-up.md). A launcher older than 0.37.0 rejects a project that
 has `tags` and names a newer plugin as the likely cause.
 
-`policy_version` (0, 1 or 2) and `delivery_target` (`research`, `local`, `pr`, `merged` or
+`policy_version` (0 to 4) and `delivery_target` (`research`, `local`, `pr`, `merged` or
 `release`) are optional v4 fields that only `workflow confirm` (kind `alignment`), `workflow
 retarget` and `migrate-policy` write; `update` refuses them. Absent `policy_version` derives from
 `created`: 0 before `DELIVERY_GATES_FROM`, 1 on or after it; a present one wins, and an invalid one
 reads as 1. Policy 2 needs a `delivery_target` once the project leaves `ALIGNING`, and policies 0
 and 1 carry none. `delivery_rules(state)` in `workspace_lib.py` is the one function every delivery
-check reads. A launcher older than 0.38.0 rejects a project that has either field.
+check reads. A launcher older than 0.38.0 rejects a project that has either field. Policy 3 adds
+the review rules and policy 4 the durable task fields below; a project created from 0.40.0 starts at
+policy 4, and a launcher older than 0.40.0 refuses it, so update both hosts together. No command
+moves a project to policy 4: it exists only for new projects.
 
 `predecessor` names the project this one continues, and nothing checks that it exists. A follow-up
 sets it to its finished source, and its `briefing.md` starts with `Follow-up of: <source-id>`; that
@@ -132,6 +135,14 @@ The v4-only `execution` object is retained for compatibility with existing proje
 Fresh projects have no coordinator or attempts and create no execution store. An existing
 non-null `coordinator_run` or non-empty `attempts` blocks writes: see
 [legacy-executor.md](legacy-executor.md). Removing the engine does not release its old ownership.
+
+At policy 4 every task also carries `block_generation` (times it entered BLOCKED; a `task block`
+on a BLOCKED task counts too) and `assignment_counter` (times it entered RUNNING or had its name,
+depends_on, outputs, success_criteria, verification, effect or reads edited). Both are
+non-negative integers written by the tool; a patch that names either is refused, and below policy 4
+the validator rejects them. A `research-wait` line then carries the task's `generation`, and a
+`research-worker` line carries `attempt_id` and `counter`; a wait without `generation` is skipped
+with a warning.
 
 A v4 task of a project created on or after `GATES_ENFORCED_FROM` also carries `started_at`, set by
 the first `task start` (a restart after `BLOCKED` keeps it), and `finished_at`, set by `task

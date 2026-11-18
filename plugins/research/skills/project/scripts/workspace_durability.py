@@ -19,7 +19,7 @@ from typing import Any
 from workspace_documents import ENTRY_MARKER_PATTERN
 from workspace_evidence import _entry_rows
 from workspace_invocations import INVOCATIONS_FILENAME
-from workspace_lib import WorkspaceError, read_text
+from workspace_lib import WorkspaceError, read_text, task_durable_enabled
 from workspace_session import next_move
 
 REFERENCE = "references/durability.md"
@@ -201,11 +201,13 @@ def crash_loops(project: Path, state: dict[str, Any], *, pending_resume: bool) -
     return loops
 
 
-def crash_loop_detail(loops: list[dict[str, Any]]) -> str:
+def crash_loop_detail(loops: list[dict[str, Any]], durable: bool = False) -> str:
     named = ", ".join(f"{item['task']} {item['resumes']} times" for item in loops)
+    # Attempts and held state exist only at policy 4, so the sentence about them is shown there only.
+    held = " (a held attempt needs stopped before the next intent)" if durable else ""
     return (
         f"resumed without progress: {named}. Record a finding or evidence for real progress, or check it is not "
-        f"looping and run task block then task start; see {REFERENCE}"
+        f"looping and run task block then task start{held}; see {REFERENCE}"
     )
 
 
@@ -216,7 +218,8 @@ def durable_move(project: Path, state: dict[str, Any], *, pending_resume: bool =
     """
     loops = crash_loops(project, state, pending_resume=pending_resume)
     if loops:
-        move = {"continue": None, "stop_reason": "blocked", "move_detail": crash_loop_detail(loops)}
+        detail = crash_loop_detail(loops, task_durable_enabled(state))
+        move = {"continue": None, "stop_reason": "blocked", "move_detail": detail}
     else:
         move = next_move(state)
     move = _with_due_waits(move, waits(project, state))
@@ -238,7 +241,9 @@ def silent_minutes(recorded: Any, now: "datetime | None" = None) -> "int | None"
     return int(minutes) if minutes > SILENT_AFTER_MINUTES else None
 
 
-def _wait_entries(text: str, warnings: list[str], task_id: str) -> list[dict[str, Any]]:
+def _wait_entries(
+    text: str, warnings: list[str], task_id: str, *, generation_required: bool = False
+) -> list[dict[str, Any]]:
     entries = []
     for match in WAIT_MARKER.finditer(text):
         try:
@@ -251,6 +256,7 @@ def _wait_entries(text: str, warnings: list[str], task_id: str) -> list[dict[str
             and bool(entry["on"].strip())
             and (entry.get("until") is None or _instant(entry["until"]) is not None)
             and (entry.get("reason") is None or isinstance(entry["reason"], str))
+            and (not generation_required or type(entry.get("generation")) is int)
         )
         if not well_formed:
             warnings.append(f"{task_id}: skipped a malformed research-wait entry")
@@ -284,15 +290,32 @@ def active_wait(
     lines: list[dict[str, Any]],
     warnings: "list[str] | None" = None,
     now: "datetime | None" = None,
+    durable: bool = False,
 ) -> "dict[str, Any] | None":
     """The wait of a BLOCKED task: its latest well-formed entry, if recorded after its latest block.
+
+    `durable` says the project is at policy 4, where a wait counts only at the task's `block_generation`. The
+    caller decides it from the project's policy, never from the key: a policy-4 task without the key has no wait.
 
     Due when `until` is set and has passed. The reason falls back to the task's `block_reason`.
     """
     if task.get("status") != "BLOCKED" or not isinstance(task.get("id"), str):
         return None
-    entries = _wait_entries(_notes(project, task["id"]), warnings if warnings is not None else [], task["id"])
-    if not entries or not _wait_after_block(lines, task["id"]):
+    # At policy 4 the task carries `block_generation` and a wait is current only when it was recorded at that
+    # generation; the log rule below is for policy 3 and older, where no such key exists.
+    anchored = durable
+    if anchored and type(task.get("block_generation")) is not int:
+        if warnings is not None:
+            warnings.append(f"{task['id']}: block_generation is missing or not an integer, so no wait counts")
+        return None
+    entries = _wait_entries(
+        _notes(project, task["id"]), warnings if warnings is not None else [], task["id"], generation_required=anchored
+    )
+    if anchored:
+        entries = [entry for entry in entries if entry["generation"] == task["block_generation"]]
+        if not entries:
+            return None
+    elif not entries or not _wait_after_block(lines, task["id"]):
         return None
     entry = entries[-1]
     until = _instant(entry.get("until"))
@@ -312,7 +335,8 @@ def _waits(project: Path, state: dict[str, Any], warnings: list[str]) -> list[di
         return []
     lines = invocation_lines(project)
     now = utcnow()
-    found = (active_wait(project, task, lines, warnings, now) for task in blocked)
+    durable = task_durable_enabled(state)
+    found = (active_wait(project, task, lines, warnings, now, durable) for task in blocked)
     return [item for item in found if item is not None]
 
 
