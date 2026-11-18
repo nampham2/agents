@@ -406,43 +406,56 @@ def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str,
     }
 
 
+WORKER_LINE = re.compile(r"<!-- research-worker (.+) -->[ \t]*")
+
+
 def _worker_lines(text: str, durable: bool, warnings: "list[str] | None", task_id: str) -> list[dict[str, Any]]:
     """The `research-worker` lines of one notes document, in order.
 
-    Below policy 4 a malformed line is an error, as before, and `attempt_id` or `counter` is an unknown key.
-    At policy 4 a malformed line is skipped with a warning, so one bad line cannot hide every attempt of the
-    task: a line that is not valid JSON, lacks a field, names an unknown event or another task, carries a
-    counter that is not an integer, or is cut short (no closing marker).
+    Below policy 4 a malformed line is an error, as before (a field error keeps its own text, bad JSON says so),
+    and `attempt_id` or `counter` is an unknown key. At policy 4 a malformed line is skipped with a warning that
+    names its line and cause, so one bad line cannot hide every attempt of the task: not valid JSON, a missing
+    field, an unknown event, another task, `counter` without `attempt_id` (or the reverse), a counter that is
+    not an integer, or a line cut short (no closing marker). Trailing spaces and a CR are tolerated.
     """
     allowed = FIELDS["worker-event"] | {"recorded", "counter"}
     if not durable:
         allowed = allowed - WORKER_EVENT_OPTIONAL
     lines = []
-    matched = 0
-    for match in re.finditer(r"^<!-- research-worker (.+) -->$", text, re.MULTILINE):
-        matched += 1
+    for number, raw in enumerate(text.splitlines(), start=1):
+        if not raw.startswith("<!-- research-worker "):
+            continue
+        match = WORKER_LINE.fullmatch(raw.rstrip("\r"))
+        if match is None:
+            if durable and warnings is not None:
+                warnings.append(f"tasks/{task_id}.md line {number}: research-worker line cut short (no closing marker)")
+            continue
         try:
-            event = json.loads(match[1])
+            try:
+                event = json.loads(match[1])
+            except ValueError as error:
+                if not durable:
+                    raise WorkspaceError("invalid worker event JSON") from error
+                raise WorkspaceError("not valid JSON") from error
             object_input(event, allowed, WORKER_EVENT_REQUIRED, where="worker event")
             for field in ("task", "handle", "event", "scope", "observation"):
                 string_input(event[field], field)
             if durable:
                 if event["event"] not in WORKER_EVENTS or event["task"] != task_id:
-                    raise WorkspaceError("worker event names an unknown event or another task")
+                    raise WorkspaceError("an unknown event or another task")
+                if ("attempt_id" in event) != ("counter" in event):
+                    raise WorkspaceError("attempt_id and counter must come together")
                 if "attempt_id" in event:
                     string_input(event["attempt_id"], "attempt_id")
-                    if type(event.get("counter")) is not int:
-                        raise WorkspaceError("worker event counter must be an integer")
-        except (ValueError, WorkspaceError) as error:
+                    if type(event["counter"]) is not int:
+                        raise WorkspaceError("counter is not an integer")
+        except WorkspaceError as error:
             if not durable:
-                raise WorkspaceError("invalid worker event JSON") from error
+                raise
             if warnings is not None:
-                warnings.append(f"{task_id}: skipped a malformed research-worker line")
+                warnings.append(f"tasks/{task_id}.md line {number}: damaged research-worker line ({error})")
             continue
         lines.append(event)
-    cut = len(re.findall(r"^<!-- research-worker ", text, re.MULTILINE)) - matched
-    if durable and cut > 0 and warnings is not None:
-        warnings.append(f"{task_id}: skipped {cut} research-worker line(s) cut short (no closing marker)")
     return lines
 
 
@@ -465,7 +478,8 @@ def worker_events(project: Path, warnings: "list[str] | None" = None) -> list[di
     A line without `attempt_id` keeps the earlier rule: the last event per task and handle, dropped once it is
     `completed`, `stopped` or `failed`. An attempt is held unless its latest event is `completed` or `stopped`:
     one item per attempt, with `reason` (`failed` or `no terminal event`) and `superseded`. Held attempts come
-    first, so the caller's cap never hides one.
+    first, so the caller's cap never hides one. A task whose notes hold a damaged line at policy 4 is listed too,
+    with `reason` `damaged notes` and the first `detail`.
     """
     state = _load_state(project)
     latest: dict[tuple[str, str], dict[str, Any]] = {}
@@ -473,7 +487,13 @@ def worker_events(project: Path, warnings: "list[str] | None" = None) -> list[di
     durable = task_durable_enabled(state)
     for task in state["tasks"]:
         text, _ = snapshot(document_path(project, "tasks/" + task["id"]))
-        lines = _worker_lines(text, durable, warnings, task["id"])
+        damage: list[str] = []
+        lines = _worker_lines(text, durable, damage, task["id"])
+        if damage:
+            if warnings is not None:
+                warnings.extend(damage)
+            # A damaged line may hide a live attempt, so the task is listed as unresolved, first, uncapped.
+            held.append({"task": task["id"], "reason": "damaged notes", "detail": damage[0], "superseded": False})
         for event in lines:
             if "attempt_id" not in event:
                 latest[(event["task"], event["handle"])] = event
@@ -501,7 +521,9 @@ def _attempt_keys(task: dict[str, Any], request: dict[str, Any], notes: str) -> 
     if damage:
         # The builder decides from these lines, so a skipped one could hide a live attempt: refuse, never guess.
         raise WorkspaceError(
-            f"tasks/{task['id']}.md holds a damaged research-worker line ({damage[0]}); repair or remove it first"
+            f"{damage[0]}; no command edits worker lines, so repair or remove that line in the notes by hand and "
+            "retry (this refuses every worker event for the task, `stopped` included, because a skipped line could "
+            "hide the attempt it names)"
         )
     attempts = _attempts(lines)
     if event == "intent":
@@ -749,7 +771,10 @@ def _wait(state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
     if request.get("reason") is not None:
         entry["reason"] = string_input(request["reason"], "reason")
     if task_durable_enabled(state):
-        entry["generation"] = task["block_generation"]
+        generation = task.get("block_generation")
+        if type(generation) is not int:
+            raise WorkspaceError(f"{task['id']} has no integer block_generation; repair the task record first")
+        entry["generation"] = generation
     entry["recorded"] = datetime.now().astimezone().isoformat(timespec="microseconds")
     return "tasks/" + task["id"], "<!-- research-wait " + json.dumps(entry).replace(">", "\\u003e") + " -->"
 
@@ -1372,8 +1397,8 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
             if silent is not None:
                 event["silent_minutes"] = silent
         # Held attempts are always listed; the cap applies to the other items only.
-        held = [event for event in events if "attempt_id" in event]
-        others = [event for event in events if "attempt_id" not in event]
+        held = [event for event in events if "reason" in event]
+        others = [event for event in events if "reason" not in event]
         result["unresolved_workers"] = [*held, *others[:20]]
         result["omitted_workers"] = max(0, len(others) - 20)
         if worker_warnings:

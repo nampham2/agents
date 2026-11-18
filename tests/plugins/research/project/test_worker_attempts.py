@@ -261,17 +261,18 @@ def test_held_attempts_are_listed_first_and_the_cap_counts_only_the_rest(four: P
 # --- malformed lines ---------------------------------------------------------------------------
 
 
-def test_a_malformed_line_is_skipped_with_a_warning_at_policy_four(four: Path) -> None:
+def test_a_malformed_line_is_listed_and_warned_at_policy_four(four: Path) -> None:
     attempt = _drive(four, ["observed"])
     path = four / "tasks/T01.md"
     path.write_text(notes(four) + "<!-- research-worker {not json -->\n", encoding="utf-8")
-    path.write_text(
-        notes(four) + '<!-- research-worker {"task": "T01", "attempt_id": "a", "counter": "x"} -->\n', encoding="utf-8"
-    )
+    path.write_text(notes(four) + '<!-- research-worker {"task": "T01", "attempt_id": "a"} -->\n', encoding="utf-8")
     warnings: list[str] = []
-    assert [item["attempt_id"] for item in worker_events(four, warnings)] == [attempt]
-    assert len(warnings) == 2
-    assert "durability_warnings" in workflow(four, "resume", {})
+    listed = worker_events(four, warnings)
+    assert [item.get("attempt_id") for item in listed] == [None, attempt]
+    assert listed[0]["reason"] == "damaged notes" and "not valid JSON" in listed[0]["detail"]
+    assert len(warnings) == 2 and all(w.startswith("tasks/T01.md line ") for w in warnings)
+    resumed = workflow(four, "resume", {})
+    assert resumed["unresolved_workers"][0]["reason"] == "damaged notes" and "durability_warnings" in resumed
 
 
 def test_a_malformed_line_still_raises_below_policy_four(three: Path) -> None:
@@ -291,8 +292,8 @@ def test_a_line_with_a_non_integer_counter_is_malformed(four: Path) -> None:
     path.parent.mkdir(exist_ok=True)
     path.write_text("# Task T01 notes\n<!-- research-worker " + json.dumps(line) + " -->\n", encoding="utf-8")
     warnings: list[str] = []
-    assert worker_events(four, warnings) == []
-    assert warnings == ["T01: skipped a malformed research-worker line"]
+    assert [item["reason"] for item in worker_events(four, warnings)] == ["damaged notes"]
+    assert warnings == ["tasks/T01.md line 2: damaged research-worker line (counter is not an integer)"]
 
 
 def test_a_terminal_attempt_is_not_listed(four: Path) -> None:
@@ -326,15 +327,15 @@ def test_a_damaged_line_refuses_a_new_intent_instead_of_hiding_a_live_attempt(fo
 def test_a_line_cut_short_is_reported_and_refuses_an_intent(four: Path) -> None:
     put(four, '<!-- research-worker {"task": "T01", "event": "intent"')
     warnings: list[str] = []
-    assert worker_events(four, warnings) == []
-    assert warnings == ["T01: skipped 1 research-worker line(s) cut short (no closing marker)"]
-    refused(four, "intent", "i-1", "cut short")
+    assert [item["reason"] for item in worker_events(four, warnings)] == ["damaged notes"]
+    assert warnings == ["tasks/T01.md line 2: research-worker line cut short (no closing marker)"]
+    refused(four, "intent", "i-1", "line 2: research-worker line cut short")
 
 
 def test_a_line_naming_an_unknown_event_or_another_task_is_skipped(four: Path) -> None:
     put(four, line(event="foo"), line(task="T02", attempt_id="T02-1-1"))
     warnings: list[str] = []
-    assert worker_events(four, warnings) == []
+    assert [item["reason"] for item in worker_events(four, warnings)] == ["damaged notes"]
     assert len(warnings) == 2
 
 
@@ -350,8 +351,41 @@ def test_an_id_already_in_the_notes_is_never_issued_again(four: Path) -> None:
 
 def test_attempt_keys_are_unknown_fields_below_policy_four(three: Path) -> None:
     put(three, line())
+    with pytest.raises(WorkspaceError) as caught:
+        worker_events(three)
+    assert "invalid worker event JSON" not in str(caught.value)  # a field error keeps its own text, as before
+
+
+def test_bad_json_below_policy_four_still_says_so(three: Path) -> None:
+    put(three, "<!-- research-worker {not json -->\n")
     with pytest.raises(WorkspaceError, match="invalid worker event JSON"):
         worker_events(three)
+
+
+def test_a_crlf_or_trailing_spaces_do_not_damage_a_line(four: Path) -> None:
+    put(four, line().replace("\n", "  \r\n"))
+    warnings: list[str] = []
+    assert [item["attempt_id"] for item in worker_events(four, warnings)] == ["T01-1-1"] and warnings == []
+
+
+def test_a_counter_without_an_attempt_id_is_damaged(four: Path) -> None:
+    base = json.loads(line()[len("<!-- research-worker ") : -len(" -->\n")])
+    del base["attempt_id"]
+    put(four, "<!-- research-worker " + json.dumps(base) + " -->\n")
+    warnings: list[str] = []
+    assert [item["reason"] for item in worker_events(four, warnings)] == ["damaged notes"]
+    assert "must come together" in warnings[0]
+
+
+def test_the_refusal_names_the_line_and_the_hand_repair(four: Path) -> None:
+    put(four, line(), "<!-- research-worker {not json -->\n")
+    refused(
+        four,
+        "stopped",
+        "stop-x",
+        r"line 3: damaged research-worker line \(not valid JSON\).*by hand",
+        attempt_id="T01-1-1",
+    )
 
 
 def test_two_events_built_on_one_state_the_second_is_refused(four: Path) -> None:

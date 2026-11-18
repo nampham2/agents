@@ -88,11 +88,12 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ### 0.40.0 durable recovery events and worker attempts
 
-- **Policy 4.** A project created from this release starts at `policy_version` 4: policy 3's rules
-  plus `block_generation` and `assignment_counter` on every task. Older projects keep their policy and
-  write nothing new.
-- **One wait anchor.** A wait records the task's block generation, so a re-block through
-  `task block`, `update` or `reconcile` retires the earlier wait.
+- **Policy 4.** Every project created from this release starts at `policy_version` 4, with no
+  opt-out: policy 3's rules plus `block_generation` and `assignment_counter` on every task. Older
+  projects keep their policy and write nothing new.
+- **One wait anchor.** A wait records the task's block generation, so `task block`, or entering
+  BLOCKED again through `update` or `reconcile`, retires the earlier wait; editing only
+  `block_reason` keeps it.
 - **Worker attempts.** `worker-event` issues an `attempt_id` at `intent`. An attempt stays held
   until `completed` or `stopped`, a superseded one accepts only `stopped`, and `resume` lists held
   attempts first.

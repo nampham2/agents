@@ -113,10 +113,14 @@ outputs, criteria, verification, effect or reads raises its `assignment_counter`
 attempts: only `stopped` is accepted for them, and the hold remains, so record `stopped` before the
 next `intent`. Authorization, receipts and evidence do not supersede.
 
-A damaged `research-worker` line (not JSON, an unknown event, another task, or cut short) is
-skipped with a warning when listing, and `intent` or any later event refuses until you repair the
-notes, because a skipped line could hide a live attempt. Example: `intent`, then `launched`, then
-`failed`, then `stopped`, then a new `intent`.
+A damaged `research-worker` line (not JSON, a missing field, an unknown event, another task,
+`counter` without `attempt_id`, a counter that is not an integer, or cut short) is skipped with a
+warning that names its line and cause, and `resume` lists the task first as `damaged notes`. Every
+worker event for that task, `stopped` included, refuses until you repair the line in the notes by
+hand: no command edits worker lines, and a skipped line could hide the attempt it names. A task
+record whose `block_generation` or `assignment_counter` is not an integer is repaired by hand in
+`project.json` the same way; the tools refuse to stamp from it. Example: `intent`, then
+`launched`, then `failed`, then `stopped`, then a new `intent`.
 
 ## Waits
 

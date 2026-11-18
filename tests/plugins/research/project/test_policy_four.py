@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -358,7 +359,7 @@ def test_an_entry_without_a_generation_is_malformed_at_policy_four(four: Path) -
         encoding="utf-8",
     )
     warnings: list[str] = []
-    assert active_wait(four, _task(four), [], warnings) is None
+    assert active_wait(four, _task(four), [], warnings, durable=True) is None
     assert any("malformed research-wait" in w for w in warnings)
 
 
@@ -367,9 +368,9 @@ def test_a_missing_or_malformed_block_generation_on_a_row_means_no_wait(four: Pa
     _wait(four, "wait-1")
     task = _task(four)
     task["block_generation"] = "2"
-    assert active_wait(four, task, []) is None
+    assert active_wait(four, task, [], durable=True) is None
     del task["block_generation"]
-    assert active_wait(four, task, []) is not None  # the policy-3 log rule applies: an old project has no key
+    assert active_wait(four, task, [], durable=False) is not None  # the policy-3 log rule: an old project has no key
 
 
 def test_the_dashboard_row_carries_block_generation(four: Path) -> None:
@@ -442,7 +443,7 @@ def test_the_crash_loop_advice_names_held_attempts_only_at_policy_four() -> None
 
     loops = [{"task": "T01", "resumes": 3}]
     assert "held attempt" not in crash_loop_detail(loops)
-    assert "record stopped for a held attempt first" in crash_loop_detail(loops, True)
+    assert "a held attempt needs stopped before the next intent" in crash_loop_detail(loops, True)
 
 
 def test_a_counter_cannot_decrease_and_a_running_task_needs_one(four: Path) -> None:
@@ -501,3 +502,27 @@ def test_policy_four_has_target_and_review_rules_in_checks_and_settings(four: Pa
     assert control_warnings(four, state) == []
     patch, _body, _result = _settings(state, {"confirmation": {"source": "t", "response": "ok"}, "review_risk": "low"})
     assert patch["review_risk"] == "low"
+
+
+def test_a_policy_four_row_without_block_generation_means_no_wait_on_the_dashboard(four: Path) -> None:
+    import workspace_dashboard as dash
+
+    _block(four)
+    _wait(four, "wait-1")
+    row = dash._task_rows(_load_state(four)["tasks"], True)[0]
+    assert dash._wait(four, row, [], datetime.now(timezone.utc)) is not None
+    row["block_generation"] = None  # a hand-edited task: the row keeps the gap instead of dropping the key
+    assert dash._wait(four, row, [], datetime.now(timezone.utc)) is None
+    legacy = {**row}
+    del legacy["block_generation"]
+    assert "block_generation" not in dash._task_rows([_load_state(four)["tasks"][0]], False)[0]
+
+
+def test_the_wait_writer_refuses_a_policy_four_task_without_an_integer_generation(four: Path) -> None:
+    from workspace_workflows import _wait as wait_entry
+
+    state = _load_state(four)
+    state["tasks"][0]["status"] = "BLOCKED"
+    del state["tasks"][0]["block_generation"]
+    with pytest.raises(WorkspaceError, match="no integer block_generation"):
+        wait_entry(state, {"task": "T01", "on": "x"})

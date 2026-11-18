@@ -223,7 +223,7 @@ def verify(project: Path, request: dict[str, Any]) -> dict[str, Any]:
 def control_warnings(project: Path, state: "dict[str, Any] | None" = None) -> list[str]:
     """Warn at finalize when a project verified content but never observed a control failing.
 
-    At policy 3 the warning applies only when `state` has a code task running or done.
+    At policy 3 or later the warning applies only when `state` has a code task running or done.
 
     Like memory_staging_warnings, this is a non-blocking warning, not an error: it tells the
     caller the gate the project never exercised, without refusing closure that is otherwise
@@ -234,7 +234,7 @@ def control_warnings(project: Path, state: "dict[str, Any] | None" = None) -> li
     if state is not None and has_review_rules(delivery_rules(state).policy) and not any(
         is_code_task(task) and task.get("status") in ("RUNNING", "DONE") for task in state.get("tasks", [])
     ):
-        return []  # policy 3: a project with no code task started or done has no check to prove can fail
+        return []  # policy 3 or later: a project with no code task started or done has no check to prove can fail
     project = project.resolve()
     batches = 0
     for path in sorted((project / ".operations").glob("*.json")):

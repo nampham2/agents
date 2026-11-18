@@ -117,8 +117,12 @@ def _read_optional(path: Path) -> str:
 
 
 def _wait(project_dir: Path, task: dict[str, Any], lines: list[dict[str, Any]], now: datetime) -> Any:
-    """The task's active wait as the page shows it, or None."""
-    found = active_wait(project_dir, task, lines, now=now)
+    """The task's active wait as the page shows it, or None.
+
+    `_task_rows` puts `block_generation` on a row at policy 4 only (None when the task lacks it), so the key's
+    presence on the row is the project's policy, decided once there.
+    """
+    found = active_wait(project_dir, task, lines, now=now, durable="block_generation" in task)
     return {key: found[key] for key in ("on", "until", "due")} if found else None
 
 
@@ -140,9 +144,9 @@ def _task_rows(tasks: list[Any], durable: bool = False) -> list[dict[str, Any]]:
             "block_reason": _text(task.get("block_reason")),
             "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
         }
-        if durable and "block_generation" in task:
-            # Only a policy-4 task has it; `active_wait` decides from the row, and a malformed value means no wait.
-            row["block_generation"] = task["block_generation"]
+        if durable:
+            # Policy 4 only. A missing or malformed value stays on the row (as None or as found): no wait.
+            row["block_generation"] = task.get("block_generation")
         rows.append(row)
     return rows
 

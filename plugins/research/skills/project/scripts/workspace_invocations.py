@@ -161,11 +161,11 @@ class Invocation:
         try:
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(line, sort_keys=True) + "\n")
-        except OSError as error:
+        except OSError as os_error:
             # The log is a diagnostic, never a gate, so the command still succeeds; but a silent gap would hide
             # the fault, so every failed append says so on stderr (a CLI call records once).
             try:
-                print(f"warning: invocation log not written ({error})", file=sys.stderr)
+                print(f"warning: invocation log not written ({os_error})", file=sys.stderr)
             except (OSError, ValueError):
                 pass  # a closed stderr must not turn a diagnostic into a failure
             return None

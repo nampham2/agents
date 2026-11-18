@@ -663,7 +663,7 @@ GOLDFISH_FROM = "2026-10-27T12:13:54+01:00"
 
 
 def is_goldfish_gated(state: dict[str, Any]) -> bool:
-    """Whether the Goldfish gates apply: always at policy 3, else the clock is at or after `GOLDFISH_FROM`."""
+    """Whether the Goldfish gates apply: always at policy 3 or later, else the clock is at or after `GOLDFISH_FROM`."""
     if has_review_rules(_policy_value(state if isinstance(state, dict) else {})[0]):
         return True
     return at_or_after(now_iso(), GOLDFISH_FROM)
@@ -697,7 +697,7 @@ def _add_retro_section_findings(state: dict[str, Any], reflection: str, report: 
 
 
 def is_style_checked(state: dict[str, Any]) -> bool:
-    """Whether style advice applies: the option at policy 3, else `state` was created on or after the cutoff."""
+    """Whether style advice applies: the option at policy 3 or later, else `state` was created on or after the cutoff."""
     if has_review_rules(_policy_value(state)[0]):
         return project_options(state)["style_advice"]
     return _created_on_or_after(state, STYLE_CHECKED_FROM)
@@ -2794,7 +2794,7 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
 
 
 def _validate_settings(state: dict[str, Any], policy: "int | None", report: ValidationReport) -> None:
-    """`review_risk`, `review_fallback` and `options`: policy 3 only, closed values."""
+    """`review_risk`, `review_fallback` and `options`: policy 3 or later, closed values."""
     for name in SETTINGS_FIELDS:
         if name in state and policy is not None and not has_review_rules(policy):
             report.errors.append(f"project: {name} needs policy_version 3 or later, but the project is at policy {policy}")
@@ -4319,7 +4319,7 @@ def _stored_state(project_dir: Path) -> "dict[str, Any]":
 
 
 def staging_enabled(state: "dict[str, Any]") -> bool:
-    """Whether closing stages lessons and warns about them: always below policy 3, else `options.memory_staging`."""
+    """Whether closing stages lessons and warns about them: always below policy 3, else (policy 3 or later) `options.memory_staging`."""
     return not has_review_rules(delivery_rules(state).policy) or project_options(state)["memory_staging"]
 
 

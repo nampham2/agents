@@ -204,7 +204,7 @@ def crash_loops(project: Path, state: dict[str, Any], *, pending_resume: bool) -
 def crash_loop_detail(loops: list[dict[str, Any]], durable: bool = False) -> str:
     named = ", ".join(f"{item['task']} {item['resumes']} times" for item in loops)
     # Attempts and held state exist only at policy 4, so the sentence about them is shown there only.
-    held = " (record stopped for a held attempt first)" if durable else ""
+    held = " (a held attempt needs stopped before the next intent)" if durable else ""
     return (
         f"resumed without progress: {named}. Record a finding or evidence for real progress, or check it is not "
         f"looping and run task block then task start{held}; see {REFERENCE}"
@@ -290,12 +290,12 @@ def active_wait(
     lines: list[dict[str, Any]],
     warnings: "list[str] | None" = None,
     now: "datetime | None" = None,
-    durable: "bool | None" = None,
+    durable: bool = False,
 ) -> "dict[str, Any] | None":
     """The wait of a BLOCKED task: its latest well-formed entry, if recorded after its latest block.
 
-    `durable` says the project is at policy 4, where a wait counts only at the task's `block_generation`; when
-    None (a row from the dashboard) the key's presence decides, and the dashboard only carries it at policy 4.
+    `durable` says the project is at policy 4, where a wait counts only at the task's `block_generation`. The
+    caller decides it from the project's policy, never from the key: a policy-4 task without the key has no wait.
 
     Due when `until` is set and has passed. The reason falls back to the task's `block_reason`.
     """
@@ -303,7 +303,7 @@ def active_wait(
         return None
     # At policy 4 the task carries `block_generation` and a wait is current only when it was recorded at that
     # generation; the log rule below is for policy 3 and older, where no such key exists.
-    anchored = ("block_generation" in task) if durable is None else durable
+    anchored = durable
     if anchored and type(task.get("block_generation")) is not int:
         if warnings is not None:
             warnings.append(f"{task['id']}: block_generation is missing or not an integer, so no wait counts")
