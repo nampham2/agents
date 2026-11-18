@@ -35,6 +35,7 @@ from workspace_lib import (
     stamp_transitions,
     tags_of,
     task_durable_enabled,
+    task_packets_enabled,
     task_stamps_enabled,
     validate_project,
     vcs_warnings,
@@ -808,6 +809,12 @@ def finish_and_checkpoint(
         if regrouped == str(error):
             raise
         raise WorkspaceError(regrouped) from error
+    state = _load_state(project_dir)
+    if task_packets_enabled(state):
+        from workspace_context import evidence_applicability
+
+        # After the commit and never blocking: the report says whether each cited check still applies.
+        result["evidence_applicability"] = evidence_applicability(project_dir, state, evidence_record_ids or [])
     if start_next is None:
         return result
     from workspace_context import checkpoint_data

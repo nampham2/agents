@@ -5328,6 +5328,12 @@ def record_evidence_result(
             "because a rewrite can hide another hook's failure; run the check again until it passes without "
             "rewriting."
         )
+    fingerprint_lines: list[str] = []
+    if task_id is not None and task_packets_enabled(state):
+        from workspace_context import capture_fingerprint  # function-local: that module imports this one
+
+        # `state` and `task` were read before the command ran, so an assignment edited meanwhile reads as old.
+        fingerprint_lines = capture_fingerprint(project_dir, state, task)
     joined = shlex.join(command)
     heading = _evidence_heading_command(joined)
     record_id = f"ev-{uuid.uuid4().hex}"
@@ -5344,6 +5350,7 @@ def record_evidence_result(
         *(["- Control: true"] if control else []),
         *(["- Outcome: rewrite"] if rewrite else []),
         "- Output decoding: UTF-8; undecodable bytes escaped as \\xNN",
+        *fingerprint_lines,
         "",
     ]
     if heading != joined:
