@@ -500,7 +500,11 @@ def needs_merge(entry: object) -> bool:
 NEW_PROJECT_POLICY: "int | None" = 5
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
 POLICY_VERSIONS = (0, 1, 2, 3, 4, 5)
-DEFAULT_OPTIONS: "dict[str, bool]" = {"style_advice": True, "memory_staging": True, "reports": False}
+DEFAULT_OPTIONS: "dict[str, bool]" = {
+    "style_advice": True, "memory_staging": True, "reports": False, "delegating": False,
+}
+# Options that exist from a later policy than 3, and the first policy that has each.
+OPTION_MIN_POLICY = {"delegating": 5}
 REVIEW_RISKS = ("low", "standard", "high")
 FALLBACK_MODES = ("ask", "waive-recorded")
 
@@ -529,10 +533,22 @@ def review_fallback(state: dict[str, Any]) -> "dict[str, str]":
     return {"mode": "ask"}
 
 
+def option_keys(state: dict[str, Any]) -> "tuple[str, ...]":
+    """The option names valid at the policy of `state`: `delegating` only from policy 5."""
+    policy, valid = _policy_value(state) if isinstance(state, dict) else (0, False)
+    return tuple(
+        key for key in DEFAULT_OPTIONS if key not in OPTION_MIN_POLICY or (valid and policy >= OPTION_MIN_POLICY[key])
+    )
+
+
 def project_options(state: dict[str, Any]) -> "dict[str, bool]":
-    """The optional policies of `state`: the stored booleans over the defaults; anything else is ignored."""
+    """The optional policies of `state`: the stored booleans over the defaults; anything else is ignored.
+
+    A stored option that its policy does not have (`delegating` below policy 5) is ignored too.
+    """
     stored = state.get("options") if isinstance(state, dict) else None
-    merged = dict(DEFAULT_OPTIONS)
+    keys = option_keys(state)
+    merged = {key: value for key, value in DEFAULT_OPTIONS.items() if key in keys}
     if isinstance(stored, dict):
         merged.update({key: value for key, value in stored.items() if key in merged and type(value) is bool})
     return merged
@@ -2818,7 +2834,7 @@ def _validate_settings(state: dict[str, Any], policy: "int | None", report: Vali
     if "review_fallback" in state:
         report.errors.extend(f"project: {text}" for text in fallback_errors(state["review_fallback"]))
     if "options" in state:
-        report.errors.extend(f"project: {text}" for text in options_errors(state["options"]))
+        report.errors.extend(f"project: {text}" for text in options_errors(state["options"], state))
 
 
 def risk_errors(value: object) -> "list[str]":
@@ -2841,19 +2857,24 @@ def fallback_errors(value: object) -> "list[str]":
     return []
 
 
-def options_errors(value: object) -> "list[str]":
-    """What is wrong with an `options` value: only the known keys, each a boolean."""
+def options_errors(value: object, state: dict[str, Any]) -> "list[str]":
+    """What is wrong with an `options` value at the policy of `state`: only its keys, each a boolean.
+
+    `delegating` is a key from policy 5; below it the finding says which policy has it.
+    """
+    keys = option_keys(state)
     if not isinstance(value, dict):
         return ["options must be an object"]
     if not value:
-        return ["options is empty; name at least one of " + ", ".join(DEFAULT_OPTIONS) + ", or use null to unset"]
-    errors = [
-        f"options has an unknown key: {key}" + (" (reserved, not an option)" if key == "delegating" else "")
-        for key in sorted(value.keys() - DEFAULT_OPTIONS.keys(), key=str)
-    ]
+        return ["options is empty; name at least one of " + ", ".join(keys) + ", or use null to unset"]
+    errors = []
+    for key in sorted(value.keys() - set(keys), key=str):
+        if key in OPTION_MIN_POLICY:
+            errors.append(f"options.{key} needs policy_version {OPTION_MIN_POLICY[key]}")
+        else:
+            errors.append(f"options has an unknown key: {key}")
     errors += [
-        f"options.{key} must be true or false" for key in sorted(value)
-        if key in DEFAULT_OPTIONS and type(value[key]) is not bool
+        f"options.{key} must be true or false" for key in sorted(value) if key in keys and type(value[key]) is not bool
     ]
     return errors
 

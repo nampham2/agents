@@ -66,6 +66,22 @@ While a worker runs, record `observed` events so `silent_minutes` measures real 
 
 ## Delegating coordinator mode
 
-A behavioural rule, reserved until a later release: the coordinator would plan, brief and review
-while workers write. It is not an option and `settings` refuses it. Until then the coordinator
-delegates under the rules above or works alone.
+`delegating` is a boolean option, off by default, valid from policy 5 (`settings` refuses it
+below, with `options.delegating needs policy_version 5`). Turn it on when the coordinator plans,
+briefs and reviews while workers write. It adds no enforcement: the tool does not stop a
+coordinator that writes or a worker that edits outside its scope.
+
+With it on, `context --worker --task` adds two entries to the packet `warnings`: a dependency that
+is not `DONE` (a `SKIPPED` one counts), and a `packet_sha256` that differs from the one on the
+task's latest `intent` event. With it off those two are never added; the hash difference still
+shows as a `notes` entry. The packet size warning is always on at policy 5.
+
+## Worker packets
+
+At policy 5 a task names what its worker needs: `spec_refs` (exact `###` headings under
+`## Current specification`, at least one) and `decision_refs` (`research-entry` IDs). Write them in
+the task patch of `update`; an edit bumps `assignment_counter`. `context --worker --task Tn`
+returns the complete `packet`: the referenced sections and decision bodies, acceptance, dependency
+outputs, write scope, prohibited effects, the assignment counter, `packet_sha256`, `notes` and
+`warnings`. Nothing is truncated; above about 12,000 characters the packet warns. Pass
+`packet_sha256` on the worker's `intent` event. `workflow packet` and `--task-only` are unchanged.

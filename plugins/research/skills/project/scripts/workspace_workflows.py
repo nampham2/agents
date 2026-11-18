@@ -902,7 +902,7 @@ def _settings(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
         patch["review_fallback"] = fallback
     if "options" in request:
         options = request["options"]
-        problems = [] if options is None else options_errors(options)
+        problems = [] if options is None else options_errors(options, state)
         if problems:
             raise WorkspaceError(problems[0])
         patch["options"] = options

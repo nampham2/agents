@@ -583,7 +583,7 @@ def test_an_empty_options_object_and_a_reasoned_ask_are_refused(project: Path) -
         settings(project, options={})
     with pytest.raises(WorkspaceError, match="only to waive"):
         settings(project, review_fallback={"mode": "ask", "reason": "stale"})
-    with pytest.raises(WorkspaceError, match="reserved"):
+    with pytest.raises(WorkspaceError, match=r"options\.delegating needs policy_version 5"):
         settings(project, options={"delegating": True})
 
 

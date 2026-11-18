@@ -412,3 +412,41 @@ def test_a_task_without_notes_or_an_intent_hash_adds_no_note(tmp_path: Path) -> 
     assert not (project / "tasks/T02.md").exists()
     assert build_packet(project, state, state["tasks"][1])["notes"] == []
     assert workspace_packets._latest_intent(project, state, "T01", []) is None
+
+
+# --- delegating: the two warnings it governs --------------------------------------------------------
+
+
+def _delegating(project: Path, on: bool) -> None:
+    path = project / "project.json"
+    state = json.loads(path.read_text(encoding="utf-8"))
+    state["options"] = {"delegating": on}
+    path.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+
+
+def test_delegating_warns_for_a_dependency_that_is_not_done(tmp_path: Path) -> None:
+    project = _project(tmp_path, 5)
+    _set(project, "T02", spec_refs=[HEADING], depends_on=["T01"])  # T01 is RUNNING
+    state = _load_state(project)
+    assert build_packet(project, state, state["tasks"][1])["warnings"] == []  # off: never added
+    _delegating(project, True)
+    state = _load_state(project)
+    assert build_packet(project, state, state["tasks"][1])["warnings"] == ["dependency T01 is RUNNING, not DONE"]
+    _set(project, "T01", status="SKIPPED")
+    state = _load_state(project)
+    assert build_packet(project, state, state["tasks"][1])["warnings"] == ["dependency T01 is SKIPPED, not DONE"]
+    _set(project, "T01", status="DONE")
+    state = _load_state(project)
+    assert build_packet(project, state, state["tasks"][1])["warnings"] == []
+
+
+def test_delegating_turns_a_changed_packet_hash_into_a_warning(tmp_path: Path) -> None:
+    project = _project(tmp_path, 5)
+    _set(project, "T01", spec_refs=[HEADING])
+    _intent(project, "intent-1", packet_sha256="ab" * 32)
+    state = _load_state(project)
+    off = build_packet(project, state, state["tasks"][0])
+    assert len(off["notes"]) == 1 and off["warnings"] == []
+    _delegating(project, True)
+    on = build_packet(project, _load_state(project), _load_state(project)["tasks"][0])
+    assert on["warnings"] == on["notes"] and len(on["notes"]) == 1
