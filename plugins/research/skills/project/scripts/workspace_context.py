@@ -27,10 +27,13 @@ from workspace_journal import (
 from workspace_lib import (
     DirectoryLock,
     WorkspaceError,
+    _resolve_local_reference,
     delivery_rules,
     document_sha256,
     now_iso,
+    read_text,
     resolve_workspace_root,
+    task_packets_enabled,
 )
 from workspace_session import (
     STOP_REASONS,
@@ -580,6 +583,8 @@ def resume_bundle(project: Path, request: dict[str, Any], *, action: str = "resu
             context["do_not"] = do_not
         state = _load_state(project)
         context["worktree"] = worktree_status(state)
+        if action == "resume" and task_packets_enabled(state):
+            context["evidence_applicability"] = evidence_applicability(project, state, cited_record_ids(state))
         pending = action == "resume" and not any(key in request for key in WORKER_KEYS)
         context.update(durable_move(project, state, pending_resume=pending))
         context.update(durability_view(project, state, pending_resume=pending))
@@ -592,12 +597,237 @@ def resume_bundle(project: Path, request: dict[str, Any], *, action: str = "resu
         return context
 
 
+FINGERPRINT_LIMIT = 16 * 1024 * 1024
+# Charged to the budget for every file inside a hashed directory, so the count of files is bounded too.
+ENTRY_COST = 256
+NOT_A_FILE = "fingerprint file budget exceeded or path is not a file"
+
+
+class Budget:
+    """One read budget shared by every path hashed in a call; once a read is refused it stays spent."""
+
+    def __init__(self, limit: "int | None" = None) -> None:
+        self.remaining = FINGERPRINT_LIMIT if limit is None else limit
+        self.exhausted = False
+
+    def take(self, size: int) -> bool:
+        if size > self.remaining:
+            self.exhausted = True
+            return False
+        self.remaining -= size
+        return True
+
+
+def _file_digest(path: Path, budget: Budget) -> str:
+    """SHA-256 of one regular file, charged to `budget`; raises `WorkspaceError` when it does not fit."""
+    if path.stat().st_size > budget.remaining:
+        budget.exhausted = True
+        raise WorkspaceError(NOT_A_FILE)
+    with path.open("rb") as stream:
+        data = stream.read(budget.remaining + 1)
+    if len(data) > budget.remaining:
+        budget.exhausted = True
+        raise WorkspaceError("fingerprint file grew beyond budget")
+    budget.take(len(data))
+    return hashlib.sha256(data).hexdigest()
+
+
+def _raise(error: OSError) -> None:
+    raise error
+
+
+def _directory_digest(path: Path, budget: Budget) -> str:
+    """SHA-256 over `<relative POSIX path>\\0<file hash>\\n` lines, sorted by path.
+
+    Symlinks and other non-regular files are skipped, `.git` is skipped and an empty directory adds nothing.
+    """
+    entries: list[tuple[str, str]] = []
+    for current, directories, files in os.walk(path, followlinks=False, onerror=_raise):
+        directories[:] = [name for name in directories if name != ".git"]
+        # Every name the walk sees is charged, so a tree of many tiny files, links or empty directories
+        # runs out of budget: time is bounded, not only bytes.
+        if not budget.take(ENTRY_COST * (len(directories) + len(files))):
+            raise WorkspaceError(NOT_A_FILE)
+        for name in files:
+            full = Path(current) / name
+            if full.is_symlink() or not full.is_file():
+                continue
+            entries.append((full.relative_to(path).as_posix(), _file_digest(full, budget)))
+    entries.sort()
+    return hashlib.sha256("".join(f"{name}\0{digest}\n" for name, digest in entries).encode("utf-8")).hexdigest()
+
+
+def hash_path(path: Path, budget: Budget) -> tuple[str, "str | None"]:
+    """`(kind, sha256)` of a path now: `missing`, `file` or `dir`.
+
+    Raises what `fingerprint()` raises (`WorkspaceError`) for a path that is neither a file nor a directory
+    or that does not fit the budget, and lets an `OSError` through.
+    """
+    if not path.exists():
+        return "missing", None
+    if path.is_file():
+        return "file", _file_digest(path, budget)
+    if path.is_dir():
+        return "dir", _directory_digest(path, budget)
+    raise WorkspaceError(NOT_A_FILE)
+
+
+def _hash_declared(
+    project: Path, target: Path, root: str, relative: str, budget: Budget
+) -> tuple[str, "str | None"]:
+    """The kind and hash of one declared path, never raising: `over-budget` and `unreadable` are kinds."""
+    if budget.exhausted:
+        return "over-budget", None
+    path, error = _resolve_local_reference(project, target, root, relative)
+    if path is None or error:
+        return "unreadable", None
+    try:
+        if path.exists() and not (path.is_file() or path.is_dir()):
+            return "unreadable", None  # a FIFO or a device is never opened
+        return hash_path(path, budget)
+    except WorkspaceError:
+        return "over-budget", None
+    except OSError:
+        return "unreadable", None
+
+
+def capture_fingerprint(project: Path, state: dict[str, Any], task: dict[str, Any]) -> list[str]:
+    """The evidence lines of one task-owned entry: the assignment counter, then one line per declared path.
+
+    The task and state are the ones read before the check ran, so an assignment edited while the command
+    ran is recorded with the old counter and reads as invalidated. `reads` resolve against the target and
+    `outputs` against their root; an `external` output is skipped.
+    """
+    target = Path(state["working_directory"])
+    declared = [("target", item) for item in task.get("reads", [])]
+    declared += [(out["root"], out["path"]) for out in task.get("outputs", []) if out["root"] != "external"]
+    budget = Budget()
+    lines = [f"- Assignment counter: {task['assignment_counter']}"]
+    for root, relative in dict.fromkeys(declared):
+        if not relative.isprintable() or relative != relative.strip():
+            lines.append(f"- Fingerprint: unreadable {root} - {relative!r}")
+            continue
+        kind, digest = _hash_declared(project, target, root, relative, budget)
+        lines.append(f"- Fingerprint: {kind} {root} {digest or '-'} {relative}")
+    return lines
+
+
+def _dirty_paths(target: Path, paths: list[str]) -> list[str]:
+    """Paths among `paths` that Git reports changed, or `[]` when Git cannot say (no repository, a timeout)."""
+    try:
+        output = _git(
+            target, "-c", "core.quotepath=off", "--no-optional-locks", "--literal-pathspecs", "status",
+            "--porcelain=v1",
+            "--untracked-files=normal", "--", *paths,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return []
+    return [line[3:] for line in output.splitlines()] if output else []
+
+
+def classify_evidence(
+    project: Path, state: dict[str, Any], row: dict[str, Any], budget: Budget,
+) -> "dict[str, Any] | None":
+    """Whether a recorded check still applies: `applicable`, `invalidated` or `needs-judgement`.
+
+    None for an entry no task owns (a closure step). The checks run in the order of the design: counter,
+    missing lines, then each recorded path against its current kind and hash. Never raises.
+    """
+    task = next((item for item in state["tasks"] if item["id"] == row["owner"]), None)
+    if task is None or row["kind"] == "observation":
+        return None
+    result: dict[str, Any] = {"record_id": row["record_id"], "task": task["id"], "dirty": []}
+    counter = task.get("assignment_counter")
+    if row["counter"] is not None and type(counter) is int and row["counter"] < counter:
+        return {**result, "state": "invalidated",
+                "reasons": [f"assignment counter moved from {row['counter']} to {counter}"]}
+    if row["passed"] is not True:
+        return {**result, "state": "needs-judgement", "reasons": ["the recorded run did not pass"]}
+    if row["counter"] is not None and not row["fingerprints"]:
+        return {**result, "state": "needs-judgement", "reasons": ["the task declared no local path to fingerprint"]}
+    if row["counter"] is None:
+        return {**result, "state": "needs-judgement", "reasons": ["no fingerprint was recorded with this entry"]}
+    target = Path(state["working_directory"])
+    changed: list[str] = []
+    unsure: list[str] = []
+    for item in row["fingerprints"]:
+        label = f"{item['root']}:{item['path']}"
+        if item["kind"] in ("over-budget", "unreadable"):
+            unsure.append(f"{label}: recorded as {item['kind']}")  # not hashed again: it costs budget for nothing
+            continue
+        now_kind, now_digest = _hash_declared(project, target, item["root"], item["path"], budget)
+        if now_kind in ("over-budget", "unreadable"):
+            unsure.append(f"{label}: {now_kind} now")
+        elif (now_kind, now_digest) != (item["kind"], item["sha256"]):
+            changed.append(f"{label}: {item['kind']} then, {now_kind} now")
+    if changed:
+        return {**result, "state": "invalidated", "reasons": changed}
+    if unsure:
+        return {**result, "state": "needs-judgement", "reasons": unsure}
+    local = [item["path"] for item in row["fingerprints"] if item["root"] == "target"]
+    return {**result, "state": "applicable", "reasons": [], "dirty": _dirty_paths(target, local) if local else []}
+
+
+def _report_item(record_id: "str | None", reason: str) -> dict[str, Any]:
+    return {"record_id": record_id, "task": None, "state": "needs-judgement", "reasons": [reason], "dirty": []}
+
+
+def applicability_failure(error: Exception) -> list[dict[str, Any]]:
+    """The report when the report itself failed: one `needs-judgement` item, so a caller never breaks."""
+    return [_report_item(None, f"the applicability report failed: {error}")]
+
+
+def cited_record_ids(state: dict[str, Any]) -> list[str]:
+    """The record ID of the latest cited evidence of each RUNNING task, for references that name one.
+
+    A reference with no anchor, an external root or another file cites no `evidence.md` record and is skipped.
+    """
+    ids = []
+    for task in state["tasks"]:
+        if task["status"] != "RUNNING" or not task["evidence"]:
+            continue
+        latest = task["evidence"][-1]
+        anchor = latest.get("anchor")
+        if latest.get("root") == "workspace" and latest.get("path") == "evidence.md" and isinstance(anchor, str):
+            found = re.fullmatch(r"evidence-([0-9a-f]{32})", anchor)
+            if found:
+                ids.append("ev-" + found[1])
+    return ids
+
+
+def evidence_applicability(project: Path, state: dict[str, Any], record_ids: list[str]) -> list[dict[str, Any]]:
+    """Classify the named records of task-owned entries with one shared budget; it never blocks or raises.
+
+    A record the evidence file does not hold reads `needs-judgement`; a failure of the report itself is one
+    `needs-judgement` item that says so.
+    """
+    from workspace_evidence import _entry_rows
+
+    path = project / "evidence.md"
+    if not record_ids:
+        return []
+    try:
+        rows = {row["record_id"]: row for row in _entry_rows(read_text(path)) if row["record_id"]}
+        budget = Budget()
+        report = []
+        for record_id in record_ids:
+            if record_id not in rows:
+                report.append(_report_item(record_id, "the record is not in evidence.md"))
+                continue
+            item = classify_evidence(project, state, rows[record_id], budget)
+            if item is not None:
+                report.append(item)
+    except (WorkspaceError, OSError, ValueError) as error:
+        return applicability_failure(error)
+    return report
+
+
 def fingerprint(project: Path, references: list[Any]) -> list[dict[str, Any]]:
     """Hash only explicitly selected local files with a bounded total read budget."""
     state = _load_state(project)
     roots = {"workspace": project, "target": Path(state["working_directory"]), "workspace_root": project.parent}
     result = []
-    remaining = 16 * 1024 * 1024
+    budget = Budget()
     for ref in list_input(references):
         object_input(ref, {"root", "path", "sha256"}, {"root", "path"})
         if not isinstance(ref["root"], str) or ref["root"] not in roots:
@@ -605,15 +835,9 @@ def fingerprint(project: Path, references: list[Any]) -> list[dict[str, Any]]:
         path = contained(roots[ref["root"]], ref["path"])
         actual = "missing"
         if path.exists():
-            size = path.stat().st_size
-            if not path.is_file() or size > remaining:
-                raise WorkspaceError("fingerprint file budget exceeded or path is not a file")
-            with path.open("rb") as stream:
-                data = stream.read(remaining + 1)
-            if len(data) > remaining:
-                raise WorkspaceError("fingerprint file grew beyond budget")
-            remaining -= len(data)
-            actual = hashlib.sha256(data).hexdigest()
+            if not path.is_file():
+                raise WorkspaceError(NOT_A_FILE)
+            actual = _file_digest(path, budget)
         result.append(
             {
                 "root": ref["root"],

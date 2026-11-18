@@ -206,12 +206,19 @@ TASK_STAMP_FIELDS = ("started_at", "finished_at")
 # Policy 4 only: `block_generation` counts the times a task entered BLOCKED and `assignment_counter` the
 # times it entered RUNNING or had an assignment field edited. Both are written by the tool, never the caller.
 TASK_DURABLE_FIELDS = ("block_generation", "assignment_counter")
+# Policy 5 only: the spec headings and decision entries a worker packet is built from. The caller writes them,
+# so they are assignment fields: editing one supersedes every live attempt.
+TASK_PACKET_FIELDS = ("spec_refs", "decision_refs")
 # The fields that define what a worker was asked to do; editing one supersedes every live attempt.
 # `authorization`, `receipts`, `evidence`, the stamps and the durable keys are deliberately not here.
-ASSIGNMENT_FIELDS = ("name", "depends_on", "outputs", "success_criteria", "verification", "effect", "reads")
+ASSIGNMENT_FIELDS = (
+    "name", "depends_on", "outputs", "success_criteria", "verification", "effect", "reads", *TASK_PACKET_FIELDS,
+)
 # An absent list reads as empty, so writing `reads: []` on a task with no `reads` is not an assignment edit.
-ASSIGNMENT_DEFAULTS: "dict[str, Any]" = {"depends_on": [], "outputs": [], "reads": []}
-TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS}
+ASSIGNMENT_DEFAULTS: "dict[str, Any]" = {
+    "depends_on": [], "outputs": [], "reads": [], **{name: [] for name in TASK_PACKET_FIELDS},
+}
+TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS, *TASK_PACKET_FIELDS}
 
 
 @dataclass
@@ -487,13 +494,17 @@ def needs_merge(entry: object) -> bool:
 
 # The policy a new project starts at: target-based delivery. `allocate_project` reads it at call time and
 # writes it to `policy_version`; None starts a project with no policy (derived from `created`). Production
-# starts at 4: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
-# the durable task fields. The test suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
+# starts at 5: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
+# the durable task fields (policy 4) and the packet reference fields (policy 5). The test suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
 # delivery target to leave ALIGNING.
-NEW_PROJECT_POLICY: "int | None" = 4
+NEW_PROJECT_POLICY: "int | None" = 5
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
-POLICY_VERSIONS = (0, 1, 2, 3, 4)
-DEFAULT_OPTIONS: "dict[str, bool]" = {"style_advice": True, "memory_staging": True, "reports": False}
+POLICY_VERSIONS = (0, 1, 2, 3, 4, 5)
+DEFAULT_OPTIONS: "dict[str, bool]" = {
+    "style_advice": True, "memory_staging": True, "reports": False, "delegating": False,
+}
+# Options that exist from a later policy than 3, and the first policy that has each.
+OPTION_MIN_POLICY = {"delegating": 5}
 REVIEW_RISKS = ("low", "standard", "high")
 FALLBACK_MODES = ("ask", "waive-recorded")
 
@@ -522,10 +533,22 @@ def review_fallback(state: dict[str, Any]) -> "dict[str, str]":
     return {"mode": "ask"}
 
 
+def option_keys(state: dict[str, Any]) -> "tuple[str, ...]":
+    """The option names valid at the policy of `state`: `delegating` only from policy 5."""
+    policy, valid = _policy_value(state) if isinstance(state, dict) else (0, False)
+    return tuple(
+        key for key in DEFAULT_OPTIONS if key not in OPTION_MIN_POLICY or (valid and policy >= OPTION_MIN_POLICY[key])
+    )
+
+
 def project_options(state: dict[str, Any]) -> "dict[str, bool]":
-    """The optional policies of `state`: the stored booleans over the defaults; anything else is ignored."""
+    """The optional policies of `state`: the stored booleans over the defaults; anything else is ignored.
+
+    A stored option that its policy does not have (`delegating` below policy 5) is ignored too.
+    """
     stored = state.get("options") if isinstance(state, dict) else None
-    merged = dict(DEFAULT_OPTIONS)
+    keys = option_keys(state)
+    merged = {key: value for key, value in DEFAULT_OPTIONS.items() if key in keys}
     if isinstance(stored, dict):
         merged.update({key: value for key, value in stored.items() if key in merged and type(value) is bool})
     return merged
@@ -1601,6 +1624,14 @@ def task_durable_enabled(state: dict[str, Any]) -> bool:
         return False
     policy, valid = _policy_value(state)
     return valid and policy >= 4
+
+
+def task_packets_enabled(state: dict[str, Any]) -> bool:
+    """Whether tasks may carry `spec_refs` and `decision_refs`: a valid policy 5 or later."""
+    if not isinstance(state, dict):
+        return False
+    policy, valid = _policy_value(state)
+    return valid and policy >= 5
 
 
 def stamp_transitions(before: "dict[str, Any] | None", after: dict[str, Any]) -> dict[str, int]:
@@ -2803,7 +2834,7 @@ def _validate_settings(state: dict[str, Any], policy: "int | None", report: Vali
     if "review_fallback" in state:
         report.errors.extend(f"project: {text}" for text in fallback_errors(state["review_fallback"]))
     if "options" in state:
-        report.errors.extend(f"project: {text}" for text in options_errors(state["options"]))
+        report.errors.extend(f"project: {text}" for text in options_errors(state["options"], state))
 
 
 def risk_errors(value: object) -> "list[str]":
@@ -2826,19 +2857,24 @@ def fallback_errors(value: object) -> "list[str]":
     return []
 
 
-def options_errors(value: object) -> "list[str]":
-    """What is wrong with an `options` value: only the known keys, each a boolean."""
+def options_errors(value: object, state: dict[str, Any]) -> "list[str]":
+    """What is wrong with an `options` value at the policy of `state`: only its keys, each a boolean.
+
+    `delegating` is a key from policy 5; below it the finding says which policy has it.
+    """
+    keys = option_keys(state)
     if not isinstance(value, dict):
         return ["options must be an object"]
     if not value:
-        return ["options is empty; name at least one of " + ", ".join(DEFAULT_OPTIONS) + ", or use null to unset"]
-    errors = [
-        f"options has an unknown key: {key}" + (" (reserved, not an option)" if key == "delegating" else "")
-        for key in sorted(value.keys() - DEFAULT_OPTIONS.keys(), key=str)
-    ]
+        return ["options is empty; name at least one of " + ", ".join(keys) + ", or use null to unset"]
+    errors = []
+    for key in sorted(value.keys() - set(keys), key=str):
+        if key in OPTION_MIN_POLICY:
+            errors.append(f"options.{key} needs policy_version {OPTION_MIN_POLICY[key]}")
+        else:
+            errors.append(f"options has an unknown key: {key}")
     errors += [
-        f"options.{key} must be true or false" for key in sorted(value)
-        if key in DEFAULT_OPTIONS and type(value[key]) is not bool
+        f"options.{key} must be true or false" for key in sorted(value) if key in keys and type(value[key]) is not bool
     ]
     return errors
 
@@ -3054,6 +3090,16 @@ def validate_v4_state(
                 report.errors.append(f"{label}: {durable_field} needs policy_version 4")
             elif type(task[durable_field]) is not int or task[durable_field] < 0:
                 report.errors.append(f"{label}: {durable_field} must be a non-negative integer")
+        packets = task_packets_enabled(state)
+        for packet_field in TASK_PACKET_FIELDS:
+            if packet_field not in task:
+                continue
+            if not packets:
+                report.errors.append(f"{label}: {packet_field} needs policy_version 5")
+                continue
+            value = task[packet_field]
+            if not isinstance(value, list) or any(not _non_empty_string(item) for item in value):
+                report.errors.append(f"{label}: {packet_field} must be a list of non-empty strings")
         if durable and task_status == "BLOCKED" and type(task.get("block_generation")) is int:
             if task["block_generation"] < 1:
                 report.errors.append(f"{label}: a BLOCKED task needs block_generation of at least 1")
@@ -4495,6 +4541,10 @@ def validate_project(
         elif version == 4:
             state = load_json(project_dir / "project.json")
             report = validate_v4_state(state, project_dir, close=close, already_done=_done_task_ids(state))
+            if not report.errors:
+                from workspace_packets import reference_errors  # function-local: that module imports this one
+
+                report.errors.extend(reference_errors(project_dir, state))
         else:
             report = ValidationReport(errors=[f"unsupported schema_version: {version} ({NEWER_PLUGIN_HINT})"])
     except WorkspaceError as error:
@@ -5299,6 +5349,12 @@ def record_evidence_result(
             "because a rewrite can hide another hook's failure; run the check again until it passes without "
             "rewriting."
         )
+    fingerprint_lines: list[str] = []
+    if task_id is not None and task_packets_enabled(state):
+        from workspace_context import capture_fingerprint  # function-local: that module imports this one
+
+        # `state` and `task` were read before the command ran, so an assignment edited meanwhile reads as old.
+        fingerprint_lines = capture_fingerprint(project_dir, state, task)
     joined = shlex.join(command)
     heading = _evidence_heading_command(joined)
     record_id = f"ev-{uuid.uuid4().hex}"
@@ -5315,6 +5371,7 @@ def record_evidence_result(
         *(["- Control: true"] if control else []),
         *(["- Outcome: rewrite"] if rewrite else []),
         "- Output decoding: UTF-8; undecodable bytes escaped as \\xNN",
+        *fingerprint_lines,
         "",
     ]
     if heading != joined:
@@ -6338,6 +6395,31 @@ def tag_project(
         raise WorkspaceError(f"tag refused: {error}") from error
 
 
+def _reference_transition_errors(project_dir: Path, current: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
+    """Reference errors of the tasks a commit adds, whose references it changes or that it starts (policy 5).
+
+    A stale reference in an untouched task never blocks an unrelated commit; `validate` scans them all.
+    """
+    if not task_packets_enabled(candidate) or not isinstance(candidate.get("tasks"), list):
+        return []
+    before = {
+        task["id"]: task for task in current.get("tasks", []) if isinstance(task, dict) and "id" in task
+    }
+    changed = [
+        task["id"] for task in candidate["tasks"]
+        if isinstance(task, dict) and isinstance(task.get("id"), str) and (
+            task["id"] not in before
+            or any(before[task["id"]].get(key) != task.get(key) for key in TASK_PACKET_FIELDS)
+            or (task.get("status") == "RUNNING" and before[task["id"]].get("status") != "RUNNING")
+        )
+    ]
+    if not changed:
+        return []
+    from workspace_packets import reference_errors  # function-local: that module imports this one
+
+    return reference_errors(project_dir, candidate, changed)
+
+
 def _commit_state_locked(
     project_dir: Path, candidate: dict[str, Any], expected_revision: int,
     locked_guard: Callable[[dict[str, Any]], None] | None = None,
@@ -6372,6 +6454,7 @@ def _commit_state_locked(
         warnings.extend(gate_warnings)
 
     transition_errors += newly_terminal_task_errors(project_dir, current, candidate)[0]
+    transition_errors += _reference_transition_errors(project_dir, current, candidate)
     if transition_errors:
         raise WorkspaceError("; ".join(transition_errors))
     candidate["revision"] = expected_revision + 1

@@ -111,16 +111,17 @@ field, so a project from before tags stays valid; a v3 project is closed to it. 
 [tags-and-follow-up.md](tags-and-follow-up.md). A launcher older than 0.37.0 rejects a project that
 has `tags` and names a newer plugin as the likely cause.
 
-`policy_version` (0 to 4) and `delivery_target` (`research`, `local`, `pr`, `merged` or
+`policy_version` (0 to 5) and `delivery_target` (`research`, `local`, `pr`, `merged` or
 `release`) are optional v4 fields that only `workflow confirm` (kind `alignment`), `workflow
 retarget` and `migrate-policy` write; `update` refuses them. Absent `policy_version` derives from
 `created`: 0 before `DELIVERY_GATES_FROM`, 1 on or after it; a present one wins, and an invalid one
 reads as 1. Policy 2 needs a `delivery_target` once the project leaves `ALIGNING`, and policies 0
 and 1 carry none. `delivery_rules(state)` in `workspace_lib.py` is the one function every delivery
 check reads. A launcher older than 0.38.0 rejects a project that has either field. Policy 3 adds
-the review rules and policy 4 the durable task fields below; a project created from 0.40.0 starts at
-policy 4, and a launcher older than 0.40.0 refuses it, so update both hosts together. No command
-moves a project to policy 4: it exists only for new projects.
+the review rules, policy 4 the durable task fields below and policy 5 the packet fields
+`spec_refs` and `decision_refs`; a project created from 0.41.0 starts at policy 5, and a launcher
+older than 0.41.0 refuses it, so update both hosts together. No command moves a project to
+policy 4 or 5: they exist only for new projects.
 
 `predecessor` names the project this one continues, and nothing checks that it exists. A follow-up
 sets it to its finished source, and its `briefing.md` starts with `Follow-up of: <source-id>`; that
@@ -152,8 +153,20 @@ of its commits happen at once. Both are timezone-aware ISO-8601, `finished_at` b
 A launcher older than the release that introduced them rejects a task that carries them and names a
 newer plugin as the likely cause, which is why projects created earlier never gain one.
 
+At policy 5 a task also carries `spec_refs` (the exact `###` heading text under `## Current
+specification`, at least one while the task is not `DONE` or `SKIPPED`) and `decision_refs` (IDs of
+`research-entry` markers in `spec.md`); both are lists of unique strings, and an edit to either
+bumps `assignment_counter`. Below policy 5 the validator rejects both. A reference that resolves to
+nothing, or a heading that appears twice, is an error when the task is written and in `validate`;
+a `DONE` or `SKIPPED` task is never checked. `context --worker --task` builds the packet from them.
+
+A `research-worker` line of an `intent` event may carry `packet_sha256`, the SHA-256 of the
+referenced spec sections (each stripped of trailing whitespace, joined by a blank line); it is
+policy 5 only and 64 lowercase hex characters.
+
 The optional v4 task `reads` list remains accepted for compatibility and input documentation;
-it no longer controls automatic dispatch. Schema-v3 task objects remain unchanged.
+it no longer controls automatic dispatch. At policy 5 it also names paths whose content a recorded
+check fingerprints. Schema-v3 task objects remain unchanged.
 
 
 ## Project lifecycle
@@ -504,6 +517,16 @@ separate `### T01 — notes` section below the recorded entry — outputs, limit
 was expected — so that what a command did and what a coordinator concluded from it stay
 distinguishable.
 Never edit a recorded entry to make it agree with a conclusion.
+
+At policy 5 an entry owned by a task also carries, before its first fence, `- Assignment counter:
+<n>` and one `- Fingerprint: <kind> <root> <sha256 or -> <path>` line per path the task declares
+(`reads` against the target, `outputs` against their root; an `external` output is skipped). Kinds
+are `file`, `dir`, `missing`, `over-budget` and `unreadable`; one call hashes at most 16 MiB. A
+directory hash covers regular files in it, skips links and `.git`. `task finish` and `resume` report
+each cited check as `applicable`, `invalidated` (the counter moved, or a path's content, existence
+or kind changed) or `needs-judgement` (no fingerprint, a run that did not pass, or a path that
+could not be compared), with `dirty` paths Git reports. The report never blocks. A closure-step
+entry is not classified.
 
 Only evidence that no command produced, such as an external delivery receipt, is written by hand.
 

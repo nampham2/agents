@@ -65,11 +65,14 @@ substantive change.
 | `style_advice` | on | style findings stop |
 | `memory_staging` | on | `finalize` stages no lessons and warns of none |
 | `reports` | off | the `report` action returns a notice and writes nothing |
+| `delegating` | off | policy 5 only; the packet adds no dependency or hash warnings |
 
-Other keys are refused, an empty object too. Set a key back to its default by writing that
+Other keys are refused, an empty object too. `delegating` below policy 5 is refused with
+`options.delegating needs policy_version 5`. Set a key back to its default by writing that
 value; `null` unsets all options. A fallback of `ask` takes no reason. At policy 3+ the `finalize`
 control warning applies only when a code task is running or done.
 
 ## Delegating mode
 
-A reserved name. See [task-workers.md](task-workers.md). `settings` refuses it as an option.
+A boolean option from policy 5, off by default. It governs two packet warnings only; see
+[task-workers.md](task-workers.md).

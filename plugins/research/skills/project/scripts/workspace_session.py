@@ -25,6 +25,7 @@ from workspace_lib import (
     stamp_transitions,
     tags_of,
     task_durable_enabled,
+    task_packets_enabled,
     validate_project,
     validate_v3_state,
     validate_v4_state,
@@ -73,8 +74,15 @@ def document_tokens(project_dir: Path) -> dict[str, str]:
     return tokens
 
 
-def _worker_context(project_dir: Path, state: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
-    """Project one assignment without loading specification text, logs, or unrelated tasks."""
+def _worker_context(
+    project_dir: Path, state: dict[str, Any], task: dict[str, Any], packet: bool = False,
+) -> dict[str, Any]:
+    """Project one assignment without loading logs or unrelated tasks.
+
+    This projection holds no specification text. With `packet` true (a worker view at policy 5) the caller
+    adds the `packet` key, which carries the referenced sections and decisions, and the two texts that
+    say what the coordinator still owes change with it.
+    """
     by_id = {item["id"]: item for item in state["tasks"]}
     return {
         "role": "worker",
@@ -95,13 +103,22 @@ def _worker_context(project_dir: Path, state: dict[str, Any], task: dict[str, An
         ],
         "specification": {"root": "workspace", "path": "spec.md", "anchor": "Current specification"},
         "context_required": (
+            "The packet carries the specification sections and decisions this task references, its acceptance "
+            "and write scope. Coordinator still supplies input references and dependency findings it does "
+            "not list. The packet does not grant authorization."
+            if packet else
             "Coordinator must supply applicable specification constraints, user decisions, input references, "
             "and dependency findings. This projection does not select them or grant authorization."
         ),
         "execution_active": bool(
             state.get("execution", {}).get("coordinator_run") or state.get("execution", {}).get("attempts")
         ),
-        "validation": "structure only; coordinator checks files, current authorization, and ownership before dispatch",
+        "validation": (
+            "references checked against the current spec.md; coordinator checks files, current authorization, "
+            "and ownership before dispatch"
+            if packet else
+            "structure only; coordinator checks files, current authorization, and ownership before dispatch"
+        ),
     }
 
 
@@ -132,9 +149,14 @@ def project_context(
         if selected is None:
             raise WorkspaceError(f"unknown task: {task_id}")
         if worker or task_only:
-            result = _worker_context(project_dir, state, selected)
+            with_packet = task_packets_enabled(state) and not task_only
+            result = _worker_context(project_dir, state, selected, with_packet)
             if task_only:
                 result["role"] = "coordinator"
+            elif with_packet:
+                from workspace_packets import build_packet  # function-local: it imports this module
+
+                result["packet"] = build_packet(project_dir, state, selected)
             return result
     active = [task for task in tasks if task["status"] not in ("DONE", "SKIPPED")]
     ready = ready_task_ids(tasks)
@@ -244,21 +266,34 @@ def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str,
 def _headings(text: str) -> list[tuple[int, str, int]]:
     """Return ATX headings outside fenced code, including their character offsets."""
     headings = []
+    for offset, line, fenced in _fence_scan(text):
+        if not fenced:
+            heading = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+            if heading:
+                headings.append((len(heading[1]), heading[2], offset))
+    return headings
+
+
+def _fence_scan(text: str) -> "list[tuple[int, str, bool]]":
+    """Each line with its character offset and whether it is a fence line or inside a fenced block.
+
+    The one fence rule: a fence opens on three or more backticks or tildes and closes on the same
+    character, at least as many, with nothing after it. An unclosed fence runs to the end of the text.
+    """
+    lines = []
     fence = ""
     offset = 0
     for line in text.splitlines(keepends=True):
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        fenced = bool(fence) or bool(marker)
         if fence:
             if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
                 fence = ""
         elif marker:
             fence = marker[1]
-        else:
-            heading = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
-            if heading:
-                headings.append((len(heading[1]), heading[2], offset))
+        lines.append((offset, line, fenced))
         offset += len(line)
-    return headings
+    return lines
 
 
 def read_project_text(

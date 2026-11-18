@@ -24,8 +24,9 @@ from workspace_lib import (
     planning_path,
     read_text,
     stale_confirmations,
+    task_packets_enabled,
 )
-from workspace_session import _headings, _load_state
+from workspace_session import _fence_scan, _headings, _load_state
 
 # Documents replaced whole under the content-token guard, as opposed to `spec`, which is edited by
 # section, and `notes`, which are append-only.
@@ -250,6 +251,15 @@ def edit_document(
         stale = stale_confirmations(spec_text, planning_text)
         if stale:
             result["stale_confirmations"] = stale
+    if document == "spec" and task_packets_enabled(state):
+        from workspace_packets import reference_errors  # function-local: that module imports this one
+
+        try:  # advisory only: the edit is already written, so a failed check never fails it
+            dangling = reference_errors(project_dir, state, dangling_only=True)
+        except (WorkspaceError, OSError, ValueError) as error:
+            dangling = [f"the references could not be checked: {error}"]
+        if dangling:
+            result["warnings"] = [f"a spec edit left references that no longer resolve: {error}" for error in dangling]
     return result
 
 
@@ -338,6 +348,53 @@ def _friction_body(body: str, friction_kind: str | None, pointer: str | None) ->
     return f"Kind: {friction_kind}\nPointer: {pointer}\n\n{body}"
 
 
+def _fenced_spans(text: str) -> list[tuple[int, int]]:
+    """Character ranges of fenced code blocks, from the one fence rule in `_fence_scan`."""
+    spans: list[tuple[int, int]] = []
+    for offset, line, fenced in _fence_scan(text):
+        if not fenced:
+            continue
+        if spans and spans[-1][1] == offset:
+            spans[-1] = (spans[-1][0], offset + len(line))
+        else:
+            spans.append((offset, offset + len(line)))
+    return spans
+
+
+def _entry_chunks(text: str, *, skip_fenced: bool = False) -> list[tuple[re.Match[str], str]]:
+    """Each entry marker with the text after it, up to the next marker or the end of the text.
+
+    `skip_fenced` ignores a marker line inside a fenced block, so quoted example text is not an entry.
+    """
+    markers = list(ENTRY_MARKER_PATTERN.finditer(text))
+    if skip_fenced:
+        spans = _fenced_spans(text)
+        markers = [m for m in markers if not any(start <= m.start() < end for start, end in spans)]
+    return [
+        (marker, text[marker.end():markers[index + 1].start() if index + 1 < len(markers) else len(text)])
+        for index, marker in enumerate(markers)
+    ]
+
+
+def entry_body(text: str, entry_id: str) -> dict[str, Any]:
+    """The body of one entry: the text after its `### <stamp> — <id>` line, stripped.
+
+    Returns `body` and `digest_ok`, which is false when the stored `research-body-sha256` line is
+    missing or does not match the body. A mismatch does not hide the body. A repeated ID or an
+    unknown ID raises `WorkspaceError`.
+    """
+    chunks = [(m, chunk) for m, chunk in _entry_chunks(text, skip_fenced=True) if m.group("id") == entry_id]
+    if not chunks:
+        raise WorkspaceError(f"no decision entry with ID: {entry_id}")
+    if len(chunks) > 1:
+        raise WorkspaceError(f"decision entry ID appears more than once: {entry_id}")
+    chunk = chunks[0][1]
+    heading = ENTRY_HEADING_PATTERN.search(chunk)
+    body = (chunk[heading.end():] if heading else chunk).strip()
+    digests = ENTRY_BODY_PATTERN.findall(chunk)
+    return {"body": body, "digest_ok": digests == [document_sha256(body)]}
+
+
 def friction_entries(text: str) -> list[dict[str, str]]:
     """Every friction entry in document order: id, at, kind, pointer, body.
 
@@ -345,10 +402,7 @@ def friction_entries(text: str) -> list[dict[str, str]]:
     dropped: the retro counts it as friction of unknown kind, which is still friction.
     """
     entries: list[dict[str, str]] = []
-    markers = list(ENTRY_MARKER_PATTERN.finditer(text))
-    for index, marker in enumerate(markers):
-        end = markers[index + 1].start() if index + 1 < len(markers) else len(text)
-        chunk = text[marker.end():end]
+    for marker, chunk in _entry_chunks(text):
         heading = ENTRY_HEADING_PATTERN.search(chunk)
         entry = {"id": marker.group("id"), "at": heading.group("at") if heading else "", "kind": "", "pointer": ""}
         rest = chunk[heading.end():] if heading else chunk

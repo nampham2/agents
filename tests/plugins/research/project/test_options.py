@@ -82,8 +82,8 @@ def test_options_records_each_key_and_keeps_the_others(three: Path) -> None:
     assert "options" not in load_state(three)
 
 
-@pytest.mark.parametrize("key", ["delegating", "delegate", "style", "Reports"])
-def test_an_unknown_key_such_as_delegating_is_rejected(three: Path, key: str) -> None:
+@pytest.mark.parametrize("key", ["delegate", "style", "Reports"])
+def test_an_unknown_key_is_rejected(three: Path, key: str) -> None:
     with pytest.raises(WorkspaceError, match="unknown key"):
         settings(three, options={key: True})
     assert "options" not in load_state(three)
@@ -91,8 +91,38 @@ def test_an_unknown_key_such_as_delegating_is_rejected(three: Path, key: str) ->
 
 def test_a_stored_unknown_key_is_a_validation_finding(three: Path) -> None:
     stored = json.loads((three / "project.json").read_text(encoding="utf-8"))
-    errors = lib.validate_v4_state({**stored, "options": {"delegating": True}}, three, check_files=False).errors
-    assert any("unknown key: delegating" in text for text in errors)
+    errors = lib.validate_v4_state({**stored, "options": {"delegate": True}}, three, check_files=False).errors
+    assert any("unknown key: delegate" in text for text in errors)
+
+
+# --- delegating: a policy-5 boolean, off by default -------------------------------------------------
+
+
+def test_delegating_is_refused_below_policy_five(three: Path) -> None:
+    with pytest.raises(WorkspaceError, match=r"options\.delegating needs policy_version 5"):
+        settings(three, options={"delegating": True})
+    assert "options" not in load_state(three)
+    stored = json.loads((three / "project.json").read_text(encoding="utf-8"))
+    errors = lib.validate_v4_state({**stored, "options": {"delegating": False}}, three, check_files=False).errors
+    assert any("options.delegating needs policy_version 5" in text for text in errors)
+    assert "delegating" not in lib.project_options({**load_state(three), "options": {"delegating": True}})
+    assert lib.option_keys(load_state(three)) == ("style_advice", "memory_staging", "reports")
+    with pytest.raises(WorkspaceError, match="name at least one of style_advice, memory_staging, reports,"):
+        settings(three, options={})
+
+
+def test_delegating_is_a_boolean_option_at_policy_five(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    five = at_policy(tmp_path, monkeypatch, 5)
+    assert lib.project_options(load_state(five))["delegating"] is False
+    settings(five, options={"delegating": True})
+    assert lib.project_options(load_state(five))["delegating"] is True
+    with pytest.raises(WorkspaceError, match=r"options\.delegating must be true or false"):
+        settings(five, options={"delegating": "yes"})
+    settings(five, options=None)
+    assert lib.project_options(load_state(five))["delegating"] is False
+    assert lib.option_keys({"policy_version": "5"}) == ("style_advice", "memory_staging", "reports")
+    not_a_state: Any = "not a state"
+    assert lib.option_keys(not_a_state) == ("style_advice", "memory_staging", "reports")
 
 
 # --- reports: off by default at policy 3 ---------------------------------------------------------

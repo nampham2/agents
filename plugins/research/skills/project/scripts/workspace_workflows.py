@@ -109,6 +109,7 @@ from workspace_lib import (
     staging_enabled,
     stale_confirmations,
     task_durable_enabled,
+    task_packets_enabled,
     validate_project,
 )
 from workspace_operations import _task, migration_plan, research_task_conflicts, rules_diff, target_conflicts
@@ -130,7 +131,9 @@ FIELDS = {
     "settings": {"review_risk", "review_fallback", "options", "confirmation"},
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
-    "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision", "attempt_id"},
+    "worker-event": {
+        "task", "handle", "event", "scope", "observation", "assignment_revision", "attempt_id", "packet_sha256",
+    },
     "authorize": {"task", "authorization", "continuation"},
     "receipt": {"task", "receipt"},
     "effect": {"operation", "task", "key", "effect", "outcome", "note"},
@@ -190,8 +193,9 @@ GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in O
 WORKER_EVENTS = ("intent", "launched", "observed", "completed", "stopped", "failed")
 # `attempt_id` is allowed everywhere but required nowhere in the schema: the builder demands it at policy 4 for
 # every event except `intent`, and refuses it below policy 4. The stored line adds `attempt_id` and `counter`.
-WORKER_EVENT_REQUIRED = frozenset(FIELDS["worker-event"] - {"attempt_id"})
-WORKER_EVENT_OPTIONAL = frozenset({"attempt_id", "counter"})
+WORKER_EVENT_REQUIRED = frozenset(FIELDS["worker-event"] - {"attempt_id", "packet_sha256"})
+WORKER_EVENT_OPTIONAL = frozenset({"attempt_id", "counter", "packet_sha256"})
+PACKET_HASH = re.compile(r"[0-9a-f]{64}")
 HELD_FREE_EVENTS = ("completed", "stopped")
 # The events each latest state accepts (section 5 of the design); `stopped` is the only one a superseded
 # attempt accepts, and `failed` stays held until it is stopped.
@@ -409,7 +413,9 @@ def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str,
 WORKER_LINE = re.compile(r"<!-- research-worker (.+) -->[ \t]*")
 
 
-def _worker_lines(text: str, durable: bool, warnings: "list[str] | None", task_id: str) -> list[dict[str, Any]]:
+def _worker_lines(
+    text: str, durable: bool, warnings: "list[str] | None", task_id: str, packets: bool = False,
+) -> list[dict[str, Any]]:
     """The `research-worker` lines of one notes document, in order.
 
     Below policy 4 a malformed line is an error, as before (a field error keeps its own text, bad JSON says so),
@@ -421,6 +427,8 @@ def _worker_lines(text: str, durable: bool, warnings: "list[str] | None", task_i
     allowed = FIELDS["worker-event"] | {"recorded", "counter"}
     if not durable:
         allowed = allowed - WORKER_EVENT_OPTIONAL
+    if not packets:
+        allowed = allowed - {"packet_sha256"}
     lines = []
     for number, raw in enumerate(text.splitlines(), start=1):
         if not raw.startswith("<!-- research-worker "):
@@ -449,6 +457,12 @@ def _worker_lines(text: str, durable: bool, warnings: "list[str] | None", task_i
                     string_input(event["attempt_id"], "attempt_id")
                     if type(event["counter"]) is not int:
                         raise WorkspaceError("counter is not an integer")
+                if "packet_sha256" in event and (
+                    event["event"] != "intent"
+                    or type(event["packet_sha256"]) is not str
+                    or PACKET_HASH.fullmatch(event["packet_sha256"]) is None
+                ):
+                    raise WorkspaceError("packet_sha256 is not 64 lowercase hex characters on an intent event")
         except WorkspaceError as error:
             if not durable:
                 raise
@@ -488,7 +502,7 @@ def worker_events(project: Path, warnings: "list[str] | None" = None) -> list[di
     for task in state["tasks"]:
         text, _ = snapshot(document_path(project, "tasks/" + task["id"]))
         damage: list[str] = []
-        lines = _worker_lines(text, durable, damage, task["id"])
+        lines = _worker_lines(text, durable, damage, task["id"], task_packets_enabled(state))
         if damage:
             if warnings is not None:
                 warnings.extend(damage)
@@ -508,7 +522,9 @@ def worker_events(project: Path, warnings: "list[str] | None" = None) -> list[di
     return [*held, *others]
 
 
-def _attempt_keys(task: dict[str, Any], request: dict[str, Any], notes: str) -> dict[str, Any]:
+def _attempt_keys(
+    task: dict[str, Any], request: dict[str, Any], notes: str, packets: bool = False,
+) -> dict[str, Any]:
     """The `attempt_id` and `counter` of a policy-4 worker event, after every refusal; nothing is written here.
 
     `intent` opens an attempt: the tool issues the id from the task's `assignment_counter`. Every other event
@@ -517,7 +533,7 @@ def _attempt_keys(task: dict[str, Any], request: dict[str, Any], notes: str) -> 
     """
     event = request["event"]
     damage: list[str] = []
-    lines = _worker_lines(notes, True, damage, task["id"])
+    lines = _worker_lines(notes, True, damage, task["id"], packets)
     if damage:
         # The builder decides from these lines, so a skipped one could hide a live attempt: refuse, never guess.
         raise WorkspaceError(
@@ -553,6 +569,17 @@ def _attempt_keys(task: dict[str, Any], request: dict[str, Any], notes: str) -> 
     if latest["event"] not in WORKER_EVENT_FROM[event]:
         raise WorkspaceError(f"event not valid from {latest['event']}: {event} on {attempt_id}")
     return {"attempt_id": attempt_id, "counter": latest["counter"]}
+
+
+def _packet_hash(request: dict[str, Any], packets: bool) -> None:
+    """Refuse `packet_sha256` below policy 5, off an `intent` event, or when it is not 64 lowercase hex."""
+    if not packets:
+        raise WorkspaceError("packet_sha256 needs policy_version 5; this project is at an earlier policy")
+    value = request["packet_sha256"]
+    if request["event"] != "intent":
+        raise WorkspaceError("packet_sha256 belongs to an intent event")
+    if type(value) is not str or PACKET_HASH.fullmatch(value) is None:
+        raise WorkspaceError("packet_sha256 must be 64 lowercase hex characters")
 
 
 def _confirmation(value: object) -> dict[str, str]:
@@ -875,7 +902,7 @@ def _settings(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
         patch["review_fallback"] = fallback
     if "options" in request:
         options = request["options"]
-        problems = [] if options is None else options_errors(options)
+        problems = [] if options is None else options_errors(options, state)
         if problems:
             raise WorkspaceError(problems[0])
         patch["options"] = options
@@ -1060,11 +1087,16 @@ def _build(
         name = "tasks/" + request["task"]
         event = {key: request[key] for key in WORKER_EVENT_REQUIRED}
         if task_durable_enabled(state):
-            event.update(_attempt_keys(task, request, read(name)))
+            event.update(_attempt_keys(task, request, read(name), task_packets_enabled(state)))
+            if "packet_sha256" in request:
+                _packet_hash(request, task_packets_enabled(state))
+                event["packet_sha256"] = request["packet_sha256"]
             if request["event"] == "intent":
                 result["attempt_id"] = event["attempt_id"]
         elif "attempt_id" in request:
             raise WorkspaceError("attempt_id needs policy_version 4; this project is at an earlier policy")
+        elif "packet_sha256" in request:
+            raise WorkspaceError("packet_sha256 needs policy_version 5; this project is at an earlier policy")
         event["recorded"] = now_iso()
         documents[name] = _entry(
             read(name), request["id"], "<!-- research-worker " + json.dumps(event, sort_keys=True) + " -->"

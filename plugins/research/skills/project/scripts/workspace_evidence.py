@@ -28,6 +28,39 @@ OUTCOME = re.compile(r"^- Outcome: (?P<outcome>rewrite)$", re.MULTILINE)
 OBSERVATION = re.compile(rf"^- Observation: (?P<label>passed|FAILED) \({re.escape(OBSERVATION_LABEL)}\)$", re.MULTILINE)
 
 
+# Policy 5 entries: the task's assignment counter and one line per declared path (design section 4).
+COUNTER_LINE = re.compile(r"^- Assignment counter:.*$", re.MULTILINE)
+COUNTER = re.compile(r"- Assignment counter: (?P<n>0|[1-9]\d*)")
+FINGERPRINT_LINE = re.compile(r"^- Fingerprint:.*$", re.MULTILINE)
+FINGERPRINT = re.compile(
+    r"- Fingerprint: (?:(?P<kind>file|dir) (?P<root>target|workspace|workspace_root) (?P<sha256>[0-9a-f]{64})"
+    r"|(?P<other>missing|over-budget|unreadable) (?P<other_root>target|workspace|workspace_root) -)"
+    r" (?P<path>\S.*)"
+)
+
+
+def _applicability_lines(preamble: str) -> tuple["int | None", list[dict[str, str]]]:
+    """The recorded counter and fingerprints of one entry, or `(None, [])` when any such line is malformed.
+
+    A duplicate or malformed counter line, or a malformed fingerprint line, leaves the entry with no
+    fingerprint; it stays selectable. An entry without the lines parses as before.
+    """
+    counters = COUNTER_LINE.findall(preamble)
+    prints: list[dict[str, str]] = []
+    for line in FINGERPRINT_LINE.findall(preamble):
+        match = FINGERPRINT.fullmatch(line.rstrip("\r"))
+        if match is None:
+            return None, []
+        prints.append({
+            "kind": match["kind"] or match["other"], "root": match["root"] or match["other_root"],
+            "sha256": match["sha256"], "path": match["path"],
+        })
+    if not counters:
+        return None, []
+    counter = COUNTER.fullmatch(counters[0].rstrip("\r")) if len(counters) == 1 else None
+    return (int(counter["n"]), prints) if counter else (None, [])
+
+
 def _entry_rows(text: str) -> list[dict[str, Any]]:
     headings = [(title, pos) for level, title, pos in _headings(text) if level == 2]
     rows: list[dict[str, Any]] = []
@@ -44,6 +77,7 @@ def _entry_rows(text: str) -> list[dict[str, Any]]:
         stamps = RECORDED.findall(preamble)
         control = CONTROL.search(preamble) is not None
         outcomes = OUTCOME.findall(preamble)
+        counter, fingerprints = _applicability_lines(preamble)
         # Exactly one verdict line, of exactly one kind: an entry that claims both an exit code and an
         # observation is ambiguous about what kind of evidence it is, so it selects as neither.
         selectable = len(ids) == len(anchors) == 1 and len(exits) + len(observations) == 1
@@ -69,6 +103,8 @@ def _entry_rows(text: str) -> list[dict[str, Any]]:
             "anchor": anchors[0] if len(anchors) == 1 else None,
             "selectable": selectable,
             "legacy": not ids,
+            "counter": counter,
+            "fingerprints": fingerprints,
             "text": segment,
         })
     return rows
