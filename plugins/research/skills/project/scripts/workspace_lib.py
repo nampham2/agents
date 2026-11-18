@@ -206,12 +206,19 @@ TASK_STAMP_FIELDS = ("started_at", "finished_at")
 # Policy 4 only: `block_generation` counts the times a task entered BLOCKED and `assignment_counter` the
 # times it entered RUNNING or had an assignment field edited. Both are written by the tool, never the caller.
 TASK_DURABLE_FIELDS = ("block_generation", "assignment_counter")
+# Policy 5 only: the spec headings and decision entries a worker packet is built from. The caller writes them,
+# so they are assignment fields: editing one supersedes every live attempt.
+TASK_PACKET_FIELDS = ("spec_refs", "decision_refs")
 # The fields that define what a worker was asked to do; editing one supersedes every live attempt.
 # `authorization`, `receipts`, `evidence`, the stamps and the durable keys are deliberately not here.
-ASSIGNMENT_FIELDS = ("name", "depends_on", "outputs", "success_criteria", "verification", "effect", "reads")
+ASSIGNMENT_FIELDS = (
+    "name", "depends_on", "outputs", "success_criteria", "verification", "effect", "reads", *TASK_PACKET_FIELDS,
+)
 # An absent list reads as empty, so writing `reads: []` on a task with no `reads` is not an assignment edit.
-ASSIGNMENT_DEFAULTS: "dict[str, Any]" = {"depends_on": [], "outputs": [], "reads": []}
-TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS}
+ASSIGNMENT_DEFAULTS: "dict[str, Any]" = {
+    "depends_on": [], "outputs": [], "reads": [], **{name: [] for name in TASK_PACKET_FIELDS},
+}
+TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS, *TASK_PACKET_FIELDS}
 
 
 @dataclass
@@ -487,12 +494,12 @@ def needs_merge(entry: object) -> bool:
 
 # The policy a new project starts at: target-based delivery. `allocate_project` reads it at call time and
 # writes it to `policy_version`; None starts a project with no policy (derived from `created`). Production
-# starts at 4: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
-# the durable task fields. The test suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
+# starts at 5: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
+# the durable task fields (policy 4) and the packet reference fields (policy 5). The test suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
 # delivery target to leave ALIGNING.
-NEW_PROJECT_POLICY: "int | None" = 4
+NEW_PROJECT_POLICY: "int | None" = 5
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
-POLICY_VERSIONS = (0, 1, 2, 3, 4)
+POLICY_VERSIONS = (0, 1, 2, 3, 4, 5)
 DEFAULT_OPTIONS: "dict[str, bool]" = {"style_advice": True, "memory_staging": True, "reports": False}
 REVIEW_RISKS = ("low", "standard", "high")
 FALLBACK_MODES = ("ask", "waive-recorded")
@@ -1601,6 +1608,14 @@ def task_durable_enabled(state: dict[str, Any]) -> bool:
         return False
     policy, valid = _policy_value(state)
     return valid and policy >= 4
+
+
+def task_packets_enabled(state: dict[str, Any]) -> bool:
+    """Whether tasks may carry `spec_refs` and `decision_refs`: a valid policy 5 or later."""
+    if not isinstance(state, dict):
+        return False
+    policy, valid = _policy_value(state)
+    return valid and policy >= 5
 
 
 def stamp_transitions(before: "dict[str, Any] | None", after: dict[str, Any]) -> dict[str, int]:
@@ -3054,6 +3069,16 @@ def validate_v4_state(
                 report.errors.append(f"{label}: {durable_field} needs policy_version 4")
             elif type(task[durable_field]) is not int or task[durable_field] < 0:
                 report.errors.append(f"{label}: {durable_field} must be a non-negative integer")
+        packets = task_packets_enabled(state)
+        for packet_field in TASK_PACKET_FIELDS:
+            if packet_field not in task:
+                continue
+            if not packets:
+                report.errors.append(f"{label}: {packet_field} needs policy_version 5")
+                continue
+            value = task[packet_field]
+            if not isinstance(value, list) or any(not _non_empty_string(item) for item in value):
+                report.errors.append(f"{label}: {packet_field} must be a list of non-empty strings")
         if durable and task_status == "BLOCKED" and type(task.get("block_generation")) is int:
             if task["block_generation"] < 1:
                 report.errors.append(f"{label}: a BLOCKED task needs block_generation of at least 1")
@@ -4495,6 +4520,10 @@ def validate_project(
         elif version == 4:
             state = load_json(project_dir / "project.json")
             report = validate_v4_state(state, project_dir, close=close, already_done=_done_task_ids(state))
+            if not report.errors:
+                from workspace_packets import reference_errors  # function-local: that module imports this one
+
+                report.errors.extend(reference_errors(project_dir, state))
         else:
             report = ValidationReport(errors=[f"unsupported schema_version: {version} ({NEWER_PLUGIN_HINT})"])
     except WorkspaceError as error:
@@ -6338,6 +6367,30 @@ def tag_project(
         raise WorkspaceError(f"tag refused: {error}") from error
 
 
+def _reference_transition_errors(project_dir: Path, current: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
+    """Reference errors of the tasks a commit adds or whose references or status it changes (policy 5).
+
+    A stale reference in an untouched task never blocks an unrelated commit; `validate` scans them all.
+    """
+    if not task_packets_enabled(candidate) or not isinstance(candidate.get("tasks"), list):
+        return []
+    before = {
+        task["id"]: task for task in current.get("tasks", []) if isinstance(task, dict) and "id" in task
+    }
+    changed = [
+        task["id"] for task in candidate["tasks"]
+        if isinstance(task, dict) and isinstance(task.get("id"), str) and (
+            task["id"] not in before
+            or any(before[task["id"]].get(key) != task.get(key) for key in (*TASK_PACKET_FIELDS, "status"))
+        )
+    ]
+    if not changed:
+        return []
+    from workspace_packets import reference_errors  # function-local: that module imports this one
+
+    return reference_errors(project_dir, candidate, changed)
+
+
 def _commit_state_locked(
     project_dir: Path, candidate: dict[str, Any], expected_revision: int,
     locked_guard: Callable[[dict[str, Any]], None] | None = None,
@@ -6372,6 +6425,7 @@ def _commit_state_locked(
         warnings.extend(gate_warnings)
 
     transition_errors += newly_terminal_task_errors(project_dir, current, candidate)[0]
+    transition_errors += _reference_transition_errors(project_dir, current, candidate)
     if transition_errors:
         raise WorkspaceError("; ".join(transition_errors))
     candidate["revision"] = expected_revision + 1

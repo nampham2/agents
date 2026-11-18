@@ -26,7 +26,7 @@ SURFACES = ["bin", "skills/project/scripts"]
 PLANNING = "# A1\n\nStatus: draft\n\n## Modules\n\nOne parser, one test file.\n"
 TASK = {
     "id": "T01", "name": "Do the work", "success_criteria": "The check passes", "verification": "Run the check",
-    "effect": {"kind": "none"}, "outputs": [],
+    "effect": {"kind": "none"}, "outputs": [], "spec_refs": ["Objective and audience"],
 }
 
 
@@ -258,7 +258,7 @@ def test_a_reviewable_pr_completes_at_closure_with_the_merge_deferred(tmp_path: 
     project = next(path for path in (tmp_path / "workspace").iterdir() if (path / "project.json").is_file())
     state = state_of(project)
     kept = state["worktrees"][0]
-    assert state["status"] == "DONE" and state["delivery_target"] == "pr" and state["policy_version"] == 4
+    assert state["status"] == "DONE" and state["delivery_target"] == "pr" and state["policy_version"] == 5
     assert "pull_request" in kept and "merge" not in kept and "version_line" not in kept
 
 
@@ -277,7 +277,7 @@ def test_a_legacy_project_keeps_the_old_permissive_behaviour(tmp_path: Path, sur
     cli.ok("edit", project, "spec", "--sections-json", "-", "--expected-sha256", snapshot(project / "spec.md")[1],
            stdin=json.dumps(sections))
     cli.ok("update", project, "-", "--expected-revision", 0,
-           stdin=json.dumps({"status": "PLANNING", "tasks": [TASK]}))
+           stdin=json.dumps({"status": "PLANNING", "tasks": [{k: v for k, v in TASK.items() if k != "spec_refs"}]}))
     cli.ok("task", project, "start", "T01", "--expected-revision", 1)
     done = {"tasks": [{"id": "T01", "status": "DONE", "evidence": [
         {"root": "workspace", "path": "evidence.md", "anchor": "T01"}]}]}
