@@ -24,8 +24,9 @@ from workspace_lib import (
     planning_path,
     read_text,
     stale_confirmations,
+    task_packets_enabled,
 )
-from workspace_session import _headings, _load_state
+from workspace_session import _fence_scan, _headings, _load_state
 
 # Documents replaced whole under the content-token guard, as opposed to `spec`, which is edited by
 # section, and `notes`, which are append-only.
@@ -250,6 +251,12 @@ def edit_document(
         stale = stale_confirmations(spec_text, planning_text)
         if stale:
             result["stale_confirmations"] = stale
+    if document == "spec" and task_packets_enabled(state):
+        from workspace_packets import reference_errors  # function-local: that module imports this one
+
+        dangling = [error for error in reference_errors(project_dir, state) if "needs at least one" not in error]
+        if dangling:
+            result["warnings"] = [f"a spec edit left references that no longer resolve: {error}" for error in dangling]
     return result
 
 
@@ -339,22 +346,15 @@ def _friction_body(body: str, friction_kind: str | None, pointer: str | None) ->
 
 
 def _fenced_spans(text: str) -> list[tuple[int, int]]:
-    """Character ranges of fenced code blocks, using the fence rule of `_headings`."""
+    """Character ranges of fenced code blocks, from the one fence rule in `_fence_scan`."""
     spans: list[tuple[int, int]] = []
-    fence = ""
-    start = offset = 0
-    for line in text.splitlines(keepends=True):
-        marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
-        if fence:
-            if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
-                fence = ""
-                spans.append((start, offset + len(line)))
-        elif marker:
-            fence = marker[1]
-            start = offset
-        offset += len(line)
-    if fence:
-        spans.append((start, len(text)))
+    for offset, line, fenced in _fence_scan(text):
+        if not fenced:
+            continue
+        if spans and spans[-1][1] == offset:
+            spans[-1] = (spans[-1][0], offset + len(line))
+        else:
+            spans.append((offset, offset + len(line)))
     return spans
 
 

@@ -96,8 +96,9 @@ Removing a Claude marketplace also removes plugins installed from it.
   records that hash on its `intent` event. A missing or unknown reference is an error when the task
   is written and when the packet is built.
 - **Evidence applicability.** A recorded check carries the assignment counter and a fingerprint of
-  the paths the task declares. `task finish` and `resume` report whether each still applies:
-  `applicable`, `invalidated` or `needs-judgement`. The report never blocks.
+  the paths the task declares. `task finish` reports whether each cited check still applies, and
+  `resume` does the same for the latest cited check of each running task: `applicable`,
+  `invalidated` or `needs-judgement`. The report never blocks.
 - **`delegating`.** A boolean option from policy 5, off by default. With it on the packet warns for
   a dependency that is not `DONE` and for a stale packet hash.
 - A launcher older than 0.41.0 refuses a policy-5 project, so update both hosts together before

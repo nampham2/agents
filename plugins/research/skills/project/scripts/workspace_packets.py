@@ -16,7 +16,7 @@ from workspace_documents import entry_body
 from workspace_journal import document_path
 from workspace_lib import WorkspaceError, project_options, read_text, task_packets_enabled
 from workspace_session import _headings
-from workspace_workflows import _worker_lines
+from workspace_workflows import HELD_FREE_EVENTS, _attempts, _worker_lines
 
 SPEC_SECTION = "Current specification"
 # Characters of referenced sections plus decision bodies above which the packet carries a warning.
@@ -122,13 +122,12 @@ def reference_errors(
     return errors
 
 
-def _latest_intent(project: Path, state: dict[str, Any], task_id: str, warnings: list[str]) -> dict[str, Any] | None:
+def _worker_history(project: Path, task_id: str, warnings: list[str]) -> list[dict[str, Any]]:
+    """The task's `research-worker` lines in file order; damaged lines are skipped with a warning."""
     path = document_path(project, "tasks/" + task_id)
     if not path.exists():
-        return None
-    lines = _worker_lines(read_text(path), True, warnings, task_id, True)
-    intents = [line for line in lines if line["event"] == "intent"]
-    return intents[-1] if intents else None
+        return []
+    return _worker_lines(read_text(path), True, warnings, task_id, True)
 
 
 def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
@@ -142,8 +141,10 @@ def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> 
     terminal = task["status"] in TERMINAL
     spec = _spec_text(project)
     sections, duplicates = spec_sections(spec)
-    if duplicates:
+    if duplicates and not terminal:
         raise WorkspaceError(f"spec.md: two `###` headings under `## {SPEC_SECTION}` read `{duplicates[0]}`")
+    if duplicates:  # a finished task is never stranded by a later spec edit: the first section is used
+        warnings.append(f"spec.md has two `###` headings that read `{duplicates[0]}`; the first is used")
     refs = _unique(task.get("spec_refs"))
     decisions = _unique(task.get("decision_refs"))
     if not terminal:
@@ -173,7 +174,13 @@ def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> 
             f"packet text is {size} characters, above {PACKET_WARN_CHARS}; nothing is truncated"
         )
     by_id = {item["id"]: item for item in state["tasks"]}
-    intent = _latest_intent(project, state, task["id"], warnings)
+    history = _worker_history(project, task["id"], warnings)
+    intents = [line for line in history if line["event"] == "intent"]
+    intent = intents[-1] if intents else None
+    open_attempts = [
+        {key: line[key] for key in ("attempt_id", "counter", "event", "handle", "observation")}
+        for line in _attempts(history).values() if line["event"] not in HELD_FREE_EVENTS
+    ]
     delegating = project_options(state)["delegating"]
     if intent is not None and "packet_sha256" in intent and intent["packet_sha256"] != packet_sha256:
         message = (
@@ -199,7 +206,7 @@ def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> 
         "write_scope": {"outputs": task.get("outputs", []), "effect": task.get("effect")},
         "prohibited_effects": {"effect": task.get("effect"), "authorization": task.get("authorization")},
         "assignment_counter": task.get("assignment_counter"),
-        "partial_work": {"task_notes": f"tasks/{task['id']}.md"},
+        "partial_work": {"task_notes": f"tasks/{task['id']}.md", "open_attempts": open_attempts},
         "result_format": "references/task-workers.md",
         "packet_sha256": packet_sha256,
         "chars": size,

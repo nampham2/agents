@@ -266,21 +266,34 @@ def validated_project_context(project_dir: Path, *, limit: int = 5) -> dict[str,
 def _headings(text: str) -> list[tuple[int, str, int]]:
     """Return ATX headings outside fenced code, including their character offsets."""
     headings = []
+    for offset, line, fenced in _fence_scan(text):
+        if not fenced:
+            heading = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
+            if heading:
+                headings.append((len(heading[1]), heading[2], offset))
+    return headings
+
+
+def _fence_scan(text: str) -> "list[tuple[int, str, bool]]":
+    """Each line with its character offset and whether it is a fence line or inside a fenced block.
+
+    The one fence rule: a fence opens on three or more backticks or tildes and closes on the same
+    character, at least as many, with nothing after it. An unclosed fence runs to the end of the text.
+    """
+    lines = []
     fence = ""
     offset = 0
     for line in text.splitlines(keepends=True):
         marker = re.match(r"^ {0,3}(`{3,}|~{3,})(.*)$", line)
+        fenced = bool(fence) or bool(marker)
         if fence:
             if marker and marker[1][0] == fence[0] and len(marker[1]) >= len(fence) and not marker[2].strip():
                 fence = ""
         elif marker:
             fence = marker[1]
-        else:
-            heading = re.match(r"^ {0,3}(#{1,6})\s+(.+?)\s*#*\s*$", line)
-            if heading:
-                headings.append((len(heading[1]), heading[2], offset))
+        lines.append((offset, line, fenced))
         offset += len(line)
-    return headings
+    return lines
 
 
 def read_project_text(

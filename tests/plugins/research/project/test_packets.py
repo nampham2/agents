@@ -411,7 +411,7 @@ def test_a_task_without_notes_or_an_intent_hash_adds_no_note(tmp_path: Path) -> 
     state = _load_state(project)
     assert not (project / "tasks/T02.md").exists()
     assert build_packet(project, state, state["tasks"][1])["notes"] == []
-    assert workspace_packets._latest_intent(project, state, "T01", []) is None
+    assert workspace_packets._worker_history(project, "T01", []) == []
 
 
 # --- delegating: the two warnings it governs --------------------------------------------------------
@@ -450,3 +450,56 @@ def test_delegating_turns_a_changed_packet_hash_into_a_warning(tmp_path: Path) -
     _delegating(project, True)
     on = build_packet(project, _load_state(project), _load_state(project)["tasks"][0])
     assert on["warnings"] == on["notes"] and len(on["notes"]) == 1
+
+
+# --- review fixes: terminal duplicates, open attempts and the spec-edit warning --------------------------
+
+
+def test_a_done_task_is_not_stranded_by_a_duplicate_heading(tmp_path: Path) -> None:
+    project = _project(tmp_path, 5)
+    _set(project, "T01", spec_refs=[HEADING], status="DONE")
+    (project / "spec.md").write_text(_spec(project).replace(f"### {OTHER}", f"### {HEADING}", 1), encoding="utf-8")
+    state = _load_state(project)
+    packet = build_packet(project, state, state["tasks"][0])
+    assert [s["heading"] for s in packet["spec_sections"]] == [HEADING]
+    assert packet["warnings"] == [f"spec.md has two `###` headings that read `{HEADING}`; the first is used"]
+
+
+def test_the_packet_lists_the_open_attempts_of_the_task(tmp_path: Path) -> None:
+    project = _project(tmp_path, 5)
+    _set(project, "T01", spec_refs=[HEADING])
+    state = _load_state(project)
+    assert build_packet(project, state, state["tasks"][0])["partial_work"]["open_attempts"] == []
+    attempt = _intent(project, "intent-1")["attempt_id"]
+    packet = build_packet(project, state, state["tasks"][0])
+    assert packet["partial_work"]["task_notes"] == "tasks/T01.md"
+    assert [(a["attempt_id"], a["counter"], a["event"]) for a in packet["partial_work"]["open_attempts"]] == [
+        (attempt, 1, "intent")
+    ]
+    workflow(
+        project, "worker-event",
+        request(
+            project, "stop-1", task="T01", handle="w", event="stopped", scope="s", observation="o",
+            assignment_revision=_load_state(project)["revision"], attempt_id=attempt,
+        ),
+    )
+    assert build_packet(project, state, state["tasks"][0])["partial_work"]["open_attempts"] == []
+
+
+def test_a_spec_edit_warns_about_references_it_leaves_dangling(tmp_path: Path) -> None:
+    from workspace_documents import edit_document
+    from workspace_journal import snapshot
+
+    project = _project(tmp_path, 5)
+    append_record(project, "decision", "A decision.", entry_id="q1")
+    _set(project, "T01", spec_refs=[HEADING], decision_refs=["q1"])
+    clean = edit_document(project, "spec", expected_sha256=snapshot(project / "spec.md")[1], sections={OTHER: "x"})
+    assert "warnings" not in clean
+    (project / "spec.md").write_text(_spec(project).replace(f"### {HEADING}", "### Renamed"), encoding="utf-8")
+    edited = edit_document(project, "spec", expected_sha256=snapshot(project / "spec.md")[1], sections={OTHER: "y"})
+    assert len(edited["warnings"]) == 1 and f"names no `###` heading under `## Current specification`: {HEADING}" in (
+        edited["warnings"][0]
+    )
+    older = _project(tmp_path / "older", 4)
+    plain = edit_document(older, "spec", expected_sha256=snapshot(older / "spec.md")[1], sections={OTHER: "z"})
+    assert "warnings" not in plain

@@ -84,4 +84,8 @@ the task patch of `update`; an edit bumps `assignment_counter`. `context --worke
 returns the complete `packet`: the referenced sections and decision bodies, acceptance, dependency
 outputs, write scope, prohibited effects, the assignment counter, `packet_sha256`, `notes` and
 `warnings`. Nothing is truncated; above about 12,000 characters the packet warns. Pass
-`packet_sha256` on the worker's `intent` event. `workflow packet` and `--task-only` are unchanged.
+`packet_sha256` on the worker's `intent` event. The hash covers the referenced spec sections only,
+not decision bodies, acceptance or scope, and the tool does not check the value a worker passes, so
+a hash note is advisory. `partial_work` names the task notes and lists open attempts. `validate` is
+the full reference check; the commit checks only tasks it touches, and a spec edit warns about
+references it leaves dangling. `workflow packet` and `--task-only` are unchanged.

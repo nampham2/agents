@@ -330,11 +330,45 @@ def test_an_entry_without_a_fingerprint_needs_judgement(tmp_path: Path) -> None:
     project, record_id = _recorded(tmp_path, [])
     result = _classify(project, record_id)
     assert result is not None and result["state"] == "needs-judgement"
-    assert result["reasons"] == ["no fingerprint was recorded with this entry"]
+    assert result["reasons"] == ["the task declared no local path to fingerprint"]
     text = (project / "evidence.md").read_text(encoding="utf-8").replace("- Assignment counter: 1\n", "")
     (project / "evidence.md").write_text(text, encoding="utf-8")
     again = _classify(project, record_id)
     assert again is not None and again["state"] == "needs-judgement"
+    assert again["reasons"] == ["no fingerprint was recorded with this entry"]
+
+
+def test_a_failed_run_is_never_applicable(tmp_path: Path) -> None:
+    project = _project(tmp_path, 5)
+    (_target(project) / "a.py").write_text("x", encoding="utf-8")
+    _declare(project, ["a.py"])
+    failed = record_evidence_result(project, "T01", ["false"])
+    assert failed.exit_code == 1
+    result = _classify(project, failed.record_id)
+    assert result is not None and result["state"] == "needs-judgement"
+    assert result["reasons"] == ["the recorded run did not pass"]
+
+
+def test_a_path_with_edge_whitespace_is_recorded_as_unreadable_and_keeps_the_other_lines(tmp_path: Path) -> None:
+    project = _project(tmp_path, 5)
+    (_target(project) / "a.py").write_text("x", encoding="utf-8")
+    _declare(project, [" a.py", "a.py"])
+    record_id = _record(project)
+    row = _row(project, record_id)
+    assert [(f["kind"], f["path"]) for f in row["fingerprints"]] == [("unreadable", "' a.py'"), ("file", "a.py")]
+
+
+def test_a_directory_of_many_files_runs_out_of_budget(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    project = _project(tmp_path, 5)
+    folder = _target(project) / "d"
+    folder.mkdir()
+    for name in "abc":
+        (folder / name).write_text("x", encoding="utf-8")
+    monkeypatch.setattr(workspace_context, "ENTRY_COST", workspace_context.FINGERPRINT_LIMIT // 2)
+    _declare(project, ["d"])
+    assert capture_fingerprint(project, _load_state(project), _task(project))[1] == (
+        "- Fingerprint: over-budget target - d"
+    )
 
 
 def test_unreadable_and_over_budget_paths_need_judgement_and_changes_win(
@@ -415,13 +449,37 @@ def test_only_workspace_paths_skip_the_git_listing(tmp_path: Path, monkeypatch: 
 # --- the two reports ------------------------------------------------------------------------------
 
 
-def test_evidence_applicability_skips_unknown_records_and_a_missing_file(tmp_path: Path) -> None:
+def test_evidence_applicability_names_unknown_records_and_survives_a_missing_file(tmp_path: Path) -> None:
     project, record_id = _recorded(tmp_path, ["a.py"], {"a.py": "x"})
     assert evidence_applicability(project, _load_state(project), []) == []
-    report = evidence_applicability(project, _load_state(project), ["ev-" + "0" * 32, record_id])
-    assert [item["record_id"] for item in report] == [record_id]
+    unknown = "ev-" + "0" * 32
+    report = evidence_applicability(project, _load_state(project), [unknown, record_id])
+    assert [(item["record_id"], item["state"]) for item in report] == [
+        (unknown, "needs-judgement"), (record_id, "applicable"),
+    ]
+    assert report[0]["reasons"] == ["the record is not in evidence.md"]
     (project / "evidence.md").unlink()
-    assert evidence_applicability(project, _load_state(project), [record_id]) == []
+    (failure,) = evidence_applicability(project, _load_state(project), [record_id])
+    assert failure["state"] == "needs-judgement" and failure["reasons"][0].startswith("the applicability report failed")
+
+
+def test_cited_record_ids_skip_references_that_name_no_evidence_record(tmp_path: Path) -> None:
+    project, record_id = _recorded(tmp_path, ["a.py"], {"a.py": "x"})
+    anchor = "evidence-" + record_id[3:]
+    cited = {"root": "workspace", "path": "evidence.md", "anchor": anchor}
+    state = _load_state(project)
+    assert workspace_context.cited_record_ids(state) == []  # a running task that cites nothing
+    for evidence in (
+        [{"root": "workspace", "path": "evidence.md", "anchor": None}],
+        [{"root": "external", "path": "https://example.com/x", "anchor": anchor}],
+        [{"root": "workspace", "path": "other.md", "anchor": anchor}],
+        [{"root": "workspace", "path": "evidence.md", "anchor": "evidence-short"}],
+    ):
+        _set(project, "T01", evidence=evidence)
+        assert workspace_context.cited_record_ids(_load_state(project)) == []
+        assert workflow(project, "resume", {})["evidence_applicability"] == []  # resume does not crash
+    _set(project, "T01", evidence=[cited, cited])
+    assert workspace_context.cited_record_ids(_load_state(project)) == [record_id]
 
 
 def _local_task_with_evidence(tmp_path: Path, policy: int) -> tuple[Path, str]:
@@ -443,6 +501,19 @@ def test_task_finish_reports_applicability_without_blocking(tmp_path: Path) -> N
     )
     (item,) = result["evidence_applicability"]
     assert item["state"] == "invalidated" and item["task"] == "T02" and _task(project, "T02")["status"] == "DONE"
+    with pytest.MonkeyPatch.context() as patch:  # a failing report is data, never a failed finish
+        broken, broken_record = _local_task_with_evidence(tmp_path / "broken", 5)
+
+        def explode(*args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+            raise WorkspaceError("evidence.md cannot be read")
+
+        patch.setattr(workspace_context, "evidence_applicability", explode)
+        done = finish_and_checkpoint(
+            broken, "T02", expected_revision=_load_state(broken)["revision"], evidence_record_ids=[broken_record]
+        )
+    assert _task(broken, "T02")["status"] == "DONE"
+    (failure,) = done["evidence_applicability"]
+    assert failure["reasons"] == ["the applicability report failed: evidence.md cannot be read"]
     older, old_record = _local_task_with_evidence(tmp_path / "older", 4)
     plain = finish_and_checkpoint(
         older, "T02", expected_revision=_load_state(older)["revision"], evidence_record_ids=[old_record]

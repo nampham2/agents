@@ -584,11 +584,7 @@ def resume_bundle(project: Path, request: dict[str, Any], *, action: str = "resu
         state = _load_state(project)
         context["worktree"] = worktree_status(state)
         if action == "resume" and task_packets_enabled(state):
-            cited = [
-                "ev-" + item["evidence"][-1]["anchor"].removeprefix("evidence-")
-                for item in state["tasks"] if item["status"] == "RUNNING" and item["evidence"]
-            ]
-            context["evidence_applicability"] = evidence_applicability(project, state, cited)
+            context["evidence_applicability"] = evidence_applicability(project, state, cited_record_ids(state))
         pending = action == "resume" and not any(key in request for key in WORKER_KEYS)
         context.update(durable_move(project, state, pending_resume=pending))
         context.update(durability_view(project, state, pending_resume=pending))
@@ -602,6 +598,8 @@ def resume_bundle(project: Path, request: dict[str, Any], *, action: str = "resu
 
 
 FINGERPRINT_LIMIT = 16 * 1024 * 1024
+# Charged to the budget for every file inside a hashed directory, so the count of files is bounded too.
+ENTRY_COST = 256
 NOT_A_FILE = "fingerprint file budget exceeded or path is not a file"
 
 
@@ -650,6 +648,8 @@ def _directory_digest(path: Path, budget: Budget) -> str:
             full = Path(current) / name
             if full.is_symlink() or not full.is_file():
                 continue
+            if not budget.take(ENTRY_COST):  # time is bounded too: a tree of many tiny files runs out
+                raise WorkspaceError(NOT_A_FILE)
             entries.append((full.relative_to(path).as_posix(), _file_digest(full, budget)))
     entries.sort()
     return hashlib.sha256("".join(f"{name}\0{digest}\n" for name, digest in entries).encode("utf-8")).hexdigest()
@@ -702,7 +702,7 @@ def capture_fingerprint(project: Path, state: dict[str, Any], task: dict[str, An
     budget = Budget()
     lines = [f"- Assignment counter: {task['assignment_counter']}"]
     for root, relative in dict.fromkeys(declared):
-        if not relative.isprintable():
+        if not relative.isprintable() or relative != relative.strip():
             lines.append(f"- Fingerprint: unreadable {root} - {relative!r}")
             continue
         kind, digest = _hash_declared(project, target, root, relative, budget)
@@ -714,7 +714,8 @@ def _dirty_paths(target: Path, paths: list[str]) -> list[str]:
     """Paths among `paths` that Git reports changed, or `[]` when Git cannot say (no repository, a timeout)."""
     try:
         output = _git(
-            target, "--no-optional-locks", "--literal-pathspecs", "status", "--porcelain=v1",
+            target, "-c", "core.quotepath=off", "--no-optional-locks", "--literal-pathspecs", "status",
+            "--porcelain=v1",
             "--untracked-files=normal", "--", *paths,
         )
     except (subprocess.TimeoutExpired, OSError):
@@ -738,7 +739,11 @@ def classify_evidence(
     if row["counter"] is not None and type(counter) is int and row["counter"] < counter:
         return {**result, "state": "invalidated",
                 "reasons": [f"assignment counter moved from {row['counter']} to {counter}"]}
-    if row["counter"] is None or not row["fingerprints"]:
+    if row["passed"] is not True:
+        return {**result, "state": "needs-judgement", "reasons": ["the recorded run did not pass"]}
+    if row["counter"] is not None and not row["fingerprints"]:
+        return {**result, "state": "needs-judgement", "reasons": ["the task declared no local path to fingerprint"]}
+    if row["counter"] is None:
         return {**result, "state": "needs-judgement", "reasons": ["no fingerprint was recorded with this entry"]}
     target = Path(state["working_directory"])
     changed: list[str] = []
@@ -760,20 +765,57 @@ def classify_evidence(
     return {**result, "state": "applicable", "reasons": [], "dirty": _dirty_paths(target, local) if local else []}
 
 
+def _report_item(record_id: "str | None", reason: str) -> dict[str, Any]:
+    return {"record_id": record_id, "task": None, "state": "needs-judgement", "reasons": [reason], "dirty": []}
+
+
+def applicability_failure(error: Exception) -> list[dict[str, Any]]:
+    """The report when the report itself failed: one `needs-judgement` item, so a caller never breaks."""
+    return [_report_item(None, f"the applicability report failed: {error}")]
+
+
+def cited_record_ids(state: dict[str, Any]) -> list[str]:
+    """The record ID of the latest cited evidence of each RUNNING task, for references that name one.
+
+    A reference with no anchor, an external root or another file cites no `evidence.md` record and is skipped.
+    """
+    ids = []
+    for task in state["tasks"]:
+        if task["status"] != "RUNNING" or not task["evidence"]:
+            continue
+        latest = task["evidence"][-1]
+        anchor = latest.get("anchor")
+        if latest.get("root") == "workspace" and latest.get("path") == "evidence.md" and isinstance(anchor, str):
+            found = re.fullmatch(r"evidence-([0-9a-f]{32})", anchor)
+            if found:
+                ids.append("ev-" + found[1])
+    return ids
+
+
 def evidence_applicability(project: Path, state: dict[str, Any], record_ids: list[str]) -> list[dict[str, Any]]:
-    """Classify the named records of task-owned entries with one shared budget; it never blocks."""
+    """Classify the named records of task-owned entries with one shared budget; it never blocks or raises.
+
+    A record the evidence file does not hold reads `needs-judgement`; a failure of the report itself is one
+    `needs-judgement` item that says so.
+    """
     from workspace_evidence import _entry_rows
 
     path = project / "evidence.md"
-    if not record_ids or not path.exists():
+    if not record_ids:
         return []
-    rows = {row["record_id"]: row for row in _entry_rows(read_text(path)) if row["record_id"]}
-    budget = Budget()
-    report = []
-    for record_id in record_ids:
-        item = classify_evidence(project, state, rows[record_id], budget) if record_id in rows else None
-        if item is not None:
-            report.append(item)
+    try:
+        rows = {row["record_id"]: row for row in _entry_rows(read_text(path)) if row["record_id"]}
+        budget = Budget()
+        report = []
+        for record_id in record_ids:
+            if record_id not in rows:
+                report.append(_report_item(record_id, "the record is not in evidence.md"))
+                continue
+            item = classify_evidence(project, state, rows[record_id], budget)
+            if item is not None:
+                report.append(item)
+    except (WorkspaceError, OSError, ValueError) as error:
+        return applicability_failure(error)
     return report
 
 

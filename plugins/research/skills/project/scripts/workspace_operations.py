@@ -809,12 +809,15 @@ def finish_and_checkpoint(
         if regrouped == str(error):
             raise
         raise WorkspaceError(regrouped) from error
-    state = _load_state(project_dir)
-    if task_packets_enabled(state):
-        from workspace_context import evidence_applicability
+    from workspace_context import applicability_failure, evidence_applicability
 
-        # After the commit and never blocking: the report says whether each cited check still applies.
-        result["evidence_applicability"] = evidence_applicability(project_dir, state, evidence_record_ids or [])
+    # After the commit and never failing it: the report says whether each cited check still applies.
+    try:
+        state = _load_state(project_dir)
+        if task_packets_enabled(state):
+            result["evidence_applicability"] = evidence_applicability(project_dir, state, evidence_record_ids or [])
+    except (WorkspaceError, OSError, ValueError) as error:
+        result["evidence_applicability"] = applicability_failure(error)
     if start_next is None:
         return result
     from workspace_context import checkpoint_data
