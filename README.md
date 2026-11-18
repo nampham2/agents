@@ -86,6 +86,23 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.41.0 worker packets and evidence applicability
+
+- **Policy 5.** Every project created from this release starts at `policy_version` 5, with no
+  opt-out: policy 4's rules plus the task fields `spec_refs` and `decision_refs`. Older projects
+  keep their policy and see no change.
+- **Worker packets.** A task names the specification headings and decision entries its worker
+  needs. `context --worker --task` returns the complete packet with `packet_sha256`, and a worker
+  records that hash on its `intent` event. A missing or unknown reference is an error when the task
+  is written and when the packet is built.
+- **Evidence applicability.** A recorded check carries the assignment counter and a fingerprint of
+  the paths the task declares. `task finish` and `resume` report whether each still applies:
+  `applicable`, `invalidated` or `needs-judgement`. The report never blocks.
+- **`delegating`.** A boolean option from policy 5, off by default. With it on the packet warns for
+  a dependency that is not `DONE` and for a stale packet hash.
+- A launcher older than 0.41.0 refuses a policy-5 project, so update both hosts together before
+  opening one.
+
 ### 0.40.0 durable recovery events and worker attempts
 
 - **Policy 4.** Every project created from this release starts at `policy_version` 4, with no
