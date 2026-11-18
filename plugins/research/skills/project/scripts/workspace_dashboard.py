@@ -37,6 +37,7 @@ from workspace_lib import (
     read_text,
     resolve_workspace_root,
     tags_of,
+    task_durable_enabled,
 )
 
 if TYPE_CHECKING:
@@ -121,7 +122,7 @@ def _wait(project_dir: Path, task: dict[str, Any], lines: list[dict[str, Any]], 
     return {key: found[key] for key in ("on", "until", "due")} if found else None
 
 
-def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
+def _task_rows(tasks: list[Any], durable: bool = False) -> list[dict[str, Any]]:
     rows = []
     for task in tasks:
         if not isinstance(task, dict):
@@ -139,7 +140,7 @@ def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
             "block_reason": _text(task.get("block_reason")),
             "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
         }
-        if "block_generation" in task:
+        if durable and "block_generation" in task:
             # Only a policy-4 task has it; `active_wait` decides from the row, and a malformed value means no wait.
             row["block_generation"] = task["block_generation"]
         rows.append(row)
@@ -272,7 +273,7 @@ def build_project(project_dir: Path) -> dict[str, Any]:
             sessions=[],
         )
         return row
-    tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [])
+    tasks = _task_rows(state["tasks"] if isinstance(state.get("tasks"), list) else [], task_durable_enabled(state))
     counts: dict[str, int] = {}
     for task in tasks:
         counts[task["status"]] = counts.get(task["status"], 0) + 1

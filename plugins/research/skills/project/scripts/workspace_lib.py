@@ -209,6 +209,8 @@ TASK_DURABLE_FIELDS = ("block_generation", "assignment_counter")
 # The fields that define what a worker was asked to do; editing one supersedes every live attempt.
 # `authorization`, `receipts`, `evidence`, the stamps and the durable keys are deliberately not here.
 ASSIGNMENT_FIELDS = ("name", "depends_on", "outputs", "success_criteria", "verification", "effect", "reads")
+# An absent list reads as empty, so writing `reads: []` on a task with no `reads` is not an assignment edit.
+ASSIGNMENT_DEFAULTS: "dict[str, Any]" = {"depends_on": [], "outputs": [], "reads": []}
 TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS}
 
 
@@ -485,8 +487,8 @@ def needs_merge(entry: object) -> bool:
 
 # The policy a new project starts at: target-based delivery. `allocate_project` reads it at call time and
 # writes it to `policy_version`; None starts a project with no policy (derived from `created`). Production
-# starts at 3: policy 2's target rules, the Goldfish gates always on, and the optional policies. The test
-# suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
+# starts at 4: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
+# the durable task fields. The test suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
 # delivery target to leave ALIGNING.
 NEW_PROJECT_POLICY: "int | None" = 4
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
@@ -1608,16 +1610,20 @@ def stamp_transitions(before: "dict[str, Any] | None", after: dict[str, Any]) ->
     `task block` bumps the generation itself; this function covers entering BLOCKED and RUNNING and assignment edits.
     """
     old = before or {}
+    for name in TASK_DURABLE_FIELDS:
+        if name in old and type(old[name]) is not int:
+            raise WorkspaceError(f"cannot stamp a task whose {name} is {old[name]!r}; repair it first")
     generation = old.get("block_generation", 0)
     counter = old.get("assignment_counter", 0)
-    generation = generation if type(generation) is int else 0
-    counter = counter if type(counter) is int else 0
     status = after.get("status")
     if status == "BLOCKED" and old.get("status") != "BLOCKED":
         generation += 1
     if status == "RUNNING" and old.get("status") != "RUNNING":
         counter += 1
-    elif before is not None and any(before.get(name) != after.get(name) for name in ASSIGNMENT_FIELDS):
+    elif before is not None and any(
+        before.get(name, ASSIGNMENT_DEFAULTS.get(name)) != after.get(name, ASSIGNMENT_DEFAULTS.get(name))
+        for name in ASSIGNMENT_FIELDS
+    ):
         counter += 1
     return {"block_generation": generation, "assignment_counter": counter}
 
@@ -3051,6 +3057,9 @@ def validate_v4_state(
         if durable and task_status == "BLOCKED" and type(task.get("block_generation")) is int:
             if task["block_generation"] < 1:
                 report.errors.append(f"{label}: a BLOCKED task needs block_generation of at least 1")
+        if durable and task_status == "RUNNING" and type(task.get("assignment_counter")) is int:
+            if task["assignment_counter"] < 1:
+                report.errors.append(f"{label}: a RUNNING task needs assignment_counter of at least 1")
 
         if "reads" in task:
             reads = task.get("reads")
@@ -6065,6 +6074,11 @@ def check_state_transition(previous: dict[str, Any], candidate: dict[str, Any]) 
             and not _enum_string(new_status, TASK_TRANSITIONS[old_status])
         ):
             errors.append(f"task {task_id}: invalid transition {old_status} -> {new_status}")
+        if task_durable_enabled(candidate):
+            for name in TASK_DURABLE_FIELDS:
+                before_value, after_value = old_task.get(name), new_task.get(name)
+                if type(before_value) is int and type(after_value) is int and after_value < before_value:
+                    errors.append(f"task {task_id}: {name} cannot decrease ({before_value} -> {after_value})")
         if isinstance(old_status, str) and old_status in TERMINAL_TASK_STATUSES and old_task != new_task:
             errors.append(f"task {task_id}: terminal task history is immutable; append a correction task instead")
     return errors

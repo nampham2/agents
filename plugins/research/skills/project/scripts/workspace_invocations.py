@@ -164,7 +164,10 @@ class Invocation:
         except OSError as error:
             # The log is a diagnostic, never a gate, so the command still succeeds; but a silent gap would hide
             # the fault, so every failed append says so on stderr (a CLI call records once).
-            print(f"warning: invocation log not written ({error})", file=sys.stderr)
+            try:
+                print(f"warning: invocation log not written ({error})", file=sys.stderr)
+            except (OSError, ValueError):
+                pass  # a closed stderr must not turn a diagnostic into a failure
             return None
         return path
 

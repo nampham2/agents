@@ -86,6 +86,21 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.40.0 durable recovery events and worker attempts
+
+- **Policy 4.** A project created from this release starts at `policy_version` 4: policy 3's rules
+  plus `block_generation` and `assignment_counter` on every task. Older projects keep their policy and
+  write nothing new.
+- **One wait anchor.** A wait records the task's block generation, so a re-block through
+  `task block`, `update` or `reconcile` retires the earlier wait.
+- **Worker attempts.** `worker-event` issues an `attempt_id` at `intent`. An attempt stays held
+  until `completed` or `stopped`, a superseded one accepts only `stopped`, and `resume` lists held
+  attempts first.
+- **Log failures.** When the invocation log cannot be written, the command still succeeds and warns
+  on stderr.
+- A launcher older than 0.40.0 refuses a policy-4 project, so update both hosts together before
+  opening one.
+
 ### 0.38.0 delivery targets decide what a project owes at closure
 
 A project no longer owes one fixed software-delivery ritual.

@@ -567,7 +567,9 @@ def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: 
         raise WorkspaceError("update tasks must be an array of objects with unique ids")
     by_id = {task["id"]: task for task in state["tasks"]}
     originals = copy.deepcopy(by_id)
-    durable = task_durable_enabled(state)
+    # The candidate decides, so an internal patch that sets `policy_version` with tasks stamps for the new policy.
+    candidate_policy = {**state, "policy_version": changes["policy_version"]} if "policy_version" in changes else state
+    durable = task_durable_enabled(candidate_policy)
     seen: set[str] = set()
     for change in task_changes:
         if not isinstance(change, dict) or not isinstance(change.get("id"), str) or not change["id"].strip():

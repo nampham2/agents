@@ -409,22 +409,30 @@ def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str,
 def _worker_lines(text: str, durable: bool, warnings: "list[str] | None", task_id: str) -> list[dict[str, Any]]:
     """The `research-worker` lines of one notes document, in order.
 
-    Below policy 4 a malformed line is an error, as before. At policy 4 it is skipped with a warning, so one
-    torn line cannot hide every attempt of the task.
+    Below policy 4 a malformed line is an error, as before, and `attempt_id` or `counter` is an unknown key.
+    At policy 4 a malformed line is skipped with a warning, so one bad line cannot hide every attempt of the
+    task: a line that is not valid JSON, lacks a field, names an unknown event or another task, carries a
+    counter that is not an integer, or is cut short (no closing marker).
     """
+    allowed = FIELDS["worker-event"] | {"recorded", "counter"}
+    if not durable:
+        allowed = allowed - WORKER_EVENT_OPTIONAL
     lines = []
+    matched = 0
     for match in re.finditer(r"^<!-- research-worker (.+) -->$", text, re.MULTILINE):
+        matched += 1
         try:
             event = json.loads(match[1])
-            object_input(
-                event, FIELDS["worker-event"] | {"recorded", "counter"}, WORKER_EVENT_REQUIRED, where="worker event"
-            )
+            object_input(event, allowed, WORKER_EVENT_REQUIRED, where="worker event")
             for field in ("task", "handle", "event", "scope", "observation"):
                 string_input(event[field], field)
-            if "attempt_id" in event:
-                string_input(event["attempt_id"], "attempt_id")
-                if type(event.get("counter")) is not int:
-                    raise WorkspaceError("worker event counter must be an integer")
+            if durable:
+                if event["event"] not in WORKER_EVENTS or event["task"] != task_id:
+                    raise WorkspaceError("worker event names an unknown event or another task")
+                if "attempt_id" in event:
+                    string_input(event["attempt_id"], "attempt_id")
+                    if type(event.get("counter")) is not int:
+                        raise WorkspaceError("worker event counter must be an integer")
         except (ValueError, WorkspaceError) as error:
             if not durable:
                 raise WorkspaceError("invalid worker event JSON") from error
@@ -432,15 +440,22 @@ def _worker_lines(text: str, durable: bool, warnings: "list[str] | None", task_i
                 warnings.append(f"{task_id}: skipped a malformed research-worker line")
             continue
         lines.append(event)
+    cut = len(re.findall(r"^<!-- research-worker ", text, re.MULTILINE)) - matched
+    if durable and cut > 0 and warnings is not None:
+        warnings.append(f"{task_id}: skipped {cut} research-worker line(s) cut short (no closing marker)")
     return lines
 
 
 def _attempts(lines: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per `attempt_id`: its latest event, its counter and how many intents the notes hold for it (always one)."""
+    """Per `attempt_id`, its latest line; a line after `completed` or `stopped` is ignored (the builder refuses it)."""
     attempts: dict[str, dict[str, Any]] = {}
     for line in lines:
-        if "attempt_id" in line:
-            attempts[line["attempt_id"]] = line
+        if "attempt_id" not in line:
+            continue
+        prior = attempts.get(line["attempt_id"])
+        if prior is not None and prior["event"] in HELD_FREE_EVENTS:
+            continue
+        attempts[line["attempt_id"]] = line
     return attempts
 
 
@@ -481,7 +496,13 @@ def _attempt_keys(task: dict[str, Any], request: dict[str, Any], notes: str) -> 
     (counter below the task's) accepts only `stopped`.
     """
     event = request["event"]
-    lines = _worker_lines(notes, True, None, task["id"])
+    damage: list[str] = []
+    lines = _worker_lines(notes, True, damage, task["id"])
+    if damage:
+        # The builder decides from these lines, so a skipped one could hide a live attempt: refuse, never guess.
+        raise WorkspaceError(
+            f"tasks/{task['id']}.md holds a damaged research-worker line ({damage[0]}); repair or remove it first"
+        )
     attempts = _attempts(lines)
     if event == "intent":
         if "attempt_id" in request:
@@ -494,6 +515,8 @@ def _attempt_keys(task: dict[str, Any], request: dict[str, Any], notes: str) -> 
             )
         counter = task["assignment_counter"]
         number = 1 + sum(1 for line in lines if line["event"] == "intent" and "attempt_id" in line)
+        while f"{task['id']}-{counter}-{number}" in attempts:
+            number += 1  # an id already in the notes is never issued again
         return {"attempt_id": f"{task['id']}-{counter}-{number}", "counter": counter}
     attempt_id = request.get("attempt_id")
     if attempt_id is None:
@@ -725,7 +748,7 @@ def _wait(state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
         entry["until"] = until.strip()
     if request.get("reason") is not None:
         entry["reason"] = string_input(request["reason"], "reason")
-    if "block_generation" in task:
+    if task_durable_enabled(state):
         entry["generation"] = task["block_generation"]
     entry["recorded"] = datetime.now().astimezone().isoformat(timespec="microseconds")
     return "tasks/" + task["id"], "<!-- research-wait " + json.dumps(entry).replace(">", "\\u003e") + " -->"

@@ -51,8 +51,7 @@ def detail(*pairs: tuple[str, int]) -> str:
     named = ", ".join(f"{task} {count} times" for task, count in pairs)
     return (
         f"resumed without progress: {named}. Record a finding or evidence for real progress, or check it is not "
-        "looping and run task block then task start (record stopped for a held attempt first); "
-        "see references/durability.md"
+        "looping and run task block then task start; see references/durability.md"
     )
 
 

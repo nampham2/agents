@@ -1,6 +1,6 @@
 # Review risk, fallback, amendments and options
 
-Policy 3 projects only. Policies 0 to 2 keep the effort rules in
+Policy 3+ projects only. Policies 0 to 2 keep the effort rules in
 [goldfish-review.md](goldfish-review.md). `workflow <project-dir> settings` is the one writer of
 `review_risk`, `review_fallback` and `options`. It needs the user's `confirmation` (`source`,
 `response` quoting their words) and records one dated decision line. `null` unsets a field;
@@ -67,7 +67,7 @@ substantive change.
 | `reports` | off | the `report` action returns a notice and writes nothing |
 
 Other keys are refused, an empty object too. Set a key back to its default by writing that
-value; `null` unsets all options. A fallback of `ask` takes no reason. At policy 3 the `finalize`
+value; `null` unsets all options. A fallback of `ask` takes no reason. At policy 3+ the `finalize`
 control warning applies only when a code task is running or done.
 
 ## Delegating mode

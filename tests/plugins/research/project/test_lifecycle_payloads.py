@@ -144,7 +144,7 @@ def test_default_instruction_payload_budget() -> None:
     router gained a `settings` row, an `amend` pointer and a policy-3 `retarget` note (27 words); the
     entry gained none. The chain and the two selected-reference ceilings rose to the new measurement:
     2260 to 2290, 2600 to 2630 and 2800 to 2840. At 0.40.0 automation-execution.md gained a one-line
-    pointer to the policy-4 attempt rules, which live in durability.md (8 words); its ceiling rose
+    pointer to the policy-4 attempt rules, which live in durability.md (7 words); its ceiling rose
     from 2840 to 2850.
     """
     skill = REPO_ROOT / "plugins/research/skills/project"

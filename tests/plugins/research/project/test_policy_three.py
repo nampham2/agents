@@ -57,8 +57,8 @@ def test_policy_three_is_a_valid_value() -> None:
     assert POLICY_VERSIONS == (0, 1, 2, 3, 4)
 
 
-@pytest.mark.parametrize(("policy", "expected"), [(0, False), (1, False), (2, True), (3, True)])
-def test_has_target_rules_is_true_for_policy_two_and_three(policy: int, expected: bool) -> None:
+@pytest.mark.parametrize(("policy", "expected"), [(0, False), (1, False), (2, True), (3, True), (4, True)])
+def test_has_target_rules_is_true_for_policy_two_and_later(policy: int, expected: bool) -> None:
     assert has_target_rules(policy) is expected
 
 

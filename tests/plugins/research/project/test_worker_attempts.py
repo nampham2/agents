@@ -31,21 +31,15 @@ def three(tmp_path: Path) -> Path:
 
 
 def event(project: Path, name: str, identity: str, task: str = "T01", **extra: Any) -> dict[str, Any]:
-    return workflow(  # type: ignore[no-any-return]
-        project,
-        "worker-event",
-        request(
-            project,
-            identity,
-            task=task,
-            handle="agent-1",
-            event=name,
-            scope="T01 code",
-            observation="seen",
-            assignment_revision=_load_state(project)["revision"],
-            **extra,
-        ),
-    )
+    fields: dict[str, Any] = {
+        "handle": "agent-1",
+        "event": name,
+        "scope": "T01 code",
+        "observation": "seen",
+        "assignment_revision": _load_state(project)["revision"],
+    }
+    fields.update(extra)
+    return workflow(project, "worker-event", request(project, identity, task=task, **fields))  # type: ignore[no-any-return]
 
 
 def notes(project: Path, task: str = "T01") -> str:
@@ -304,3 +298,107 @@ def test_a_line_with_a_non_integer_counter_is_malformed(four: Path) -> None:
 def test_a_terminal_attempt_is_not_listed(four: Path) -> None:
     _drive(four, ["completed"])
     assert worker_events(four) == []
+
+
+# --- review round 9: damaged lines, ids, the race and the legacy guard ---------------------------------------
+
+
+def line(**over: Any) -> str:
+    base: dict[str, Any] = {
+        "task": "T01", "handle": "h", "event": "intent", "scope": "s", "observation": "o",
+        "assignment_revision": 1, "attempt_id": "T01-1-1", "counter": 1, "recorded": "2026-11-17T10:00:00+00:00",
+    }  # fmt: skip
+    base.update(over)
+    return "<!-- research-worker " + json.dumps(base) + " -->\n"
+
+
+def put(project: Path, *raw: str, task: str = "T01") -> None:
+    path = project / f"tasks/{task}.md"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(f"# Task {task} notes\n" + "".join(raw), encoding="utf-8")
+
+
+def test_a_damaged_line_refuses_a_new_intent_instead_of_hiding_a_live_attempt(four: Path) -> None:
+    put(four, "<!-- research-worker {not json -->\n")
+    refused(four, "intent", "i-1", "damaged research-worker line")
+
+
+def test_a_line_cut_short_is_reported_and_refuses_an_intent(four: Path) -> None:
+    put(four, '<!-- research-worker {"task": "T01", "event": "intent"')
+    warnings: list[str] = []
+    assert worker_events(four, warnings) == []
+    assert warnings == ["T01: skipped 1 research-worker line(s) cut short (no closing marker)"]
+    refused(four, "intent", "i-1", "cut short")
+
+
+def test_a_line_naming_an_unknown_event_or_another_task_is_skipped(four: Path) -> None:
+    put(four, line(event="foo"), line(task="T02", attempt_id="T02-1-1"))
+    warnings: list[str] = []
+    assert worker_events(four, warnings) == []
+    assert len(warnings) == 2
+
+
+def test_a_line_after_a_terminal_event_cannot_reopen_the_attempt(four: Path) -> None:
+    put(four, line(event="completed"), line(event="observed"))
+    assert worker_events(four) == []
+
+
+def test_an_id_already_in_the_notes_is_never_issued_again(four: Path) -> None:
+    put(four, line(attempt_id="T01-1-2"), line(attempt_id="T01-1-2", event="stopped"))
+    assert event(four, "intent", "i-1")["attempt_id"] == "T01-1-3"
+
+
+def test_attempt_keys_are_unknown_fields_below_policy_four(three: Path) -> None:
+    put(three, line())
+    with pytest.raises(WorkspaceError, match="invalid worker event JSON"):
+        worker_events(three)
+
+
+def test_two_events_built_on_one_state_the_second_is_refused(four: Path) -> None:
+    first = request(
+        four, "race-1", task="T01", handle="h", event="intent", scope="s", observation="o", assignment_revision=1
+    )
+    second = request(
+        four, "race-2", task="T01", handle="h", event="intent", scope="s", observation="o", assignment_revision=1
+    )
+    workflow(four, "worker-event", first)
+    with pytest.raises(WorkspaceError):
+        workflow(four, "worker-event", second)
+    assert [item["event"] for item in lines(four)] == ["intent"]
+
+
+def test_attempt_events_never_touch_the_legacy_execution_block(four: Path) -> None:
+    from workspace_operations import task_operation
+
+    before = _load_state(four)["execution"]
+    attempt = _drive(four, ["launched", "observed"])
+    assert _load_state(four)["execution"] == before
+    # a mutating command still works: the reader-only guard would refuse it if execution had changed
+    task_operation(four, "block", "T01", expected_revision=_load_state(four)["revision"], reason="x")
+    assert _task(four)["status"] == "BLOCKED" and attempt
+
+
+def test_a_held_attempt_stays_listed_on_a_skipped_task(four: Path) -> None:
+    from workspace_operations import task_operation
+
+    attempt = _drive(four, ["observed"])
+    task_operation(four, "skip", "T01", expected_revision=_load_state(four)["revision"], reason="dropped")
+    assert [item["attempt_id"] for item in worker_events(four)] == [attempt]
+
+
+def test_stopped_needs_an_observation_like_every_event(four: Path) -> None:
+    attempt = open_attempt(four)
+    refused(four, "stopped", "stop-x", "observation", attempt_id=attempt, observation="  ")
+
+
+def test_a_held_attempt_does_not_block_finishing_another_task(four: Path) -> None:
+    import sys
+
+    import workspace_lib as lib
+    from workspace_operations import task_operation
+
+    task_operation(four, "start", "T02", expected_revision=_load_state(four)["revision"])
+    event(four, "intent", "i-t02", task="T02")
+    record = lib.record_evidence_result(four, "T02", [sys.executable, "-c", "pass"]).record_id
+    task_operation(four, "finish", "T02", expected_revision=_load_state(four)["revision"], evidence_record_ids=[record])
+    assert _task(four, "T02")["status"] == "DONE"

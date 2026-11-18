@@ -122,10 +122,23 @@ class ManageLogTests(_Fixture):
         self.assertEqual([], _lines(self.project))
         self.assertRegex(captured.getvalue(), r"^warning: invocation log not written \(.+\)\n$")
 
-    def test_a_missing_project_directory_gets_no_file(self) -> None:
+    def test_a_closed_stderr_does_not_fail_the_command(self) -> None:
+        if os.geteuid() == 0:  # pragma: no cover - root writes anywhere
+            self.skipTest("root ignores directory modes")
+        mode = stat.S_IMODE(self.project.stat().st_mode)
+        self.project.chmod(stat.S_IRUSR | stat.S_IXUSR)
+        self.addCleanup(self.project.chmod, mode)
+        closed = io.StringIO()
+        closed.close()
+        with patch.object(sys, "stderr", closed):
+            self.assertEqual(0, _manage(["context", self.project]))
+
+    def test_a_missing_project_directory_gets_no_file_and_no_warning(self) -> None:
         missing = self.root / "nope"
-        self.assertEqual(1, _manage(["context", missing]))
+        with patch.object(sys, "stderr", io.StringIO()) as captured:
+            self.assertEqual(1, _manage(["context", missing]))
         self.assertFalse(missing.exists())
+        self.assertNotIn("invocation log not written", captured.getvalue())
 
     def test_root_level_commands_write_nothing(self) -> None:
         self.assertEqual(0, _manage(["list-projects", self.workspace]))

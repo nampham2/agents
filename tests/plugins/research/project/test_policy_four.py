@@ -376,7 +376,128 @@ def test_the_dashboard_row_carries_block_generation(four: Path) -> None:
     import workspace_dashboard as dash
 
     _block(four)
-    rows = dash._task_rows(_load_state(four)["tasks"])
+    rows = dash._task_rows(_load_state(four)["tasks"], True)
     assert rows[0]["block_generation"] == _task(four)["block_generation"]
     plain = dash._task_rows([{"id": "T1", "status": "TODO"}])
     assert "block_generation" not in plain[0]
+
+
+# --- review round 9 ---------------------------------------------------------------------------------------------
+
+
+def _reconcile(project: Path, identity: str, *changes: dict[str, Any]) -> Any:
+    return workflow(
+        project,
+        "reconcile",
+        request(
+            project,
+            identity,
+            patch={"tasks": list(changes)},
+            decision="Reconciled in the test.",
+            continuation={"next": "continue"},
+        ),
+    )
+
+
+def test_reconcile_stamps_retires_the_wait_and_refuses_caller_values(four: Path) -> None:
+    _reconcile(four, "rec-1", {"id": "T01", "status": "BLOCKED", "block_reason": "x"})
+    assert (_task(four)["block_generation"], _task(four)["assignment_counter"]) == (1, 1)
+    _wait(four, "wait-1")
+    assert len(waits(four, _load_state(four))) == 1
+    _reconcile(four, "rec-2", {"id": "T01", "status": "RUNNING", "block_reason": None})
+    _reconcile(four, "rec-3", {"id": "T01", "status": "BLOCKED", "block_reason": "again"})
+    assert _task(four)["block_generation"] == 2 and waits(four, _load_state(four)) == []
+    with pytest.raises(WorkspaceError, match="generation and counter are tool-managed"):
+        _reconcile(four, "rec-4", {"id": "T01", "block_generation": 9})
+
+
+def test_a_stray_block_generation_below_policy_four_does_not_change_the_wait_rule(three: Path) -> None:
+    import workspace_dashboard as dash
+    from workspace_durability import active_wait
+
+    _block(three)
+    _wait(three, "wait-1")
+    task = _task(three)
+    task["block_generation"] = 7  # hand-edited, never validated on this path
+    assert "generation" not in (three / "tasks/T01.md").read_text(encoding="utf-8")
+    assert active_wait(three, task, [], durable=False) is not None  # the log rule decides, not the stray key
+    assert "block_generation" not in dash._task_rows([task], False)[0]
+    assert "block_generation" in dash._task_rows([task], True)[0]
+
+
+def test_a_malformed_generation_at_policy_four_warns_and_means_no_wait(four: Path) -> None:
+    from workspace_durability import active_wait
+
+    _block(four)
+    _wait(four, "wait-1")
+    task = _task(four)
+    task["block_generation"] = "2"
+    warnings: list[str] = []
+    assert active_wait(four, task, [], warnings, durable=True) is None
+    assert any("block_generation is missing or not an integer" in w for w in warnings)
+
+
+def test_the_crash_loop_advice_names_held_attempts_only_at_policy_four() -> None:
+    from workspace_durability import crash_loop_detail
+
+    loops = [{"task": "T01", "resumes": 3}]
+    assert "held attempt" not in crash_loop_detail(loops)
+    assert "record stopped for a held attempt first" in crash_loop_detail(loops, True)
+
+
+def test_a_counter_cannot_decrease_and_a_running_task_needs_one(four: Path) -> None:
+    previous = _load_state(four)
+    lowered = copy.deepcopy(previous)
+    lowered["tasks"][0]["assignment_counter"] = 0
+    assert any(
+        "assignment_counter cannot decrease (1 -> 0)" in e for e in lib.check_state_transition(previous, lowered)
+    )
+    assert any(
+        "a RUNNING task needs assignment_counter of at least 1" in e
+        for e in lib.validate_v4_state(lowered, four, check_files=False).errors
+    )
+
+
+def test_stamping_refuses_a_malformed_previous_value() -> None:
+    with pytest.raises(WorkspaceError, match="cannot stamp a task whose assignment_counter"):
+        stamp_transitions({"status": "TODO", "assignment_counter": "1"}, {"status": "RUNNING"})
+
+
+def test_writing_an_empty_list_for_an_absent_one_is_not_an_assignment_edit() -> None:
+    before = {"status": "RUNNING", "assignment_counter": 1, "block_generation": 0}
+    assert stamp_transitions(before, {**before, "reads": [], "outputs": []})["assignment_counter"] == 1
+
+
+def test_an_internal_patch_that_sets_the_policy_stamps_for_the_new_policy(tmp_path: Path) -> None:
+    project = make_running(tmp_path)
+    _rewrite(project, 3)
+    state = prepare_update(
+        _load_state(project),
+        {"policy_version": 4, "tasks": [{"id": "T09", "name": "n", "success_criteria": "s", "verification": "v",
+                                         "effect": {"kind": "none", "description": None}}]},
+        internal=True,
+    )  # fmt: skip
+    new = next(t for t in state["tasks"] if t["id"] == "T09")
+    assert (new["block_generation"], new["assignment_counter"]) == (0, 0)
+
+
+def test_a_policy_three_wait_and_reconcile_write_no_new_field(three: Path) -> None:
+    _block(three)
+    _wait(three, "wait-1")
+    assert '"generation"' not in (three / "tasks/T01.md").read_text(encoding="utf-8")
+    _reconcile(three, "rec-1", {"id": "T01", "status": "RUNNING", "block_reason": None})
+    assert all("block_generation" not in t and "assignment_counter" not in t for t in _load_state(three)["tasks"])
+
+
+def test_policy_four_has_target_and_review_rules_in_checks_and_settings(four: Path) -> None:
+    from workspace_checks import control_warnings
+    from workspace_goldfish import _risk_of
+    from workspace_workflows import _settings
+
+    state = _load_state(four)
+    assert lib.has_target_rules(4) is True
+    assert _risk_of(state) == "standard" and _risk_of({**state, "policy_version": 2}) is None
+    # policy 3 and later: a project with no code task started has nothing to prove can fail, so no warning
+    assert control_warnings(four, state) == []
+    patch, _body, _result = _settings(state, {"confirmation": {"source": "t", "response": "ok"}, "review_risk": "low"})
+    assert patch["review_risk"] == "low"
