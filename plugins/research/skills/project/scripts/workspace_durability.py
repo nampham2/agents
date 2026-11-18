@@ -205,7 +205,7 @@ def crash_loop_detail(loops: list[dict[str, Any]]) -> str:
     named = ", ".join(f"{item['task']} {item['resumes']} times" for item in loops)
     return (
         f"resumed without progress: {named}. Record a finding or evidence for real progress, or check it is not "
-        f"looping and run task block then task start; see {REFERENCE}"
+        f"looping and run task block then task start (record stopped for a held attempt first); see {REFERENCE}"
     )
 
 
@@ -238,7 +238,9 @@ def silent_minutes(recorded: Any, now: "datetime | None" = None) -> "int | None"
     return int(minutes) if minutes > SILENT_AFTER_MINUTES else None
 
 
-def _wait_entries(text: str, warnings: list[str], task_id: str) -> list[dict[str, Any]]:
+def _wait_entries(
+    text: str, warnings: list[str], task_id: str, *, generation_required: bool = False
+) -> list[dict[str, Any]]:
     entries = []
     for match in WAIT_MARKER.finditer(text):
         try:
@@ -251,6 +253,7 @@ def _wait_entries(text: str, warnings: list[str], task_id: str) -> list[dict[str
             and bool(entry["on"].strip())
             and (entry.get("until") is None or _instant(entry["until"]) is not None)
             and (entry.get("reason") is None or isinstance(entry["reason"], str))
+            and (not generation_required or type(entry.get("generation")) is int)
         )
         if not well_formed:
             warnings.append(f"{task_id}: skipped a malformed research-wait entry")
@@ -291,8 +294,19 @@ def active_wait(
     """
     if task.get("status") != "BLOCKED" or not isinstance(task.get("id"), str):
         return None
-    entries = _wait_entries(_notes(project, task["id"]), warnings if warnings is not None else [], task["id"])
-    if not entries or not _wait_after_block(lines, task["id"]):
+    # At policy 4 the task carries `block_generation` and a wait is current only when it was recorded at that
+    # generation; the log rule below is for policy 3 and older, where no such key exists.
+    anchored = "block_generation" in task
+    if anchored and type(task["block_generation"]) is not int:
+        return None
+    entries = _wait_entries(
+        _notes(project, task["id"]), warnings if warnings is not None else [], task["id"], generation_required=anchored
+    )
+    if anchored:
+        entries = [entry for entry in entries if entry["generation"] == task["block_generation"]]
+        if not entries:
+            return None
+    elif not entries or not _wait_after_block(lines, task["id"]):
         return None
     entry = entries[-1]
     until = _instant(entry.get("until"))

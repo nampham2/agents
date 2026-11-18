@@ -14,6 +14,8 @@ attested-finish note; a `FAILED` one never finishes the task.
 actual host observations. Resume surfaces the latest unresolved observation per handle; neither an
 intent record nor a missing handle proves no worker exists.
 
+Policy 4 adds tool-issued attempt IDs ([durability.md](durability.md)).
+
 `verify` takes `id`, a nonempty `checks` array, optional boolean `continue_on_failure` (default
 false), optional check-shaped `control`, and optional `fingerprints` references. It needs no token
 or revision and leaves task status alone. Each check requires exactly one `task` or closure `step`

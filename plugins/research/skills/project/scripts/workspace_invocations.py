@@ -10,6 +10,7 @@ directory that holds `project.json` is written to: a typo in the path must not p
 from __future__ import annotations
 
 import json
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -160,7 +161,10 @@ class Invocation:
         try:
             with path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(line, sort_keys=True) + "\n")
-        except OSError:
+        except OSError as error:
+            # The log is a diagnostic, never a gate, so the command still succeeds; but a silent gap would hide
+            # the fault, so every failed append says so on stderr (a CLI call records once).
+            print(f"warning: invocation log not written ({error})", file=sys.stderr)
             return None
         return path
 

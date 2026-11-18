@@ -15,13 +15,16 @@ from workspace_lib import (
     CLOSURE_STEPS,
     DESIGN_DOCUMENT,
     SETTINGS_FIELDS,
+    TASK_DURABLE_FIELDS,
     WorkspaceError,
     commit_state,
     document_sha256,
     load_json,
     planning_path,
     read_text,
+    stamp_transitions,
     tags_of,
+    task_durable_enabled,
     validate_project,
     validate_v3_state,
     validate_v4_state,
@@ -477,7 +480,7 @@ def _merge(destination: dict[str, Any], changes: dict[str, Any]) -> None:
             destination[key] = copy.deepcopy(value)
 
 
-def _new_task(changes: dict[str, Any]) -> dict[str, Any]:
+def _new_task(changes: dict[str, Any], durable: bool = False) -> dict[str, Any]:
     effect = changes.get("effect")
     if not isinstance(effect, dict) or effect.get("kind") not in ("none", "local_write", "destructive", "external"):
         raise WorkspaceError("new tasks need an explicit effect.kind: none, local_write, destructive, or external")
@@ -500,6 +503,8 @@ def _new_task(changes: dict[str, Any]) -> dict[str, Any]:
         },
     }
     _merge(task, changes)
+    if durable:
+        task.update(stamp_transitions(None, task))
     return task
 
 
@@ -561,18 +566,26 @@ def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: 
     if not isinstance(task_changes, list):
         raise WorkspaceError("update tasks must be an array of objects with unique ids")
     by_id = {task["id"]: task for task in state["tasks"]}
+    originals = copy.deepcopy(by_id)
+    durable = task_durable_enabled(state)
     seen: set[str] = set()
     for change in task_changes:
         if not isinstance(change, dict) or not isinstance(change.get("id"), str) or not change["id"].strip():
             raise WorkspaceError("each task update needs a non-empty id")
+        if set(TASK_DURABLE_FIELDS) & change.keys():
+            raise WorkspaceError(
+                "generation and counter are tool-managed: block_generation and assignment_counter cannot be set"
+            )
         task_id = change["id"]
         if task_id in seen:
             raise WorkspaceError(f"duplicate task update: {task_id}")
         seen.add(task_id)
         if task_id in by_id:
             _merge(by_id[task_id], change)
+            if durable:
+                by_id[task_id].update(stamp_transitions(originals[task_id], by_id[task_id]))
         else:
-            state["tasks"].append(_new_task(change))
+            state["tasks"].append(_new_task(change, durable))
     if internal:
         # `settings` replaces a risk or fallback and merges options per key; a null leaves the field unset.
         for key in SETTINGS_FIELDS[:2]:

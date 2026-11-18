@@ -129,18 +129,20 @@ def _task_rows(tasks: list[Any]) -> list[dict[str, Any]]:
         effect = task.get("effect")
         evidence = task.get("evidence")
         receipts = task.get("receipts")
-        rows.append(
-            {
-                "id": _text(task.get("id")),
-                "name": _text(task.get("name")),
-                "status": _text(task.get("status")),
-                "effect": _text(effect.get("kind")) if isinstance(effect, dict) else "",
-                "evidence": len(evidence) if isinstance(evidence, list) else 0,
-                "receipts": len(receipts) if isinstance(receipts, list) else 0,
-                "block_reason": _text(task.get("block_reason")),
-                "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
-            }
-        )
+        row = {
+            "id": _text(task.get("id")),
+            "name": _text(task.get("name")),
+            "status": _text(task.get("status")),
+            "effect": _text(effect.get("kind")) if isinstance(effect, dict) else "",
+            "evidence": len(evidence) if isinstance(evidence, list) else 0,
+            "receipts": len(receipts) if isinstance(receipts, list) else 0,
+            "block_reason": _text(task.get("block_reason")),
+            "authorization": task.get("authorization") if isinstance(task.get("authorization"), dict) else {},
+        }
+        if "block_generation" in task:
+            # Only a policy-4 task has it; `active_wait` decides from the row, and a malformed value means no wait.
+            row["block_generation"] = task["block_generation"]
+        rows.append(row)
     return rows
 
 

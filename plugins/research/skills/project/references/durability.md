@@ -93,7 +93,16 @@ Manual cases need a person to check:
 Each `unresolved_workers` entry shows `silent_minutes` once its latest event is more than 30
 minutes old. Workers write no records, so the silence measures your observations: record a
 `worker-event` with `event: observed` while a worker runs, and check the host before treating a
-silent worker as gone.
+silent worker as gone. At policy 4 a held attempt is listed with its `attempt_id` and a
+`reason` (`failed` or `no terminal event`); record `stopped` once the host confirms it is gone.
+
+## Worker attempts (policy 4)
+
+The tool issues `attempt_id` at `intent`; never supply it. Every later event names it. An attempt
+stays held until `completed` or `stopped`: `failed` is held, and a new `intent` is refused while
+any attempt is held. A task start after a block, or an edit to its name, dependencies, outputs,
+criteria, verification, effect or reads, supersedes its attempts: only `stopped` is accepted for
+them. Authorization, receipts and evidence do not supersede.
 
 ## Waits
 

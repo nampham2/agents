@@ -152,7 +152,7 @@ def alignment(project: Path) -> dict[str, Any]:
 def test_a_small_implementation_closes_under_the_lighter_rules(tmp_path: Path, surface: str) -> None:
     seen = run_light(tmp_path, surface)
     state = seen["state"]
-    assert state["status"] == "DONE" and state["policy_version"] == 3 and state["review_risk"] == "low"
+    assert state["status"] == "DONE" and state["policy_version"] == 4 and state["review_risk"] == "low"
     assert state["review_fallback"] == STANDING
     assert seen["design_outcome"] == "accepted", "a fixed Major at low risk does not force a re-audit"
     assert seen["amendments"] and seen["amendments"][0]["kind"] == "editorial"

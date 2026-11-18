@@ -91,6 +91,7 @@ from workspace_lib import (
     document_conflict_message,
     document_sha256,
     fallback_errors,
+    has_review_rules,
     has_target_rules,
     is_legacy_planning_layout,
     is_retro_gated,
@@ -107,6 +108,7 @@ from workspace_lib import (
     risk_errors,
     staging_enabled,
     stale_confirmations,
+    task_durable_enabled,
     validate_project,
 )
 from workspace_operations import _task, migration_plan, research_task_conflicts, rules_diff, target_conflicts
@@ -128,7 +130,7 @@ FIELDS = {
     "settings": {"review_risk", "review_fallback", "options", "confirmation"},
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
-    "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision"},
+    "worker-event": {"task", "handle", "event", "scope", "observation", "assignment_revision", "attempt_id"},
     "authorize": {"task", "authorization", "continuation"},
     "receipt": {"task", "receipt"},
     "effect": {"operation", "task", "key", "effect", "outcome", "note"},
@@ -186,7 +188,20 @@ GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in O
 # Every worker-event field is required for every event. The `event=<name>` entries add no key; they
 # are how `--schema` names the closed event vocabulary without a new top-level schema key.
 WORKER_EVENTS = ("intent", "launched", "observed", "completed", "stopped", "failed")
-WORKER_EVENT_REQUIRED = frozenset(FIELDS["worker-event"])
+# `attempt_id` is allowed everywhere but required nowhere in the schema: the builder demands it at policy 4 for
+# every event except `intent`, and refuses it below policy 4. The stored line adds `attempt_id` and `counter`.
+WORKER_EVENT_REQUIRED = frozenset(FIELDS["worker-event"] - {"attempt_id"})
+WORKER_EVENT_OPTIONAL = frozenset({"attempt_id", "counter"})
+HELD_FREE_EVENTS = ("completed", "stopped")
+# The events each latest state accepts (section 5 of the design); `stopped` is the only one a superseded
+# attempt accepts, and `failed` stays held until it is stopped.
+WORKER_EVENT_FROM = {
+    "launched": ("intent",),
+    "observed": ("intent", "launched", "observed"),
+    "completed": ("intent", "launched", "observed"),
+    "failed": ("intent", "launched", "observed"),
+    "stopped": ("intent", "launched", "observed", "failed"),
+}
 WORKER_EVENT_REQUIRED_BY = {f"event={name}": frozenset() for name in WORKER_EVENTS}
 # P1: an effect intent before an external or destructive effect, and its resolve once checked.
 EFFECT_REQUIRED = frozenset({"operation", "task", "key"})
@@ -391,21 +406,108 @@ def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str,
     }
 
 
-def worker_events(project: Path) -> list[dict[str, Any]]:
-    """Project the last observation per task/handle; opaque host liveness remains unknown."""
-    latest = {}
-    for task in _load_state(project)["tasks"]:
-        text, _ = snapshot(document_path(project, "tasks/" + task["id"]))
-        for match in re.finditer(r"^<!-- research-worker (.+) -->$", text, re.MULTILINE):
-            try:
-                event = json.loads(match[1])
-            except ValueError as error:
-                raise WorkspaceError("invalid worker event JSON") from error
-            object_input(event, FIELDS["worker-event"] | {"recorded"}, FIELDS["worker-event"])
+def _worker_lines(text: str, durable: bool, warnings: "list[str] | None", task_id: str) -> list[dict[str, Any]]:
+    """The `research-worker` lines of one notes document, in order.
+
+    Below policy 4 a malformed line is an error, as before. At policy 4 it is skipped with a warning, so one
+    torn line cannot hide every attempt of the task.
+    """
+    lines = []
+    for match in re.finditer(r"^<!-- research-worker (.+) -->$", text, re.MULTILINE):
+        try:
+            event = json.loads(match[1])
+            object_input(
+                event, FIELDS["worker-event"] | {"recorded", "counter"}, WORKER_EVENT_REQUIRED, where="worker event"
+            )
             for field in ("task", "handle", "event", "scope", "observation"):
                 string_input(event[field], field)
-            latest[(event["task"], event["handle"])] = event
-    return [item for item in latest.values() if item["event"] not in ("completed", "stopped", "failed")]
+            if "attempt_id" in event:
+                string_input(event["attempt_id"], "attempt_id")
+                if type(event.get("counter")) is not int:
+                    raise WorkspaceError("worker event counter must be an integer")
+        except (ValueError, WorkspaceError) as error:
+            if not durable:
+                raise WorkspaceError("invalid worker event JSON") from error
+            if warnings is not None:
+                warnings.append(f"{task_id}: skipped a malformed research-worker line")
+            continue
+        lines.append(event)
+    return lines
+
+
+def _attempts(lines: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per `attempt_id`: its latest event, its counter and how many intents the notes hold for it (always one)."""
+    attempts: dict[str, dict[str, Any]] = {}
+    for line in lines:
+        if "attempt_id" in line:
+            attempts[line["attempt_id"]] = line
+    return attempts
+
+
+def worker_events(project: Path, warnings: "list[str] | None" = None) -> list[dict[str, Any]]:
+    """Project the unresolved workers; opaque host liveness remains unknown.
+
+    A line without `attempt_id` keeps the earlier rule: the last event per task and handle, dropped once it is
+    `completed`, `stopped` or `failed`. An attempt is held unless its latest event is `completed` or `stopped`:
+    one item per attempt, with `reason` (`failed` or `no terminal event`) and `superseded`. Held attempts come
+    first, so the caller's cap never hides one.
+    """
+    state = _load_state(project)
+    latest: dict[tuple[str, str], dict[str, Any]] = {}
+    held: list[dict[str, Any]] = []
+    durable = task_durable_enabled(state)
+    for task in state["tasks"]:
+        text, _ = snapshot(document_path(project, "tasks/" + task["id"]))
+        lines = _worker_lines(text, durable, warnings, task["id"])
+        for event in lines:
+            if "attempt_id" not in event:
+                latest[(event["task"], event["handle"])] = event
+        for event in _attempts(lines).values():
+            if event["event"] in HELD_FREE_EVENTS:
+                continue
+            counter = task.get("assignment_counter")
+            superseded = type(counter) is int and event["counter"] < counter
+            reason = "failed" if event["event"] == "failed" else "no terminal event"
+            held.append({**event, "reason": reason, "superseded": superseded})
+    others = [item for item in latest.values() if item["event"] not in ("completed", "stopped", "failed")]
+    return [*held, *others]
+
+
+def _attempt_keys(task: dict[str, Any], request: dict[str, Any], notes: str) -> dict[str, Any]:
+    """The `attempt_id` and `counter` of a policy-4 worker event, after every refusal; nothing is written here.
+
+    `intent` opens an attempt: the tool issues the id from the task's `assignment_counter`. Every other event
+    names an attempt that exists, is not terminal, and is in a state that accepts it; a superseded attempt
+    (counter below the task's) accepts only `stopped`.
+    """
+    event = request["event"]
+    lines = _worker_lines(notes, True, None, task["id"])
+    attempts = _attempts(lines)
+    if event == "intent":
+        if "attempt_id" in request:
+            raise WorkspaceError("attempt_id is issued by the tool at intent; do not supply one")
+        if task["status"] != "RUNNING":
+            raise WorkspaceError(f"task is not RUNNING: {task['id']} is {task['status']}")
+        if any(line["event"] not in HELD_FREE_EVENTS for line in attempts.values()):
+            raise WorkspaceError(
+                f"held attempt blocks a new intent on {task['id']}: record stopped for it first"
+            )
+        counter = task["assignment_counter"]
+        number = 1 + sum(1 for line in lines if line["event"] == "intent" and "attempt_id" in line)
+        return {"attempt_id": f"{task['id']}-{counter}-{number}", "counter": counter}
+    attempt_id = request.get("attempt_id")
+    if attempt_id is None:
+        raise WorkspaceError("attempt_id is required at policy 4 for every event except intent")
+    latest = attempts.get(string_input(attempt_id, "attempt_id"))
+    if latest is None:
+        raise WorkspaceError(f"unknown attempt: {attempt_id}")
+    if latest["event"] in HELD_FREE_EVENTS:
+        raise WorkspaceError(f"attempt already terminal: {attempt_id} is {latest['event']}")
+    if latest["counter"] < task["assignment_counter"] and event != "stopped":
+        raise WorkspaceError(f"superseded attempt: {attempt_id} predates an assignment change; record stopped")
+    if latest["event"] not in WORKER_EVENT_FROM[event]:
+        raise WorkspaceError(f"event not valid from {latest['event']}: {event} on {attempt_id}")
+    return {"attempt_id": attempt_id, "counter": latest["counter"]}
 
 
 def _confirmation(value: object) -> dict[str, str]:
@@ -623,6 +725,8 @@ def _wait(state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
         entry["until"] = until.strip()
     if request.get("reason") is not None:
         entry["reason"] = string_input(request["reason"], "reason")
+    if "block_generation" in task:
+        entry["generation"] = task["block_generation"]
     entry["recorded"] = datetime.now().astimezone().isoformat(timespec="microseconds")
     return "tasks/" + task["id"], "<!-- research-wait " + json.dumps(entry).replace(">", "\\u003e") + " -->"
 
@@ -640,7 +744,7 @@ def _alignment_target(state: dict[str, Any], kind: str, request: dict[str, Any])
     if not has_target_rules(rules.policy):
         if "delivery_target" in request:
             raise WorkspaceError(
-                f"delivery_target needs policy_version 2 or 3, but this project is at policy {rules.policy}"
+                f"delivery_target needs policy_version 2 or later, but this project is at policy {rules.policy}"
             )
         return None
     if "delivery_target" not in request:
@@ -673,7 +777,7 @@ def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
     """The patch, decision body and result of a target change, after its refusals."""
     old = delivery_rules(state)
     if not has_target_rules(old.policy):
-        raise WorkspaceError(f"retarget needs policy_version 2 or 3, but this project is at policy {old.policy}")
+        raise WorkspaceError(f"retarget needs policy_version 2 or later, but this project is at policy {old.policy}")
     if state["status"] in ("DONE", "CANCELLED"):
         raise WorkspaceError(f"a {state['status']} project keeps its delivery_target")
     target = request.get("delivery_target")
@@ -703,8 +807,8 @@ def _retarget(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
 def _settings(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str, Any], str, dict[str, Any]]":
     """The patch, decision body and result of a settings change, after its refusals."""
     policy = delivery_rules(state).policy
-    if policy != 3:
-        raise WorkspaceError(f"settings needs policy_version 3, but this project is at policy {policy}")
+    if not has_review_rules(policy):
+        raise WorkspaceError(f"settings needs policy_version 3 or later, but this project is at policy {policy}")
     if state["status"] in ("DONE", "CANCELLED"):
         raise WorkspaceError(f"a {state['status']} project keeps its settings")
     confirmation = _confirmation(request.get("confirmation"))
@@ -895,7 +999,7 @@ def _build(
         )
         decision(string_input(request.get("decision"), "decision"))
     elif action == "worker-event":
-        _task(state, string_input(request.get("task"), "task"))
+        task = _task(state, string_input(request.get("task"), "task"))
         for field in ("handle", "scope", "observation"):
             string_input(request.get(field), field)
         if request.get("event") not in WORKER_EVENTS:
@@ -905,9 +1009,15 @@ def _build(
             or not 0 <= request["assignment_revision"] <= state["revision"]
         ):
             raise WorkspaceError("invalid assignment revision")
-        event = {key: request[key] for key in FIELDS[action]}
-        event["recorded"] = now_iso()
         name = "tasks/" + request["task"]
+        event = {key: request[key] for key in WORKER_EVENT_REQUIRED}
+        if task_durable_enabled(state):
+            event.update(_attempt_keys(task, request, read(name)))
+            if request["event"] == "intent":
+                result["attempt_id"] = event["attempt_id"]
+        elif "attempt_id" in request:
+            raise WorkspaceError("attempt_id needs policy_version 4; this project is at an earlier policy")
+        event["recorded"] = now_iso()
         documents[name] = _entry(
             read(name), request["id"], "<!-- research-worker " + json.dumps(event, sort_keys=True) + " -->"
         )
@@ -1066,7 +1176,7 @@ def _build(
     elif action == "report":
         from workspace_reports import render_report
 
-        if delivery_rules(state).policy == 3 and not project_options(state)["reports"]:
+        if has_review_rules(delivery_rules(state).policy) and not project_options(state)["reports"]:
             result["notice"] = (
                 "reports are off for this project (options.reports); the report was not written. "
                 "Turn them on with 'workflow settings' and the user's words"
@@ -1232,13 +1342,19 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
         if action == "resume" and any(key in request for key in WORKER_KEYS):
             note(worker_packet=True)
         result = resume_bundle(project, request, action=action)
-        events = worker_events(project)
+        worker_warnings: list[str] = []
+        events = worker_events(project, worker_warnings)
         for event in events:
             silent = silent_minutes(event.get("recorded"))
             if silent is not None:
                 event["silent_minutes"] = silent
-        result["unresolved_workers"] = events[:20]
-        result["omitted_workers"] = max(0, len(events) - 20)
+        # Held attempts are always listed; the cap applies to the other items only.
+        held = [event for event in events if "attempt_id" in event]
+        others = [event for event in events if "attempt_id" not in event]
+        result["unresolved_workers"] = [*held, *others[:20]]
+        result["omitted_workers"] = max(0, len(others) - 20)
+        if worker_warnings:
+            result["durability_warnings"] = [*result.get("durability_warnings", []), *worker_warnings]
         return result
     if action == "read":
         return selected_read(project, request)

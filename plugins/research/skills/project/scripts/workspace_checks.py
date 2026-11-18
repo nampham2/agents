@@ -23,6 +23,7 @@ from workspace_lib import (
     atomic_write_json,
     delivery_rules,
     document_sha256,
+    has_review_rules,
     is_code_task,
     load_json,
     record_evidence_result,
@@ -230,7 +231,7 @@ def control_warnings(project: Path, state: "dict[str, Any] | None" = None) -> li
     rejection carries no exit code, and journals without a control slot (legacy layouts) count
     as never observed. Unreadable journals are skipped rather than repaired at finalize.
     """
-    if state is not None and delivery_rules(state).policy == 3 and not any(
+    if state is not None and has_review_rules(delivery_rules(state).policy) and not any(
         is_code_task(task) and task.get("status") in ("RUNNING", "DONE") for task in state.get("tasks", [])
     ):
         return []  # policy 3: a project with no code task started or done has no check to prove can fail

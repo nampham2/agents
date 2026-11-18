@@ -203,7 +203,13 @@ TASK_FIELDS = {
 # `GATES_ENFORCED_FROM`: an older launcher rejects a task that carries them, so projects already in
 # flight must never gain one. The task graph prefers them to evidence stamps when present.
 TASK_STAMP_FIELDS = ("started_at", "finished_at")
-TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS}
+# Policy 4 only: `block_generation` counts the times a task entered BLOCKED and `assignment_counter` the
+# times it entered RUNNING or had an assignment field edited. Both are written by the tool, never the caller.
+TASK_DURABLE_FIELDS = ("block_generation", "assignment_counter")
+# The fields that define what a worker was asked to do; editing one supersedes every live attempt.
+# `authorization`, `receipts`, `evidence`, the stamps and the durable keys are deliberately not here.
+ASSIGNMENT_FIELDS = ("name", "depends_on", "outputs", "success_criteria", "verification", "effect", "reads")
+TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS}
 
 
 @dataclass
@@ -482,17 +488,22 @@ def needs_merge(entry: object) -> bool:
 # starts at 3: policy 2's target rules, the Goldfish gates always on, and the optional policies. The test
 # suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
 # delivery target to leave ALIGNING.
-NEW_PROJECT_POLICY: "int | None" = 3
+NEW_PROJECT_POLICY: "int | None" = 4
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
-POLICY_VERSIONS = (0, 1, 2, 3)
+POLICY_VERSIONS = (0, 1, 2, 3, 4)
 DEFAULT_OPTIONS: "dict[str, bool]" = {"style_advice": True, "memory_staging": True, "reports": False}
 REVIEW_RISKS = ("low", "standard", "high")
 FALLBACK_MODES = ("ask", "waive-recorded")
 
 
 def has_target_rules(policy: int) -> bool:
-    """Whether `policy` records a delivery target and takes its obligations from it: policy 2 and 3."""
+    """Whether `policy` records a delivery target and takes its obligations from it: policy 2 and later."""
     return policy >= 2
+
+
+def has_review_rules(policy: int) -> bool:
+    """Whether `policy` carries policy 3's review rules (Goldfish gates, settings, options): 3 and later."""
+    return policy >= 3
 
 
 def review_risk(state: dict[str, Any]) -> str:
@@ -651,7 +662,7 @@ GOLDFISH_FROM = "2026-10-27T12:13:54+01:00"
 
 def is_goldfish_gated(state: dict[str, Any]) -> bool:
     """Whether the Goldfish gates apply: always at policy 3, else the clock is at or after `GOLDFISH_FROM`."""
-    if _policy_value(state if isinstance(state, dict) else {})[0] >= 3:
+    if has_review_rules(_policy_value(state if isinstance(state, dict) else {})[0]):
         return True
     return at_or_after(now_iso(), GOLDFISH_FROM)
 
@@ -685,7 +696,7 @@ def _add_retro_section_findings(state: dict[str, Any], reflection: str, report: 
 
 def is_style_checked(state: dict[str, Any]) -> bool:
     """Whether style advice applies: the option at policy 3, else `state` was created on or after the cutoff."""
-    if _policy_value(state)[0] >= 3:
+    if has_review_rules(_policy_value(state)[0]):
         return project_options(state)["style_advice"]
     return _created_on_or_after(state, STYLE_CHECKED_FROM)
 
@@ -1580,6 +1591,35 @@ def planning_status(planning_markdown: str) -> "str | None":
 # The transition the alignment gate guards: leaving the alignment phases for the working ones.
 GATE_FROM = frozenset({"ALIGNING", "BLOCKED"})
 GATE_TO = frozenset({"PLANNING", "EXECUTING"})
+
+
+def task_durable_enabled(state: dict[str, Any]) -> bool:
+    """Whether tasks carry `block_generation` and `assignment_counter`: a valid policy 4 or later."""
+    if not isinstance(state, dict):
+        return False
+    policy, valid = _policy_value(state)
+    return valid and policy >= 4
+
+
+def stamp_transitions(before: "dict[str, Any] | None", after: dict[str, Any]) -> dict[str, int]:
+    """The `block_generation` and `assignment_counter` values `after` must carry, from the task it replaces.
+
+    `before` is None for a new task. A re-block (`task block` on a BLOCKED task) is not visible in a diff, so
+    `task block` bumps the generation itself; this function covers entering BLOCKED and RUNNING and assignment edits.
+    """
+    old = before or {}
+    generation = old.get("block_generation", 0)
+    counter = old.get("assignment_counter", 0)
+    generation = generation if type(generation) is int else 0
+    counter = counter if type(counter) is int else 0
+    status = after.get("status")
+    if status == "BLOCKED" and old.get("status") != "BLOCKED":
+        generation += 1
+    if status == "RUNNING" and old.get("status") != "RUNNING":
+        counter += 1
+    elif before is not None and any(before.get(name) != after.get(name) for name in ASSIGNMENT_FIELDS):
+        counter += 1
+    return {"block_generation": generation, "assignment_counter": counter}
 
 
 def task_stamps_enabled(state: dict[str, Any]) -> bool:
@@ -2735,7 +2775,7 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
             )
         if valid and not has_target_rules(policy):
             report.errors.append(
-                f"project: delivery_target needs policy_version 2 or 3, but the project is at policy {policy}"
+                f"project: delivery_target needs policy_version 2 or later, but the project is at policy {policy}"
             )
     _validate_settings(state, policy if valid else None, report)
     # BLOCKED may follow ALIGNING, so it is let through here: leaving it for PLANNING or beyond is refused.
@@ -2750,8 +2790,8 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
 def _validate_settings(state: dict[str, Any], policy: "int | None", report: ValidationReport) -> None:
     """`review_risk`, `review_fallback` and `options`: policy 3 only, closed values."""
     for name in SETTINGS_FIELDS:
-        if name in state and policy is not None and policy != 3:
-            report.errors.append(f"project: {name} needs policy_version 3, but the project is at policy {policy}")
+        if name in state and policy is not None and not has_review_rules(policy):
+            report.errors.append(f"project: {name} needs policy_version 3 or later, but the project is at policy {policy}")
     if "review_risk" in state:
         report.errors.extend(f"project: {text}" for text in risk_errors(state["review_risk"]))
     if "review_fallback" in state:
@@ -2998,6 +3038,19 @@ def validate_v4_state(
             finished = datetime.fromisoformat(str(task["finished_at"]).replace("Z", "+00:00"))
             if finished < started:
                 report.errors.append(f"{label}: finished_at is earlier than started_at")
+
+        durable = task_durable_enabled(state)
+        for durable_field in TASK_DURABLE_FIELDS:
+            if durable_field not in task:
+                if durable:
+                    report.errors.append(f"{label}: {durable_field} is required at policy 4")
+            elif not durable:
+                report.errors.append(f"{label}: {durable_field} needs policy_version 4")
+            elif type(task[durable_field]) is not int or task[durable_field] < 0:
+                report.errors.append(f"{label}: {durable_field} must be a non-negative integer")
+        if durable and task_status == "BLOCKED" and type(task.get("block_generation")) is int:
+            if task["block_generation"] < 1:
+                report.errors.append(f"{label}: a BLOCKED task needs block_generation of at least 1")
 
         if "reads" in task:
             reads = task.get("reads")
@@ -4258,7 +4311,7 @@ def _stored_state(project_dir: Path) -> "dict[str, Any]":
 
 def staging_enabled(state: "dict[str, Any]") -> bool:
     """Whether closing stages lessons and warns about them: always below policy 3, else `options.memory_staging`."""
-    return delivery_rules(state).policy != 3 or project_options(state)["memory_staging"]
+    return not has_review_rules(delivery_rules(state).policy) or project_options(state)["memory_staging"]
 
 
 def memory_staging_warnings(

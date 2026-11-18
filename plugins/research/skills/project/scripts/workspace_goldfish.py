@@ -286,7 +286,8 @@ def _stages(value: object) -> "tuple[str, ...]":
 
 def _risk_of(state: "dict[str, Any]") -> "str | None":
     """The recorded review risk at policy 3; None at policy 0 to 2, where the effort rules stand."""
-    return workspace_lib.review_risk(state) if workspace_lib.delivery_rules(state).policy == 3 else None
+    rules = workspace_lib.delivery_rules(state)
+    return workspace_lib.review_risk(state) if workspace_lib.has_review_rules(rules.policy) else None
 
 
 def _check_risk_stages(target: str, stages: "tuple[str, ...]", risk: str) -> None:
@@ -509,7 +510,7 @@ def _standing_applies(state: "dict[str, Any]", request: "dict[str, Any]") -> boo
     """Whether a waiver rests on the standing fallback: policy 3, a spec or planning target, below `high`, and
     the user's per-round words left out. Design and diff rounds always need them."""
     return (
-        workspace_lib.delivery_rules(state).policy == 3
+        workspace_lib.has_review_rules(workspace_lib.delivery_rules(state).policy)
         and request.get("target") in LIGHT_TARGETS
         and "confirmation" not in request
         and workspace_lib.review_fallback(state)["mode"] == "waive-recorded"
@@ -519,8 +520,10 @@ def _standing_applies(state: "dict[str, Any]", request: "dict[str, Any]") -> boo
 
 def amend_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
     """Record an explicit editorial or reviewer-requested edit after a passing close as a bookkeeping round."""
-    if workspace_lib.delivery_rules(state).policy != 3:
-        raise WorkspaceError("amend needs policy_version 3; policies 0 to 2 record an edit with a round or a waiver")
+    if not workspace_lib.has_review_rules(workspace_lib.delivery_rules(state).policy):
+        raise WorkspaceError(
+            "amend needs policy_version 3 or later; policies 0 to 2 record an edit with a round or a waiver"
+        )
     target = _choice(request.get("target"), TARGETS, "target")
     if target not in LIGHT_TARGETS:
         raise WorkspaceError("amend applies to spec and planning only; a design or diff change needs a round")

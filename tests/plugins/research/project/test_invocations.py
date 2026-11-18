@@ -117,8 +117,10 @@ class ManageLogTests(_Fixture):
         mode = stat.S_IMODE(self.project.stat().st_mode)
         self.project.chmod(stat.S_IRUSR | stat.S_IXUSR)
         self.addCleanup(self.project.chmod, mode)
-        self.assertEqual(0, _manage(["context", self.project]))
+        with patch.object(sys, "stderr", io.StringIO()) as captured:
+            self.assertEqual(0, _manage(["context", self.project]))
         self.assertEqual([], _lines(self.project))
+        self.assertRegex(captured.getvalue(), r"^warning: invocation log not written \(.+\)\n$")
 
     def test_a_missing_project_directory_gets_no_file(self) -> None:
         missing = self.root / "nope"
