@@ -644,12 +644,14 @@ def _directory_digest(path: Path, budget: Budget) -> str:
     entries: list[tuple[str, str]] = []
     for current, directories, files in os.walk(path, followlinks=False, onerror=_raise):
         directories[:] = [name for name in directories if name != ".git"]
+        # Every name the walk sees is charged, so a tree of many tiny files, links or empty directories
+        # runs out of budget: time is bounded, not only bytes.
+        if not budget.take(ENTRY_COST * (len(directories) + len(files))):
+            raise WorkspaceError(NOT_A_FILE)
         for name in files:
             full = Path(current) / name
             if full.is_symlink() or not full.is_file():
                 continue
-            if not budget.take(ENTRY_COST):  # time is bounded too: a tree of many tiny files runs out
-                raise WorkspaceError(NOT_A_FILE)
             entries.append((full.relative_to(path).as_posix(), _file_digest(full, budget)))
     entries.sort()
     return hashlib.sha256("".join(f"{name}\0{digest}\n" for name, digest in entries).encode("utf-8")).hexdigest()
@@ -749,11 +751,12 @@ def classify_evidence(
     changed: list[str] = []
     unsure: list[str] = []
     for item in row["fingerprints"]:
-        now_kind, now_digest = _hash_declared(project, target, item["root"], item["path"], budget)
         label = f"{item['root']}:{item['path']}"
         if item["kind"] in ("over-budget", "unreadable"):
-            unsure.append(f"{label}: recorded as {item['kind']}")
-        elif now_kind in ("over-budget", "unreadable"):
+            unsure.append(f"{label}: recorded as {item['kind']}")  # not hashed again: it costs budget for nothing
+            continue
+        now_kind, now_digest = _hash_declared(project, target, item["root"], item["path"], budget)
+        if now_kind in ("over-budget", "unreadable"):
             unsure.append(f"{label}: {now_kind} now")
         elif (now_kind, now_digest) != (item["kind"], item["sha256"]):
             changed.append(f"{label}: {item['kind']} then, {now_kind} now")

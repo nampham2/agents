@@ -254,7 +254,10 @@ def edit_document(
     if document == "spec" and task_packets_enabled(state):
         from workspace_packets import reference_errors  # function-local: that module imports this one
 
-        dangling = [error for error in reference_errors(project_dir, state) if "needs at least one" not in error]
+        try:  # advisory only: the edit is already written, so a failed check never fails it
+            dangling = reference_errors(project_dir, state, dangling_only=True)
+        except (WorkspaceError, OSError, ValueError) as error:
+            dangling = [f"the references could not be checked: {error}"]
         if dangling:
             result["warnings"] = [f"a spec edit left references that no longer resolve: {error}" for error in dangling]
     return result

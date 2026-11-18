@@ -6396,7 +6396,7 @@ def tag_project(
 
 
 def _reference_transition_errors(project_dir: Path, current: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
-    """Reference errors of the tasks a commit adds or whose references or status it changes (policy 5).
+    """Reference errors of the tasks a commit adds, whose references it changes or that it starts (policy 5).
 
     A stale reference in an untouched task never blocks an unrelated commit; `validate` scans them all.
     """
@@ -6409,7 +6409,8 @@ def _reference_transition_errors(project_dir: Path, current: dict[str, Any], can
         task["id"] for task in candidate["tasks"]
         if isinstance(task, dict) and isinstance(task.get("id"), str) and (
             task["id"] not in before
-            or any(before[task["id"]].get(key) != task.get(key) for key in (*TASK_PACKET_FIELDS, "status"))
+            or any(before[task["id"]].get(key) != task.get(key) for key in TASK_PACKET_FIELDS)
+            or (task.get("status") == "RUNNING" and before[task["id"]].get("status") != "RUNNING")
         )
     ]
     if not changed:

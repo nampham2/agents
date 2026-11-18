@@ -503,3 +503,43 @@ def test_a_spec_edit_warns_about_references_it_leaves_dangling(tmp_path: Path) -
     older = _project(tmp_path / "older", 4)
     plain = edit_document(older, "spec", expected_sha256=snapshot(older / "spec.md")[1], sections={OTHER: "z"})
     assert "warnings" not in plain
+
+
+# --- re-audit fixes: commit trigger, structured spec-edit filter and a guarded warning ---------------------
+
+
+def test_only_a_start_counts_as_a_status_touch(tmp_path: Path) -> None:
+    from workspace_operations import task_operation
+
+    project = _project(tmp_path, 5)
+    _set(project, "T01", spec_refs=["stale"])  # T01 is RUNNING with a heading that no longer exists
+    _set(project, "T02", spec_refs=["stale"])
+    task_operation(project, "block", "T01", expected_revision=_load_state(project)["revision"], reason="parked")
+    assert _load_state(project)["tasks"][0]["status"] == "BLOCKED"  # a block is not refused
+    with pytest.raises(WorkspaceError, match="task T02: spec_refs names no"):
+        task_operation(project, "start", "T02", expected_revision=_load_state(project)["revision"])
+
+
+def test_dangling_only_leaves_out_a_task_with_no_references(tmp_path: Path) -> None:
+    project = _project(tmp_path, 5)
+    state = _load_state(project)
+    assert any("needs at least one" in e for e in reference_errors(project, state))
+    assert reference_errors(project, state, dangling_only=True) == []
+
+
+def test_a_failing_reference_check_after_a_spec_edit_is_a_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from workspace_documents import edit_document
+    from workspace_journal import snapshot
+
+    project = _project(tmp_path, 5)
+
+    def fail(*args: Any, **kwargs: Any) -> list[str]:
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(workspace_packets, "reference_errors", fail)
+    edited = edit_document(project, "spec", expected_sha256=snapshot(project / "spec.md")[1], sections={OTHER: "x"})
+    assert edited["warnings"] == [
+        "a spec edit left references that no longer resolve: the references could not be checked: disk went away"
+    ]

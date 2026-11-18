@@ -524,8 +524,9 @@ At policy 5 an entry owned by a task also carries, before its first fence, `- As
 are `file`, `dir`, `missing`, `over-budget` and `unreadable`; one call hashes at most 16 MiB. A
 directory hash covers regular files in it, skips links and `.git`. `task finish` and `resume` report
 each cited check as `applicable`, `invalidated` (the counter moved, or a path's content, existence
-or kind changed) or `needs-judgement` (no fingerprint, or a path could not be compared), with
-`dirty` paths Git reports. The report never blocks. A closure-step entry is not classified.
+or kind changed) or `needs-judgement` (no fingerprint, a run that did not pass, or a path that
+could not be compared), with `dirty` paths Git reports. The report never blocks. A closure-step
+entry is not classified.
 
 Only evidence that no command produced, such as an external delivery receipt, is written by hand.
 

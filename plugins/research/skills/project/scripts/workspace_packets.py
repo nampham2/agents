@@ -69,13 +69,18 @@ def _unique(values: object) -> list[str]:
 
 def _task_errors(
     task: dict[str, Any], sections: dict[str, str] | None, spec: str | None, load_error: str,
+    require_refs: bool = True,
 ) -> list[str]:
-    """Reference errors of one task; each names the task and the field."""
+    """Reference errors of one task; each names the task and the field.
+
+    `require_refs` false leaves out the finding that a task names no heading at all, for a caller that
+    only asks which references no longer resolve.
+    """
     label = f"task {task['id']}"
     refs = _unique(task.get("spec_refs"))
     decisions = _unique(task.get("decision_refs"))
     errors: list[str] = []
-    if not refs:
+    if require_refs and not refs:
         errors.append(f"{label}: spec_refs needs at least one specification heading")
     if (refs or decisions) and (sections is None or spec is None):
         return [*errors, f"{label}: spec_refs and decision_refs cannot be checked: {load_error}"]
@@ -91,13 +96,13 @@ def _task_errors(
 
 
 def reference_errors(
-    project: Path, state: dict[str, Any], task_ids: "list[str] | None" = None,
+    project: Path, state: dict[str, Any], task_ids: "list[str] | None" = None, dangling_only: bool = False,
 ) -> list[str]:
     """Reference errors for the given tasks (default: every task that is not DONE or SKIPPED).
 
     Below policy 5 there is nothing to check. A DONE or SKIPPED task is never checked, so a later
     specification edit does not strand finished work. Two `###` headings with the same text are one
-    project-level error.
+    project-level error. `dangling_only` leaves out the finding that a task names no heading at all.
     """
     if not task_packets_enabled(state):
         return []
@@ -118,7 +123,7 @@ def reference_errors(
     except WorkspaceError as error:
         load_error = str(error)
     for task in tasks:
-        errors.extend(_task_errors(task, sections, spec, load_error))
+        errors.extend(_task_errors(task, sections, spec, load_error, require_refs=not dangling_only))
     return errors
 
 
