@@ -23,10 +23,13 @@ from workspace_lib import WorkspaceError, document_sha256
 from workspace_session import update_project_data
 from workspace_workflows import input_schema, workflow
 
+from tests.plugins.research.project.test_automated_gates import ready_project
+from tests.plugins.research.project.test_decide_action import automated
 from tests.plugins.research.project.test_delivery import FILES, fetched, write_versions
 from tests.plugins.research.project.test_gate_new_projects import PLANNING
 from tests.plugins.research.project.test_goldfish import CODE_TASK, close, open_round, report
 from tests.plugins.research.project.test_lifecycle_commands import planned, request
+from tests.plugins.research.project.test_options import USER
 from tests.plugins.research.project.test_workflow_automation import fill_spec
 from tests.plugins.research.project.test_worktrees import (
     add_worktree,
@@ -401,4 +404,47 @@ class TestWorkerEventContract:
             del without[key]
             with pytest.raises(WorkspaceError) as caught:
                 workflow(project, "worker-event", without)
+            assert key in str(caught.value), f"without {key}: {caught.value}"
+
+
+DECIDE_VARIANTS = sorted(input_schema("decide")["required_by"])
+
+
+class TestDecideContract:
+    """Each printed `by=<v>[,kind=<k>]` entry of `decide` is a request the runtime accepts, every key demanded."""
+
+    def decide_request(self, tmp_path: Path, variant: str) -> tuple[Path, dict[str, Any]]:
+        parts = dict(part.split("=", 1) for part in variant.split(","))
+        kind = parts.get("kind", "approach")
+        project = ready_project(tmp_path) if kind == "project-close" else automated(tmp_path)
+        choices = {"task-change": "skip", "replan": "changed", "task-accept": "accept", "project-close": "close"}
+        values: dict[str, Any] = {
+            "by": parts["by"], "kind": kind, "subject": "project" if kind == "project-close" else "T02",
+            "choice": choices.get(kind, "a"), "options": ["a", "b"], "evidence": ["spec.md"], "confidence": 0.95,
+            "proposer": "coordinator", "assessor": "assessor-1", "confirmation": USER,
+        }
+        keys = schema_keys("decide", variant)
+        supplied = request(project, short_id("decide"))
+        supplied.update({key: values[key] for key in keys - {"id", "expected_revision"}})
+        assert set(supplied) - {"tokens"} == keys, f"{variant}: schema prints {sorted(keys)}"
+        return project, supplied
+
+    def test_the_variants_are_built_from_the_decision_kinds(self) -> None:
+        kinds = ("task-change", "replan", "task-accept", "project-close")
+        expected = {"by=agent", "by=user"} | {f"by={by},kind={kind}" for by in ("agent", "user") for kind in kinds}
+        assert set(DECIDE_VARIANTS) == expected
+
+    @pytest.mark.parametrize("variant", DECIDE_VARIANTS)
+    def test_every_variant_accepts_a_request_built_from_its_schema_entry(self, tmp_path: Path, variant: str) -> None:
+        project, supplied = self.decide_request(tmp_path, variant)
+        assert workflow(project, "decide", supplied)["outcome"] == "decision"
+
+    @pytest.mark.parametrize("variant", DECIDE_VARIANTS)
+    def test_omitting_any_printed_key_is_refused_and_names_it(self, tmp_path: Path, variant: str) -> None:
+        project, full = self.decide_request(tmp_path, variant)
+        for key in sorted(set(full) - {"tokens"}):
+            without = {**full, "id": short_id("omit")}
+            del without[key]
+            with pytest.raises(WorkspaceError) as caught:
+                workflow(project, "decide", without)
             assert key in str(caught.value), f"without {key}: {caught.value}"

@@ -1,6 +1,6 @@
 # Project
 
-A Claude Code and Codex skill for work that survives across sessions:
+A Claude Code and Pi skill for work that survives across sessions:
 
 ```text
 /research:project Use /path/to/workspace. Implement the parser fix in /path/to/repo,
@@ -86,9 +86,17 @@ guard; recalibrate when the workspace grows a lot.
 `list-projects --query` matches a project when every word of the query occurs in its row, so a
 multi-word objective finds the project; one literal phrase still matches as before.
 
+## Modes
+
+A project at policy 6 has two options, set only by `workflow settings` with the user's words.
+`coordinator` (on by default): a fresh worker subagent executes each task and `task finish` needs
+its recorded attempt and a replan statement. `automated` (off by default, needs `coordinator`): the
+agent decides inside execution, records each decision with its evidence and stops only for the
+user's own words. See [modes.md](references/modes.md).
+
 ## Commands
 
-Claude uses launchers on `PATH`; Codex resolves them beside the loaded skill.
+Claude uses launchers on `PATH`; Pi resolves them beside the loaded skill.
 
 ```sh
 research-project list-projects /path/to/workspace --query parser

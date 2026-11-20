@@ -11,10 +11,11 @@ from typing import Any
 import pytest
 import workspace_packets
 from workspace_documents import append_record, entry_body, friction_entries
+from workspace_durability import task_attempts, worker_lines
 from workspace_lib import WorkspaceError, validate_project
 from workspace_packets import PACKET_WARN_CHARS, build_packet, reference_errors, spec_sections
 from workspace_session import project_context, update_project_data
-from workspace_workflows import _worker_lines, workflow
+from workspace_workflows import workflow
 
 from tests.plugins.research.project.test_lifecycle_commands import request
 from tests.plugins.research.project.test_policy_five import _project as _policy_project
@@ -383,11 +384,11 @@ def test_damaged_packet_hash_lines_are_skipped_with_a_warning_at_policy_five() -
     good = line(packet_sha256="ab" * 32)
     text = good + line(packet_sha256="short") + line(event="observed", packet_sha256="ab" * 32)
     warnings: list[str] = []
-    assert len(_worker_lines(text, True, warnings, "T01", True)) == 1
+    assert len(worker_lines(text, True, warnings, "T01", True)) == 1
     assert len(warnings) == 2 and all("packet_sha256" in w for w in warnings)
     # below policy 5 the key is unknown, so the line is damaged
     warnings = []
-    assert _worker_lines(good, True, warnings, "T01", False) == [] and "damaged" in warnings[0]
+    assert worker_lines(good, True, warnings, "T01", False) == [] and "damaged" in warnings[0]
 
 
 def test_a_changed_packet_hash_is_a_note_not_a_bump(tmp_path: Path) -> None:
@@ -411,7 +412,7 @@ def test_a_task_without_notes_or_an_intent_hash_adds_no_note(tmp_path: Path) -> 
     state = _load_state(project)
     assert not (project / "tasks/T02.md").exists()
     assert build_packet(project, state, state["tasks"][1])["notes"] == []
-    assert workspace_packets._worker_history(project, "T01", []) == []
+    assert task_attempts(project, state, "T01") == ([], {}, [])
 
 
 # --- delegating: the two warnings it governs --------------------------------------------------------

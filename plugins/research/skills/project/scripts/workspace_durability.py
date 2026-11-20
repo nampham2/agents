@@ -5,7 +5,8 @@ notes (P1); a crash loop is counted from `invocations.jsonl`, the task notes and
 (P2); a worker is silent when its latest event is older than 30 minutes (P4); a wait is a
 `research-wait` entry in the notes of a BLOCKED task (P5). Workspace files are untrusted: a
 malformed entry or line is skipped, never raised, so that a resume can always run. The markers are
-new names, so a 0.33.0 reader of `research-worker` lines never matches them.
+new names, so a 0.33.0 reader of `research-worker` lines never matches them. The readers of the
+`research-worker` lines live here too, with the mode gate that every commit path runs on them (policy 6).
 """
 
 from __future__ import annotations
@@ -19,13 +20,25 @@ from typing import Any
 from workspace_documents import ENTRY_MARKER_PATTERN
 from workspace_evidence import _entry_rows
 from workspace_invocations import INVOCATIONS_FILENAME
-from workspace_lib import WorkspaceError, read_text, task_durable_enabled
-from workspace_session import next_move
+from workspace_journal import object_input, string_input
+from workspace_lib import (
+    WorkspaceError,
+    automated_enabled,
+    coordinator_enabled,
+    modes_enabled,
+    read_text,
+    stamp_transitions,
+    task_durable_enabled,
+    task_packets_enabled,
+)
+from workspace_session import decision_gate, default_authorization, next_move
 
 REFERENCE = "references/durability.md"
 EFFECT_MARKER = re.compile(r"^<!-- research-effect (.+) -->$", re.MULTILINE)
 EFFECT_OUTCOMES = ("done", "not-done", "unknown")
-EFFECT_KINDS = ("external", "destructive")
+# The effect kinds that take an effect intent, that a worker may not run, and that coordinator mode exempts
+# from the worker-attempt rule of `task finish`.
+SIDE_EFFECT_KINDS = ("external", "destructive")
 KEY_LIMIT = 256
 CRASH_LOOP_THRESHOLD = 3
 # An entry whose whole body is one of these markers is a record of an observation, not a finding.
@@ -33,6 +46,18 @@ MARKER_ONLY = re.compile(r"\A<!-- research-(?:worker|effect|wait) .+ -->\Z")
 HEADING_STAMP = re.compile(r"^### (?P<stamp>\S+) — ", re.MULTILINE)
 WAIT_MARKER = re.compile(r"^<!-- research-wait (.+) -->$", re.MULTILINE)
 SILENT_AFTER_MINUTES = 30
+# The keys of a `worker-event` request; the stored line adds `recorded`, and from policy 4 `counter`.
+WORKER_EVENT_FIELDS = frozenset({
+    "task", "handle", "event", "scope", "observation", "assignment_revision", "attempt_id", "packet_sha256",
+})
+# Every worker-event field is required for every event. `attempt_id` is allowed everywhere but required nowhere in
+# the schema: the builder demands it at policy 4 for every event except `intent`, and refuses it below policy 4.
+WORKER_EVENTS = ("intent", "launched", "observed", "completed", "stopped", "failed")
+WORKER_EVENT_REQUIRED = frozenset(WORKER_EVENT_FIELDS - {"attempt_id", "packet_sha256"})
+WORKER_EVENT_OPTIONAL = frozenset({"attempt_id", "counter", "packet_sha256"})
+PACKET_HASH = re.compile(r"[0-9a-f]{64}")
+HELD_FREE_EVENTS = ("completed", "stopped")
+WORKER_LINE = re.compile(r"<!-- research-worker (.+) -->[ \t]*")
 
 
 def utcnow() -> datetime:
@@ -201,8 +226,16 @@ def crash_loops(project: Path, state: dict[str, Any], *, pending_resume: bool) -
     return loops
 
 
-def crash_loop_detail(loops: list[dict[str, Any]], durable: bool = False) -> str:
+def crash_loop_detail(loops: list[dict[str, Any]], durable: bool = False, coordinator: bool = False) -> str:
     named = ", ".join(f"{item['task']} {item['resumes']} times" for item in loops)
+    if coordinator:
+        # In coordinator mode a restart raises `assignment_counter` and voids a completed worker attempt.
+        return (
+            f"resumed without progress: {named}. Record a finding or evidence for real progress. In coordinator "
+            "mode do not run task block then task start: a restart is a new assignment and voids a completed "
+            "worker attempt. If the worker completed, finish the task; if its attempt is still open, record its "
+            f"outcome with 'workflow worker-event'; see {REFERENCE}"
+        )
     # Attempts and held state exist only at policy 4, so the sentence about them is shown there only.
     held = " (a held attempt needs stopped before the next intent)" if durable else ""
     return (
@@ -218,7 +251,7 @@ def durable_move(project: Path, state: dict[str, Any], *, pending_resume: bool =
     """
     loops = crash_loops(project, state, pending_resume=pending_resume)
     if loops:
-        detail = crash_loop_detail(loops, task_durable_enabled(state))
+        detail = crash_loop_detail(loops, task_durable_enabled(state), coordinator_enabled(state))
         move = {"continue": None, "stop_reason": "blocked", "move_detail": detail}
     else:
         move = next_move(state)
@@ -382,3 +415,232 @@ def durability_view(project: Path, state: dict[str, Any], *, pending_resume: boo
     if warnings:
         view["durability_warnings"] = warnings
     return view
+
+
+def worker_lines(
+    text: str, durable: bool, warnings: "list[str] | None", task_id: str, packets: bool = False,
+) -> list[dict[str, Any]]:
+    """The `research-worker` lines of one notes document, in order.
+
+    Below policy 4 a malformed line is an error, as before (a field error keeps its own text, bad JSON says so),
+    and `attempt_id` or `counter` is an unknown key. At policy 4 a malformed line is skipped with a warning that
+    names its line and cause, so one bad line cannot hide every attempt of the task: not valid JSON, a missing
+    field, an unknown event, another task, `counter` without `attempt_id` (or the reverse), a counter that is
+    not an integer, or a line cut short (no closing marker). Trailing spaces and a CR are tolerated.
+    """
+    allowed = WORKER_EVENT_FIELDS | {"recorded", "counter"}
+    if not durable:
+        allowed = allowed - WORKER_EVENT_OPTIONAL
+    if not packets:
+        allowed = allowed - {"packet_sha256"}
+    lines = []
+    for number, raw in enumerate(text.splitlines(), start=1):
+        if not raw.startswith("<!-- research-worker "):
+            continue
+        match = WORKER_LINE.fullmatch(raw.rstrip("\r"))
+        if match is None:
+            if durable and warnings is not None:
+                warnings.append(f"tasks/{task_id}.md line {number}: research-worker line cut short (no closing marker)")
+            continue
+        try:
+            try:
+                event = json.loads(match[1])
+            except ValueError as error:
+                if not durable:
+                    raise WorkspaceError("invalid worker event JSON") from error
+                raise WorkspaceError("not valid JSON") from error
+            object_input(event, allowed, WORKER_EVENT_REQUIRED, where="worker event")
+            for field in ("task", "handle", "event", "scope", "observation"):
+                string_input(event[field], field)
+            if durable:
+                if event["event"] not in WORKER_EVENTS or event["task"] != task_id:
+                    raise WorkspaceError("an unknown event or another task")
+                if ("attempt_id" in event) != ("counter" in event):
+                    raise WorkspaceError("attempt_id and counter must come together")
+                if "attempt_id" in event:
+                    string_input(event["attempt_id"], "attempt_id")
+                    if type(event["counter"]) is not int:
+                        raise WorkspaceError("counter is not an integer")
+                if "packet_sha256" in event and (
+                    event["event"] != "intent"
+                    or type(event["packet_sha256"]) is not str
+                    or PACKET_HASH.fullmatch(event["packet_sha256"]) is None
+                ):
+                    raise WorkspaceError("packet_sha256 is not 64 lowercase hex characters on an intent event")
+        except WorkspaceError as error:
+            if not durable:
+                raise
+            if warnings is not None:
+                warnings.append(f"tasks/{task_id}.md line {number}: damaged research-worker line ({error})")
+            continue
+        lines.append(event)
+    return lines
+
+
+def attempts(lines: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Per `attempt_id`, its latest line; a line after `completed` or `stopped` is ignored (the builder refuses it)."""
+    found: dict[str, dict[str, Any]] = {}
+    for line in lines:
+        if "attempt_id" not in line:
+            continue
+        prior = found.get(line["attempt_id"])
+        if prior is not None and prior["event"] in HELD_FREE_EVENTS:
+            continue
+        found[line["attempt_id"]] = line
+    return found
+
+
+def task_attempts(
+    project: Path, state: dict[str, Any], task_id: str,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
+    """The worker lines of one task in file order, the latest line per attempt, and the damage found."""
+    damage: list[str] = []
+    lines = worker_lines(
+        _notes(project, task_id), task_durable_enabled(state), damage, task_id, task_packets_enabled(state)
+    )
+    return lines, attempts(lines), damage
+
+
+# The findings of the mode gate (design section 4.3). From `task finish` each has the prefix
+# `task <id> cannot finish: `; from the shared gate, `task <id>: `.
+G0 = "coordinator mode cannot read the worker attempts: {damage}; repair or remove that line in tasks/{task}.md by hand"
+G1 = (
+    "coordinator mode: attempt {attempt} is still open (latest event {event}); record stopped for it with "
+    "'workflow worker-event'"
+)
+G2 = (
+    "coordinator mode needs a completed worker attempt for the current assignment (assignment_counter {counter}) "
+    "and found none; dispatch a fresh worker and record its events with 'workflow worker-event', or turn "
+    "coordinator off with 'workflow settings' and the user's words"
+)
+R2 = (
+    "coordinator mode needs a replan statement on a finished task; review the tasks that have not started, then "
+    "use 'task finish --replan none' or '--replan changed' with --replan-reason \"<one line>\""
+)
+K1 = (
+    "coordinator mode: effect.kind cannot change from {old} to {new} once the task has an assignment "
+    "(assignment_counter {counter}); a worker may not run an exempt step. Skip this task and add a new task for "
+    "the {new} step"
+)
+C0 = (
+    "assignment_counter is written by the tool: expected {expected}, found {found}; leave it as the tool stamps it "
+    "(task start, task finish and update write it)"
+)
+A1 = (
+    "authorization can change only through 'workflow authorize' at policy 6; this {action} would set it to "
+    "{status}. Create or reset a task with its default authorization, then authorize it with the user's words"
+)
+
+
+def _effect_kind(task: dict[str, Any]) -> Any:
+    effect = task.get("effect")
+    return effect.get("kind") if isinstance(effect, dict) else None
+
+
+def _attempt_findings(project: Path, state: dict[str, Any], task: dict[str, Any]) -> list[str]:
+    """The worker-attempt rule: a completed attempt on the current assignment counter and none open."""
+    _, found, damage = task_attempts(project, state, task["id"])
+    if damage:
+        # A skipped line can hide an open attempt; the event builder refuses for the same reason.
+        return [G0.format(damage=damage[0], task=task["id"])]
+    counter = task.get("assignment_counter")
+    findings = [
+        G1.format(attempt=attempt, event=line["event"])
+        for attempt, line in found.items() if line["event"] not in HELD_FREE_EVENTS
+    ]
+    if not any(line["event"] == "completed" and line["counter"] == counter for line in found.values()):
+        findings.append(G2.format(counter=counter))
+    return findings
+
+
+def task_finish_findings(project: Path, state: dict[str, Any], task: dict[str, Any]) -> list[str]:
+    """Why the modes refuse `task` becoming DONE from `state`; empty when it may (section 4.3).
+
+    `state` is the state before the commit and `task` the task as the candidate holds it. Every finished task
+    needs a replan statement; a task whose effect kind is not `external` or `destructive` also needs the worker
+    attempts the coordinator recorded.
+    """
+    findings = [] if "replan" in task else [R2]
+    if _effect_kind(task) not in SIDE_EFFECT_KINDS:
+        findings.extend(_attempt_findings(project, state, task))
+    replan = task.get("replan")
+    if automated_enabled(state) and isinstance(replan, dict) and replan.get("statement") == "changed":
+        text = decision_gate(state, "replan", task["id"], "changed")
+        if text is not None:
+            findings.append(text)
+    return findings
+
+
+def _stamped_counter(before: "dict[str, Any] | None", task: dict[str, Any]) -> "int | None":
+    """The `assignment_counter` the tool stamps on `task`, or None when the stored task cannot be stamped."""
+    try:
+        return stamp_transitions(before, task)["assignment_counter"]
+    except WorkspaceError:
+        return None  # a stored counter or generation that is not an integer: the validator reports it
+
+
+def _authorization_status(value: Any) -> Any:
+    return value.get("status") if isinstance(value, dict) else value
+
+
+def mode_gate_errors(
+    project: Path, previous: dict[str, Any], candidate: dict[str, Any], action: "str | None" = None,
+) -> list[str]:
+    """Every mode refusal of one commit, each labelled with its task or `project` (section 4.3).
+
+    Policy 6 only. Every policy-6 commit keeps the stamped `assignment_counter` (C0) and lets only `authorize`
+    grant consent (A1). With `coordinator` on, a started task cannot change into an exempt effect kind (K1) and a
+    task that becomes DONE passes `task_finish_findings`. With `automated` on, a task newly SKIPPED needs a valid
+    `task-change` decision for `skip` (except under `cancel` and `maintenance`, which carry the user's words), and
+    the project newly DONE a valid `project-close` decision for `close`. `action` is the journaled action name,
+    None for a task command, `update`, `commit` and the legacy `close`.
+    """
+    tasks = candidate.get("tasks") if isinstance(candidate, dict) else None
+    if not modes_enabled(candidate) or not isinstance(tasks, list):
+        return []
+    stored = previous.get("tasks")
+    before = {
+        task["id"]: task for task in (stored if isinstance(stored, list) else [])
+        if isinstance(task, dict) and isinstance(task.get("id"), str)
+    }
+    coordinator = coordinator_enabled(candidate)
+    automated = automated_enabled(candidate)
+    errors: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict) or not isinstance(task.get("id"), str):
+            continue
+        old = before.get(task["id"])
+        findings: list[str] = []
+        expected = _stamped_counter(old, task)
+        found = task.get("assignment_counter")
+        if expected is not None and (type(found) is not int or found != expected):
+            findings.append(C0.format(expected=expected, found=found))
+        authorization = task.get("authorization")
+        kind = _effect_kind(task)
+        if action != "authorize" and authorization != default_authorization(kind) and (
+            old is None or authorization != old.get("authorization")
+        ):
+            findings.append(A1.format(action=action or "update/commit", status=_authorization_status(authorization)))
+        if coordinator:
+            counter = old.get("assignment_counter") if old is not None else None
+            if (
+                old is not None and type(counter) is int and counter >= 1
+                and _effect_kind(old) not in SIDE_EFFECT_KINDS and kind in SIDE_EFFECT_KINDS
+            ):
+                findings.append(K1.format(old=_effect_kind(old), new=kind, counter=counter))
+            if task.get("status") == "DONE" and (old is None or old.get("status") != "DONE"):
+                findings.extend(task_finish_findings(project, previous, task))
+        # Rule 3: a skip needs a `task-change` decision, read from the state before, where the task is not yet
+        # terminal. `cancel` and `maintenance` carry the user's words instead (section 4.5).
+        newly_skipped = task.get("status") == "SKIPPED" and (old is None or old.get("status") != "SKIPPED")
+        if automated and newly_skipped and action not in ("cancel", "maintenance"):
+            text = decision_gate(previous, "task-change", task["id"], "skip")
+            if text is not None:
+                findings.append(text)
+        errors.extend(f"task {task['id']}: {finding}" for finding in findings)
+    # Rule 4: the close reads the candidate, so a task added in the same commit makes the decision stale.
+    if automated and candidate.get("status") == "DONE" and previous.get("status") != "DONE":
+        text = decision_gate(candidate, "project-close", "project", "close")
+        if text is not None:
+            errors.append(f"project: {text}")
+    return errors

@@ -1,6 +1,6 @@
 """Tests for the plugin's host-specific command entry points.
 
-Claude Code invokes the top-level `bin/` wrappers from PATH. Codex resolves the launchers from the
+Claude Code invokes the top-level `bin/` wrappers from PATH. Pi resolves the launchers from the
 exact loaded skill directory. Both surfaces must reach the same scripts without consulting cwd.
 
 These run every entry point as a process, which is the only way to test shell launchers honestly.
@@ -78,7 +78,7 @@ class WrapperExecutionTests(unittest.TestCase):
         for subcommand in ("init", "commit", "rebuild-index", "record-evidence", "find-roots", "migrate"):
             self.assertIn(subcommand, result.stdout)
 
-    def test_a_real_subcommand_runs_through_the_codex_surface(self) -> None:
+    def test_a_real_subcommand_runs_through_the_skill_local_surface(self) -> None:
         workspace = self.root / "ws"
         workspace.mkdir()
         target = self.root / "target"

@@ -11,15 +11,20 @@ from pathlib import Path
 from typing import Any
 
 from memory_search import memory_candidates, objective_text
+from workspace_fields import MAX_EVIDENCE_ROUNDS
 from workspace_lib import (
     CLOSURE_STEPS,
     DESIGN_DOCUMENT,
+    MODE_PROJECT_FIELDS,
     SETTINGS_FIELDS,
     TASK_DURABLE_FIELDS,
     WorkspaceError,
+    automated_enabled,
     commit_state,
+    coordinator_enabled,
     document_sha256,
     load_json,
+    modes_enabled,
     planning_path,
     read_text,
     stamp_transitions,
@@ -393,12 +398,208 @@ def ready_task_ids(tasks: list[dict[str, Any]]) -> list[str]:
     ]
 
 
+OFFER_NOTE = (
+    "automated mode is not answered: ask the user once whether to turn it on, and for the two "
+    "standing words; record the answer with 'workflow settings' (options.automated true or false)"
+)
+EXHAUSTED_DETAIL = (
+    "automated decision exhausted after {rounds} evidence rounds: {items}; ask the user to choose "
+    "and show them these options, then record the answer with 'workflow decide' and a confirmation"
+)
+TERMINAL = ("DONE", "SKIPPED")
+
+
+def automated_offer(state: dict[str, Any]) -> bool:
+    """Whether the automated-mode offer is pending: coordinator on, no stored `automated` answer, an agreed plan
+    (status PLANNING, EXECUTING or REVIEW) and a task that is ready or RUNNING."""
+    stored = state.get("options")
+    tasks = state["tasks"]
+    return (
+        coordinator_enabled(state)
+        and not (isinstance(stored, dict) and "automated" in stored)
+        and state["status"] in ("PLANNING", "EXECUTING", "REVIEW")
+        and (bool(ready_task_ids(tasks)) or any(task["status"] == "RUNNING" for task in tasks))
+    )
+
+
+def mode_counter_values(state: dict[str, Any]) -> tuple[int, int]:
+    """`mode_counters` as (automated_off, reopens); absent or malformed reads as zero."""
+    counters = state.get("mode_counters")
+    counters = counters if isinstance(counters, dict) else {}
+    values = [counters.get(key) for key in ("automated_off", "reopens")]
+    off, reopens = (value if type(value) is int else 0 for value in values)
+    return off, reopens
+
+
+def _decision_records(state: dict[str, Any]) -> list[dict[str, Any]]:
+    stored = state.get("automated_decisions")
+    return [record for record in stored if isinstance(record, dict)] if isinstance(stored, list) else []
+
+
+def _judged(record: dict[str, Any], key: str) -> Any:
+    judged = record.get("judged")
+    return judged.get(key) if isinstance(judged, dict) else None
+
+
+def _pair(state: dict[str, Any], kind: str, subject: str) -> list[dict[str, Any]]:
+    return [
+        record for record in _decision_records(state) if (record.get("kind"), record.get("subject")) == (kind, subject)
+    ]
+
+
+def _window(state: dict[str, Any], kind: str, subject: str) -> list[dict[str, Any]]:
+    """The records of the pair since `automated` was last turned off and, for the project, since the last reopen."""
+    off, reopens = mode_counter_values(state)
+    return [
+        record for record in _pair(state, kind, subject)
+        if record.get("automated_off") == off and (subject != "project" or _judged(record, "reopens") == reopens)
+    ]
+
+
+def _is_user(record: dict[str, Any]) -> bool:
+    return record.get("proposer") == "user"
+
+
+def _series(window: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The agent records of the window after its latest agent decision, or all of them."""
+    agents = [record for record in window if not _is_user(record)]
+    decided = [index for index, record in enumerate(agents) if record.get("outcome") == "decision"]
+    return agents[decided[-1] + 1:] if decided else agents
+
+
+def _task_by_id(state: dict[str, Any], task_id: Any) -> "dict[str, Any] | None":
+    tasks = state.get("tasks")
+    tasks = tasks if isinstance(tasks, list) else []
+    return next((task for task in tasks if isinstance(task, dict) and task.get("id") == task_id), None)
+
+
+def decision_valid(state: dict[str, Any], record: dict[str, Any]) -> bool:
+    """Whether an agent decision still counts: the state it judged is unchanged."""
+    if record.get("outcome") != "decision" or not isinstance(record.get("judged"), dict):
+        return False
+    if record.get("subject") == "project":
+        tasks = state.get("tasks")
+        return (
+            isinstance(tasks, list) and len(tasks) == _judged(record, "task_count")
+            and mode_counter_values(state)[1] == _judged(record, "reopens")
+        )
+    task = _task_by_id(state, record.get("subject"))
+    return (
+        task is not None and task.get("status") not in TERMINAL
+        and task.get("assignment_counter") == _judged(record, "assignment_counter")
+    )
+
+
+def decision_state(state: dict[str, Any], kind: str, subject: str) -> tuple[str, "dict[str, Any] | None", int]:
+    """(`open`, `rounds`, `exhausted` or `answered`; the standing answer or the last record of the series; the next
+    round)."""
+    window = _window(state, kind, subject)
+    answers = [record for record in window if _is_user(record)]
+    series = _series(window)
+    last = series[-1] if series else None
+    if answers:
+        return "answered", answers[-1], len(series) + 1
+    if last is None:
+        return "open", None, 1
+    if last.get("outcome") == "exhausted":
+        return "exhausted", last, len(series) + 1
+    return "rounds", last, len(series) + 1
+
+
+def exhausted_pairs(state: dict[str, Any]) -> list[tuple[str, str]]:
+    """Every pair whose state is `exhausted` and whose subject is not terminal, in the order of each pair's first
+    record."""
+    pairs: list[tuple[str, str]] = []
+    for record in _decision_records(state):
+        pair = (record.get("kind"), record.get("subject"))
+        if pair in pairs or not all(isinstance(value, str) for value in pair):
+            continue
+        kind, subject = str(pair[0]), str(pair[1])
+        task = _task_by_id(state, subject)
+        if subject != "project" and (task is None or task.get("status") in TERMINAL):
+            continue
+        if decision_state(state, kind, subject)[0] == "exhausted":
+            pairs.append((kind, subject))
+    return pairs
+
+
+def _quoted(options: Any) -> str:
+    values = [f"'{option}'" for option in options] if isinstance(options, list) else []
+    return values[0] if len(values) < 2 else ", ".join(values[:-1]) + " or " + values[-1]
+
+
+def exhausted_detail(state: dict[str, Any], pairs: list[tuple[str, str]]) -> str:
+    """The `user-decision` text of the exhausted pairs, each with the options of its last record."""
+    items = "; ".join(
+        f"{kind} for {subject}: {_quoted(_pair(state, kind, subject)[-1].get('options'))}" for kind, subject in pairs
+    )
+    return EXHAUSTED_DETAIL.format(rounds=MAX_EVIDENCE_ROUNDS, items=items)
+
+
+def decision_gate(state: dict[str, Any], kind: str, subject: str, choice: str) -> "str | None":
+    """None when the standing user answer, or else the pair's last agent record after the latest answer, is a valid
+    decision for this choice; else the refusal text."""
+    prefix = "automated mode needs a valid decision: "
+    name, standing, _ = decision_state(state, kind, subject)
+    if name == "answered":
+        assert standing is not None
+        if standing.get("choice") == choice:
+            return None
+        return prefix + f"the user's decision for {subject} chose '{standing.get('choice')}', not '{choice}'"
+    if name == "exhausted":
+        return (
+            prefix + f"'{kind}' for {subject} is exhausted after {MAX_EVIDENCE_ROUNDS} evidence rounds; "
+            "the user decides"
+        )
+    if name == "rounds":
+        assert standing is not None
+        return (
+            prefix + f"'{kind}' for {subject} is at evidence round {standing.get('round')} of {MAX_EVIDENCE_ROUNDS}; "
+            "collect evidence and record it again"
+        )
+    pair = _pair(state, kind, subject)
+    users = [index for index, record in enumerate(pair) if _is_user(record)]
+    after = pair[users[-1] + 1:] if users else pair
+    last = after[-1] if after else None
+    if last is not None and last.get("outcome") == "decision":
+        if not decision_valid(state, last):
+            return (
+                prefix + f"the '{kind}' decision for {subject} is stale, {subject} changed after it was recorded; "
+                "record it again"
+            )
+        if last.get("choice") == choice:
+            return None
+        return prefix + f"the agent's decision for {subject} chose '{last.get('choice')}', not '{choice}'"
+    return (
+        prefix + f"no current '{kind}' decision for {subject}; record one with 'workflow decide' (choice '{choice}')"
+    )
+
+
 def next_move(state: dict[str, Any]) -> dict[str, Any]:
     """What the coordinator does next, or the one listed reason it may stop.
 
     Derived from the records and advisory: it grants no authority. `continue` is a task id, `plan` or
-    `finalize`; `stop_reason` is one of `STOP_REASONS`. Exactly one of the two is set.
+    `finalize`; `stop_reason` is one of `STOP_REASONS`. Exactly one of the two is set. At policy 6 an
+    exhausted automated decision stops for the user, and a pending automated-mode offer is a suffix of
+    `move_detail`.
     """
+    move = _base_move(state)
+    if move["stop_reason"] == "closed" or not modes_enabled(state):
+        return move
+    pairs = exhausted_pairs(state) if automated_enabled(state) else []
+    if pairs:
+        detail = exhausted_detail(state, pairs)
+        running = {task["id"] for task in state["tasks"] if task["status"] == "RUNNING"}
+        if move["stop_reason"] is not None or move["continue"] in running:
+            detail += "; " + move["move_detail"]
+        return {"continue": None, "stop_reason": "user-decision", "move_detail": detail}
+    if automated_offer(state):
+        return {**move, "move_detail": move["move_detail"] + "; " + OFFER_NOTE}
+    return move
+
+
+def _base_move(state: dict[str, Any]) -> dict[str, Any]:
+    """The move from the task graph and the closure steps alone."""
     tasks = state["tasks"]
     status = state["status"]
     if status in ("DONE", "CANCELLED"):
@@ -515,11 +716,22 @@ def _merge(destination: dict[str, Any], changes: dict[str, Any]) -> None:
             destination[key] = copy.deepcopy(value)
 
 
+def default_authorization(kind: Any) -> dict[str, Any]:
+    """The authorization a new task of effect kind `kind` starts with: pending for an external or destructive one."""
+    required = kind in ("destructive", "external")
+    return {
+        "required": required,
+        "status": "pending" if required else "not_required",
+        "scope": None,
+        "source": None,
+        "authorized_at": None,
+    }
+
+
 def _new_task(changes: dict[str, Any], durable: bool = False) -> dict[str, Any]:
     effect = changes.get("effect")
     if not isinstance(effect, dict) or effect.get("kind") not in ("none", "local_write", "destructive", "external"):
         raise WorkspaceError("new tasks need an explicit effect.kind: none, local_write, destructive, or external")
-    required = effect["kind"] in ("destructive", "external")
     task: dict[str, Any] = {
         "status": "TODO",
         "depends_on": [],
@@ -529,13 +741,7 @@ def _new_task(changes: dict[str, Any], durable: bool = False) -> dict[str, Any]:
         "skip_reason": None,
         "block_reason": None,
         "effect": {"description": None},
-        "authorization": {
-            "required": required,
-            "status": "pending" if required else "not_required",
-            "scope": None,
-            "source": None,
-            "authorized_at": None,
-        },
+        "authorization": default_authorization(effect["kind"]),
     }
     _merge(task, changes)
     if durable:
@@ -584,7 +790,7 @@ UPDATE_FIELDS = {"title", "status", "review", "cancellation_reason", "predecesso
 # Fields only a verifying operation may patch: `update` must not be able to declare a worktree or
 # move the target root without the Git observations the `worktree` action insists on.
 INTERNAL_UPDATE_FIELDS = UPDATE_FIELDS | {
-    "worktrees", "working_directory", "policy_version", "delivery_target", *SETTINGS_FIELDS,
+    "worktrees", "working_directory", "policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
 }
 
 
@@ -613,6 +819,8 @@ def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: 
             raise WorkspaceError(
                 "generation and counter are tool-managed: block_generation and assignment_counter cannot be set"
             )
+        if "replan" in change:
+            raise WorkspaceError("replan is written by task finish; it cannot be set")
         task_id = change["id"]
         if task_id in seen:
             raise WorkspaceError(f"duplicate task update: {task_id}")

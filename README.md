@@ -1,10 +1,10 @@
 # agents
 
-Cross-host research plugins for Claude Code, Codex and Pi.
+Cross-host research plugins for Claude Code and Pi.
 
 ## Install through a marketplace
 
-Plugins are distributed through the repository marketplace for each host. Do not install a plugin
+Each host installs the plugins through its own mechanism. Do not install a plugin
 by symlinking or treating the repository root as a single plugin.
 
 ### Claude Code
@@ -18,17 +18,6 @@ claude plugin install research@agents
 
 Confirm with `claude plugin list`. The plugin installs three user-facing skills, `research:project`,
 `research:dashboard` and `research:retro`.
-
-### Codex
-
-Add the marketplace directly from GitHub; no clone is required:
-
-```bash
-codex plugin marketplace add nampham2/agents --ref main
-codex plugin add research@agents
-```
-
-Confirm with `codex plugin list`.
 
 ### Pi
 
@@ -85,6 +74,29 @@ claude plugin install research@agents
 Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
+
+### 0.42.0 coordinator and automated modes
+
+- **Policy 6.** Every project created from this release starts at `policy_version` 6, with two
+  options: `coordinator` (on by default) and `automated` (off by default, needs `coordinator`).
+  Only `workflow settings` with the user's words turns either on or off. Older projects keep their
+  policy and see no change.
+- **Coordinator mode.** The main agent plans, orders the workers, runs the acceptance checks and
+  commits; a fresh worker runs every task except an `external` or `destructive` one. `task finish`
+  needs a completed worker attempt and a replan statement (`--replan none|changed` with
+  `--replan-reason`), and `--backfill` is refused. See `references/modes.md`.
+- **Automated mode.** After planning the agent takes the decisions with `workflow decide`: each
+  needs evidence, and `task-change`, `task-accept` and `project-close` also need an independent
+  assessor; it stops for the user after the evidence rounds run out. `workflow cancel`,
+  `workflow maintenance` and the delivery steps still need the user's words.
+- **Coding worker persona.** A code task's worker packet names `references/worker-personas.md`
+  in a `persona` key. Any other task's packet has `persona` set to null.
+- **`delegating`.** Valid at policy 5 only. At policy 6 the two packet warnings follow
+  `coordinator`.
+- **Hosts.** Claude Code and Pi are the supported hosts. The manifest and marketplace file of
+  the Codex host are deleted, so its users lose the plugin when this release merges.
+- A launcher older than 0.42.0 refuses a policy-6 project, so update both hosts together before
+  opening one.
 
 ### 0.41.0 worker packets and evidence applicability
 
@@ -579,8 +591,8 @@ This version preserves the ownership guard but cannot perform legacy executor re
 
 ### Versioning and updates
 
-`pyproject.toml` owns the release version. `uv.lock` and the Claude Code, Codex and Pi plugin
-manifests must use exactly the same SemVer; CI enforces this contract.
+`pyproject.toml` owns the release version. `uv.lock`, the Claude Code manifest and `package.json`
+must use exactly the same SemVer; CI enforces this contract.
 
 Claude Code caches installed plugins by version. After publishing a version bump:
 

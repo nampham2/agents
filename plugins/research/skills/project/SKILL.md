@@ -30,7 +30,7 @@ checkpoint. Never end a turn by asking whether to continue. Restart on user requ
 
 ## Resolve once
 
-Use the launchers beside this `SKILL.md`; use `PATH` only for a Claude plugin (Pi and Codex omit
+Use the launchers beside this `SKILL.md`; `PATH` only for a Claude plugin (Pi omits
 `bin`). Never search caches, infer the plugin root from cwd, use `CLAUDE_PLUGIN_ROOT`, or call
 modules directly.
 
@@ -56,7 +56,7 @@ research-project workflow <project-dir> resume -
 ```
 
 Send `{}` or selections. Resolve validation errors and contradictions; follow truncation with
-targeted reads.
+reads.
 
 `research-project init <root> --title "<title>" --working-directory <target> --tag <tag> --json`
 creates one; it refuses a likely duplicate, so ask the user. Report version-control warnings; never
@@ -93,7 +93,7 @@ records or material changes.
 After agreement, enter `PLANNING`; derive milestones from `planning.md` with success criteria,
 verification, effects, `depends_on` and rooted outputs. A code project's first task is the design
 task ([design-document.md](references/design-document.md)). Plan publication, pushes or commits only
-when requested. Send a compact stdin patch:
+when requested. Send a stdin patch:
 
 ```sh
 research-project update <project-dir> - --expected-revision <revision> --json
@@ -107,23 +107,25 @@ agreement, follow [execution-changes.md](references/execution-changes.md). `work
 allocates correction tasks for terminal work without copying acceptance or consent.
 
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
-and roots. Start before writing; `finish --backfill --note` records earlier work. Dependencies must
-be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization (existing counts)
-and an optional intent ([durability.md](references/durability.md)). A repository target needs a
+and roots. Start before writing. Dependencies must be `DONE`, not `SKIPPED`. Destructive/external
+effects need explicit authorization (existing counts) and
+an optional intent ([durability.md](references/durability.md)). A repository target needs a
 recorded worktree, and an MR where the delivery target demands one, before its first write
 ([worktrees.md](references/worktrees.md)).
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
-[legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs startup
-cost ([task-workers.md](references/task-workers.md)).
+[legacy-executor.md](references/legacy-executor.md). At policy 5 and below, delegate only when
+isolation outweighs startup cost ([task-workers.md](references/task-workers.md)). At policy 6 read
+[modes.md](references/modes.md) before the first task: coordinator mode is on by default, so a fresh
+worker runs each task and `task finish` needs its recorded attempt.
 
-Use `workflow ... verify` for check batches; single checks may use:
+Use `workflow ... verify` for batches; single checks may use:
 
 ```sh
 research-project record-evidence <project-dir> --task T01 --json -- <command>
 ```
 
-Commands run in the target: use absolute paths and an explicit shell for pipelines. Inspect failures
+Use absolute paths and an explicit shell for pipelines. Inspect failures
 with `read ... evidence --entry <record-id>`; never rewrite them as passes. Show a check for new
 code behaviour or a regression fix failing first. Finish with passing record IDs only when success
 criteria are met, not on zero exit alone. Prose goes in `append ... finding --task T01`, not

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Claude Code PATH entry point for the host-neutral validation launcher.
 #
-# Claude Code puts <plugin-root>/bin on PATH. Codex does not, so the implementation lives beside
+# Claude Code puts <plugin-root>/bin on PATH. Pi does not, so the implementation lives beside
 # the skill and this wrapper delegates to it. Both routes therefore execute the same launcher.
 set -euo pipefail
 

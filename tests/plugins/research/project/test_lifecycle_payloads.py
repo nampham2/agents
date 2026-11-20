@@ -145,17 +145,21 @@ def test_default_instruction_payload_budget() -> None:
     entry gained none. The chain and the two selected-reference ceilings rose to the new measurement:
     2260 to 2290, 2600 to 2630 and 2800 to 2840. At 0.40.0 automation-execution.md gained a one-line
     pointer to the policy-4 attempt rules, which live in durability.md (7 words); its ceiling rose
-    from 2840 to 2850.
+    from 2840 to 2850. With the coordinator and automated modes (policy 6) the entry gained the
+    pointer to modes.md (a trimmed sentence pays for part of it), commands.md the two `task finish`
+    flags, automation.md a `decide` row and `confirmation` in the `cancel` and `maintenance` rows,
+    and automation-execution.md the assessor sentence. The ceilings rose to the new measurement:
+    890 to 910, 1440 to 1480, 2290 to 2370, 2630 to 2710 and 2850 to 2950.
     """
     skill = REPO_ROOT / "plugins/research/skills/project"
     entry = (skill / "SKILL.md").read_text()
     routine = (skill / "references/commands.md").read_text()
-    assert len(entry.split()) <= 890
-    assert len((entry + routine).split()) <= 1440
+    assert len(entry.split()) <= 910
+    assert len((entry + routine).split()) <= 1480
     router = (skill / "references/automation.md").read_text()
     chain = len((entry + routine + router).split())
-    assert chain <= 2290 < 2442
-    ceilings = {"automation-context": 2630, "automation-execution": 2850}
+    assert chain <= 2370 < 2442
+    ceilings = {"automation-context": 2710, "automation-execution": 2950}
     for reference, ceiling in ceilings.items():
         selected = (skill / f"references/{reference}.md").read_text()
         assert len((entry + routine + router + selected).split()) <= ceiling
@@ -190,17 +194,20 @@ RESUME = ("durable-context", "writing-rules", "session-handoff", "memory-operati
 # scenario loads) and planning-review.md and the entry a failing-first clause. Every scenario that counts
 # those files rose to its new measurement: alignment-repository 7460 to 7510, alignment-plain 6750 to
 # 6800, resume 5160 to 5190, resume-with-verifier 5350 to 5380, alignment-and-handoff 8040 to 8090,
-# material-change-after-resume 8680 to 8730, closure 5990 to 6020.
+# material-change-after-resume 8680 to 8730, closure 5990 to 6020. With the policy-6 modes (SKILL.md, commands.md,
+# automation.md; goldfish-review.md in closure) every ceiling rose to its new measurement: alignment-repository 7510
+# to 7590, alignment-plain 6800 to 6880, resume 5190 to 5270, resume-with-verifier 5380 to 5460, alignment-and-handoff
+# 8090 to 8170, material-change-after-resume 8730 to 8810, closure 6020 to 6100. modes.md is in no scenario.
 SCENARIOS: dict[str, tuple[tuple[str, ...], int]] = {
-    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7510),
-    "alignment-plain": ((*CORE, *ALIGNMENT), 6800),
-    "resume": ((*CORE, *RESUME), 5190),
-    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5380),
-    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 8090),
+    "alignment-repository": ((*CORE, *ALIGNMENT, "worktrees"), 7590),
+    "alignment-plain": ((*CORE, *ALIGNMENT), 6880),
+    "resume": ((*CORE, *RESUME), 5270),
+    "resume-with-verifier": ((*CORE, *RESUME, "handoff-verifiers"), 5460),
+    "alignment-and-handoff": ((*CORE, *ALIGNMENT, "worktrees", "session-handoff"), 8170),
     "material-change-after-resume": (
-        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8730),
+        (*CORE, *RESUME, "execution-changes", "grill", "planning-review"), 8810),
     "closure": ((*CORE, "durable-context", "writing-rules", "memory-operations", "memory-promotion", "automation",
-                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 6020),
+                 "handoff-writing", "worktrees", "pull-requests", "goldfish-review"), 6100),
 }
 BASELINE = {
     "alignment-repository": 8205, "alignment-plain": 7726, "resume": 5843, "resume-with-verifier": 6033,
@@ -227,6 +234,8 @@ CONDITIONAL = {
     "legacy-executor": "only for old executor ownership or storage",
     "maintenance": "only when reopening a closed project",
     "planning-review": "only when a change reopens alignment",
+    "refusals": "only when a coordinator or automated-mode refusal needs its next step",
+    "modes": "only at policy 6: coordinator mode, the replan statement, the automated-mode offer and decisions",
     "memory-architecture": "only for memory format, migration or validation repairs",
     "records-layout": "only for the workspace records layout, doctor and migrate --layout",
     "memory-promotion": "only when closing with a promotion, compaction or retirement",
@@ -239,6 +248,7 @@ CONDITIONAL = {
     "tags-and-follow-up": "only when creating a project, changing its tags or closing one that may leave a follow-up",
     "stopping": "only when deciding whether the work may stop after a task",
     "task-workers": "only when delegating to workers",
+    "worker-personas": "only for a worker on a code task; the coordinator hands the path to it",
     "versioning": "only when proposing a base, recording an alpha line, moving a base or recording a release",
     "workspace-schema": "only for schema, migration or validation-error repairs",
     "worktrees": "only for a repository target",

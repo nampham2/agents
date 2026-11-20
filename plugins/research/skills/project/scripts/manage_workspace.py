@@ -281,6 +281,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="finish a task whose work was done before it was started: a start and a finish, two commits",
     )
     task.add_argument("--note", help="with --backfill: why the task was not started first")
+    task.add_argument(
+        "--replan", choices=("none", "changed"),
+        help="finish: the outcome of the review of the tasks that have not started",
+    )
+    task.add_argument("--replan-reason", help="finish: one line saying why, required with --replan")
     task.add_argument("--lock-timeout", type=float, default=5.0)
 
     close = subparsers.add_parser("close", help="Write an optional reflection and guardedly close a project")
@@ -877,6 +882,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
                 evidence_record_ids=args.evidence_records, start_next=args.start_next,
                 lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
                 observation_record_ids=args.observation_records,
+                replan=args.replan, replan_reason=args.replan_reason,
             )
         else:
             result = task_operation(
@@ -884,6 +890,7 @@ def _run(parser: argparse.ArgumentParser, args: argparse.Namespace, command_argv
                 reason=args.reason, evidence_record_ids=args.evidence_records, start_next=args.start_next,
                 lock_timeout=args.lock_timeout, backfill=args.backfill, note=args.note,
                 observation_record_ids=args.observation_records,
+                replan=args.replan, replan_reason=args.replan_reason,
             )
         print(json.dumps(result, indent=2))
         return 0

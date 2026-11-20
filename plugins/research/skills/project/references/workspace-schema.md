@@ -111,17 +111,17 @@ field, so a project from before tags stays valid; a v3 project is closed to it. 
 [tags-and-follow-up.md](tags-and-follow-up.md). A launcher older than 0.37.0 rejects a project that
 has `tags` and names a newer plugin as the likely cause.
 
-`policy_version` (0 to 5) and `delivery_target` (`research`, `local`, `pr`, `merged` or
+`policy_version` (0 to 6) and `delivery_target` (`research`, `local`, `pr`, `merged` or
 `release`) are optional v4 fields that only `workflow confirm` (kind `alignment`), `workflow
 retarget` and `migrate-policy` write; `update` refuses them. Absent `policy_version` derives from
 `created`: 0 before `DELIVERY_GATES_FROM`, 1 on or after it; a present one wins, and an invalid one
 reads as 1. Policy 2 needs a `delivery_target` once the project leaves `ALIGNING`, and policies 0
 and 1 carry none. `delivery_rules(state)` in `workspace_lib.py` is the one function every delivery
 check reads. A launcher older than 0.38.0 rejects a project that has either field. Policy 3 adds
-the review rules, policy 4 the durable task fields below and policy 5 the packet fields
-`spec_refs` and `decision_refs`; a project created from 0.41.0 starts at policy 5, and a launcher
-older than 0.41.0 refuses it, so update both hosts together. No command moves a project to
-policy 4 or 5: they exist only for new projects.
+the review rules, policy 4 the durable task fields below, policy 5 the packet fields
+`spec_refs` and `decision_refs` and policy 6 the mode options and fields below; a new project
+starts at policy 6, and a launcher older than 0.42.0 refuses it, so update both
+hosts together. No command moves a project to policy 4, 5 or 6: they exist only for new projects.
 
 `predecessor` names the project this one continues, and nothing checks that it exists. A follow-up
 sets it to its finished source, and its `briefing.md` starts with `Follow-up of: <source-id>`; that
@@ -163,6 +163,17 @@ a `DONE` or `SKIPPED` task is never checked. `context --worker --task` builds th
 A `research-worker` line of an `intent` event may carry `packet_sha256`, the SHA-256 of the
 referenced spec sections (each stripped of trailing whitespace, joined by a blank line); it is
 policy 5 only and 64 lowercase hex characters.
+
+At policy 6 `options` has `coordinator` (default on) and `automated` (default off) and refuses
+`delegating`; see [modes.md](modes.md). A `DONE` task may carry `replan`, an object with
+`statement` (`none` or `changed`) and `reason` (one line, at most 200 characters), written by
+`task finish`; `update` refuses it. The project has two optional fields. `automated_decisions` is
+a list, in record order, of the records `workflow decide` writes: `id`, `kind`, `subject`,
+`options`, `choice`, `evidence`, `confidence`, `proposer`, `assessor`, `round`, `outcome`,
+`recorded`, `confirmation`, `revision`, `judged` and `automated_off`. `mode_counters` is
+`{"automated_off": n, "reopens": m}`, raised by `settings` and `maintenance`; absent reads as
+zero. The worker packet has the key `persona`: the absolute path of the coding worker persona for
+a code task, else null.
 
 The optional v4 task `reads` list remains accepted for compatibility and input documentation;
 it no longer controls automatic dispatch. At policy 5 it also names paths whose content a recorded

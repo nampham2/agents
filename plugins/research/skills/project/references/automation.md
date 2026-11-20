@@ -1,6 +1,6 @@
 # Lifecycle automation
 
-Use the launchers beside the loaded skill (Codex) or on PATH (Claude). Examples use
+Use the launchers beside the loaded skill (Pi) or on PATH (Claude). Examples use
 `research-project`; substitute the resolved executable, never a Python module.
 
 ```sh
@@ -53,8 +53,9 @@ changed input with the same ID conflicts.
 | `review` | `reviewer`, `version`, `scope`, `findings`, actual `status`; optional `evidence`, `required`. Allocates the next cycle/file, preserving history. `pending` reopens acceptance. |
 | `goldfish` | `operation` `open` (`target`, `stages`; diff adds `worktree`, optional `commit`) returns `round`, `token`, `reviewed`; `close` (`round`; `tokens` `{"reviews/goldfish_NN": token}`; `reports` `[{stage, summary}]`; `findings` `[{id, reviewer, severity, scope, summary, triage, evidence, resolution, artifact}]`; optional `confirmation` `{source, response}`) computes the outcome; `amend` (`target`, `kind`, `reason`; `confirmation` when required; see review-risk.md); `waive` (`target`, `reason`, `confirmation`; diff adds `worktree`, optional `commit`). A changed target needs a `FIX` finding; a Blocker or Major `FIX` on an unchanged target names an existing `artifact` file; one `reports` entry per opened stage; `commit` is full hex. Writes only `reviews/goldfish_NN.md`; see [goldfish-review.md](goldfish-review.md). |
 | `finalize` | `reflection` (200+ characters, a heading, `## Retro`: what got in the way with pointers, unused references, one plugin change or `none`; required after the cutoff), `continuation`; `tokens` include `memory-staging`; commits DONE, saves the handoff; returns `reflected_lessons` (`staged`, `skipped`), retro and control warnings. |
-| `maintenance` | `reason`, optional `tasks`, `continuation`; reopens DONE as PLANNING. |
-| `cancel` | `reason`, `tasks` patch array, `continuation`; commits CANCELLED, deleting nothing and claiming no stopped workers. |
+| `maintenance` | `reason`, optional `tasks`, `continuation`, `confirmation` (required while `automated` is on); reopens DONE as PLANNING. |
+| `cancel` | `reason`, `tasks` patch array, `continuation`, `confirmation` (required while `automated` is on); commits CANCELLED, deleting nothing and claiming no stopped workers. |
+| `decide` | Needs `automated` on. `by` `agent`: `kind`, `subject`, `choice`, `evidence`, `confidence`, `proposer`, `assessor` for a consequential kind, `options` for a free kind. `by` `user`: `kind`, `subject`, `choice`, `confirmation`, `spec` token. See [modes.md](modes.md). |
 | `assess` | `topic`, `disposition` (`apply`, `reject`, `defer`), `reason`, `application`; saves the lesson assessment with its topic token. |
 | `worktree` | `operation` `record` (`path`, `branch`, optional `repository`, `kind`, `role`) or `close` (`path`, `decision` `keep`/`accept_dirty`/`remove`), or a delivery record (`path` each): `pull_request`, `alpha`, `release`, `merge` (also `merged_head`); plus `confirmation`; Git-verified; see [worktrees.md](worktrees.md). |
 | `report` | Optional report `sections` and boolean `graph`; generates the Markdown scaffold/accounting and checks citations. |

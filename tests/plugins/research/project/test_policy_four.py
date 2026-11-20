@@ -94,7 +94,8 @@ def test_policy_four_is_valid_and_carries_policy_three_rules() -> None:
 def test_task_durable_enabled_only_at_a_valid_policy_four() -> None:
     assert task_durable_enabled({"policy_version": 4}) is True
     assert task_durable_enabled({"policy_version": 5}) is True  # policy 5 keeps the durable fields
-    assert not any(task_durable_enabled({"policy_version": p}) for p in (0, 1, 2, 3, 6, True, "4"))
+    assert task_durable_enabled({"policy_version": 6}) is True  # policy 6 keeps the durable fields
+    assert not any(task_durable_enabled({"policy_version": p}) for p in (0, 1, 2, 3, 7, True, "4"))
     assert task_durable_enabled({}) is False
     assert task_durable_enabled([]) is False  # ty: ignore[invalid-argument-type]
 

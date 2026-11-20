@@ -23,7 +23,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from workspace_fields import NESTED_INPUTS, WORKTREE_OPTIONAL_FIELDS, field_errors
+from workspace_fields import (
+    DECISION_OUTCOMES,
+    DECISION_RECORD_FIELDS,
+    MAX_EVIDENCE_ROUNDS,
+    NESTED_INPUTS,
+    WORKTREE_OPTIONAL_FIELDS,
+    field_errors,
+)
 from workspace_style import (
     LIMIT_STEP,
     LIMIT_TEXT,
@@ -105,12 +112,18 @@ PROJECT_FIELDS = {
 # review on a host with no fresh agents, and the optional policies.
 SETTINGS_FIELDS = ("review_risk", "review_fallback", "options")
 # `tags`, `policy_version` and `delivery_target` are v4 only: schema v3 shares PROJECT_FIELDS and stays closed to them.
-PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS}
+# Policy 6: the records of `workflow decide` and the two counters `settings` and `maintenance` write.
+MODE_PROJECT_FIELDS = ("automated_decisions", "mode_counters")
+PROJECT_V4_FIELDS = PROJECT_FIELDS | {
+    "execution", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
+}
 # Fields a valid project may omit: `predecessor` names the project this one continues (a maintenance
 # ancestor, or the finished source of a follow-up, whose briefing starts `Follow-up of: <id>`) and `worktrees` is
 # only present once a repository worktree, or its absence, has been recorded. `tags` is absent from
 # every project created before tags existed, so validation never requires it.
-OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS}
+OPTIONAL_PROJECT_FIELDS = {
+    "predecessor", "worktrees", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
+}
 
 # A project carries 1 to 5 tags. Creation and the `tag` command enforce the minimum; validation checks
 # the form and the maximum only, so the projects that predate tags stay valid.
@@ -218,7 +231,28 @@ ASSIGNMENT_FIELDS = (
 ASSIGNMENT_DEFAULTS: "dict[str, Any]" = {
     "depends_on": [], "outputs": [], "reads": [], **{name: [] for name in TASK_PACKET_FIELDS},
 }
-TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS, *TASK_PACKET_FIELDS}
+# Policy 6 only: the replan statement `task finish` writes in coordinator mode, `{statement, reason}`.
+TASK_MODE_FIELDS = ("replan",)
+TASK_V4_FIELDS = TASK_FIELDS | {
+    "reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS, *TASK_PACKET_FIELDS, *TASK_MODE_FIELDS,
+}
+REPLAN_STATEMENTS = ("none", "changed")
+REPLAN_REASON_LIMIT = 200
+
+
+def replan_valid(value: object) -> bool:
+    """A replan statement: exactly `statement` (none or changed) and `reason`, one non-blank line of at most 200."""
+    if not isinstance(value, dict) or set(value) != {"statement", "reason"}:
+        return False
+    reason = value["reason"]
+    return (
+        value["statement"] in REPLAN_STATEMENTS
+        and isinstance(reason, str)
+        and bool(reason.strip())
+        and len(reason) <= REPLAN_REASON_LIMIT
+        and "\n" not in reason
+        and "\r" not in reason
+    )
 
 
 @dataclass
@@ -494,17 +528,26 @@ def needs_merge(entry: object) -> bool:
 
 # The policy a new project starts at: target-based delivery. `allocate_project` reads it at call time and
 # writes it to `policy_version`; None starts a project with no policy (derived from `created`). Production
-# starts at 5: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
-# the durable task fields (policy 4) and the packet reference fields (policy 5). The test suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
-# delivery target to leave ALIGNING.
-NEW_PROJECT_POLICY: "int | None" = 5
+# starts at 6: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
+# the durable task fields (policy 4), the packet reference fields (policy 5) and the mode options `coordinator`
+# and `automated` (policy 6). The test suite moves it to None because it also moves the date cutoffs, so its
+# projects would otherwise need a delivery target to leave ALIGNING.
+NEW_PROJECT_POLICY: "int | None" = 6
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
-POLICY_VERSIONS = (0, 1, 2, 3, 4, 5)
+POLICY_VERSIONS = (0, 1, 2, 3, 4, 5, 6)
 DEFAULT_OPTIONS: "dict[str, bool]" = {
     "style_advice": True, "memory_staging": True, "reports": False, "delegating": False,
+    "coordinator": True, "automated": False,
 }
-# Options that exist from a later policy than 3, and the first policy that has each.
-OPTION_MIN_POLICY = {"delegating": 5}
+# The first and the last policy that has each option; None means no last policy. A key that is
+# not listed is always returned by option_keys.
+OPTION_POLICIES: "dict[str, tuple[int, int | None]]" = {
+    "delegating": (5, 5), "coordinator": (6, None), "automated": (6, None),
+}
+AUTOMATED_NEEDS_COORDINATOR = (
+    "options.automated needs options.coordinator: automated is on and coordinator is off; "
+    "turn automated off too (one settings call may turn both off)"
+)
 REVIEW_RISKS = ("low", "standard", "high")
 FALLBACK_MODES = ("ask", "waive-recorded")
 
@@ -533,12 +576,21 @@ def review_fallback(state: dict[str, Any]) -> "dict[str, str]":
     return {"mode": "ask"}
 
 
+def _option_in_range(key: str, policy: int, valid: bool) -> bool:
+    """Whether `policy` has the option `key`: an unlisted key always; a listed one inside its range."""
+    if key not in OPTION_POLICIES:
+        return True
+    first, last = OPTION_POLICIES[key]
+    return valid and first <= policy and (last is None or policy <= last)
+
+
 def option_keys(state: dict[str, Any]) -> "tuple[str, ...]":
-    """The option names valid at the policy of `state`: `delegating` only from policy 5."""
+    """The option names valid at the policy of `state`.
+
+    `delegating` only at policy 5; `coordinator` and `automated` from policy 6; the others at every policy.
+    """
     policy, valid = _policy_value(state) if isinstance(state, dict) else (0, False)
-    return tuple(
-        key for key in DEFAULT_OPTIONS if key not in OPTION_MIN_POLICY or (valid and policy >= OPTION_MIN_POLICY[key])
-    )
+    return tuple(key for key in DEFAULT_OPTIONS if _option_in_range(key, policy, valid))
 
 
 def project_options(state: dict[str, Any]) -> "dict[str, bool]":
@@ -552,6 +604,26 @@ def project_options(state: dict[str, Any]) -> "dict[str, bool]":
     if isinstance(stored, dict):
         merged.update({key: value for key, value in stored.items() if key in merged and type(value) is bool})
     return merged
+
+
+def modes_enabled(state: dict[str, Any]) -> bool:
+    """Whether the project has the mode options `coordinator` and `automated`: policy 6 and later."""
+    return "coordinator" in option_keys(state)
+
+
+def coordinator_enabled(state: dict[str, Any]) -> bool:
+    """Whether coordinator mode is on: the project has the mode options and `coordinator` is on."""
+    return modes_enabled(state) and project_options(state)["coordinator"]
+
+
+def automated_enabled(state: dict[str, Any]) -> bool:
+    """Whether automated mode is on: the project has the mode options and `automated` is on."""
+    return modes_enabled(state) and project_options(state)["automated"]
+
+
+def packet_warnings_enabled(state: dict[str, Any]) -> bool:
+    """Whether a worker packet adds the two warnings: `coordinator` from policy 6, the stored `delegating` at 5."""
+    return coordinator_enabled(state) or project_options(state).get("delegating", False)
 _ALL_DIFF_EVENTS: frozenset = frozenset({"closure_exempt", "merge", "release"})
 
 
@@ -2815,6 +2887,7 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
                 f"project: delivery_target needs policy_version 2 or later, but the project is at policy {policy}"
             )
     _validate_settings(state, policy if valid else None, report)
+    _validate_automated_decisions(state, report)
     # BLOCKED may follow ALIGNING, so it is let through here: leaving it for PLANNING or beyond is refused.
     unaligned = ("ALIGNING", "BLOCKED", "CANCELLED")
     if valid and has_target_rules(policy) and "delivery_target" not in state and state.get("status") not in unaligned:
@@ -2835,6 +2908,81 @@ def _validate_settings(state: dict[str, Any], policy: "int | None", report: Vali
         report.errors.extend(f"project: {text}" for text in fallback_errors(state["review_fallback"]))
     if "options" in state:
         report.errors.extend(f"project: {text}" for text in options_errors(state["options"], state))
+    if automated_enabled(state) and not coordinator_enabled(state):
+        report.errors.append(f"project: {AUTOMATED_NEEDS_COORDINATOR}")
+
+
+def _text_within(value: object, limit: int) -> bool:
+    return isinstance(value, str) and len(value) <= limit
+
+
+def _counter(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _decision_record_errors(record: object) -> "list[str]":
+    """Shape only: the keys, the outcome, the round, the counter and the string caps of one stored decision."""
+    if not isinstance(record, dict) or set(record) != DECISION_RECORD_FIELDS:
+        return ["must be an object with exactly the keys " + ", ".join(sorted(DECISION_RECORD_FIELDS))]
+    errors = []
+    for key in ("id", "kind", "subject", "recorded"):
+        if not (isinstance(record[key], str) and record[key].strip() and len(record[key]) <= 200):
+            errors.append(f"{key} must be non-empty text")
+    if not (_text_within(record["choice"], 80) and record["choice"]):
+        errors.append("choice must be non-empty text of at most 80 characters")
+    options = record["options"]
+    if not isinstance(options, list) or not all(_text_within(item, 80) for item in options):
+        errors.append("options must be a list of strings of at most 80 characters")
+    evidence = record["evidence"]
+    if not isinstance(evidence, list) or not all(_text_within(item, 200) for item in evidence):
+        errors.append("evidence must be a list of strings of at most 200 characters")
+    for key in ("proposer", "assessor"):
+        if record[key] is not None and not _text_within(record[key], 64):
+            errors.append(f"{key} must be null or text of at most 64 characters")
+    if record["outcome"] not in DECISION_OUTCOMES:
+        errors.append("outcome must be one of " + ", ".join(DECISION_OUTCOMES))
+    rounds = record["round"]
+    if rounds is not None and not (type(rounds) is int and 1 <= rounds <= MAX_EVIDENCE_ROUNDS):
+        errors.append(f"round must be 1 to {MAX_EVIDENCE_ROUNDS} or null")
+    if not _counter(record["automated_off"]):
+        errors.append("automated_off must be a non-negative integer")
+    if not isinstance(record["judged"], dict):
+        errors.append("judged must be an object")
+    confirmation = record["confirmation"]
+    if confirmation is not None and not (
+        isinstance(confirmation, dict) and set(confirmation) == NESTED_INPUTS["confirmation"][0]
+        and _text_within(confirmation["source"], 200) and _text_within(confirmation["response"], 2000)
+    ):
+        errors.append("confirmation must be null or a source of at most 200 and a response of at most 2000 characters")
+    return errors
+
+
+def _validate_automated_decisions(state: dict[str, Any], report: ValidationReport) -> None:
+    """`automated_decisions` and `mode_counters`: policy 6 and their shape; rounds and validity are not re-derived."""
+    for name in MODE_PROJECT_FIELDS:
+        if name in state and not modes_enabled(state):
+            report.errors.append(f"project: {name} needs policy_version 6")
+    if "automated_decisions" in state:
+        records = state["automated_decisions"]
+        if not isinstance(records, list):
+            report.errors.append("project: automated_decisions must be a list of decision records")
+        else:
+            for index, record in enumerate(records):
+                report.errors.extend(
+                    f"project: automated_decisions[{index}]: {error}" if not error.startswith("must ")
+                    else f"project: automated_decisions[{index}] {error}"
+                    for error in _decision_record_errors(record)
+                )
+    if "mode_counters" in state:
+        counters = state["mode_counters"]
+        if not (
+            isinstance(counters, dict) and set(counters) == {"automated_off", "reopens"}
+            and all(_counter(value) for value in counters.values())
+        ):
+            report.errors.append(
+                "project: mode_counters must be an object with exactly automated_off and reopens, each a "
+                "non-negative integer"
+            )
 
 
 def risk_errors(value: object) -> "list[str]":
@@ -2860,17 +3008,23 @@ def fallback_errors(value: object) -> "list[str]":
 def options_errors(value: object, state: dict[str, Any]) -> "list[str]":
     """What is wrong with an `options` value at the policy of `state`: only its keys, each a boolean.
 
-    `delegating` is a key from policy 5; below it the finding says which policy has it.
+    A key of `OPTION_POLICIES` outside its range is named with its range: below its first policy (or at an
+    invalid policy) the finding says which policy has it; past its last policy, that the option ended there.
     """
     keys = option_keys(state)
+    policy, valid = _policy_value(state) if isinstance(state, dict) else (0, False)
     if not isinstance(value, dict):
         return ["options must be an object"]
     if not value:
         return ["options is empty; name at least one of " + ", ".join(keys) + ", or use null to unset"]
     errors = []
     for key in sorted(value.keys() - set(keys), key=str):
-        if key in OPTION_MIN_POLICY:
-            errors.append(f"options.{key} needs policy_version {OPTION_MIN_POLICY[key]}")
+        if key in OPTION_POLICIES:
+            first, last = OPTION_POLICIES[key]
+            if valid and last is not None and policy > last:
+                errors.append(f"options.{key} ends at policy_version {last}; this project is at policy_version {policy}")
+            else:
+                errors.append(f"options.{key} needs policy_version {first}")
         else:
             errors.append(f"options has an unknown key: {key}")
     errors += [
@@ -3100,6 +3254,16 @@ def validate_v4_state(
             value = task[packet_field]
             if not isinstance(value, list) or any(not _non_empty_string(item) for item in value):
                 report.errors.append(f"{label}: {packet_field} must be a list of non-empty strings")
+        if "replan" in task:
+            if not modes_enabled(state):
+                report.errors.append(f"{label}: replan needs policy_version 6")
+            elif not replan_valid(task["replan"]):
+                report.errors.append(
+                    f"{label}: replan must be an object with only statement (none or changed) and reason "
+                    f"(one line of at most {REPLAN_REASON_LIMIT} characters)"
+                )
+            elif task_status != "DONE":
+                report.errors.append(f"{label}: replan belongs only to a DONE task")
         if durable and task_status == "BLOCKED" and type(task.get("block_generation")) is int:
             if task["block_generation"] < 1:
                 report.errors.append(f"{label}: a BLOCKED task needs block_generation of at least 1")
@@ -3523,8 +3687,7 @@ def launcher_version_warning(
     project each time before anyone compared versions.
 
     Silent unless it is sure: only when this copy lives under the host's plugin cache and the host's
-    own record names a different install path for the plugin. A working tree, a Codex session (no
-    such record), an unreadable or unfamiliar file all produce nothing, so the line can be trusted.
+    own record names a different install path for the plugin. A working tree, a host with no such record (Pi), an unreadable or unfamiliar file all produce nothing, so the line can be trusted.
     """
     try:
         config = config_dir or Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
@@ -6180,9 +6343,11 @@ def _revision_conflicts(current: dict[str, Any], candidate: dict[str, Any], expe
 
 # Fields only a named journaled action may change. The exemption comes from the action name stored in
 # the journal record, never from request data, so preflight, commit and replay agree.
-GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target", *SETTINGS_FIELDS)
+GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS)
 GUARDED_WRITERS: "dict[str, set[str]]" = {
-    "settings": set(SETTINGS_FIELDS),
+    "settings": set(SETTINGS_FIELDS) | {"mode_counters"},
+    "decide": {"automated_decisions"},
+    "maintenance": {"mode_counters"},
     "confirm": {"delivery_target"},
     "retarget": {"delivery_target"},
     "migrate_policy": {"policy_version", "delivery_target"},
@@ -6233,14 +6398,20 @@ def check_candidate(
 
 
 def transition_gate_errors(
-    project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]
+    project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any],
+    action: "str | None" = None,
 ) -> tuple[list[str], list[str]]:
-    """The design gate and the MR gate, as (errors, warnings); the one place the three call sites list them."""
+    """The design gate, the MR gate and the mode gate, as (errors, warnings).
+
+    The one place the three call sites list them. `action` is the journaled action name, never request data.
+    """
     from workspace_delivery import mr_gate_errors
+    from workspace_durability import mode_gate_errors
     from workspace_goldfish import design_gate_errors
 
     errors, warnings = mr_gate_errors(project_dir, previous, candidate)
-    return design_gate_errors(project_dir, previous, candidate) + errors, warnings
+    errors = design_gate_errors(project_dir, previous, candidate) + errors
+    return errors + mode_gate_errors(project_dir, previous, candidate, action), warnings
 
 
 def check_state_candidate(
@@ -6276,7 +6447,7 @@ def check_state_candidate(
         report.errors.extend(alignment_gate_errors(project_dir, current, candidate))
         from workspace_evidence import newly_terminal_task_errors
 
-        gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate)
+        gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate, action)
         report.errors.extend(gate_errors)
         report.warnings.extend(gate_warnings)
 
@@ -6448,7 +6619,7 @@ def _commit_state_locked(
     transition_errors = check_state_transition(current, candidate) + alignment_gate_errors(project_dir, current, candidate)
     from workspace_evidence import newly_terminal_task_errors
 
-    gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate)
+    gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate, action)
     transition_errors += gate_errors
     if warnings is not None:
         warnings.extend(gate_warnings)

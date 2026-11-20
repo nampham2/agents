@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Instructions for Claude Code, Codex, and other agents working in this repository.
+Instructions for Claude Code, Pi, and other agents working in this repository.
 
 ## Repository
 
@@ -9,8 +9,8 @@ source of truth; there is no importable `agents` package or build step.
 
 ```text
 .claude-plugin/  Claude Code marketplace
-.agents/plugins/ Codex marketplace
 plugins/         Shared plugin implementations
+package.json     Pi package manifest (pi.skills)
 tests/           pytest suite mirroring plugins/
 bin/             Repository helpers
 ```
@@ -32,17 +32,18 @@ Chrome: it skips when none is found, `REQUIRE_BROWSER=1` (set in CI) makes that 
 
 ## Cross-host plugin contract
 
-Plugins are installed through each host's marketplace, never by symlink or direct directory
-placement. Keep these surfaces aligned:
+Plugins are installed through each host's own install mechanism, never by symlink or direct
+directory placement. Keep these surfaces aligned:
 
 | Host | Repository catalog | Plugin manifest | Command entry |
 | --- | --- | --- | --- |
 | Claude Code | `.claude-plugin/marketplace.json` | `plugins/research/.claude-plugin/plugin.json` | `plugins/research/bin/` on `PATH` |
-| Codex | `.agents/plugins/marketplace.json` | `plugins/research/.codex-plugin/plugin.json` | launcher beside the loaded project skill |
+| Pi | `package.json` `pi.skills` | `package.json` `pi.skills` | launcher beside the loaded project skill |
 
-- A shared plugin change must work in Claude Code and Codex. Test every affected host
-  surface; success in one host does not imply compatibility with the others.
-- Claude invokes `research-project` and `research-validate` by name. Codex resolves the same
+- A shared plugin change must work in Claude Code and Pi. Test every affected host surface;
+  success in one host does not imply compatibility with the other. Testing the Pi surface means
+  the tool tests through the skill-local launchers and the version test over `package.json`.
+- Claude invokes `research-project` and `research-validate` by name. Pi resolves the same
   executable launchers relative to the loaded `skills/project/SKILL.md`. Top-level wrappers
   delegate to those skill-local launchers.
 - Never search plugin caches, infer a plugin root from the current directory, depend on
@@ -51,18 +52,17 @@ placement. Keep these surfaces aligned:
 - Claude discovers `skills/<name>/SKILL.md` by convention; its `plugin.json` must not contain a
   `skills` key. After manifest changes, run `claude plugin validate --strict .` and
   `claude plugin validate --strict plugins/research`.
-- Skill frontmatter is not portable. Claude Code honours `user-invocable: false`, which hides a
-  skill's slash command while leaving it reachable through the Skill tool; Codex reads only `name`
-  and `description` from `SKILL.md` and takes invocation policy from `agents/openai.yaml`
-  (`policy.allow_implicit_invocation`), so a skill hidden that way still appears as a Codex slash
-  command. Plugin-internal procedures therefore live under `skills/<skill>/references/` and are
-  loaded by the owning skill on demand, never as hidden sibling skills. The requirements grill
-  (`skills/project/references/grill.md`) is the precedent. Never reach for `disable-model-invocation`
-  to hide a skill: it is the opposite lever, blocking the model from loading the skill, which would
-  break the skill that invokes it.
+- Skill frontmatter is not portable between hosts. Claude Code honours `user-invocable: false`,
+  which hides a skill's slash command while leaving it reachable through the Skill tool; Pi
+  reads `name`, `description` and `disable-model-invocation` from `SKILL.md` and does not read
+  `user-invocable`, so that key hides nothing in Pi. Plugin-internal procedures therefore live
+  under `skills/<skill>/references/` and are loaded by the owning skill on demand, never as
+  hidden sibling skills. The requirements grill (`skills/project/references/grill.md`) is the
+  precedent. Never reach for `disable-model-invocation` to hide a skill: it is the opposite
+  lever, blocking the model from loading the skill, which would break the skill that invokes it.
 - `pyproject.toml` `[project].version` is canonical. It must match the `agents` package in
-  `uv.lock` and the Claude and Codex plugin manifests, after the alpha spellings normalize. Committed manifests use SemVer, without a
-  Codex development cachebuster. Run `uv lock` after a bump and the focused CI check:
+  `uv.lock`, the Claude plugin manifest and `package.json`, after the alpha spellings normalize.
+  Committed manifests use SemVer. Run `uv lock` after a bump and the focused CI check:
   `uv run pytest -q --no-cov tests/plugins/research/test_plugin_versions.py`.
 - A project branch records an alpha line only when it needs a test or experiment build; a project
   that never tests a build needs none, but closes with a release record or a user-granted

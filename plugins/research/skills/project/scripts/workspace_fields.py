@@ -47,6 +47,30 @@ EXEMPTION_REPLACED_FIELDS = frozenset({
     "reason", "source", "response", "replaced_at", "replaced_source", "replaced_response",
 })
 
+# Automated mode (policy 6): the keys of a `decide` request and of a stored decision, and the decision constants.
+# `workspace_lib` (the record validator), `workspace_session` (the readers) and `workspace_workflows` (the
+# builder) all read them here, so no message hard-codes a number.
+DECIDE_FIELDS = frozenset({
+    "by", "kind", "subject", "options", "choice", "evidence", "confidence", "proposer", "assessor",
+    "confirmation",
+})
+DECIDE_REQUIRED = frozenset({"by", "kind", "subject", "choice"})
+DECIDE_AGENT_REQUIRED = frozenset({"evidence", "confidence", "proposer"})
+DECISION_RECORD_FIELDS = frozenset({
+    "id", "kind", "subject", "options", "choice", "evidence", "confidence", "proposer", "assessor",
+    "round", "outcome", "recorded", "confirmation", "revision", "judged", "automated_off",
+})
+DECISION_OUTCOMES = ("decision", "evidence-round", "exhausted")
+# The kinds a gate or a prose rule reads, each with its closed choice pair; any other kind is free.
+DECISION_CHOICES = {
+    "task-change": ("skip", "keep"), "replan": ("changed", "none"),
+    "task-accept": ("accept", "reject"), "project-close": ("close", "continue"),
+}
+# The kinds that need an independent assessor; every other kind is self-rated.
+CONSEQUENTIAL_KINDS = ("task-change", "task-accept", "project-close")
+DECISION_THRESHOLD = 0.9
+MAX_EVIDENCE_ROUNDS = 3
+
 # A shape name maps to (allowed, required).
 NESTED_INPUTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "confirmation": (frozenset({"source", "response"}), frozenset({"source", "response"})),
@@ -78,8 +102,9 @@ ACTION_NESTED: dict[str, tuple[tuple[str, str], ...]] = {
     "correct": (("continuation", "continuation"),),
     "reconcile": (("continuation", "continuation"),),
     "finalize": (("continuation", "continuation"),),
-    "maintenance": (("continuation", "continuation"),),
-    "cancel": (("continuation", "continuation"),),
+    "maintenance": (("continuation", "continuation"), ("confirmation", "confirmation")),
+    "cancel": (("continuation", "continuation"), ("confirmation", "confirmation")),
+    "decide": (("confirmation", "confirmation"),),
 }
 
 # Nested objects an action cannot do without: absent, they are refused as `key: expected a JSON object`.
