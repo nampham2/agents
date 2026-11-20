@@ -69,6 +69,24 @@ def state_of(project: Path) -> dict[str, Any]:
     return json.loads((project / "project.json").read_text(encoding="utf-8"))  # type: ignore[no-any-return]
 
 
+# Coordinator mode (policy 6) finishes a task only on a completed worker attempt and with a replan statement.
+REPLAN = ("--replan", "none", "--replan-reason", "the remaining plan still fits")
+
+
+def worker_completed(cli: Cli, project: Path, task_id: str) -> None:
+    """Record a fresh worker's intent and its completion through the launcher, as a coordinator does."""
+    attempt: dict[str, Any] = {}
+    for event in ("intent", "completed"):
+        notes = project / "tasks" / f"{task_id}.md"
+        completed = cli.ok("workflow", project, "worker-event", "-", stdin=json.dumps({
+            "id": f"worker-{task_id.lower()}-{event}", "expected_revision": state_of(project)["revision"],
+            "tokens": {f"tasks/{task_id}": snapshot(notes)[1]}, "task": task_id, "handle": "worker-1",
+            "event": event, "scope": "the task's write scope", "observation": f"the worker reported {event}",
+            "assignment_revision": state_of(project)["revision"], **attempt,
+        }))
+        attempt = {"attempt_id": json.loads(completed.stdout)["attempt_id"]} if event == "intent" else attempt
+
+
 def review(cli: Cli, project: Path, target: str, identity: str, **fields: Any) -> None:
     """Open and close a clean one-reviewer round through the launcher, as a coordinator does."""
     opened = json.loads(cli.ok("workflow", project, "goldfish", "-", stdin=json.dumps({
@@ -205,7 +223,8 @@ def run_lifecycle(
     passing = json.loads(step("passing-check", cli.run(
         "record-evidence", project, "--task", "T01", "--json", "--", sys.executable, "-c", "pass"),
         refused=False).stdout)
-    step("finish", cli.run("task", project, "finish", "T01", "--evidence", passing["record_id"],
+    worker_completed(cli, project, "T01")
+    step("finish", cli.run("task", project, "finish", "T01", "--evidence", passing["record_id"], *REPLAN,
                            "--expected-revision", state_of(project)["revision"]), refused=False)
 
     # F3: `close` may not commit DONE over a worktree nobody decided about; the message names the repair.
@@ -322,7 +341,8 @@ def run_research(tmp_path: Path, surface: str) -> dict[str, Any]:
     assert started["worktree"]["warnings"] == [], "a research project gets no worktree warning"
     passing = json.loads(cli.ok(
         "record-evidence", project, "--task", "T01", "--json", "--", sys.executable, "-c", "pass").stdout)
-    cli.ok("task", project, "finish", "T01", "--evidence", passing["record_id"],
+    worker_completed(cli, project, "T01")
+    cli.ok("task", project, "finish", "T01", "--evidence", passing["record_id"], *REPLAN,
            "--expected-revision", state_of(project)["revision"])
     (project / "reflection.md").write_text(REFLECTION, encoding="utf-8")
     cli.ok("workflow", project, "finalize", "-", stdin=json.dumps({

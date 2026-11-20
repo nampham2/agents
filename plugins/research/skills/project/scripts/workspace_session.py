@@ -515,11 +515,22 @@ def _merge(destination: dict[str, Any], changes: dict[str, Any]) -> None:
             destination[key] = copy.deepcopy(value)
 
 
+def default_authorization(kind: Any) -> dict[str, Any]:
+    """The authorization a new task of effect kind `kind` starts with: pending for an external or destructive one."""
+    required = kind in ("destructive", "external")
+    return {
+        "required": required,
+        "status": "pending" if required else "not_required",
+        "scope": None,
+        "source": None,
+        "authorized_at": None,
+    }
+
+
 def _new_task(changes: dict[str, Any], durable: bool = False) -> dict[str, Any]:
     effect = changes.get("effect")
     if not isinstance(effect, dict) or effect.get("kind") not in ("none", "local_write", "destructive", "external"):
         raise WorkspaceError("new tasks need an explicit effect.kind: none, local_write, destructive, or external")
-    required = effect["kind"] in ("destructive", "external")
     task: dict[str, Any] = {
         "status": "TODO",
         "depends_on": [],
@@ -529,13 +540,7 @@ def _new_task(changes: dict[str, Any], durable: bool = False) -> dict[str, Any]:
         "skip_reason": None,
         "block_reason": None,
         "effect": {"description": None},
-        "authorization": {
-            "required": required,
-            "status": "pending" if required else "not_required",
-            "scope": None,
-            "source": None,
-            "authorized_at": None,
-        },
+        "authorization": default_authorization(effect["kind"]),
     }
     _merge(task, changes)
     if durable:
@@ -613,6 +618,8 @@ def prepare_update(current: dict[str, Any], patch: dict[str, Any], *, internal: 
             raise WorkspaceError(
                 "generation and counter are tool-managed: block_generation and assignment_counter cannot be set"
             )
+        if "replan" in change:
+            raise WorkspaceError("replan is written by task finish; it cannot be set")
         task_id = change["id"]
         if task_id in seen:
             raise WorkspaceError(f"duplicate task update: {task_id}")

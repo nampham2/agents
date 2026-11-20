@@ -13,10 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from workspace_documents import entry_body
-from workspace_journal import document_path
+from workspace_durability import HELD_FREE_EVENTS, task_attempts
 from workspace_lib import WorkspaceError, packet_warnings_enabled, read_text, task_packets_enabled
 from workspace_session import _headings
-from workspace_workflows import HELD_FREE_EVENTS, _attempts, _worker_lines
 
 SPEC_SECTION = "Current specification"
 # Characters of referenced sections plus decision bodies above which the packet carries a warning.
@@ -127,14 +126,6 @@ def reference_errors(
     return errors
 
 
-def _worker_history(project: Path, task_id: str, warnings: list[str]) -> list[dict[str, Any]]:
-    """The task's `research-worker` lines in file order; damaged lines are skipped with a warning."""
-    path = document_path(project, "tasks/" + task_id)
-    if not path.exists():
-        return []
-    return _worker_lines(read_text(path), True, warnings, task_id, True)
-
-
 def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> dict[str, Any]:
     """The complete packet of one task, or raises `WorkspaceError` for a missing or unknown reference.
 
@@ -179,12 +170,13 @@ def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> 
             f"packet text is {size} characters, above {PACKET_WARN_CHARS}; nothing is truncated"
         )
     by_id = {item["id"]: item for item in state["tasks"]}
-    history = _worker_history(project, task["id"], warnings)
+    history, found, damage = task_attempts(project, state, task["id"])
+    warnings.extend(damage)
     intents = [line for line in history if line["event"] == "intent"]
     intent = intents[-1] if intents else None
     open_attempts = [
         {key: line[key] for key in ("attempt_id", "counter", "event", "handle", "observation")}
-        for line in _attempts(history).values() if line["event"] not in HELD_FREE_EVENTS
+        for line in found.values() if line["event"] not in HELD_FREE_EVENTS
     ]
     delegating = packet_warnings_enabled(state)
     if intent is not None and "packet_sha256" in intent and intent["packet_sha256"] != packet_sha256:

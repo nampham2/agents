@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -46,13 +45,21 @@ from workspace_documents import (
     reflection_lesson_sections,
 )
 from workspace_durability import (
-    EFFECT_KINDS,
     EFFECT_OUTCOMES,
+    HELD_FREE_EVENTS,
     KEY_LIMIT,
+    PACKET_HASH,
+    SIDE_EFFECT_KINDS,
+    WORKER_EVENT_FIELDS,
+    WORKER_EVENT_REQUIRED,
+    WORKER_EVENTS,
+    attempts,
     aware_instant,
     open_intents,
     silent_minutes,
+    task_attempts,
     valid_key,
+    worker_lines,
 )
 from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
 from workspace_goldfish import (
@@ -131,9 +138,7 @@ FIELDS = {
     "settings": {"review_risk", "review_fallback", "options", "confirmation"},
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
-    "worker-event": {
-        "task", "handle", "event", "scope", "observation", "assignment_revision", "attempt_id", "packet_sha256",
-    },
+    "worker-event": set(WORKER_EVENT_FIELDS),
     "authorize": {"task", "authorization", "continuation"},
     "receipt": {"task", "receipt"},
     "effect": {"operation", "task", "key", "effect", "outcome", "note"},
@@ -188,15 +193,9 @@ WORKTREE_REQUIRED_BY = {
 }
 GOLDFISH_REQUIRED = frozenset({"operation"})
 GOLDFISH_REQUIRED_BY = {f"operation={name}": frozenset(keys) for name, keys in OPERATION_REQUIRED.items()}
-# Every worker-event field is required for every event. The `event=<name>` entries add no key; they
-# are how `--schema` names the closed event vocabulary without a new top-level schema key.
-WORKER_EVENTS = ("intent", "launched", "observed", "completed", "stopped", "failed")
-# `attempt_id` is allowed everywhere but required nowhere in the schema: the builder demands it at policy 4 for
-# every event except `intent`, and refuses it below policy 4. The stored line adds `attempt_id` and `counter`.
-WORKER_EVENT_REQUIRED = frozenset(FIELDS["worker-event"] - {"attempt_id", "packet_sha256"})
-WORKER_EVENT_OPTIONAL = frozenset({"attempt_id", "counter", "packet_sha256"})
-PACKET_HASH = re.compile(r"[0-9a-f]{64}")
-HELD_FREE_EVENTS = ("completed", "stopped")
+# Every worker-event field is required for every event (the constants live in `workspace_durability`). The
+# `event=<name>` entries add no key; they are how `--schema` names the closed event vocabulary without a new
+# top-level schema key.
 # The events each latest state accepts (section 5 of the design); `stopped` is the only one a superseded
 # attempt accepts, and `failed` stays held until it is stopped.
 WORKER_EVENT_FROM = {
@@ -410,82 +409,6 @@ def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str,
     }
 
 
-WORKER_LINE = re.compile(r"<!-- research-worker (.+) -->[ \t]*")
-
-
-def _worker_lines(
-    text: str, durable: bool, warnings: "list[str] | None", task_id: str, packets: bool = False,
-) -> list[dict[str, Any]]:
-    """The `research-worker` lines of one notes document, in order.
-
-    Below policy 4 a malformed line is an error, as before (a field error keeps its own text, bad JSON says so),
-    and `attempt_id` or `counter` is an unknown key. At policy 4 a malformed line is skipped with a warning that
-    names its line and cause, so one bad line cannot hide every attempt of the task: not valid JSON, a missing
-    field, an unknown event, another task, `counter` without `attempt_id` (or the reverse), a counter that is
-    not an integer, or a line cut short (no closing marker). Trailing spaces and a CR are tolerated.
-    """
-    allowed = FIELDS["worker-event"] | {"recorded", "counter"}
-    if not durable:
-        allowed = allowed - WORKER_EVENT_OPTIONAL
-    if not packets:
-        allowed = allowed - {"packet_sha256"}
-    lines = []
-    for number, raw in enumerate(text.splitlines(), start=1):
-        if not raw.startswith("<!-- research-worker "):
-            continue
-        match = WORKER_LINE.fullmatch(raw.rstrip("\r"))
-        if match is None:
-            if durable and warnings is not None:
-                warnings.append(f"tasks/{task_id}.md line {number}: research-worker line cut short (no closing marker)")
-            continue
-        try:
-            try:
-                event = json.loads(match[1])
-            except ValueError as error:
-                if not durable:
-                    raise WorkspaceError("invalid worker event JSON") from error
-                raise WorkspaceError("not valid JSON") from error
-            object_input(event, allowed, WORKER_EVENT_REQUIRED, where="worker event")
-            for field in ("task", "handle", "event", "scope", "observation"):
-                string_input(event[field], field)
-            if durable:
-                if event["event"] not in WORKER_EVENTS or event["task"] != task_id:
-                    raise WorkspaceError("an unknown event or another task")
-                if ("attempt_id" in event) != ("counter" in event):
-                    raise WorkspaceError("attempt_id and counter must come together")
-                if "attempt_id" in event:
-                    string_input(event["attempt_id"], "attempt_id")
-                    if type(event["counter"]) is not int:
-                        raise WorkspaceError("counter is not an integer")
-                if "packet_sha256" in event and (
-                    event["event"] != "intent"
-                    or type(event["packet_sha256"]) is not str
-                    or PACKET_HASH.fullmatch(event["packet_sha256"]) is None
-                ):
-                    raise WorkspaceError("packet_sha256 is not 64 lowercase hex characters on an intent event")
-        except WorkspaceError as error:
-            if not durable:
-                raise
-            if warnings is not None:
-                warnings.append(f"tasks/{task_id}.md line {number}: damaged research-worker line ({error})")
-            continue
-        lines.append(event)
-    return lines
-
-
-def _attempts(lines: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Per `attempt_id`, its latest line; a line after `completed` or `stopped` is ignored (the builder refuses it)."""
-    attempts: dict[str, dict[str, Any]] = {}
-    for line in lines:
-        if "attempt_id" not in line:
-            continue
-        prior = attempts.get(line["attempt_id"])
-        if prior is not None and prior["event"] in HELD_FREE_EVENTS:
-            continue
-        attempts[line["attempt_id"]] = line
-    return attempts
-
-
 def worker_events(project: Path, warnings: "list[str] | None" = None) -> list[dict[str, Any]]:
     """Project the unresolved workers; opaque host liveness remains unknown.
 
@@ -498,11 +421,8 @@ def worker_events(project: Path, warnings: "list[str] | None" = None) -> list[di
     state = _load_state(project)
     latest: dict[tuple[str, str], dict[str, Any]] = {}
     held: list[dict[str, Any]] = []
-    durable = task_durable_enabled(state)
     for task in state["tasks"]:
-        text, _ = snapshot(document_path(project, "tasks/" + task["id"]))
-        damage: list[str] = []
-        lines = _worker_lines(text, durable, damage, task["id"], task_packets_enabled(state))
+        lines, found, damage = task_attempts(project, state, task["id"])
         if damage:
             if warnings is not None:
                 warnings.extend(damage)
@@ -511,7 +431,7 @@ def worker_events(project: Path, warnings: "list[str] | None" = None) -> list[di
         for event in lines:
             if "attempt_id" not in event:
                 latest[(event["task"], event["handle"])] = event
-        for event in _attempts(lines).values():
+        for event in found.values():
             if event["event"] in HELD_FREE_EVENTS:
                 continue
             counter = task.get("assignment_counter")
@@ -533,7 +453,7 @@ def _attempt_keys(
     """
     event = request["event"]
     damage: list[str] = []
-    lines = _worker_lines(notes, True, damage, task["id"], packets)
+    lines = worker_lines(notes, True, damage, task["id"], packets)
     if damage:
         # The builder decides from these lines, so a skipped one could hide a live attempt: refuse, never guess.
         raise WorkspaceError(
@@ -541,25 +461,25 @@ def _attempt_keys(
             "retry (this refuses every worker event for the task, `stopped` included, because a skipped line could "
             "hide the attempt it names)"
         )
-    attempts = _attempts(lines)
+    found = attempts(lines)
     if event == "intent":
         if "attempt_id" in request:
             raise WorkspaceError("attempt_id is issued by the tool at intent; do not supply one")
         if task["status"] != "RUNNING":
             raise WorkspaceError(f"task is not RUNNING: {task['id']} is {task['status']}")
-        if any(line["event"] not in HELD_FREE_EVENTS for line in attempts.values()):
+        if any(line["event"] not in HELD_FREE_EVENTS for line in found.values()):
             raise WorkspaceError(
                 f"held attempt blocks a new intent on {task['id']}: record stopped for it first"
             )
         counter = task["assignment_counter"]
         number = 1 + sum(1 for line in lines if line["event"] == "intent" and "attempt_id" in line)
-        while f"{task['id']}-{counter}-{number}" in attempts:
+        while f"{task['id']}-{counter}-{number}" in found:
             number += 1  # an id already in the notes is never issued again
         return {"attempt_id": f"{task['id']}-{counter}-{number}", "counter": counter}
     attempt_id = request.get("attempt_id")
     if attempt_id is None:
         raise WorkspaceError("attempt_id is required at policy 4 for every event except intent")
-    latest = attempts.get(string_input(attempt_id, "attempt_id"))
+    latest = found.get(string_input(attempt_id, "attempt_id"))
     if latest is None:
         raise WorkspaceError(f"unknown attempt: {attempt_id}")
     if latest["event"] in HELD_FREE_EVENTS:
@@ -752,7 +672,7 @@ def _effect(project: Path, state: dict[str, Any], request: dict[str, Any]) -> tu
     recorded = datetime.now().astimezone().isoformat(timespec="microseconds")
     if operation == "intent":
         kind = task["effect"]["kind"]
-        if kind not in EFFECT_KINDS:
+        if kind not in SIDE_EFFECT_KINDS:
             raise WorkspaceError(
                 f"effect intents are for external or destructive tasks; {task['id']} has effect kind {kind}"
             )

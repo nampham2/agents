@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from workspace_documents import append_record, edit_document, follow_up_items
+from workspace_durability import task_finish_findings
 from workspace_evidence import evidence_entries, evidence_findings, selected_evidence_references
 from workspace_goldfish import residual_findings
 from workspace_journal import OperationError, snapshot
@@ -23,6 +24,7 @@ from workspace_lib import (
     allocate_project,
     authorization_findings,
     commit_state,
+    coordinator_enabled,
     delivery_rules,
     has_target_rules,
     load_json,
@@ -31,6 +33,7 @@ from workspace_lib import (
     read_text,
     reason_reference_warnings,
     receipt_findings,
+    replan_valid,
     staged_lesson_lines,
     stamp_transitions,
     tags_of,
@@ -245,6 +248,43 @@ def _refuse_unmet(task_id: str, action: str, findings: list[str]) -> None:
         raise WorkspaceError(f"task {task_id} cannot {action}: " + "; ".join(findings))
 
 
+REPLAN_ONLY_FINISH = "--replan applies only to task finish"
+REPLAN_NEEDS_COORDINATOR = (
+    "--replan needs coordinator mode (policy_version 6 with options.coordinator on); this project stores no replan "
+    "statement"
+)
+REPLAN_MALFORMED = '--replan takes none or changed, with --replan-reason "<one line, at most 200 characters>"'
+REPLAN_START_NEXT = (
+    "--start-next is refused with --replan changed; finish first, then start the next task from the changed plan"
+)
+
+
+def _replan_statement(
+    state: dict[str, Any], action: str, task_id: str, *, replan: "str | None", replan_reason: "str | None",
+    backfill: bool, start_next: "str | None",
+) -> "dict[str, str] | None":
+    """The command-line checks of the mode flags, in the order of design section 4.3; the statement to store."""
+    given = replan is not None or replan_reason is not None
+    if given and action != "finish":
+        raise WorkspaceError(REPLAN_ONLY_FINISH)
+    coordinator = coordinator_enabled(state)
+    if given and not coordinator:
+        raise WorkspaceError(REPLAN_NEEDS_COORDINATOR)
+    if backfill and coordinator and action == "finish":
+        raise WorkspaceError(
+            f"task {task_id} cannot finish: --backfill is refused in coordinator mode; start the task, dispatch a "
+            "worker and use a plain task finish"
+        )
+    if not given:
+        return None
+    reason = replan_reason.strip() if isinstance(replan_reason, str) else None
+    if not isinstance(replan, str) or reason is None or not replan_valid({"statement": replan, "reason": reason}):
+        raise WorkspaceError(REPLAN_MALFORMED)
+    if replan == "changed" and start_next is not None:
+        raise WorkspaceError(REPLAN_START_NEXT)
+    return {"statement": replan, "reason": reason}
+
+
 def task_operation(
     project_dir: Path,
     action: str,
@@ -259,20 +299,28 @@ def task_operation(
     note: str | None = None,
     observation_record_ids: list[str] | None = None,
     stamp_start: bool = True,
+    replan: str | None = None,
+    replan_reason: str | None = None,
 ) -> dict[str, Any]:
     """Start, finish, block, or skip a named task with one guarded state commit.
 
     `backfill` finishes a task whose work already happened without `task start`: it is a start and
-    a finish, each an ordinary guarded commit, with the reason saved between them.
+    a finish, each an ordinary guarded commit, with the reason saved between them. It is refused in
+    coordinator mode. `replan` and `replan_reason` are the replan statement a finish stores in
+    coordinator mode (policy 6); the mode gate is listed with the other unmet preconditions.
     """
     project_dir = project_dir.resolve()
+    loaded = _load_state(project_dir)
+    statement = _replan_statement(
+        loaded, action, task_id, replan=replan, replan_reason=replan_reason, backfill=backfill, start_next=start_next,
+    )
     if backfill:
         return _backfill_finish(
             project_dir, action, task_id, expected_revision=expected_revision,
             evidence_record_ids=evidence_record_ids, start_next=start_next, lock_timeout=lock_timeout, note=note,
             observation_record_ids=observation_record_ids,
         )
-    state = copy.deepcopy(_load_state(project_dir))
+    state = copy.deepcopy(loaded)
     before_tasks = copy.deepcopy(state["tasks"])
     selected = _task(state, task_id)
     changed = [task_id]
@@ -298,9 +346,14 @@ def task_operation(
             if start_next == task_id:
                 raise WorkspaceError("--start-next must name a different task")
             successor = _task(state, start_next)
-        _refuse_unmet(
-            task_id, "finish", task_preconditions(state, selected, "finish", successor, record_ids, observation_ids)
-        )
+        findings = task_preconditions(state, selected, "finish", successor, record_ids, observation_ids)
+        if coordinator_enabled(state):
+            if statement is not None:
+                selected["replan"] = statement
+            # Early, for one complete message and a refusal before the attested-finish record; the shared gate
+            # runs again at the commit and is the rule that counts.
+            findings.extend(task_finish_findings(project_dir, loaded, {**selected, "status": "DONE"}))
+        _refuse_unmet(task_id, "finish", findings)
         references, observed = _finish_references(project_dir, task_id, record_ids, observation_ids)
         if observed and not record_ids:
             # Intent first, like a backfill: the record must say this finish rests on the agent's own
@@ -790,6 +843,8 @@ def finish_and_checkpoint(
     backfill: bool = False,
     note: str | None = None,
     observation_record_ids: list[str] | None = None,
+    replan: str | None = None,
+    replan_reason: str | None = None,
 ) -> dict[str, Any]:
     """Finish a task, regrouping a validation refusal per output, and save a checkpoint after `--start-next`.
 
@@ -803,6 +858,7 @@ def finish_and_checkpoint(
             project_dir, "finish", task_id, expected_revision=expected_revision,
             evidence_record_ids=evidence_record_ids, start_next=start_next, lock_timeout=lock_timeout,
             backfill=backfill, note=note, observation_record_ids=observation_record_ids,
+            replan=replan, replan_reason=replan_reason,
         )
     except WorkspaceError as error:
         regrouped = _group_by_output(str(error))

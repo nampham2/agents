@@ -218,7 +218,28 @@ ASSIGNMENT_FIELDS = (
 ASSIGNMENT_DEFAULTS: "dict[str, Any]" = {
     "depends_on": [], "outputs": [], "reads": [], **{name: [] for name in TASK_PACKET_FIELDS},
 }
-TASK_V4_FIELDS = TASK_FIELDS | {"reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS, *TASK_PACKET_FIELDS}
+# Policy 6 only: the replan statement `task finish` writes in coordinator mode, `{statement, reason}`.
+TASK_MODE_FIELDS = ("replan",)
+TASK_V4_FIELDS = TASK_FIELDS | {
+    "reads", *TASK_STAMP_FIELDS, *TASK_DURABLE_FIELDS, *TASK_PACKET_FIELDS, *TASK_MODE_FIELDS,
+}
+REPLAN_STATEMENTS = ("none", "changed")
+REPLAN_REASON_LIMIT = 200
+
+
+def replan_valid(value: object) -> bool:
+    """A replan statement: exactly `statement` (none or changed) and `reason`, one non-blank line of at most 200."""
+    if not isinstance(value, dict) or set(value) != {"statement", "reason"}:
+        return False
+    reason = value["reason"]
+    return (
+        value["statement"] in REPLAN_STATEMENTS
+        and isinstance(reason, str)
+        and bool(reason.strip())
+        and len(reason) <= REPLAN_REASON_LIMIT
+        and "\n" not in reason
+        and "\r" not in reason
+    )
 
 
 @dataclass
@@ -3146,6 +3167,16 @@ def validate_v4_state(
             value = task[packet_field]
             if not isinstance(value, list) or any(not _non_empty_string(item) for item in value):
                 report.errors.append(f"{label}: {packet_field} must be a list of non-empty strings")
+        if "replan" in task:
+            if not modes_enabled(state):
+                report.errors.append(f"{label}: replan needs policy_version 6")
+            elif not replan_valid(task["replan"]):
+                report.errors.append(
+                    f"{label}: replan must be an object with only statement (none or changed) and reason "
+                    f"(one line of at most {REPLAN_REASON_LIMIT} characters)"
+                )
+            elif task_status != "DONE":
+                report.errors.append(f"{label}: replan belongs only to a DONE task")
         if durable and task_status == "BLOCKED" and type(task.get("block_generation")) is int:
             if task["block_generation"] < 1:
                 report.errors.append(f"{label}: a BLOCKED task needs block_generation of at least 1")
@@ -6279,14 +6310,20 @@ def check_candidate(
 
 
 def transition_gate_errors(
-    project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]
+    project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any],
+    action: "str | None" = None,
 ) -> tuple[list[str], list[str]]:
-    """The design gate and the MR gate, as (errors, warnings); the one place the three call sites list them."""
+    """The design gate, the MR gate and the mode gate, as (errors, warnings).
+
+    The one place the three call sites list them. `action` is the journaled action name, never request data.
+    """
     from workspace_delivery import mr_gate_errors
+    from workspace_durability import mode_gate_errors
     from workspace_goldfish import design_gate_errors
 
     errors, warnings = mr_gate_errors(project_dir, previous, candidate)
-    return design_gate_errors(project_dir, previous, candidate) + errors, warnings
+    errors = design_gate_errors(project_dir, previous, candidate) + errors
+    return errors + mode_gate_errors(project_dir, previous, candidate, action), warnings
 
 
 def check_state_candidate(
@@ -6322,7 +6359,7 @@ def check_state_candidate(
         report.errors.extend(alignment_gate_errors(project_dir, current, candidate))
         from workspace_evidence import newly_terminal_task_errors
 
-        gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate)
+        gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate, action)
         report.errors.extend(gate_errors)
         report.warnings.extend(gate_warnings)
 
@@ -6494,7 +6531,7 @@ def _commit_state_locked(
     transition_errors = check_state_transition(current, candidate) + alignment_gate_errors(project_dir, current, candidate)
     from workspace_evidence import newly_terminal_task_errors
 
-    gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate)
+    gate_errors, gate_warnings = transition_gate_errors(project_dir, current, candidate, action)
     transition_errors += gate_errors
     if warnings is not None:
         warnings.extend(gate_warnings)

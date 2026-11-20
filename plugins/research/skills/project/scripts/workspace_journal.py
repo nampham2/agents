@@ -372,7 +372,7 @@ def _run_operation(
 
                     # The commit paths run these gates too, but only after the documents are written; the
                     # preflight refuses before anything is journaled.
-                    gated, gate_warnings = transition_gate_errors(project, state, candidate)
+                    gated, gate_warnings = transition_gate_errors(project, state, candidate, action)
                     if gated:
                         raise WorkspaceError("; ".join(gated))
                     if gate_warnings:
