@@ -405,6 +405,12 @@ def test_an_unresolvable_evidence_pointer_writes_nothing(auto: Path, pointer: st
     refused(auto, f"evidence pointer does not resolve: {pointer} ({reason})", evidence=["spec.md", pointer])
 
 
+def test_an_anchor_on_a_binary_file_is_a_refusal(auto: Path) -> None:
+    (auto / "blob.bin").write_bytes(b"\xff\xfe\x00binary")
+    reason = "evidence pointer does not resolve: blob.bin#x (blob.bin is not a text file)"
+    refused(auto, reason, evidence=["blob.bin#x"])
+
+
 def test_an_ambiguous_evidence_record_does_not_resolve(auto: Path) -> None:
     record = _evidence(auto, "T01")
     path = auto / "evidence.md"

@@ -943,7 +943,13 @@ def _evidence_pointers(project: Path, value: object) -> list[str]:
         path, anchor = match["path"], match["anchor"]
         if not _artifact_exists(project, path):
             raise WorkspaceError(f"evidence pointer does not resolve: {pointer} (not a file of this project)")
-        if anchor is not None and f'id="{anchor}"' not in (project / path).read_text(encoding="utf-8"):
+        if anchor is None:
+            continue
+        try:
+            text = (project / path).read_text(encoding="utf-8")
+        except UnicodeDecodeError as error:
+            raise WorkspaceError(f"evidence pointer does not resolve: {pointer} ({path} is not a text file)") from error
+        if f'id="{anchor}"' not in text:
             raise WorkspaceError(f'evidence pointer does not resolve: {pointer} ({path} has no id="{anchor}")')
     return list(value)
 

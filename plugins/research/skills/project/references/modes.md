@@ -11,14 +11,15 @@ and reviews, commits accepted work on the user's words and talks to the user. A 
 task. A fresh worker executes every task except the exempt ones, the design task and routine
 corrections included ([task-workers.md](task-workers.md)).
 
-Each task: `task start`; `context --worker --task Tn`; `worker-event` `intent`; start the worker;
+Each task: `task start`; `context --worker --task Tn` ([task-workers.md](task-workers.md));
+`worker-event` `intent` ([automation-execution.md](automation-execution.md)); start the worker;
 record `completed`; run the acceptance checks; the replan step; `task finish`.
 
 `task finish` refuses a non-exempt task unless its notes hold, for the current assignment, a
 worker attempt whose latest event is `completed` and no attempt still open (latest event neither
 `completed` nor `stopped`). It also refuses a damaged worker line and `--backfill`. Every commit
 path shares the check: `update`, `reconcile`, `commit` and the legacy `close` cannot mark such a
-task `DONE`. It checks bookkeeping, not who edited a file. `task skip` needs no worker.
+task `DONE`. `task skip` needs no worker.
 
 Exempt tasks (effect kind `external` or `destructive`) are run by the coordinator, not a worker.
 Only `workflow authorize` grants consent. Split a task that mixes file work with an external step.
@@ -49,13 +50,13 @@ Offer the mode once, when the plan is agreed, a task is ready, `coordinator` is 
 Ask one prompt: whether to turn the mode on, and for standing words on two things only.
 
 - Recorded worktrees are kept: the `worktree` `close` record, decision `keep`, quotes the reply.
-- Which existing external tasks, by ID, are authorized: each gets an `authorize` record sourced
-  from the reply; delivery records of a named merge or release task quote it.
+- Which existing external tasks, by ID, are authorized: each gets an `authorize` record sourced from
+  the reply; the `workflow worktree` delivery records of a named merge or release task quote it.
 
 Record the answer with `workflow settings`: `options` `{"automated": true}` or `false` and a
 `confirmation` quoting the reply. A decline stores `automated: false` and ends the offer;
 `options: null` re-arms it. The user can turn it on later or off at any time. A task created after
-the opt-in, a replacement too, stops for authorization.
+the opt-in, a replacement too, stops for authorization if it is an external or destructive task.
 
 ## What still stops for the user
 
@@ -77,6 +78,8 @@ kinds have a meaning; any other kind is free, self-rated, ungated and names its 
 | `task-accept` | a task | `accept`, `reject` | required | none: a prose rule |
 | `project-close` | `project` | `close`, `continue` | required | project newly `DONE` needs `close` |
 
+A pair is one kind with one subject.
+
 The gates run on every commit path before any document is written. Replacing a task is a skip plus
 a new task; the skip decision covers it, and skips made by a replan need their own.
 `project-close` is refused while a task is not terminal. For `task-accept`, record `accept` before
@@ -90,16 +93,18 @@ this project, with an optional `#<anchor>`. Every agent round cites at least one
 pointer makes the record malformed.
 
 Outcomes: `decision` at confidence 0.9 or above with a pointer; otherwise `evidence-round` on the
-first and second such round and `exhausted` on the third. Rounds count per kind and subject; a
-qualifying record decides in any round. An agent `decision` counts only while its judged state is
-unchanged: a task's assignment, or the project's set of tasks and every reopen. Rounds, exhaustion
-and user answers never go stale.
+first and second such round and `exhausted` on the third. After `evidence-round`, collect more
+evidence and record the same kind and subject again, citing at least one new pointer. Rounds count
+per pair; a qualifying record decides in any round. An agent `decision` counts only while its judged
+state is unchanged: a task's assignment, or the project's set of tasks and every reopen. Rounds,
+exhaustion and user answers never go stale.
 
-Exhaustion is sticky: `resume` and `task` results report `stop_reason` `user-decision` and quote
-the options; show them to the user. The user answers at any time with `by` `user` and a
-`confirmation`; the answer supersedes an earlier one and binds: the agent records nothing for that
-pair while it stands. Both end when the task is terminal, a new answer comes, `automated` goes off
-or the project is reopened.
+Exhaustion is sticky: `resume` and `task` results report `stop_reason` `user-decision` and quote the
+options; show them to the user. The user answers at any time with `by` `user` and a `confirmation`
+and the `spec` token, as for other `workflow` records (`context` returns the `tokens` map; `read ...
+spec --outline` the spec token); the answer supersedes an earlier one and binds: the agent records
+nothing for that pair while it stands. Both end when the task is terminal, a new answer comes,
+`automated` goes off or the project is reopened.
 
 For a consequential kind, start a fresh agent as assessor (the worker start, the decision brief as
 its task); take back a confidence figure and a reason. Name its handle in `assessor`, which
@@ -110,10 +115,5 @@ differs from `proposer`. It records no worker event.
 | Refusal | Next step |
 | --- | --- |
 | `needs a completed worker attempt` | dispatch a worker, or ask to turn `coordinator` off |
-| `attempt ... is still open`, `cannot read the worker attempts` | record its outcome; repair the line |
-| `needs a replan statement` | finish with `--replan` |
-| `effect.kind cannot change` | skip the task, add a new one |
-| `authorization can change only through` | `workflow authorize` |
 | `needs a valid decision` | `workflow decide` or the user's answer |
 | `needs the user's words` | send the user's `confirmation` |
-

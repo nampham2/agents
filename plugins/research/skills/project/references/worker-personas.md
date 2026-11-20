@@ -57,8 +57,9 @@ still apply. Where the target repository's rules differ from this file, the repo
 - Check the working-tree copy, not an installed one: call a shipped tool by its path and confirm
   which interpreter and dependencies ran. A check your environment cannot run is reported as not
   run, never replaced by a weaker one.
-- Name your new files to the hooks, which see only tracked files. When the change has a local
-  entry point without side effects, run it once on realistic input and read the result.
+- Report your new files to the coordinator, who adds them: the hooks see only tracked files. Do
+  not run `git add`. When the change has a local entry point without side effects, run it once on
+  realistic input and read the result.
 - Re-run the affected gates after your last edit, a formatter run included. Do not retry a
   failure that cannot change: read the error first.
 

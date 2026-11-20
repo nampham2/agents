@@ -86,9 +86,9 @@ Removing a Claude marketplace also removes plugins installed from it.
   needs a completed worker attempt and a replan statement (`--replan none|changed` with
   `--replan-reason`), and `--backfill` is refused. See `references/modes.md`.
 - **Automated mode.** After planning the agent takes the decisions with `workflow decide`: each
-  needs evidence, is checked by an assessor, and stops for the user after the evidence rounds run
-  out. `workflow cancel`, `workflow maintenance` and the delivery steps still need the user's
-  words.
+  needs evidence, and `task-change`, `task-accept` and `project-close` also need an independent
+  assessor; it stops for the user after the evidence rounds run out. `workflow cancel`,
+  `workflow maintenance` and the delivery steps still need the user's words.
 - **Coding worker persona.** A code task's worker packet names `references/worker-personas.md`
   in a `persona` key. Any other task's packet has `persona` set to null.
 - **`delegating`.** Valid at policy 5 only. At policy 6 the two packet warnings follow

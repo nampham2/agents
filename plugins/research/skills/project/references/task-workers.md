@@ -33,6 +33,9 @@ Use a fresh native agent. Preserve the configured model.
     options: { context: "fresh" } })
   ```
 
+  Checked against `pi-subagents` 0.89.0 and Pi 1.5.2; a later release may rename the tool or a
+  parameter, so check its documentation.
+
   If only `subagents_enable` is listed, call `subagents_enable({})` first. If neither is listed, the
   package is not installed or not enabled and the host has no fresh agents.
 - An assessor starts like a worker, with the decision brief as the task.

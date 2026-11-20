@@ -120,7 +120,7 @@ and 1 carry none. `delivery_rules(state)` in `workspace_lib.py` is the one funct
 check reads. A launcher older than 0.38.0 rejects a project that has either field. Policy 3 adds
 the review rules, policy 4 the durable task fields below, policy 5 the packet fields
 `spec_refs` and `decision_refs` and policy 6 the mode options and fields below; a new project
-starts at policy 6, and a launcher older than the release that added it refuses it, so update both
+starts at policy 6, and a launcher older than 0.42.0 refuses it, so update both
 hosts together. No command moves a project to policy 4, 5 or 6: they exist only for new projects.
 
 `predecessor` names the project this one continues, and nothing checks that it exists. A follow-up
