@@ -14,7 +14,7 @@ from typing import Any
 
 from workspace_documents import entry_body
 from workspace_journal import document_path
-from workspace_lib import WorkspaceError, project_options, read_text, task_packets_enabled
+from workspace_lib import WorkspaceError, packet_warnings_enabled, read_text, task_packets_enabled
 from workspace_session import _headings
 from workspace_workflows import HELD_FREE_EVENTS, _attempts, _worker_lines
 
@@ -186,7 +186,7 @@ def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> 
         {key: line[key] for key in ("attempt_id", "counter", "event", "handle", "observation")}
         for line in _attempts(history).values() if line["event"] not in HELD_FREE_EVENTS
     ]
-    delegating = project_options(state)["delegating"]
+    delegating = packet_warnings_enabled(state)
     if intent is not None and "packet_sha256" in intent and intent["packet_sha256"] != packet_sha256:
         message = (
             f"the latest intent {intent.get('attempt_id', '')} recorded another packet_sha256; "

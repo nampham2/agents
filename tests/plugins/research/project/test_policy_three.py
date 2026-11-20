@@ -54,22 +54,12 @@ def _errors(project: Path, **changes: Any) -> list[str]:
 
 
 def test_policy_three_is_a_valid_value() -> None:
-    assert POLICY_VERSIONS == (0, 1, 2, 3, 4, 5)
+    assert POLICY_VERSIONS == (0, 1, 2, 3, 4, 5, 6)
 
 
 @pytest.mark.parametrize(("policy", "expected"), [(0, False), (1, False), (2, True), (3, True), (4, True), (5, True)])
 def test_has_target_rules_is_true_for_policy_two_and_later(policy: int, expected: bool) -> None:
     assert has_target_rules(policy) is expected
-
-
-def test_a_new_project_starts_at_policy_five(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    # tests/conftest.py sets the constant to None for the suite; the shipped value is read from the source.
-    monkeypatch.undo()
-    assert lib.NEW_PROJECT_POLICY == 5
-    target = tmp_path / "target"
-    target.mkdir()
-    created = lib.allocate_project(tmp_path / "workspace", title="Fresh", working_directory=target, create_root=True)
-    assert json.loads((created / "project.json").read_text(encoding="utf-8"))["policy_version"] == 5
 
 
 @pytest.mark.parametrize("target", ["research", "local", "pr", "merged", "release"])
@@ -96,7 +86,7 @@ def test_policy_three_without_a_valid_target_takes_policy_one_values(target: obj
 
 
 def test_an_unknown_policy_is_still_refused(project: Path) -> None:
-    for bad in (6, -1, "3", 3.0, True):
+    for bad in (7, -1, "3", 3.0, True):
         assert any("policy_version must be one of" in text for text in _errors(project, policy_version=bad))
     assert not any("policy_version must be one of" in text for text in _errors(project, policy_version=3))
 

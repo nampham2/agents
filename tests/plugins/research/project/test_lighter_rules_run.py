@@ -56,8 +56,9 @@ def run_light(tmp_path: Path, surface: str) -> dict[str, Any]:
 
     # The user's words come first: no settings without them.
     refused("settings-without-words", cli.flow(project, "settings", "set-0", review_risk="low"))
+    # The subject is the review-risk rules, not coordinator mode, so the run turns the mode off.
     settings = cli.flow(project, "settings", "set-1", review_risk="low", review_fallback=STANDING,
-                        confirmation=USER)
+                        options={"coordinator": False}, confirmation=USER)
     assert settings.returncode == 0, settings.stderr
     # A review ladder at low risk is refused: one combined reviewer reads every target.
     ladder = refused("ladder-at-low", cli.flow(
@@ -152,7 +153,7 @@ def alignment(project: Path) -> dict[str, Any]:
 def test_a_small_implementation_closes_under_the_lighter_rules(tmp_path: Path, surface: str) -> None:
     seen = run_light(tmp_path, surface)
     state = seen["state"]
-    assert state["status"] == "DONE" and state["policy_version"] == 5 and state["review_risk"] == "low"
+    assert state["status"] == "DONE" and state["policy_version"] == 6 and state["review_risk"] == "low"
     assert state["review_fallback"] == STANDING
     assert seen["design_outcome"] == "accepted", "a fixed Major at low risk does not force a re-audit"
     assert seen["amendments"] and seen["amendments"][0]["kind"] == "editorial"

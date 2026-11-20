@@ -53,22 +53,14 @@ def _errors(project: Path, state: dict[str, Any]) -> list[str]:
 # --- the policy value and the predicate ---------------------------------------------------------
 
 
-def test_policy_five_is_valid_and_new_projects_start_there(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    assert 5 in POLICY_VERSIONS
-    # tests/conftest.py sets the constant to None for the suite; the shipped value is read from the source.
-    monkeypatch.undo()
-    assert lib.NEW_PROJECT_POLICY == 5
-    target = tmp_path / "target"
-    target.mkdir()
-    created = lib.allocate_project(tmp_path / "workspace", title="Fresh", working_directory=target, create_root=True)
-    assert json.loads((created / "project.json").read_text(encoding="utf-8"))["policy_version"] == 5
+def test_policy_five_is_valid() -> None:
+    assert 5 in POLICY_VERSIONS  # new projects start at policy 6: test_policy_six.py
 
 
 def test_task_packets_enabled_only_at_a_valid_policy_five() -> None:
     assert task_packets_enabled({"policy_version": 5}) is True
-    assert not any(task_packets_enabled({"policy_version": p}) for p in (0, 1, 2, 3, 4, 6, True, "5", None))
+    assert task_packets_enabled({"policy_version": 6}) is True  # policy 6 keeps the packet fields
+    assert not any(task_packets_enabled({"policy_version": p}) for p in (0, 1, 2, 3, 4, 7, True, "5", None))
     assert task_packets_enabled({}) is False
     assert task_packets_enabled([]) is False  # ty: ignore[invalid-argument-type]
 
@@ -77,11 +69,11 @@ def test_policy_five_keeps_the_durable_fields() -> None:
     assert task_durable_enabled({"policy_version": 5}) is True
 
 
-def test_a_policy_above_five_is_not_a_valid_value(tmp_path: Path) -> None:
+def test_a_policy_above_six_is_not_a_valid_value(tmp_path: Path) -> None:
     project = _project(tmp_path, 5)
     state = _load_state(project)
-    state["policy_version"] = 6  # what a tool older than this one sees in a newer project
-    assert any("policy_version must be one of 0, 1, 2, 3, 4, 5" in e for e in _errors(project, state))
+    state["policy_version"] = 7  # what a tool older than this one sees in a newer project
+    assert any("policy_version must be one of 0, 1, 2, 3, 4, 5, 6 " in e for e in _errors(project, state))
 
 
 # --- the fields ----------------------------------------------------------------------------------

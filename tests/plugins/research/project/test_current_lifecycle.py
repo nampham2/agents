@@ -258,7 +258,7 @@ def test_a_reviewable_pr_completes_at_closure_with_the_merge_deferred(tmp_path: 
     project = next(path for path in (tmp_path / "workspace").iterdir() if (path / "project.json").is_file())
     state = state_of(project)
     kept = state["worktrees"][0]
-    assert state["status"] == "DONE" and state["delivery_target"] == "pr" and state["policy_version"] == 5
+    assert state["status"] == "DONE" and state["delivery_target"] == "pr" and state["policy_version"] == 6
     assert "pull_request" in kept and "merge" not in kept and "version_line" not in kept
 
 

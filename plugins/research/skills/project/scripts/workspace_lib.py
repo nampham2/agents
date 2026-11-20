@@ -494,17 +494,26 @@ def needs_merge(entry: object) -> bool:
 
 # The policy a new project starts at: target-based delivery. `allocate_project` reads it at call time and
 # writes it to `policy_version`; None starts a project with no policy (derived from `created`). Production
-# starts at 5: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
-# the durable task fields (policy 4) and the packet reference fields (policy 5). The test suite moves it to None because it also moves the date cutoffs, so its projects would otherwise need a
-# delivery target to leave ALIGNING.
-NEW_PROJECT_POLICY: "int | None" = 5
+# starts at 6: policy 3 (policy 2's target rules, the Goldfish gates always on, the optional policies) plus
+# the durable task fields (policy 4), the packet reference fields (policy 5) and the mode options `coordinator`
+# and `automated` (policy 6). The test suite moves it to None because it also moves the date cutoffs, so its
+# projects would otherwise need a delivery target to leave ALIGNING.
+NEW_PROJECT_POLICY: "int | None" = 6
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
-POLICY_VERSIONS = (0, 1, 2, 3, 4, 5)
+POLICY_VERSIONS = (0, 1, 2, 3, 4, 5, 6)
 DEFAULT_OPTIONS: "dict[str, bool]" = {
     "style_advice": True, "memory_staging": True, "reports": False, "delegating": False,
+    "coordinator": True, "automated": False,
 }
-# Options that exist from a later policy than 3, and the first policy that has each.
-OPTION_MIN_POLICY = {"delegating": 5}
+# The first and the last policy that has each option; None means no last policy. A key that is
+# not listed is always returned by option_keys.
+OPTION_POLICIES: "dict[str, tuple[int, int | None]]" = {
+    "delegating": (5, 5), "coordinator": (6, None), "automated": (6, None),
+}
+AUTOMATED_NEEDS_COORDINATOR = (
+    "options.automated needs options.coordinator: automated is on and coordinator is off; "
+    "turn automated off too (one settings call may turn both off)"
+)
 REVIEW_RISKS = ("low", "standard", "high")
 FALLBACK_MODES = ("ask", "waive-recorded")
 
@@ -533,12 +542,21 @@ def review_fallback(state: dict[str, Any]) -> "dict[str, str]":
     return {"mode": "ask"}
 
 
+def _option_in_range(key: str, policy: int, valid: bool) -> bool:
+    """Whether `policy` has the option `key`: an unlisted key always; a listed one inside its range."""
+    if key not in OPTION_POLICIES:
+        return True
+    first, last = OPTION_POLICIES[key]
+    return valid and first <= policy and (last is None or policy <= last)
+
+
 def option_keys(state: dict[str, Any]) -> "tuple[str, ...]":
-    """The option names valid at the policy of `state`: `delegating` only from policy 5."""
+    """The option names valid at the policy of `state`.
+
+    `delegating` only at policy 5; `coordinator` and `automated` from policy 6; the others at every policy.
+    """
     policy, valid = _policy_value(state) if isinstance(state, dict) else (0, False)
-    return tuple(
-        key for key in DEFAULT_OPTIONS if key not in OPTION_MIN_POLICY or (valid and policy >= OPTION_MIN_POLICY[key])
-    )
+    return tuple(key for key in DEFAULT_OPTIONS if _option_in_range(key, policy, valid))
 
 
 def project_options(state: dict[str, Any]) -> "dict[str, bool]":
@@ -552,6 +570,26 @@ def project_options(state: dict[str, Any]) -> "dict[str, bool]":
     if isinstance(stored, dict):
         merged.update({key: value for key, value in stored.items() if key in merged and type(value) is bool})
     return merged
+
+
+def modes_enabled(state: dict[str, Any]) -> bool:
+    """Whether the project has the mode options `coordinator` and `automated`: policy 6 and later."""
+    return "coordinator" in option_keys(state)
+
+
+def coordinator_enabled(state: dict[str, Any]) -> bool:
+    """Whether coordinator mode is on: the project has the mode options and `coordinator` is on."""
+    return modes_enabled(state) and project_options(state)["coordinator"]
+
+
+def automated_enabled(state: dict[str, Any]) -> bool:
+    """Whether automated mode is on: the project has the mode options and `automated` is on."""
+    return modes_enabled(state) and project_options(state)["automated"]
+
+
+def packet_warnings_enabled(state: dict[str, Any]) -> bool:
+    """Whether a worker packet adds the two warnings: `coordinator` from policy 6, the stored `delegating` at 5."""
+    return coordinator_enabled(state) or project_options(state).get("delegating", False)
 _ALL_DIFF_EVENTS: frozenset = frozenset({"closure_exempt", "merge", "release"})
 
 
@@ -2835,6 +2873,8 @@ def _validate_settings(state: dict[str, Any], policy: "int | None", report: Vali
         report.errors.extend(f"project: {text}" for text in fallback_errors(state["review_fallback"]))
     if "options" in state:
         report.errors.extend(f"project: {text}" for text in options_errors(state["options"], state))
+    if automated_enabled(state) and not coordinator_enabled(state):
+        report.errors.append(f"project: {AUTOMATED_NEEDS_COORDINATOR}")
 
 
 def risk_errors(value: object) -> "list[str]":
@@ -2860,17 +2900,23 @@ def fallback_errors(value: object) -> "list[str]":
 def options_errors(value: object, state: dict[str, Any]) -> "list[str]":
     """What is wrong with an `options` value at the policy of `state`: only its keys, each a boolean.
 
-    `delegating` is a key from policy 5; below it the finding says which policy has it.
+    A key of `OPTION_POLICIES` outside its range is named with its range: below its first policy (or at an
+    invalid policy) the finding says which policy has it; past its last policy, that the option ended there.
     """
     keys = option_keys(state)
+    policy, valid = _policy_value(state) if isinstance(state, dict) else (0, False)
     if not isinstance(value, dict):
         return ["options must be an object"]
     if not value:
         return ["options is empty; name at least one of " + ", ".join(keys) + ", or use null to unset"]
     errors = []
     for key in sorted(value.keys() - set(keys), key=str):
-        if key in OPTION_MIN_POLICY:
-            errors.append(f"options.{key} needs policy_version {OPTION_MIN_POLICY[key]}")
+        if key in OPTION_POLICIES:
+            first, last = OPTION_POLICIES[key]
+            if valid and last is not None and policy > last:
+                errors.append(f"options.{key} ends at policy_version {last}; this project is at policy_version {policy}")
+            else:
+                errors.append(f"options.{key} needs policy_version {first}")
         else:
             errors.append(f"options has an unknown key: {key}")
     errors += [

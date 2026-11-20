@@ -59,7 +59,7 @@ def test_explicit_policy_wins_over_created() -> None:
     assert delivery_rules(_state(AFTER, policy_version=0)).policy == 0
 
 
-@pytest.mark.parametrize("bad", [True, False, 6, -1, "1", 1.0, None])
+@pytest.mark.parametrize("bad", [True, False, 7, -1, "1", 1.0, None])
 def test_invalid_policy_takes_policy_one_values_never_zero(bad: object) -> None:
     rules = delivery_rules(_state(BEFORE, policy_version=bad))
     assert rules == delivery_rules(_state(AFTER, policy_version=1))
@@ -189,7 +189,7 @@ def test_validation_accepts_a_fresh_project_and_each_target(tmp_path: Path) -> N
 
 def test_validation_rejects_bad_values(tmp_path: Path) -> None:
     project_dir, state = _new_project(tmp_path)
-    for bad in (True, 6, "2"):
+    for bad in (True, 7, "2"):
         assert any("policy_version" in e for e in _errors({**state, "policy_version": bad}, project_dir))
     assert any("delivery_target" in e for e in _errors({**state, "delivery_target": "bogus"}, project_dir))
 
