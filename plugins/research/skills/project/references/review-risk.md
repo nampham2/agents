@@ -60,19 +60,25 @@ substantive change.
 
 ## Options
 
-| Option | Default | When off |
+| Option | Default | When off, or limit |
 | --- | --- | --- |
 | `style_advice` | on | style findings stop |
 | `memory_staging` | on | `finalize` stages no lessons and warns of none |
 | `reports` | off | the `report` action returns a notice and writes nothing |
-| `delegating` | off | policy 5 only; the packet adds no dependency or hash warnings |
+| `coordinator` | on | policy 6; off: `task finish` needs no worker attempt or replan |
+| `automated` | off | policy 6; needs `coordinator` |
+| `delegating` | off | policy 5 only; `coordinator` replaces it at policy 6 |
 
-Other keys are refused, an empty object too. `delegating` below policy 5 is refused with
-`options.delegating needs policy_version 5`. Set a key back to its default by writing that
+Other keys are refused, an empty object too. Refusals: `options.coordinator needs policy_version 6`
+and `options.automated needs policy_version 6` below policy 6; `options.delegating needs
+policy_version 5` below 5; `options.delegating ends at policy_version 5; this project is at
+policy_version 6` at policy 6. A call that leaves `automated` on and `coordinator` off is refused
+with `options.automated needs options.coordinator`; one call may turn both off. The modes:
+[modes.md](modes.md). Set a key back to its default by writing that
 value; `null` unsets all options. A fallback of `ask` takes no reason. At policy 3+ the `finalize`
 control warning applies only when a code task is running or done.
 
 ## Delegating mode
 
-A boolean option from policy 5, off by default. It governs two packet warnings only; see
-[task-workers.md](task-workers.md).
+A boolean option at policy 5 only, off by default. It governs two packet warnings only; see
+[task-workers.md](task-workers.md). At policy 6 `coordinator` replaces it.

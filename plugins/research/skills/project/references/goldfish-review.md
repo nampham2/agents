@@ -9,9 +9,10 @@ merge records and, per target, before closure.
 
 1. Run `workflow <project-dir> goldfish`, `operation: open`, with `target` (`diff` adds
    `worktree`, its recorded path) and `stages`. Keep `round`, `token`, `reviewed`.
-2. Start one fresh agent per reviewer in parallel (Claude: non-fork `Agent`;
-   Codex: `fork_context: false`). Give each [goldfish-personas.md](goldfish-personas.md) whole,
-   its persona, absolute paths to the target and its links. A diff reviewer also gets
+2. Start one fresh agent per reviewer (Claude: non-fork `Agent`; Pi: `subagent`,
+   `context: "fresh"`); call: [task-workers.md](task-workers.md). Give each
+   [goldfish-personas.md](goldfish-personas.md) whole, its persona, absolute paths to the target and
+   its links. A diff reviewer also gets
    the `reviewed` commit and the base; a re-audit or delta reviewer, the previous round's document.
 3. Stages: policy 3+ follows [review-risk.md](review-risk.md). Earlier: spec and planning
    `combined`; design and diff by effort: low `combined`; medium `comprehension`, `design-critic`,

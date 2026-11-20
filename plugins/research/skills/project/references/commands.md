@@ -92,8 +92,9 @@ research-project task <project-dir> finish T01 --evidence <id> <id> \
 ```
 
 `block` and `skip` require `--reason`; `finish --backfill --note <why>` is start plus finish for
-earlier work. `read <project-dir> evidence --entries --task T01` lists checks; `--entry <record-id>`
-returns one.
+earlier work. In coordinator mode `finish` also needs `--replan none|changed --replan-reason
+"<line>"` ([modes.md](modes.md)) and refuses `--backfill`. `read <project-dir> evidence --entries
+--task T01` lists checks; `--entry <record-id>` returns one.
 
 A failed `close` reports what was saved; keep drafts, reload, use the reported recovery
 (`rebuild-index` after an index failure); never repeat it. Layout, `doctor`:

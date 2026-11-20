@@ -21,10 +21,28 @@ Workers can read relevant source and repository instructions beyond the input po
 Include applicable adopted-lesson summaries and pending checks from project records; worker
 context omits shared-memory candidates. Return new reusable observations to the coordinator.
 
-Use a fresh native agent: Claude's non-fork `general-purpose` Agent or Codex's spawn tool with
-conversation inheritance disabled (`fork_turns: "none"` or `fork_context: false`, as its actual
-schema supports). Preserve the configured model. If fresh context, observation, or stopping is
-unavailable or delegation is prohibited, continue inline; do not launch a detached CLI workaround.
+Use a fresh native agent. Preserve the configured model.
+
+- Claude Code: the non-fork `Agent` tool (`general-purpose`), one per worker or reviewer.
+- Pi: the `subagent` tool of the `pi-subagents` package, one call per worker or reviewer, with
+  `context: "fresh"`:
+
+  ```text
+  subagent({ agent: "worker", task: "<assignment>", async: false, options: { context: "fresh" } })
+  subagent({ agent: "reviewer", task: "<persona and target paths>", async: false,
+    options: { context: "fresh" } })
+  ```
+
+  If only `subagents_enable` is listed, call `subagents_enable({})` first. If neither is listed, the
+  package is not installed or not enabled and the host has no fresh agents.
+- An assessor starts like a worker, with the decision brief as the task.
+
+At policy 6 with coordinator on, a host that cannot start a fresh agent stops the work: checkpoint
+with `stop_reason` `user-decision` and ask the user to turn `coordinator` off with `workflow
+settings`. Do not continue inline. At policy 5 and below, if fresh context, observation, or stopping
+is unavailable or delegation is prohibited, continue inline; do not launch a detached CLI
+workaround. At policy 6 the coordinator also follows [modes.md](modes.md): each task needs a
+completed worker attempt.
 
 Use [`workflow worker-event`](automation-execution.md) for launch intent (at policy 4 keep the
 returned `attempt_id`), then the observed host handle/outcome in `tasks/<id>.md`. Keep this a
@@ -46,6 +64,9 @@ completion.
 
 ## Acceptance and recovery
 
+At policy 6 review the tasks that have not started before each finish: the replan step of
+[modes.md](modes.md).
+
 For routine corrections under the same assignment, reuse the worker and check its result. Settle it
 before taking over its files. Invalidated assignments/inputs need
 [execution-changes.md](execution-changes.md); settle old work before replacing its assignment and
@@ -64,7 +85,9 @@ nothing ran. Unknown ownership blocks conflicting work; preserve the record and 
 While a worker runs, record `observed` events so `silent_minutes` measures real silence; see
 [durability.md](durability.md).
 
-## Delegating coordinator mode
+## Delegating coordinator mode (policy 5 only)
+
+At policy 6 the two warnings follow `coordinator`; see [modes.md](modes.md).
 
 `delegating` is a boolean option, off by default, valid from policy 5 (`settings` refuses it
 below, with `options.delegating needs policy_version 5`). Turn it on when the coordinator plans,
@@ -89,3 +112,8 @@ not decision bodies, acceptance or scope, and the tool does not check the value 
 a hash note is advisory. `partial_work` names the task notes and lists open attempts. `validate` is
 the full reference check; the commit checks only tasks it touches, and a spec edit warns about
 references it leaves dangling. `workflow packet` and `--task-only` are unchanged.
+
+At policy 6 the packet also has `persona`: for a code task (`local_write` with a `target` output
+that is not `.md`, `.rst` or `.txt`) the absolute path of
+[worker-personas.md](worker-personas.md), else null. The coordinator passes the path and the
+worker reads the file.

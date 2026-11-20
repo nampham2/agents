@@ -24,9 +24,9 @@ actual consent.
 Continue authorized work after each task: start the `continue` task from `task finish` or `resume`.
 Stop only for a `stop_reason` ([stopping.md](references/stopping.md)): `user-decision`,
 `authorization`, `blocked`, `context-pressure`, `closure-step` or `closed`; name it in the
-checkpoint. Never end a turn by asking whether to continue. Restart on user request or
-`context-pressure`: checkpoint, supply a resume prompt, stop; the user opens the new session. Read
-[session-handoff.md](references/session-handoff.md) only for handoff or interruption recovery.
+checkpoint. Restart on user request or `context-pressure`: checkpoint, supply a resume prompt, stop;
+the user opens the new session. Read [session-handoff.md](references/session-handoff.md) only for
+handoff or interruption recovery.
 
 ## Resolve once
 
@@ -107,15 +107,17 @@ agreement, follow [execution-changes.md](references/execution-changes.md). `work
 allocates correction tasks for terminal work without copying acceptance or consent.
 
 `task <project-dir> start T01 --expected-revision <revision>` returns the assignment, dependencies
-and roots. Start before writing; `finish --backfill --note` records earlier work. Dependencies must
-be `DONE`, not `SKIPPED`. Destructive/external effects need explicit authorization (existing counts)
-and an optional intent ([durability.md](references/durability.md)). A repository target needs a
+and roots. Start before writing. Dependencies must be `DONE`, not `SKIPPED`. Destructive/external
+effects need explicit authorization (existing counts) and
+an optional intent ([durability.md](references/durability.md)). A repository target needs a
 recorded worktree, and an MR where the delivery target demands one, before its first write
 ([worktrees.md](references/worktrees.md)).
 
 Resolve worker ownership before takeover. If `execution_active` is true, read
-[legacy-executor.md](references/legacy-executor.md). Delegate only when isolation outweighs startup
-cost ([task-workers.md](references/task-workers.md)).
+[legacy-executor.md](references/legacy-executor.md). At policy 5 and below, delegate only when
+isolation outweighs startup cost ([task-workers.md](references/task-workers.md)). At policy 6 read
+[modes.md](references/modes.md) before the first task: coordinator mode is on by default, so a fresh
+worker runs each task and `task finish` needs its recorded attempt.
 
 Use `workflow ... verify` for check batches; single checks may use:
 
