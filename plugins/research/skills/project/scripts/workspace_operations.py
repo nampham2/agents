@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from workspace_documents import append_record, edit_document, follow_up_items
-from workspace_durability import task_finish_findings
+from workspace_durability import mode_gate_errors, task_finish_findings
 from workspace_evidence import evidence_entries, evidence_findings, selected_evidence_references
 from workspace_goldfish import residual_findings
 from workspace_journal import OperationError, snapshot
@@ -28,6 +28,7 @@ from workspace_lib import (
     delivery_rules,
     has_target_rules,
     load_json,
+    modes_enabled,
     normalize_tags,
     now_iso,
     read_text,
@@ -419,7 +420,8 @@ def task_operation(
     if action == "finish" and observation_record_ids:
         result["observations"] = list(observation_record_ids)
         result["attested"] = not evidence_record_ids
-    if action in ("finish", "block", "skip"):
+    # At policy 6 a start carries the move too: the exhausted-decision stop and the automated-mode offer.
+    if action in ("finish", "block", "skip") or modes_enabled(committed):
         result.update(next_move(committed))
     if action in ("block", "skip"):
         result["warnings"] = reason_reference_warnings(before_tasks, committed["tasks"], project_dir.parent)
@@ -547,6 +549,12 @@ def close_project(
         raise WorkspaceConflict(
             f"revision conflict: expected {expected_revision}, found {initial['revision']}"
         )
+    if modes_enabled(initial):
+        # The commit runs the whole gate under the lock, but only after the reflection was saved; the mode rules
+        # are checked here first so a refused close writes nothing (policy 6 only).
+        errors = mode_gate_errors(project_dir, initial, {**initial, "status": "DONE"})
+        if errors:
+            raise WorkspaceError("; ".join(errors))
     reflection_result = None
     if reflection is not None:
         assert expected_reflection_sha256 is not None

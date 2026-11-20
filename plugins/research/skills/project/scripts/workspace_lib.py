@@ -23,7 +23,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from workspace_fields import NESTED_INPUTS, WORKTREE_OPTIONAL_FIELDS, field_errors
+from workspace_fields import (
+    DECISION_OUTCOMES,
+    DECISION_RECORD_FIELDS,
+    MAX_EVIDENCE_ROUNDS,
+    NESTED_INPUTS,
+    WORKTREE_OPTIONAL_FIELDS,
+    field_errors,
+)
 from workspace_style import (
     LIMIT_STEP,
     LIMIT_TEXT,
@@ -105,12 +112,18 @@ PROJECT_FIELDS = {
 # review on a host with no fresh agents, and the optional policies.
 SETTINGS_FIELDS = ("review_risk", "review_fallback", "options")
 # `tags`, `policy_version` and `delivery_target` are v4 only: schema v3 shares PROJECT_FIELDS and stays closed to them.
-PROJECT_V4_FIELDS = PROJECT_FIELDS | {"execution", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS}
+# Policy 6: the records of `workflow decide` and the two counters `settings` and `maintenance` write.
+MODE_PROJECT_FIELDS = ("automated_decisions", "mode_counters")
+PROJECT_V4_FIELDS = PROJECT_FIELDS | {
+    "execution", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
+}
 # Fields a valid project may omit: `predecessor` names the project this one continues (a maintenance
 # ancestor, or the finished source of a follow-up, whose briefing starts `Follow-up of: <id>`) and `worktrees` is
 # only present once a repository worktree, or its absence, has been recorded. `tags` is absent from
 # every project created before tags existed, so validation never requires it.
-OPTIONAL_PROJECT_FIELDS = {"predecessor", "worktrees", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS}
+OPTIONAL_PROJECT_FIELDS = {
+    "predecessor", "worktrees", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
+}
 
 # A project carries 1 to 5 tags. Creation and the `tag` command enforce the minimum; validation checks
 # the form and the maximum only, so the projects that predate tags stay valid.
@@ -2874,6 +2887,7 @@ def _validate_delivery_policy(state: dict[str, Any], report: ValidationReport) -
                 f"project: delivery_target needs policy_version 2 or later, but the project is at policy {policy}"
             )
     _validate_settings(state, policy if valid else None, report)
+    _validate_automated_decisions(state, report)
     # BLOCKED may follow ALIGNING, so it is let through here: leaving it for PLANNING or beyond is refused.
     unaligned = ("ALIGNING", "BLOCKED", "CANCELLED")
     if valid and has_target_rules(policy) and "delivery_target" not in state and state.get("status") not in unaligned:
@@ -2896,6 +2910,79 @@ def _validate_settings(state: dict[str, Any], policy: "int | None", report: Vali
         report.errors.extend(f"project: {text}" for text in options_errors(state["options"], state))
     if automated_enabled(state) and not coordinator_enabled(state):
         report.errors.append(f"project: {AUTOMATED_NEEDS_COORDINATOR}")
+
+
+def _text_within(value: object, limit: int) -> bool:
+    return isinstance(value, str) and len(value) <= limit
+
+
+def _counter(value: object) -> bool:
+    return type(value) is int and value >= 0
+
+
+def _decision_record_errors(record: object) -> "list[str]":
+    """Shape only: the keys, the outcome, the round, the counter and the string caps of one stored decision."""
+    if not isinstance(record, dict) or set(record) != DECISION_RECORD_FIELDS:
+        return ["must be an object with exactly the keys " + ", ".join(sorted(DECISION_RECORD_FIELDS))]
+    errors = []
+    for key in ("id", "kind", "subject", "recorded"):
+        if not (isinstance(record[key], str) and record[key].strip() and len(record[key]) <= 200):
+            errors.append(f"{key} must be non-empty text")
+    if not (_text_within(record["choice"], 80) and record["choice"]):
+        errors.append("choice must be non-empty text of at most 80 characters")
+    options = record["options"]
+    if not isinstance(options, list) or not all(_text_within(item, 80) for item in options):
+        errors.append("options must be a list of strings of at most 80 characters")
+    evidence = record["evidence"]
+    if not isinstance(evidence, list) or not all(_text_within(item, 200) for item in evidence):
+        errors.append("evidence must be a list of strings of at most 200 characters")
+    for key in ("proposer", "assessor"):
+        if record[key] is not None and not _text_within(record[key], 64):
+            errors.append(f"{key} must be null or text of at most 64 characters")
+    if record["outcome"] not in DECISION_OUTCOMES:
+        errors.append("outcome must be one of " + ", ".join(DECISION_OUTCOMES))
+    rounds = record["round"]
+    if rounds is not None and not (type(rounds) is int and 1 <= rounds <= MAX_EVIDENCE_ROUNDS):
+        errors.append(f"round must be 1 to {MAX_EVIDENCE_ROUNDS} or null")
+    if not _counter(record["automated_off"]):
+        errors.append("automated_off must be a non-negative integer")
+    if not isinstance(record["judged"], dict):
+        errors.append("judged must be an object")
+    confirmation = record["confirmation"]
+    if confirmation is not None and not (
+        isinstance(confirmation, dict) and set(confirmation) == NESTED_INPUTS["confirmation"][0]
+        and _text_within(confirmation["source"], 200) and _text_within(confirmation["response"], 2000)
+    ):
+        errors.append("confirmation must be null or a source of at most 200 and a response of at most 2000 characters")
+    return errors
+
+
+def _validate_automated_decisions(state: dict[str, Any], report: ValidationReport) -> None:
+    """`automated_decisions` and `mode_counters`: policy 6 and their shape; rounds and validity are not re-derived."""
+    for name in MODE_PROJECT_FIELDS:
+        if name in state and not modes_enabled(state):
+            report.errors.append(f"project: {name} needs policy_version 6")
+    if "automated_decisions" in state:
+        records = state["automated_decisions"]
+        if not isinstance(records, list):
+            report.errors.append("project: automated_decisions must be a list of decision records")
+        else:
+            for index, record in enumerate(records):
+                report.errors.extend(
+                    f"project: automated_decisions[{index}]: {error}" if not error.startswith("must ")
+                    else f"project: automated_decisions[{index}] {error}"
+                    for error in _decision_record_errors(record)
+                )
+    if "mode_counters" in state:
+        counters = state["mode_counters"]
+        if not (
+            isinstance(counters, dict) and set(counters) == {"automated_off", "reopens"}
+            and all(_counter(value) for value in counters.values())
+        ):
+            report.errors.append(
+                "project: mode_counters must be an object with exactly automated_off and reopens, each a "
+                "non-negative integer"
+            )
 
 
 def risk_errors(value: object) -> "list[str]":
@@ -6257,9 +6344,11 @@ def _revision_conflicts(current: dict[str, Any], candidate: dict[str, Any], expe
 
 # Fields only a named journaled action may change. The exemption comes from the action name stored in
 # the journal record, never from request data, so preflight, commit and replay agree.
-GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target", *SETTINGS_FIELDS)
+GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS)
 GUARDED_WRITERS: "dict[str, set[str]]" = {
-    "settings": set(SETTINGS_FIELDS),
+    "settings": set(SETTINGS_FIELDS) | {"mode_counters"},
+    "decide": {"automated_decisions"},
+    "maintenance": {"mode_counters"},
     "confirm": {"delivery_target"},
     "retarget": {"delivery_target"},
     "migrate_policy": {"policy_version", "delivery_target"},

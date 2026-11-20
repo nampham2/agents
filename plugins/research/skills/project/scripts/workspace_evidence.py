@@ -157,6 +157,25 @@ def evidence_findings(record_ids: list[str], observation_ids: list[str]) -> list
     return ["finishing a task requires at least one explicit evidence record"]
 
 
+def evidence_rows_by_id(project_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    """The rows of `evidence.md` grouped by Record ID; a row without one is left out."""
+    by_id: dict[str, list[dict[str, Any]]] = {}
+    for row in _entry_rows(read_text(project_dir.resolve() / "evidence.md")):
+        if row["record_id"] is not None:
+            by_id.setdefault(row["record_id"], []).append(row)
+    return by_id
+
+
+def selectable_evidence_row(by_id: dict[str, list[dict[str, Any]]], record_id: str) -> dict[str, Any]:
+    """The one well-formed row of `record_id`, or the refusal that says why there is none."""
+    matches = by_id.get(record_id, [])
+    if len(matches) != 1:
+        raise WorkspaceError(f"evidence record must match exactly one entry: {record_id}")
+    if not matches[0]["selectable"]:
+        raise WorkspaceError(f"evidence record has malformed or ambiguous metadata: {record_id}")
+    return matches[0]
+
+
 def selected_evidence_references(
     project_dir: Path,
     task_id: str,
@@ -174,19 +193,10 @@ def selected_evidence_references(
         raise WorkspaceError(findings[0])
     if len(record_ids) != len(set(record_ids)):
         raise WorkspaceError("duplicate evidence record ID")
-    all_rows = _entry_rows(read_text(project_dir.resolve() / "evidence.md"))
-    by_id: dict[str, list[dict[str, Any]]] = {}
-    for row in all_rows:
-        if row["record_id"] is not None:
-            by_id.setdefault(row["record_id"], []).append(row)
+    by_id = evidence_rows_by_id(project_dir)
     references = []
     for record_id in record_ids:
-        matches = by_id.get(record_id, [])
-        if len(matches) != 1:
-            raise WorkspaceError(f"evidence record must match exactly one entry: {record_id}")
-        row = matches[0]
-        if not row["selectable"]:
-            raise WorkspaceError(f"evidence record has malformed or ambiguous metadata: {record_id}")
+        row = selectable_evidence_row(by_id, record_id)
         if row["owner"] != task_id:
             raise WorkspaceError(f"evidence record {record_id} belongs to {row['owner']}, not {task_id}")
         if row["kind"] != kind:

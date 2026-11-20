@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -61,10 +62,23 @@ from workspace_durability import (
     valid_key,
     worker_lines,
 )
-from workspace_fields import ACTION_NESTED, NESTED_INPUTS, NESTED_REQUIRED
+from workspace_evidence import evidence_rows_by_id, selectable_evidence_row
+from workspace_fields import (
+    ACTION_NESTED,
+    CONSEQUENTIAL_KINDS,
+    DECIDE_AGENT_REQUIRED,
+    DECIDE_FIELDS,
+    DECIDE_REQUIRED,
+    DECISION_CHOICES,
+    DECISION_THRESHOLD,
+    MAX_EVIDENCE_ROUNDS,
+    NESTED_INPUTS,
+    NESTED_REQUIRED,
+)
 from workspace_goldfish import (
     OPERATION_FIELDS,
     OPERATION_REQUIRED,
+    _artifact_exists,
     amendment_details,
     confirm_gate_errors,
     delivery_gate_errors,
@@ -92,6 +106,7 @@ from workspace_lib import (
     DeliveryRules,
     WorkspaceConflict,
     WorkspaceError,
+    automated_enabled,
     check_state_candidate,
     confirmation_marker,
     delivery_rules,
@@ -104,6 +119,7 @@ from workspace_lib import (
     is_retro_gated,
     load_json,
     memory_staging_warnings,
+    modes_enabled,
     now_iso,
     options_errors,
     planning_path,
@@ -120,7 +136,14 @@ from workspace_lib import (
     validate_project,
 )
 from workspace_operations import _task, migration_plan, research_task_conflicts, rules_diff, target_conflicts
-from workspace_session import _headings, _load_state, prepare_update
+from workspace_session import (
+    EXHAUSTED_DETAIL,
+    _headings,
+    _load_state,
+    decision_state,
+    mode_counter_values,
+    prepare_update,
+)
 
 # Shortest reflection `finalize` accepts: enough for an outcome and a limitation, not a bare token.
 REFLECTION_MIN_CHARS = 200
@@ -147,8 +170,9 @@ FIELDS = {
     "goldfish": set().union(*OPERATION_FIELDS.values()),
     "finalize": {"reflection", "continuation"},
     "report": {"sections", "graph"},
-    "maintenance": {"tasks", "reason", "continuation"},
-    "cancel": {"tasks", "reason", "continuation"},
+    "maintenance": {"tasks", "reason", "continuation", "confirmation"},
+    "cancel": {"tasks", "reason", "continuation", "confirmation"},
+    "decide": set(DECIDE_FIELDS),
     "assess": {"topic", "disposition", "reason", "application"},
     "worktree": {
         "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
@@ -209,16 +233,28 @@ WORKER_EVENT_REQUIRED_BY = {f"event={name}": frozenset() for name in WORKER_EVEN
 # P1: an effect intent before an external or destructive effect, and its resolve once checked.
 EFFECT_REQUIRED = frozenset({"operation", "task", "key"})
 EFFECT_REQUIRED_BY = {"operation=intent": frozenset({"effect"}), "operation=resolve": frozenset({"outcome"})}
+# Automated mode: `by` tells the agent's record from the user's answer. A free kind names its options; a listed
+# kind takes its pair from DECISION_CHOICES, and a consequential one needs an assessor.
+DECIDE_REQUIRED_BY = {
+    "by=agent": DECIDE_AGENT_REQUIRED | {"options"},
+    **{
+        f"by=agent,kind={kind}": DECIDE_AGENT_REQUIRED | ({"assessor"} if kind in CONSEQUENTIAL_KINDS else set())
+        for kind in DECISION_CHOICES
+    },
+    "by=user": frozenset({"confirmation", "options"}),
+    **{f"by=user,kind={kind}": frozenset({"confirmation"}) for kind in DECISION_CHOICES},
+}
 # P5: what a BLOCKED task waits for; no operation, no variants and no clear (leaving BLOCKED ends it).
 WAIT_REQUIRED = frozenset({"task", "on"})
 ALWAYS_REQUIRED = {
     "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
     "retarget": RETARGET_REQUIRED, "settings": SETTINGS_REQUIRED,
     "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED, "wait": WAIT_REQUIRED,
+    "decide": DECIDE_REQUIRED,
 }
 REQUIRED_BY = {
     "confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY, "goldfish": GOLDFISH_REQUIRED_BY,
-    "worker-event": WORKER_EVENT_REQUIRED_BY, "effect": EFFECT_REQUIRED_BY,
+    "worker-event": WORKER_EVENT_REQUIRED_BY, "effect": EFFECT_REQUIRED_BY, "decide": DECIDE_REQUIRED_BY,
 }
 # Workflow writes that name a task put it on their invocation line; a receipt there is crash-loop progress.
 TASK_NOTED_ACTIONS = ("effect", "wait", "receipt", "authorize", "worker-event")
@@ -509,6 +545,15 @@ def _confirmation(value: object) -> dict[str, str]:
     return {key: string_input(confirmation[key], f"confirmation.{key}") for key in ("source", "response")}
 
 
+REMOVE_REFUSED = (
+    "worktree close: recording remove is refused while options.automated is on. Removing a worktree is the user's "
+    "own step: the tool does not run `git worktree remove`, it only refuses this record. If the worktree is still "
+    "there, record keep with the user's standing words. If it is already gone, keep is refused too ('the worktree "
+    "is missing'): stop for the user, turn automated off with 'workflow settings' and the user's words, then record "
+    "remove with their confirmation"
+)
+
+
 def _worktree(
     state: dict[str, Any], request: dict[str, Any], workspace_root: Path
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -606,6 +651,8 @@ def _worktree(
     decision = request.get("decision")
     if decision not in ("keep", "accept_dirty", "remove"):
         raise WorkspaceError("worktree decision must be keep, accept_dirty or remove")
+    if decision == "remove" and automated_enabled(state):
+        raise WorkspaceError(REMOVE_REFUSED)
     entry = next((item for item in worktrees if item["path"] == path), None)
     # A kept worktree stays decidable: the user may change their mind, work may resume after
     # maintenance reopens the project, and removal can happen outside the tool. Replacing a closure
@@ -830,7 +877,218 @@ def _settings(state: dict[str, Any], request: dict[str, Any]) -> "tuple[dict[str
         raise WorkspaceError("settings needs at least one of review_risk, review_fallback and options")
     changes = "; ".join(f"{key} = {json.dumps(value, sort_keys=True)}" for key, value in patch.items())
     body = f"kind: settings\n{changes}\nsource: {confirmation['source']}\nresponse: {confirmation['response']}"
-    return patch, body, {"settings": patch}
+    outcome = {"settings": dict(patch)}
+    if "options" in patch and automated_enabled(state):
+        # Turning automated off ends every decision window; the counter is how a later reader sees it.
+        if not automated_enabled(prepare_update(state, {"options": patch["options"]}, internal=True)):
+            off, reopens = mode_counter_values(state)
+            patch["mode_counters"] = {"automated_off": off + 1, "reopens": reopens}
+    return patch, body, outcome
+
+
+DECIDE_KIND = re.compile(r"[a-z][a-z0-9-]{0,39}")
+AGENT_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
+EVIDENCE_RECORD = re.compile(r"ev-[0-9a-f]{32}")
+EVIDENCE_FILE = re.compile(r"(?P<path>[^#\r\n]+)(?:#(?P<anchor>[A-Za-z0-9._:-]+))?")
+DECIDE_EVIDENCE_RULE = (
+    "evidence must be a list of 1 to 20 pointers: an evidence record ID (ev-<32 hex>) or a file of this project, "
+    "optionally with #<anchor>; every agent round needs at least one"
+)
+# The caps of a stored record (design section 4.5, Growth); `decide` alone applies them to a confirmation.
+DECIDE_CONFIRMATION_CAPS = {"source": 200, "response": 2000}
+
+
+def _one_line(value: object, limit: int) -> bool:
+    return (
+        isinstance(value, str) and bool(value.strip()) and len(value) <= limit and "\n" not in value
+        and "\r" not in value
+    )
+
+
+def _agent_label(request: dict[str, Any], field: str) -> str:
+    value = request[field]
+    if not isinstance(value, str) or AGENT_LABEL.fullmatch(value) is None:
+        raise WorkspaceError(
+            f"{field} must be a short agent label such as 'coordinator' or a subagent handle: letters, digits, '.', "
+            "'_', ':' and '-', at most 64 characters"
+        )
+    if value.casefold() == "user":
+        raise WorkspaceError(
+            f"{field} 'user' is reserved for the user's answer; send by user with confirmation and the user's words "
+            "instead"
+        )
+    return value
+
+
+def _evidence_pointers(project: Path, value: object) -> list[str]:
+    """1 to 20 pointers of the grammar, each resolving to an evidence record or a file of this project."""
+    if not isinstance(value, list) or not 1 <= len(value) <= 20 or not all(
+        isinstance(item, str) and len(item) <= 200 and (
+            EVIDENCE_RECORD.fullmatch(item) is not None or EVIDENCE_FILE.fullmatch(item) is not None
+        )
+        for item in value
+    ):
+        raise WorkspaceError(DECIDE_EVIDENCE_RULE)
+    by_id = None
+    for pointer in value:
+        if EVIDENCE_RECORD.fullmatch(pointer):
+            by_id = evidence_rows_by_id(project) if by_id is None else by_id
+            try:
+                selectable_evidence_row(by_id, pointer)
+            except WorkspaceError as error:
+                raise WorkspaceError(f"evidence pointer does not resolve: {pointer} ({error})") from error
+            continue
+        match = EVIDENCE_FILE.fullmatch(pointer)
+        assert match is not None
+        path, anchor = match["path"], match["anchor"]
+        if not _artifact_exists(project, path):
+            raise WorkspaceError(f"evidence pointer does not resolve: {pointer} (not a file of this project)")
+        if anchor is not None and f'id="{anchor}"' not in (project / path).read_text(encoding="utf-8"):
+            raise WorkspaceError(f'evidence pointer does not resolve: {pointer} ({path} has no id="{anchor}")')
+    return list(value)
+
+
+def _decide(
+    project: Path, state: dict[str, Any], request: dict[str, Any]
+) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
+    """Record one automated decision: the agent's judgment, rated against the threshold, or the user's answer.
+
+    Every refusal is raised before the journal record, so a malformed record writes nothing. The pair state is
+    derived from the kind, the subject and the written counters; the request ID plays no part (section 6).
+    """
+    if not automated_enabled(state):
+        raise WorkspaceError("decide needs options.automated on; with it off the choice is the user's")
+    by = request.get("by")
+    if by not in ("agent", "user"):
+        raise WorkspaceError(
+            "by must be agent (a record of the agent's judgment) or user (the user's answer, with confirmation)"
+        )
+    kind = request.get("kind")
+    if not isinstance(kind, str) or DECIDE_KIND.fullmatch(kind) is None:
+        raise WorkspaceError("kind must be lowercase letters, digits and hyphens, at most 40 characters")
+    subject = request.get("subject")
+    tasks = {task["id"]: task for task in state["tasks"]}
+    if subject != "project" and (not isinstance(subject, str) or subject not in tasks):
+        raise WorkspaceError("subject must be a task ID of this project or 'project'")
+    if subject != "project" and tasks[subject]["status"] in ("DONE", "SKIPPED"):
+        raise WorkspaceError(
+            f"subject {subject} is {tasks[subject]['status']}; a decision about a finished or skipped task has "
+            "nothing left to decide"
+        )
+    pair = DECISION_CHOICES.get(kind)
+    if pair is not None:
+        wants_project = kind == "project-close"
+        if wants_project != (subject == "project"):
+            expected = "'project'" if wants_project else "a task ID"
+            raise WorkspaceError(f"kind {kind} takes {expected} as subject")
+        given = request.get("options", list(pair))
+        if not isinstance(given, list) or len(given) != 2 or set(given) != set(pair):
+            raise WorkspaceError(f"kind {kind} takes the options {pair[0]} and {pair[1]}; a gate reads no other choice")
+        options = list(pair)
+    else:
+        given = request.get("options")
+        if not (
+            isinstance(given, list) and 2 <= len(given) <= 8 and all(_one_line(item, 80) for item in given)
+            and len(set(given)) == len(given)
+        ):
+            raise WorkspaceError("options must be a list of 2 to 8 distinct one-line strings of at most 80 characters")
+        options = list(given)
+    choice = request.get("choice")
+    if choice not in options:
+        raise WorkspaceError("choice must be one of options")
+    unfinished = [task for task in state["tasks"] if task["status"] not in ("DONE", "SKIPPED")]
+    if kind == "project-close" and unfinished and (by == "agent" or choice == "close"):
+        raise WorkspaceError(
+            "project-close is refused while a task is not terminal: "
+            + ", ".join(f"{task['id']} {task['status']}" for task in unfinished)
+        )
+    name, standing, next_round = decision_state(state, kind, subject)
+    confirmation = None
+    evidence: list[str] = []
+    confidence: Any = None
+    proposer: "str | None" = None
+    assessor: "str | None" = None
+    rounds: "int | None" = None
+    if by == "user":
+        if DECIDE_AGENT_REQUIRED & request.keys() or "assessor" in request:
+            raise WorkspaceError("a user answer takes by, kind, subject, options, choice and confirmation only")
+        confirmation = _confirmation(request.get("confirmation"))
+        for key, limit in DECIDE_CONFIRMATION_CAPS.items():
+            if len(confirmation[key]) > limit:
+                raise WorkspaceError(f"confirmation.{key} is longer than {limit} characters")
+        proposer, outcome, rounds = "user", "decision", None
+    else:
+        if "confirmation" in request:
+            raise WorkspaceError("an agent record carries no confirmation; the user's words go in a by user answer")
+        evidence = _evidence_pointers(project, request.get("evidence"))
+        rated = request.get("confidence")
+        if isinstance(rated, bool) or not isinstance(rated, int | float) or not 0 <= rated <= 1:
+            raise WorkspaceError("confidence must be a number from 0 to 1")
+        confidence = rated
+        proposer = _agent_label(request, "proposer")
+        if kind in CONSEQUENTIAL_KINDS and "assessor" not in request:
+            raise WorkspaceError(f"kind {kind} is consequential: assessor is required")
+        assessor = _agent_label(request, "assessor") if "assessor" in request else None
+        if kind in CONSEQUENTIAL_KINDS and assessor == proposer:
+            raise WorkspaceError(f"kind {kind} is consequential: assessor must differ from proposer")
+        if name == "answered":
+            assert standing is not None
+            until = (
+                "the project is reopened with workflow maintenance" if subject == "project"
+                else "the task is finished or skipped"
+            )
+            raise WorkspaceError(
+                f"the user answered {kind} for {subject} with '{standing['choice']}'; the answer binds until {until}, "
+                "a new user answer, or automated turned off"
+            )
+        if name == "exhausted":
+            raise WorkspaceError(
+                f"decision exhausted: {kind} for {subject} used {MAX_EVIDENCE_ROUNDS} evidence rounds; only the user's "
+                "answer is accepted: send by user with confirmation and the user's words"
+            )
+        rounds = next_round
+        outcome = (
+            "decision" if rated >= DECISION_THRESHOLD
+            else "evidence-round" if rounds < MAX_EVIDENCE_ROUNDS else "exhausted"
+        )
+    off, reopens = mode_counter_values(state)
+    judged = (
+        {"task_count": len(state["tasks"]), "reopens": reopens} if subject == "project"
+        else {"assignment_counter": tasks[subject].get("assignment_counter")}
+    )
+    record = {
+        "id": request["id"], "kind": kind, "subject": subject, "options": options, "choice": choice,
+        "evidence": evidence, "confidence": confidence, "proposer": proposer, "assessor": assessor,
+        "round": rounds, "outcome": outcome, "recorded": now_iso(), "confirmation": confirmation,
+        "revision": state["revision"], "judged": judged, "automated_off": off,
+    }
+    stored = state.get("automated_decisions", [])
+    patch = {"automated_decisions": [*stored, record]}
+    result: dict[str, Any] = {"decision": record, "outcome": outcome, "round": rounds}
+    documents: dict[str, str] = {}
+    if by == "user":
+        assert confirmation is not None
+        lines = [
+            "kind: automated-decision", f"decision: {kind} for {subject}", f"choice: {choice}",
+            "options: " + ", ".join(options), f"source: {confirmation['source']}",
+            f"response: {confirmation['response']}",
+        ]
+        if name == "answered":
+            assert standing is not None
+            lines.append(f"supersedes: {standing['id']}")
+        spec = snapshot(document_path(project, "spec"))[0]
+        documents["spec"] = _entry(spec, request["id"], "\n".join(lines), decision=True)
+        return documents, patch, result
+    if outcome != "decision":
+        result["rounds_left"] = MAX_EVIDENCE_ROUNDS - next_round
+    if outcome == "exhausted":
+        quoted = [f"'{option}'" for option in options]
+        listed = ", ".join(quoted[:-1]) + " or " + quoted[-1]
+        result["stop_reason"] = "user-decision"
+        result["move_detail"] = EXHAUSTED_DETAIL.format(
+            rounds=MAX_EVIDENCE_ROUNDS, items=f"{kind} for {subject}: {listed}"
+        )
+    return documents, patch, result
 
 
 def _build(
@@ -1144,10 +1402,26 @@ def _build(
         }
         if action == "maintenance" and state["status"] != "DONE":
             raise WorkspaceError("maintenance requires a completed project")
+        if "confirmation" not in request and automated_enabled(state):
+            raise WorkspaceError(
+                f"workflow {action} needs the user's words while options.automated is on: send confirmation with "
+                "the source and the user's response; the agent never writes its own words there"
+            )
         if action == "cancel":
             patch["cancellation_reason"] = reason
-        decision(f"{action}: {reason}")
+        if action == "maintenance" and modes_enabled(state):
+            # A reopen ends the project's decision window and makes every earlier close decision stale.
+            off, reopens = mode_counter_values(state)
+            patch["mode_counters"] = {"automated_off": off, "reopens": reopens + 1}
+        body = f"{action}: {reason}"
+        if "confirmation" in request:
+            words = _confirmation(request["confirmation"])
+            body += f"\nsource: {words['source']}\nresponse: {words['response']}"
+        decision(body)
         result["legal_next"] = sorted(PROJECT_TRANSITIONS[patch["status"]])
+    elif action == "decide":
+        decided, patch, result = _decide(project, state, request)
+        documents.update(decided)
     elif action == "assess":
         from workspace_lib import read_memory_topic
 
@@ -1294,6 +1568,11 @@ def _variant_required(project: Path, action: str, request: Any) -> frozenset[str
         return WORKER_EVENT_REQUIRED
     if action == "wait":
         return WAIT_REQUIRED
+    if isinstance(request, dict) and action == "decide":
+        by, kind = request.get("by"), request.get("kind")
+        listed = isinstance(kind, str) and kind in DECISION_CHOICES
+        row = DECIDE_REQUIRED_BY.get(f"by={by},kind={kind}" if listed else f"by={by}", frozenset())
+        return DECIDE_REQUIRED | row
     if isinstance(request, dict) and action == "effect":
         return EFFECT_REQUIRED | EFFECT_REQUIRED_BY.get(f"operation={request.get('operation')}", frozenset())
     if not isinstance(request, dict) or action != "worktree":

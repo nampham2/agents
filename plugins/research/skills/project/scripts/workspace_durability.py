@@ -23,6 +23,7 @@ from workspace_invocations import INVOCATIONS_FILENAME
 from workspace_journal import object_input, string_input
 from workspace_lib import (
     WorkspaceError,
+    automated_enabled,
     coordinator_enabled,
     modes_enabled,
     read_text,
@@ -30,7 +31,7 @@ from workspace_lib import (
     task_durable_enabled,
     task_packets_enabled,
 )
-from workspace_session import default_authorization, next_move
+from workspace_session import decision_gate, default_authorization, next_move
 
 REFERENCE = "references/durability.md"
 EFFECT_MARKER = re.compile(r"^<!-- research-effect (.+) -->$", re.MULTILINE)
@@ -562,6 +563,11 @@ def task_finish_findings(project: Path, state: dict[str, Any], task: dict[str, A
     findings = [] if "replan" in task else [R2]
     if _effect_kind(task) not in SIDE_EFFECT_KINDS:
         findings.extend(_attempt_findings(project, state, task))
+    replan = task.get("replan")
+    if automated_enabled(state) and isinstance(replan, dict) and replan.get("statement") == "changed":
+        text = decision_gate(state, "replan", task["id"], "changed")
+        if text is not None:
+            findings.append(text)
     return findings
 
 
@@ -584,8 +590,10 @@ def mode_gate_errors(
 
     Policy 6 only. Every policy-6 commit keeps the stamped `assignment_counter` (C0) and lets only `authorize`
     grant consent (A1). With `coordinator` on, a started task cannot change into an exempt effect kind (K1) and a
-    task that becomes DONE passes `task_finish_findings`. `action` is the journaled action name, None for a task
-    command, `update`, `commit` and the legacy `close`.
+    task that becomes DONE passes `task_finish_findings`. With `automated` on, a task newly SKIPPED needs a valid
+    `task-change` decision for `skip` (except under `cancel` and `maintenance`, which carry the user's words), and
+    the project newly DONE a valid `project-close` decision for `close`. `action` is the journaled action name,
+    None for a task command, `update`, `commit` and the legacy `close`.
     """
     tasks = candidate.get("tasks") if isinstance(candidate, dict) else None
     if not modes_enabled(candidate) or not isinstance(tasks, list):
@@ -596,6 +604,7 @@ def mode_gate_errors(
         if isinstance(task, dict) and isinstance(task.get("id"), str)
     }
     coordinator = coordinator_enabled(candidate)
+    automated = automated_enabled(candidate)
     errors: list[str] = []
     for task in tasks:
         if not isinstance(task, dict) or not isinstance(task.get("id"), str):
@@ -621,5 +630,17 @@ def mode_gate_errors(
                 findings.append(K1.format(old=_effect_kind(old), new=kind, counter=counter))
             if task.get("status") == "DONE" and (old is None or old.get("status") != "DONE"):
                 findings.extend(task_finish_findings(project, previous, task))
+        # Rule 3: a skip needs a `task-change` decision, read from the state before, where the task is not yet
+        # terminal. `cancel` and `maintenance` carry the user's words instead (section 4.5).
+        newly_skipped = task.get("status") == "SKIPPED" and (old is None or old.get("status") != "SKIPPED")
+        if automated and newly_skipped and action not in ("cancel", "maintenance"):
+            text = decision_gate(previous, "task-change", task["id"], "skip")
+            if text is not None:
+                findings.append(text)
         errors.extend(f"task {task['id']}: {finding}" for finding in findings)
+    # Rule 4: the close reads the candidate, so a task added in the same commit makes the decision stale.
+    if automated and candidate.get("status") == "DONE" and previous.get("status") != "DONE":
+        text = decision_gate(candidate, "project-close", "project", "close")
+        if text is not None:
+            errors.append(f"project: {text}")
     return errors
