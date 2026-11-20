@@ -234,6 +234,7 @@ CONDITIONAL = {
     "legacy-executor": "only for old executor ownership or storage",
     "maintenance": "only when reopening a closed project",
     "planning-review": "only when a change reopens alignment",
+    "refusals": "only when a coordinator or automated-mode refusal needs its next step",
     "modes": "only at policy 6: coordinator mode, the replan statement, the automated-mode offer and decisions",
     "memory-architecture": "only for memory format, migration or validation repairs",
     "records-layout": "only for the workspace records layout, doctor and migrate --layout",

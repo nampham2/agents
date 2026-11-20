@@ -119,6 +119,13 @@ def test_modes_names_every_gated_kind_and_its_choice_pair() -> None:
         assert all(f"`{choice}`" in found[0] for choice in pair), (kind, found[0])
 
 
+def test_the_refusals_reference_has_the_refusal_phrases_and_modes_links_it() -> None:
+    assert "[refusals.md](refusals.md)" in raw("references/modes.md")
+    text = flat("references/refusals.md")
+    for phrase in ("needs a completed worker attempt", "needs a valid decision", "needs the user's words"):
+        assert phrase in text, phrase
+
+
 def test_modes_covers_the_two_options_the_replan_and_the_offer() -> None:
     text = flat("references/modes.md")
     for needle in (

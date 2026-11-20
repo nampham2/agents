@@ -19,7 +19,7 @@ record `completed`; run the acceptance checks; the replan step; `task finish`.
 worker attempt whose latest event is `completed` and no attempt still open (latest event neither
 `completed` nor `stopped`). It also refuses a damaged worker line and `--backfill`. Every commit
 path shares the check: `update`, `reconcile`, `commit` and the legacy `close` cannot mark such a
-task `DONE`. `task skip` needs no worker.
+task `DONE`. It checks bookkeeping, not who edited a file. `task skip` needs no worker.
 
 Exempt tasks (effect kind `external` or `destructive`) are run by the coordinator, not a worker.
 Only `workflow authorize` grants consent. Split a task that mixes file work with an external step.
@@ -94,9 +94,10 @@ pointer makes the record malformed.
 
 Outcomes: `decision` at confidence 0.9 or above with a pointer; otherwise `evidence-round` on the
 first and second such round and `exhausted` on the third. After `evidence-round`, collect more
-evidence and record the same kind and subject again, citing at least one new pointer. Rounds count
-per pair; a qualifying record decides in any round. An agent `decision` counts only while its judged
-state is unchanged: a task's assignment, or the project's set of tasks and every reopen. Rounds,
+evidence and record the same kind and subject again, citing at least one pointer: the tool checks
+only that each pointer resolves, so use new evidence. Rounds count per pair; a qualifying record
+decides in any round. An agent `decision` counts only while its judged state is unchanged: a
+task's assignment, or the project's set of tasks and every reopen. Rounds,
 exhaustion and user answers never go stale.
 
 Exhaustion is sticky: `resume` and `task` results report `stop_reason` `user-decision` and quote the
@@ -110,10 +111,5 @@ For a consequential kind, start a fresh agent as assessor (the worker start, the
 its task); take back a confidence figure and a reason. Name its handle in `assessor`, which
 differs from `proposer`. It records no worker event.
 
-## Refusals
-
-| Refusal | Next step |
-| --- | --- |
-| `needs a completed worker attempt` | dispatch a worker, or ask to turn `coordinator` off |
-| `needs a valid decision` | `workflow decide` or the user's answer |
-| `needs the user's words` | send the user's `confirmation` |
+Each refusal names its next step; the fixed texts and what to do are in
+[refusals.md](refusals.md).
