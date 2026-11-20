@@ -239,6 +239,7 @@ CONDITIONAL = {
     "tags-and-follow-up": "only when creating a project, changing its tags or closing one that may leave a follow-up",
     "stopping": "only when deciding whether the work may stop after a task",
     "task-workers": "only when delegating to workers",
+    "worker-personas": "only for a worker on a code task; the coordinator hands the path to it",
     "versioning": "only when proposing a base, recording an alpha line, moving a base or recording a release",
     "workspace-schema": "only for schema, migration or validation-error repairs",
     "worktrees": "only for a repository target",

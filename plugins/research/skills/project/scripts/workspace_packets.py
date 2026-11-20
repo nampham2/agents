@@ -14,13 +14,22 @@ from typing import Any
 
 from workspace_documents import entry_body
 from workspace_durability import HELD_FREE_EVENTS, task_attempts
-from workspace_lib import WorkspaceError, packet_warnings_enabled, read_text, task_packets_enabled
+from workspace_lib import (
+    WorkspaceError,
+    is_code_task,
+    modes_enabled,
+    packet_warnings_enabled,
+    read_text,
+    task_packets_enabled,
+)
 from workspace_session import _headings
 
 SPEC_SECTION = "Current specification"
 # Characters of referenced sections plus decision bodies above which the packet carries a warning.
 PACKET_WARN_CHARS = 12_000
 TERMINAL = ("DONE", "SKIPPED")
+# The coding worker persona of the running copy of the skill; at policy 6 a code task's packet names it.
+PERSONA_FILE = Path(__file__).resolve().parents[1] / "references" / "worker-personas.md"
 
 
 def _spec_text(project: Path) -> str:
@@ -131,6 +140,8 @@ def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> 
 
     The sections and decision bodies are never truncated; above `PACKET_WARN_CHARS` the packet
     carries a warning. For a DONE or SKIPPED task an unresolved reference is dropped with a warning.
+    At policy 6 the key `persona` is the absolute path of `PERSONA_FILE` for a code task and null for
+    any other task; below policy 6 the key is absent. `packet_sha256` does not cover it.
     """
     notes: list[str] = []
     warnings: list[str] = []
@@ -192,7 +203,7 @@ def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> 
             f"dependency {dep} is {by_id[dep]['status']}, not DONE"
             for dep in task["depends_on"] if by_id[dep]["status"] != "DONE"
         )
-    return {
+    packet: dict[str, Any] = {
         "spec_sections": chosen,
         "decisions": bodies,
         "acceptance": {"success_criteria": task.get("success_criteria"), "verification": task.get("verification")},
@@ -210,3 +221,6 @@ def build_packet(project: Path, state: dict[str, Any], task: dict[str, Any]) -> 
         "notes": notes,
         "warnings": warnings,
     }
+    if modes_enabled(state):
+        packet["persona"] = str(PERSONA_FILE) if is_code_task(task) else None
+    return packet
