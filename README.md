@@ -75,6 +75,29 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.42.0 coordinator and automated modes
+
+- **Policy 6.** Every project created from this release starts at `policy_version` 6, with two
+  options: `coordinator` (on by default) and `automated` (off by default, needs `coordinator`).
+  Only `workflow settings` with the user's words turns either on or off. Older projects keep their
+  policy and see no change.
+- **Coordinator mode.** The main agent plans, orders the workers, runs the acceptance checks and
+  commits; a fresh worker runs every task except an `external` or `destructive` one. `task finish`
+  needs a completed worker attempt and a replan statement (`--replan none|changed` with
+  `--replan-reason`), and `--backfill` is refused. See `references/modes.md`.
+- **Automated mode.** After planning the agent takes the decisions with `workflow decide`: each
+  needs evidence, is checked by an assessor, and stops for the user after the evidence rounds run
+  out. `workflow cancel`, `workflow maintenance` and the delivery steps still need the user's
+  words.
+- **Coding worker persona.** A code task's worker packet names `references/worker-personas.md`
+  in a `persona` key. Any other task's packet has `persona` set to null.
+- **`delegating`.** Valid at policy 5 only. At policy 6 the two packet warnings follow
+  `coordinator`.
+- **Hosts.** Claude Code and Pi are the supported hosts. The manifest and marketplace file of
+  the Codex host are deleted, so its users lose the plugin when this release merges.
+- A launcher older than 0.42.0 refuses a policy-6 project, so update both hosts together before
+  opening one.
+
 ### 0.41.0 worker packets and evidence applicability
 
 - **Policy 5.** Every project created from this release starts at `policy_version` 5, with no
