@@ -1,10 +1,10 @@
 # agents
 
-Cross-host research plugins for Claude Code, Codex and Pi.
+Cross-host research plugins for Claude Code and Pi.
 
 ## Install through a marketplace
 
-Plugins are distributed through the repository marketplace for each host. Do not install a plugin
+Each host installs the plugins through its own mechanism. Do not install a plugin
 by symlinking or treating the repository root as a single plugin.
 
 ### Claude Code
@@ -18,17 +18,6 @@ claude plugin install research@agents
 
 Confirm with `claude plugin list`. The plugin installs three user-facing skills, `research:project`,
 `research:dashboard` and `research:retro`.
-
-### Codex
-
-Add the marketplace directly from GitHub; no clone is required:
-
-```bash
-codex plugin marketplace add nampham2/agents --ref main
-codex plugin add research@agents
-```
-
-Confirm with `codex plugin list`.
 
 ### Pi
 
@@ -579,8 +568,8 @@ This version preserves the ownership guard but cannot perform legacy executor re
 
 ### Versioning and updates
 
-`pyproject.toml` owns the release version. `uv.lock` and the Claude Code, Codex and Pi plugin
-manifests must use exactly the same SemVer; CI enforces this contract.
+`pyproject.toml` owns the release version. `uv.lock`, the Claude Code manifest and `package.json`
+must use exactly the same SemVer; CI enforces this contract.
 
 Claude Code caches installed plugins by version. After publishing a version bump:
 

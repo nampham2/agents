@@ -1,6 +1,6 @@
 # Lifecycle automation
 
-Use the launchers beside the loaded skill (Codex) or on PATH (Claude). Examples use
+Use the launchers beside the loaded skill (Pi) or on PATH (Claude). Examples use
 `research-project`; substitute the resolved executable, never a Python module.
 
 ```sh

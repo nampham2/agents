@@ -3687,8 +3687,7 @@ def launcher_version_warning(
     project each time before anyone compared versions.
 
     Silent unless it is sure: only when this copy lives under the host's plugin cache and the host's
-    own record names a different install path for the plugin. A working tree, a Codex session (no
-    such record), an unreadable or unfamiliar file all produce nothing, so the line can be trusted.
+    own record names a different install path for the plugin. A working tree, a host with no such record (Pi), an unreadable or unfamiliar file all produce nothing, so the line can be trusted.
     """
     try:
         config = config_dir or Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")

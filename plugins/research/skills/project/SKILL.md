@@ -30,7 +30,7 @@ handoff or interruption recovery.
 
 ## Resolve once
 
-Use the launchers beside this `SKILL.md`; use `PATH` only for a Claude plugin (Pi and Codex omit
+Use the launchers beside this `SKILL.md`; use `PATH` only for a Claude plugin (Pi omits
 `bin`). Never search caches, infer the plugin root from cwd, use `CLAUDE_PLUGIN_ROOT`, or call
 modules directly.
 

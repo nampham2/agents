@@ -138,7 +138,7 @@ def test_the_cutoff_decides_by_instant_and_a_bad_cutoff_checks_nothing(monkeypat
         REPO_ROOT / "plugins/research/bin/research-validate",
         REPO_ROOT / "plugins/research/skills/project/scripts/research-validate",
     ],
-    ids=["claude-bin", "codex-skill-local"],
+    ids=["claude-bin", "skill-local"],
 )
 def validator(request: pytest.FixtureRequest) -> Path:
     return Path(request.param)
@@ -161,7 +161,7 @@ def test_both_launchers_print_the_same_warning(project: Path, validator: Path) -
         REPO_ROOT / "plugins/research/bin/research-project",
         REPO_ROOT / "plugins/research/skills/project/scripts/research-project",
     ],
-    ids=["claude-bin", "codex-skill-local"],
+    ids=["claude-bin", "skill-local"],
 )
 def manager(request: pytest.FixtureRequest) -> Path:
     return Path(request.param)

@@ -1,6 +1,6 @@
 # Project
 
-A Claude Code and Codex skill for work that survives across sessions:
+A Claude Code and Pi skill for work that survives across sessions:
 
 ```text
 /research:project Use /path/to/workspace. Implement the parser fix in /path/to/repo,
@@ -96,7 +96,7 @@ user's own words. See [modes.md](references/modes.md).
 
 ## Commands
 
-Claude uses launchers on `PATH`; Codex resolves them beside the loaded skill.
+Claude uses launchers on `PATH`; Pi resolves them beside the loaded skill.
 
 ```sh
 research-project list-projects /path/to/workspace --query parser

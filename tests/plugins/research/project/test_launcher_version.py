@@ -83,7 +83,7 @@ class LauncherVersionWarningTests(_CacheFixture):
         self.assertEqual(self.warn(REPO_ROOT / "plugins/research"), "")
 
     def test_a_host_without_the_record_is_silent(self) -> None:
-        # Codex has no installed_plugins.json; neither does a fresh config directory.
+        # A host with no installed_plugins.json (Pi), or a fresh config directory.
         self.assertEqual(self.warn(), "")
 
     def test_an_install_in_a_different_cache_directory_is_not_a_version_of_this_plugin(self) -> None:
