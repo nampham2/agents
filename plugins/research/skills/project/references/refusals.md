@@ -27,6 +27,6 @@ described in [modes.md](modes.md).
 | chose not | `... chose '...', not '...'` | record the needed choice with evidence, or ask the user |
 | stale | `the '<kind>' decision for ... is stale` | the judged state changed: record the decision again |
 | remove | `worktree close: recording remove is refused while options.automated is on` | record `keep` with the user's words, or stop for the user |
-| remove, worktree gone | `the worktree is missing; restore it or record its removal:` | stop for the user, turn automated off with `workflow settings` and the user's words, then record remove with their confirmation |
+| keep, worktree gone | `the worktree is missing; restore it or record its removal:` | refused on recording `keep`: stop for the user, turn automated off with `workflow settings` and the user's words, then record remove with their confirmation |
 | cancel | `workflow <action> needs the user's words while options.automated is on` | send the user's `confirmation` for cancel |
 | maintenance | `workflow <action> needs the user's words while options.automated is on` | send the user's `confirmation` for maintenance |
