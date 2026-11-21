@@ -23,7 +23,7 @@ Deliver the following in the primary implementation:
 1. A reproducible baseline and comparison of representative project lifecycles.
 2. Shared, transport-independent operations for updates, task transitions, document maintenance,
    evidence selection, validated resume, and closure.
-3. CLI access through the existing Claude Code and Codex launchers.
+3. CLI access through the existing Claude Code and Pi launchers.
 4. Skill instructions that use these operations for routine work.
 5. Tests, compatibility checks, and a measurement report with honest limitations.
 6. A documented decision about whether an MCP prototype would add enough value to justify itself.
@@ -104,7 +104,7 @@ Do not introduce an importable `agents` package or a build/install requirement f
 operations. Both host launchers must call the same implementation:
 
 - Claude Code: `plugins/research/bin/research-project` and `research-validate` through `PATH`.
-- Codex: the corresponding executable launchers beside the loaded project skill.
+- Pi: the corresponding executable launchers beside the loaded project skill.
 
 Skills must not call Python implementation files directly, locate caches, infer the installed
 plugin root from the working directory, or depend on a session-shell `CLAUDE_PLUGIN_ROOT`.
@@ -723,7 +723,7 @@ and existing effect authorization rules; an MCP connection does not confer task 
 ### 10.4 Packaging, tests and adoption
 
 Consult current official host documentation before changing manifests/configuration. Do not guess
-that Claude and Codex use identical MCP declaration formats. Install only through supported
+that Claude Code and Pi use identical MCP declaration formats. Install only through supported
 marketplace/plugin workflows when installation is authorized; never copy or symlink directly into
 host-managed plugin locations.
 

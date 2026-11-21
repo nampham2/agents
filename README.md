@@ -75,6 +75,14 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.42.1 refusals test and docs cleanup
+
+- `refusals.md` is now checked against the script strings by a test: labelled Code column,
+  worktree-gone row, cancel and maintenance rows, and the valid decision prefix row.
+- `goldfish-review.md` pins the diff round rule; `CONDITIONAL` stays alphabetical.
+- Mentions in `docs/` of current host support now name Claude Code and Pi.
+- The Pi call in `task-workers.md` is checked against the pi-subagents 0.89.0 docs.
+
 ### 0.42.0 coordinator and automated modes
 
 - **Policy 6.** Every project created from this release starts at `policy_version` 6, with two

@@ -233,23 +233,23 @@ CONDITIONAL = {
     "handoff-verifiers": "only when a handoff gives the successor a verifier",
     "legacy-executor": "only for old executor ownership or storage",
     "maintenance": "only when reopening a closed project",
-    "planning-review": "only when a change reopens alignment",
-    "refusals": "only when a coordinator or automated-mode refusal needs its next step",
-    "modes": "only at policy 6: coordinator mode, the replan statement, the automated-mode offer and decisions",
     "memory-architecture": "only for memory format, migration or validation repairs",
-    "records-layout": "only for the workspace records layout, doctor and migrate --layout",
     "memory-promotion": "only when closing with a promotion, compaction or retirement",
+    "modes": "only at policy 6: coordinator mode, the replan statement, the automated-mode offer and decisions",
+    "planning-review": "only when a change reopens alignment",
     "pull-requests": "only before a review ask or test deploy in a repository, and at repository closure",
-    "review-risk": "only when review risk, fallback, amendments or options are set or changed",
+    "records-layout": "only for the workspace records layout, doctor and migrate --layout",
+    "refusals": "only when a coordinator or automated-mode refusal needs its next step",
     "report-design": "only when a report is requested",
     "report-execution": "only when an execution report is requested",
     "report-html": "only when an HTML report is requested",
+    "review-risk": "only when review risk, fallback, amendments or options are set or changed",
     "session-handoff": "only for handoff or interruption recovery",
-    "tags-and-follow-up": "only when creating a project, changing its tags or closing one that may leave a follow-up",
     "stopping": "only when deciding whether the work may stop after a task",
+    "tags-and-follow-up": "only when creating a project, changing its tags or closing one that may leave a follow-up",
     "task-workers": "only when delegating to workers",
-    "worker-personas": "only for a worker on a code task; the coordinator hands the path to it",
     "versioning": "only when proposing a base, recording an alpha line, moving a base or recording a release",
+    "worker-personas": "only for a worker on a code task; the coordinator hands the path to it",
     "workspace-schema": "only for schema, migration or validation-error repairs",
     "worktrees": "only for a repository target",
     "writing-rules-extra": "only when a style finding names a preferred word or the rule set changes",
@@ -285,6 +285,10 @@ def test_every_reachable_reference_is_loaded_or_classified_as_conditional(scenar
     reachable = set().union(*(linked_references(name) for name in names)) - set(names)
     unclassified = sorted(reachable - set(CONDITIONAL))
     assert not unclassified, f"{scenario} reaches {unclassified} without loading or classifying them"
+
+
+def test_conditional_is_sorted_by_key() -> None:
+    assert list(CONDITIONAL) == sorted(CONDITIONAL)
 
 
 def test_every_reference_is_in_a_scenario_or_classified() -> None:

@@ -1,8 +1,10 @@
 # Refusals of coordinator and automated modes
 
 Read this only when a coordinator-mode or automated-mode refusal needs its next step. Each row
-gives the leading, fixed part of the text; the tool fills the braces. Modes are described in
-[modes.md](modes.md).
+gives the leading, fixed part of the text; the tool fills the braces. The codes are this file's
+own lookup labels, not text the tool prints. The findings of the mode gate may begin with
+`task <id>: ` or `task <id> cannot finish: `; the fixed text follows that prefix. Modes are
+described in [modes.md](modes.md).
 
 | Code | Fixed text begins | Next step |
 | --- | --- | --- |
@@ -18,10 +20,13 @@ gives the leading, fixed part of the text; the tool fills the braces. Modes are 
 | R0 | `--replan needs coordinator mode` | drop the flags, or have the user turn `coordinator` on |
 | R1 | `--replan takes none or changed, with --replan-reason` | give both flags, a reason of one line of at most 200 characters |
 | R3 | `--start-next is refused with --replan changed` | finish first, then start the next task |
-| no decision | `automated mode needs a valid decision: no current '<kind>' decision for` | `workflow decide` with the choice the text names |
-| evidence round | `automated mode needs a valid decision: ... is at evidence round` | collect evidence, record the same kind and subject again |
-| exhausted | `automated mode needs a valid decision: ... is exhausted after` | show the options to the user; record the user's answer |
-| chose not | `automated mode needs a valid decision: ... chose '...', not '...'` | record the needed choice with evidence, or ask the user |
-| stale | `automated mode needs a valid decision: the '<kind>' decision for ... is stale` | the judged state changed: record the decision again |
+| valid decision prefix | `automated mode needs a valid decision: ` | every `needs a valid decision` row below starts with this text |
+| no decision | `no current '<kind>' decision for` | `workflow decide` with the choice the text names |
+| evidence round | `... is at evidence round` | collect evidence, record the same kind and subject again |
+| exhausted | `... is exhausted after` | show the options to the user; record the user's answer |
+| chose not | `... chose '...', not '...'` | record the needed choice with evidence, or ask the user |
+| stale | `the '<kind>' decision for ... is stale` | the judged state changed: record the decision again |
 | remove | `worktree close: recording remove is refused while options.automated is on` | record `keep` with the user's words, or stop for the user |
-| cancel, maintenance | `workflow cancel needs the user's words while options.automated is on` | send the user's `confirmation` (also for maintenance) |
+| remove, worktree gone | `the worktree is missing; restore it or record its removal:` | stop for the user, turn automated off with `workflow settings` and the user's words, then record remove with their confirmation |
+| cancel | `workflow <action> needs the user's words while options.automated is on` | send the user's `confirmation` for cancel |
+| maintenance | `workflow <action> needs the user's words while options.automated is on` | send the user's `confirmation` for maintenance |

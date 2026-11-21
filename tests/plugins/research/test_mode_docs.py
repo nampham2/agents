@@ -7,6 +7,7 @@ the skill is built from two halves, so that this file does not name it.
 
 from __future__ import annotations
 
+import ast
 import re
 
 from tests.conftest import REPO_ROOT
@@ -183,3 +184,50 @@ def test_stopping_and_schema_name_the_mode_facts() -> None:
 def test_the_skill_readme_has_a_modes_paragraph() -> None:
     text = raw("README.md")
     assert "## Modes" in text and "references/modes.md" in text
+
+
+MIN_FRAGMENT = 8
+
+
+def script_strings() -> set[str]:
+    """Every str constant in the skill's scripts (adjacent literals joined, comments excluded)."""
+    found: set[str] = set()
+    for path in sorted((SKILL / "scripts").glob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                found.add(node.value)
+    return found
+
+
+def cell_matches(cell: str, constants: set[str]) -> bool:
+    """True when the cell has a fragment and each fragment occurs inside one script string."""
+    fragments = [part.strip() for part in re.split(r"\.\.\.|<[^>]*>", cell)]
+    fragments = [part for part in fragments if len(part) >= MIN_FRAGMENT]
+    return bool(fragments) and all(any(part in text for text in constants) for part in fragments)
+
+
+def refusal_cells() -> list[str]:
+    """The Fixed text begins cell of every row of the first table of refusals.md, code marks removed."""
+    rows = [line for line in raw("references/refusals.md").splitlines() if line.startswith("|")]
+    cells = []
+    for line in rows[2:]:
+        if not line.strip():
+            break
+        cells.append(line.strip().strip("|").split(" | ")[1].replace("`", "").strip())
+    return cells
+
+
+def test_refusals_cells_match_script_strings() -> None:
+    constants = script_strings()
+    cells = refusal_cells()
+    assert len(cells) >= 19, len(cells)
+    assert [cell for cell in cells if not cell_matches(cell, constants)] == []
+
+
+def test_refusals_cell_check_rejects_a_mutated_cell() -> None:
+    constants = script_strings()
+    cell = refusal_cells()[0]
+    assert cell_matches(cell, constants)
+    assert not cell_matches(cell + " zzz-not-in-any-script", constants)
+    assert not cell_matches("...", constants)
+    assert not cell_matches("<kind> short", constants)
