@@ -3,7 +3,8 @@
 Read this only when a coordinator-mode or automated-mode refusal needs its next step. Each row
 gives the leading, fixed part of the text; the tool fills the braces. The codes are this file's
 own lookup labels, not text the tool prints. The findings of the mode gate may begin with
-`task <id>: ` or `task <id> cannot finish: `; the fixed text follows that prefix. Modes are
+`task <id>: ` or `task <id> cannot finish: `; the fixed text follows that prefix. The `cancel` and
+`maintenance` rows share one text: the tool prints the action name for `<action>`. Modes are
 described in [modes.md](modes.md).
 
 | Code | Fixed text begins | Next step |
