@@ -61,7 +61,8 @@ GIT_CONFIG = (
     f"core.attributesFile={os.devnull}",
 )
 # Options of every diff the gates parse. `--text` ignores attributes (also `.git/info/attributes`, which no config
-# can switch off), so `-diff` and `binary` cannot hide a file; the prefixes are fixed; `diff.relative` is overridden.
+# can switch off), so `-diff` and `binary` cannot hide a file; the prefixes are fixed; `diff.relative` is overridden;
+# `--inter-hunk-context=0` keeps a user's `diff.interHunkContext` from fusing `-U0` hunks and adding context lines.
 DIFF_OPTIONS = (
     "--text",
     "--no-ext-diff",
@@ -70,26 +71,36 @@ DIFF_OPTIONS = (
     "--no-relative",
     "--src-prefix=a/",
     "--dst-prefix=b/",
+    "--inter-hunk-context=0",
 )
 PATH_CHUNK = 200
+# A changed file larger than this (either side) is never given to a text diff: a binary of any size would be read,
+# decoded and held in memory. A Python or config file over it is a finding, since it cannot be scanned.
+MAX_DIFF_BYTES = 8 * 1024 * 1024
+NULL_OID = "0" * 40
 
 
 def _git_bytes(
     repo: Path,
     *arguments: str,
     environment: "dict[str, str] | None" = None,
+    stdin: "bytes | None" = None,
 ) -> bytes:
     """One Git query in `repo`; `environment` adds variables, as a snapshot's private index and object store do.
 
-    Every `GIT_*` variable of the caller is dropped (a hook's `GIT_DIR` or a `GIT_WORK_TREE` would point Git at another
-    repository); only the two set here and the ones the caller passes reach Git.
+    The `GIT_*` variables of the caller are dropped (a hook's `GIT_DIR` or a `GIT_WORK_TREE` would point Git at
+    another repository) except `GIT_CONFIG_*`: a sandbox or CI may supply `safe.directory` or a global config file
+    that way, and Git refuses the repository without it. The two set here and `environment` reach Git as well.
     """
-    inherited = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    inherited = {
+        key: value for key, value in os.environ.items() if not key.startswith("GIT_") or key.startswith("GIT_CONFIG_")
+    }
     full = {**inherited, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", **(environment or {})}
     try:
         done = subprocess.run(
             ["git", *GIT_CONFIG, "-C", str(repo), *arguments],
             capture_output=True,
+            input=stdin,
             env=full,
             timeout=GIT_TIMEOUT,
             check=False,
@@ -188,7 +199,7 @@ def _toplevel_problem(repo: Path) -> str:
         top = Path(_git(repo, "rev-parse", "--show-toplevel"))
     except WorkspaceError:
         return ""  # not a repository, or a bare one: the other checks name that
-    if top.resolve() != repo.resolve():
+    if not _same_directory(top, repo):
         return (
             f"gates-subdirectory: the target {repo} is inside the repository {top}; the gates read the whole "
             "repository, so record the repository root as the target"
@@ -196,20 +207,31 @@ def _toplevel_problem(repo: Path) -> str:
     return ""
 
 
+def _same_directory(first: Path, second: Path) -> bool:
+    """Whether two paths name one directory: a symlink, a trailing slash or a case-insensitive spelling is no change."""
+    try:
+        return os.path.samefile(first, second)
+    except OSError:
+        return first.resolve() == second.resolve()
+
+
 def head_tree(repo: Path, base_commit: str) -> str:
     """A sha256 over the whole change since `base_commit`, committed or not, untracked files included.
 
-    The text is `git diff --cached --binary --full-index` of the snapshot against the base, which holds every path
-    that differs and its full content. Ignored paths are left out; untracked and unignored ones (`.coverage`,
-    caches) are part of the tree and stay stable between a run and the finish that checks it.
+    The text is `git diff --cached --raw` of the snapshot against the base: every path that differs, with both modes
+    and both full object ids. An object id is a hash of the content, so the text follows every edit, and Git never
+    reads the content of a large binary file to print it. Ignored paths are left out; untracked and unignored ones
+    (`.coverage`, caches) are part of the tree and stay stable between a run and the finish that checks it.
     """
     with _snapshot(repo, base_commit) as environment:
         text = _git_bytes(
             repo,
             "diff",
             "--cached",
-            "--binary",
-            "--full-index",
+            "--raw",
+            "-z",
+            "--no-abbrev",
+            "--no-renames",
             *(item for item in DIFF_OPTIONS if item != "--text"),
             base_commit,
             "--",
@@ -620,12 +642,16 @@ LANGUAGES = {
 
 @dataclass
 class FileChange:
-    """One file's change against the base: added lines by new line number, a removal count, binary or not."""
+    """One file's change against the base: added lines by new line number, a removal count, binary or not.
+
+    `skipped` is a file over `MAX_DIFF_BYTES`: it was listed and not read, so it has no added lines.
+    """
 
     path: str
     old_path: "str | None" = None
     status: str = "modified"
     binary: bool = False
+    skipped: bool = False
     added: dict[int, str] = field(default_factory=dict)
     removed: int = 0
     deletions: list[int] = field(default_factory=list)
@@ -761,9 +787,68 @@ def parse_diff(text: str) -> list[FileChange]:
     return changes
 
 
+class RawChange(NamedTuple):
+    """One line of `git diff --raw`: the change of a path without its content."""
+
+    status: str
+    old_oid: str
+    new_oid: str
+    path: str
+
+
+def _raw_changes(repo: Path, base_commit: str, environment: dict[str, str]) -> list[RawChange]:
+    """Every changed path of the snapshot against the base, listed from tree entries only (no content is read)."""
+    text = _git_bytes(
+        repo,
+        "diff",
+        "--cached",
+        "--raw",
+        "-z",
+        "--no-abbrev",
+        "--no-renames",
+        *DIFF_OPTIONS,
+        base_commit,
+        "--",
+        environment=environment,
+    )
+    parts = text.split(b"\0")[:-1]  # every field ends in NUL, so the last piece is empty
+    names = {"A": "added", "D": "deleted"}
+    changes = []
+    for meta, raw_path in zip(parts[0::2], parts[1::2], strict=True):
+        fields = meta.decode("ascii").split()  # ":<old mode> <new mode> <old oid> <new oid> <status>"
+        changes.append(
+            RawChange(
+                names.get(fields[4][0], "modified"), fields[2], fields[3], raw_path.decode("utf-8", "surrogateescape")
+            )
+        )
+    return changes
+
+
+def _oversized(repo: Path, changes: list[RawChange], environment: dict[str, str]) -> list[RawChange]:
+    """The changes with a side over `MAX_DIFF_BYTES`; sizes come from object headers, never from content."""
+    oids = sorted({oid for item in changes for oid in (item.old_oid, item.new_oid) if oid != NULL_OID})
+    if not oids:
+        return []
+    out = _git_bytes(
+        repo,
+        "cat-file",
+        "--batch-check=%(objectsize)",
+        environment=environment,
+        stdin="".join(f"{oid}\n" for oid in oids).encode(),
+    )
+    size = dict(zip(oids, (int(line) for line in out.decode("ascii").split()), strict=True))
+    return [item for item in changes if any(size.get(oid, 0) > MAX_DIFF_BYTES for oid in (item.old_oid, item.new_oid))]
+
+
 def changed_files(repo: Path, base_commit: str) -> list[FileChange]:
-    """Everything changed since `base_commit`, committed or not; an untracked file is a wholly added one."""
+    """Everything changed since `base_commit`, committed or not; an untracked file is a wholly added one.
+
+    The text diff never covers a file with a side over `MAX_DIFF_BYTES` (an `exclude` pathspec names it); such a file
+    is listed from the raw change as `skipped`, without its content.
+    """
     with _snapshot(repo, base_commit) as environment:
+        large = _oversized(repo, _raw_changes(repo, base_commit, environment), environment)
+        excluded = [f":(literal,exclude){item.path}" for item in large]
         text = _git_bytes(
             repo,
             "diff",
@@ -773,9 +858,22 @@ def changed_files(repo: Path, base_commit: str) -> list[FileChange]:
             *DIFF_OPTIONS,
             base_commit,
             "--",
+            ".",
+            *excluded,
             environment=environment,
         ).decode("utf-8", "replace")
-    return parse_diff(text)
+    changes = parse_diff(text)
+    if large:
+        changes += (
+            FileChange(
+                path=item.path.encode("utf-8", "surrogateescape").decode("utf-8", "replace"),
+                status=item.status,
+                skipped=True,
+            )
+            for item in large
+        )
+        changes.sort(key=lambda change: change.path)
+    return changes
 
 
 # --- the diff scan: bypasses on added lines -------------------------------------------------------------------
@@ -785,7 +883,7 @@ BYPASS_PATTERNS = (
     ("noqa", re.compile(r"#\s*noqa")),
     ("pyright: ignore", re.compile(r"#\s*pyright:\s*ignore")),
     ("ty: ignore", re.compile(r"#\s*ty:\s*ignore")),
-    ("cast", re.compile(r"\bcast\(")),
+    ("cast", re.compile(r"\btyping\.cast\(")),
     ("pytest.mark.skip", re.compile(r"\bmark\.skip\b")),
     ("xfail", re.compile(r"\bxfail\b")),
     ("unittest.skip", re.compile(r"\bunittest\.skip\b")),
@@ -843,8 +941,21 @@ CONSTANT_NODES = (
     ast.boolop,
     ast.cmpop,
 )
-IMPORT_AS = re.compile(r"^\s*import\s+(?P<module>pytest|unittest)\s+as\s+(?P<alias>\w+)", re.MULTILINE)
+IMPORT_AS = re.compile(r"^\s*import\s+(?P<module>pytest|unittest|typing)\s+as\s+(?P<alias>\w+)", re.MULTILINE)
 MARK_AS = re.compile(r"^\s*from\s+pytest\s+import\s+mark\s+as\s+(?P<alias>\w+)", re.MULTILINE)
+
+
+CAST_IMPORT = re.compile(
+    r"^\s*from\s+(?:typing|typing_extensions)\s+import\s+(?:\([^)]*|[^\n#]*)\bcast\b(?:\s+as\s+(?P<alias>\w+))?",
+    re.MULTILINE,
+)
+PRAGMA = "pragma: no cover"
+EXCLUDED_GUARD = re.compile(r"^\s*if\s+(?:__name__\s*==\s*['\"]__main__['\"]|(?:typing\.)?TYPE_CHECKING)\s*:")
+
+
+def _cast_names(source: str) -> set[str]:
+    """The names `typing.cast` is called by in this file: every `from typing import cast [as name]`."""
+    return {match.group("alias") or "cast" for match in CAST_IMPORT.finditer(source)}
 
 
 def _first_argument(text: str) -> str:
@@ -905,20 +1016,34 @@ def _conditional(name: str, lines: list[str], number: int) -> bool:
     return bool(REASON_KEYWORD.search(call))
 
 
+def _python_hits(lines: list[str], number: int, text: str) -> list[tuple[str, bool]]:
+    """The Python bypasses on one added line, as `_line_hits` reports them."""
+    names = _cast_names("\n".join(lines or [text]))
+    hits = [name for name, pattern in BYPASS_PATTERNS if pattern.search(text)]
+    if names and re.search(rf"(?<![\w.])(?:{'|'.join(map(re.escape, names))})\(", text):
+        hits.append("cast")
+    found = [(name, name == PRAGMA and EXCLUDED_GUARD.match(text) is not None) for name in hits]
+    found.extend(
+        (name, _conditional(name, lines or [text], number if lines else 1))
+        for name, pattern in CONDITIONAL_PATTERNS
+        if pattern.search(text)
+    )
+    return found
+
+
 def _line_hits(path: str, lines: list[str], number: int, raw: str) -> list[tuple[str, bool]]:
-    """The bypasses on one added line: (name, whether it is a conditional skip that only informs)."""
+    """The bypasses on one added line: (name, whether it only informs: a conditional skip or an excluded guard)."""
     text = _normalized(raw, lines)
-    hits: list[tuple[str, bool]] = []
-    if path.endswith(".py"):
-        hits.extend((name, False) for name, pattern in BYPASS_PATTERNS if pattern.search(text))
-        hits.extend(
-            (name, _conditional(name, lines or [text], number if lines else 1))
-            for name, pattern in CONDITIONAL_PATTERNS
-            if pattern.search(text)
-        )
+    hits = _python_hits(lines, number, text) if path.endswith(".py") else []
     if NO_COV.search(text):
         hits.append(("--no-cov", False))
     return hits
+
+
+def _scanned_name(path: str) -> bool:
+    """Whether the scan or the config check reads this file by its name: Python and config files."""
+    name = Path(path).name
+    return name.endswith(".py") or name in CONFIG_NAMES or name.endswith(CONFIG_SUFFIXES)
 
 
 def _file_notes(change: FileChange, kind: str) -> "tuple[list[dict[str, Any]], list[dict[str, Any]]]":
@@ -932,6 +1057,9 @@ def _file_notes(change: FileChange, kind: str) -> "tuple[list[dict[str, Any]], l
         info.append({"code": "test-deleted", "file": change.path, "line": 0, "detail": "test file deleted"})
     if name == ".gitattributes":
         detail = ".gitattributes changed: attributes can change what a diff shows"
+        findings.append({"code": "bypass-added", "file": change.path, "line": 0, "detail": detail})
+    if change.skipped and change.status != "deleted" and _scanned_name(change.path):
+        detail = f"file over {MAX_DIFF_BYTES} bytes: it was not read, so it cannot be scanned"
         findings.append({"code": "bypass-added", "file": change.path, "line": 0, "detail": detail})
     if change.binary and change.path.endswith(".py"):
         detail = "python file with a NUL byte: it cannot be scanned"
@@ -965,7 +1093,8 @@ def scan_changes(repo: Path, changes: list[FileChange]) -> "tuple[list[dict[str,
             for name, conditional in _line_hits(change.path, lines, number, raw):
                 entry = {"file": change.path, "line": number, "detail": name}
                 if conditional:
-                    info.append({"code": "conditional-skip", **entry})
+                    code = "excluded-guard" if name == PRAGMA else "conditional-skip"
+                    info.append({"code": code, **entry})
                 else:
                     findings.append({"code": "bypass-added", **entry})
     return findings, info
@@ -1554,7 +1683,10 @@ def _run_locked(
         tests, covered, total, note, test_failures = _measure_tests(repo, commands, outcomes, scratch, changes)
         findings, info = scan_changes(repo, changes)
         findings += scan_config(repo, gates["base_commit"], changes)
-        if total == 0 and note is None:
+        measured = not test_failures and all(
+            passed for command, passed in zip(commands, outcomes, strict=True) if command["kind"] == "tests"
+        )
+        if total == 0 and note is None and measured:
             info.append(
                 {
                     "code": "no-executable-lines",
@@ -1656,6 +1788,12 @@ def gates_run(project_dir: Path, request: dict[str, Any], *, lock_timeout: float
         )
     if task["status"] != "RUNNING":
         raise WorkspaceError(f"task {task_id} is {task['status']}; start it with `task start` before gate-run")
+    if not is_code_task(task):
+        raise WorkspaceError(
+            f"gates-not-code-task: task {task_id} is not a code task (a local_write task with a non-prose file in a "
+            "target output), so its outputs are not judged by the gates; if its work has become code, skip the task "
+            "and add a new one that declares the code outputs"
+        )
     if GATE_NO_REPOSITORY in _waiver_of(gates).get("kinds", []):
         return {
             "task": task_id,

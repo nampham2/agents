@@ -6415,17 +6415,32 @@ def check_state_transition(previous: dict[str, Any], candidate: dict[str, Any]) 
 GATED_TASK_FIELDS = ("outputs", "effect")
 
 
+def _has_started(old_task: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    """Whether `old_task` has ever been RUNNING, as far as the project state can say.
+
+    A task that is not TODO or BLOCKED is or was running. `started_at`, stamped on a first start and kept when the
+    task goes back to TODO or BLOCKED, is the durable mark. Where the project stamps nothing, a BLOCKED task may
+    have run, so it counts as started; a TODO one has not.
+    """
+    status = old_task.get("status")
+    if "started_at" in old_task:
+        return True
+    if status == "BLOCKED":
+        return not task_stamps_enabled(candidate)
+    return status != "TODO"
+
+
 def _gated_field_errors(
     task_id: str, old_task: dict[str, Any], new_task: dict[str, Any], candidate: dict[str, Any]
 ) -> list[str]:
-    """In a gated project, a task that has left TODO keeps its outputs and effect."""
+    """In a gated project, a task that has ever been RUNNING keeps its outputs and effect."""
     gates = candidate.get("gates")
-    status = old_task.get("status")
-    if status == "TODO" or not (isinstance(gates, dict) and gates.get("enabled") is True):
+    if not (isinstance(gates, dict) and gates.get("enabled") is True) or not _has_started(old_task, candidate):
         return []
     return [
-        f"task {task_id}: {name} cannot change once the task has left TODO ({status}); the gates judge a "
-        "task by what it writes, so a change of outputs or effect would move it out of their reach"
+        f"task {task_id}: {name} cannot change once the task has started ({old_task.get('status')}); the gates judge "
+        "a task by what it writes, so a change of outputs or effect would move it out of their reach. If the plan "
+        "changed, skip the task and add a new one"
         for name in GATED_TASK_FIELDS
         if old_task.get(name) != new_task.get(name)
     ]

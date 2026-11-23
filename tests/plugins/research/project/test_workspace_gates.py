@@ -880,7 +880,7 @@ BYPASSES = [
     ("x = 1  # pyright: ignore[reportX]", "pyright: ignore"),
     ("x = 1  # ty: ignore[x]", "ty: ignore"),
     ("y = typing.cast(int, x)", "cast"),
-    ("y = cast(int, x)", "cast"),
+    ("from typing import cast; y = cast(int, x)", "cast"),
     ("@pytest.mark.skip", "pytest.mark.skip"),
     ('@pytest.mark.skip(reason="later")', "pytest.mark.skip"),
     ("pytest.skip()", "pytest.skip"),
@@ -2907,3 +2907,444 @@ class TestConstantCondition:
     )
     def test_only_a_condition_of_constants_that_always_skips_counts(self, call: str, always: bool) -> None:
         assert gates._constant_condition("pytest.mark.skipif", call) is always
+
+
+# --- corrections after the diff re-audit (round 18) -----------------------------------------------------------
+
+BIG = 9 * 1024 * 1024  # over the 8 MiB cap, small enough for a test
+
+
+def spy_on_git(monkeypatch: pytest.MonkeyPatch) -> "list[tuple[list[str], int]]":
+    """Every Git call the runner makes, with the size of what it printed."""
+    calls: "list[tuple[list[str], int]]" = []
+    real = subprocess.run
+
+    def spy(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        done = real(argv, *args, **kwargs)
+        calls.append(([str(item) for item in argv], len(done.stdout)))
+        return done
+
+    monkeypatch.setattr(gates.subprocess, "run", spy)
+    return calls
+
+
+def binary_repo(tmp_path: Path) -> "tuple[Path, str]":
+    repo = make_repo(tmp_path)
+    (repo / "old.bin").write_bytes(os.urandom(BIG))
+    (repo / "mod.bin").write_bytes(os.urandom(BIG))
+    commit_all(repo)
+    return repo, git(repo, "rev-parse", "HEAD")
+
+
+class TestBinaryFilesAreNotDiffed:
+    def test_a_large_added_modified_or_deleted_binary_is_never_read_as_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo, base = binary_repo(tmp_path)
+        (repo / "old.bin").unlink()
+        (repo / "mod.bin").write_bytes(os.urandom(BIG))
+        (repo / "new.bin").write_bytes(os.urandom(BIG))
+        (repo / "feature.py").write_text("a = 1  # noqa\n", encoding="utf-8")
+        calls = spy_on_git(monkeypatch)
+        changes = {item.path: item for item in gates.changed_files(repo, base)}
+        assert len(tree(repo, base)) == 64
+        assert max(size for _, size in calls) < 1_000_000, [(argv[-6:], size) for argv, size in calls if size > 1e6]
+        assert {name: item.status for name, item in changes.items()} == {
+            "feature.py": "added",
+            "mod.bin": "modified",
+            "new.bin": "added",
+            "old.bin": "deleted",
+        }
+        assert all(not changes[name].added and not changes[name].binary for name in ("mod.bin", "new.bin", "old.bin"))
+        assert sorted(changes["feature.py"].added) == [1]  # the rest of the change is still read
+
+    def test_a_binary_that_is_not_python_is_not_a_finding_and_a_binary_py_still_is(self, tmp_path: Path) -> None:
+        repo, base = binary_repo(tmp_path)
+        (repo / "new.bin").write_bytes(os.urandom(BIG))
+        (repo / "model.py").write_bytes(b"a = 1\n\x00\x01\n")
+        assert findings_of(repo, base) == [("model.py", "python file with a NUL byte: it cannot be scanned")]
+
+    def test_the_exclusion_names_the_path_literally(self, tmp_path: Path) -> None:
+        repo, base = binary_repo(tmp_path)
+        (repo / "big[1].bin").write_bytes(os.urandom(BIG))
+        (repo / "big1.bin").write_text("addopts = --no-cov\n", encoding="utf-8")  # a glob would hide this one
+        assert findings_of(repo, base) == [("big1.bin", "--no-cov")]
+
+    def test_a_python_or_config_file_over_the_cap_is_a_finding_other_files_are_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(gates, "MAX_DIFF_BYTES", 1000, raising=False)
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "feature.py").write_text("x = 1  # noqa\n" * 100, encoding="utf-8")
+        (repo / "setup.cfg").write_text("[x]\n" + "a = 1\n" * 300, encoding="utf-8")
+        (repo / "tools.sh").write_text("pytest --no-cov\n" * 100, encoding="utf-8")
+        assert sorted(findings_of(repo, base)) == [
+            ("feature.py", "file over 1000 bytes: it was not read, so it cannot be scanned"),
+            ("setup.cfg", "file over 1000 bytes: it was not read, so it cannot be scanned"),
+        ]
+
+    def test_the_evidence_hash_follows_the_content_of_a_binary_it_does_not_read(self, tmp_path: Path) -> None:
+        repo, base = binary_repo(tmp_path)
+        clean = tree(repo, base)
+        (repo / "mod.bin").write_bytes(os.urandom(BIG))
+        changed_once = tree(repo, base)
+        assert changed_once != clean and tree(repo, base) == changed_once
+        (repo / "mod.bin").write_bytes(os.urandom(BIG))
+        assert tree(repo, base) not in (clean, changed_once)
+        (repo / "mod.bin").chmod(0o755)
+        assert tree(repo, base) != changed_once
+
+
+class TestCallerGitVariables:
+    def test_config_variables_of_the_caller_reach_git(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        repo = make_repo(tmp_path)
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "t09.key")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "from-the-caller")
+        assert gates._git(repo, "config", "--get", "t09.key") == "from-the-caller"
+
+    def test_a_global_config_file_named_by_the_caller_is_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        named = tmp_path / "global.cfg"
+        named.write_text("[t09]\n\tkey = from-a-file\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(named))
+        assert gates._git(repo, "config", "--get", "t09.key") == "from-a-file"
+
+    def test_a_safe_directory_the_caller_supplies_is_still_listed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "safe.directory")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(repo))
+        assert gates._git(repo, "config", "--get-all", "safe.directory") == str(repo)
+
+    def test_the_variables_that_choose_a_repository_are_still_dropped_with_config_kept(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        decoy = make_repo(tmp_path / "decoy", {"other.py": "q = 1\n"})
+        monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+        monkeypatch.setenv("GIT_COMMON_DIR", str(decoy / ".git"))
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "t09.key")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", "kept")
+        assert gates._git(repo, "rev-parse", "--show-toplevel") == str(repo.resolve())
+        assert gates._git(repo, "config", "--get", "t09.key") == "kept"
+
+    def test_the_prefix_settings_a_caller_supplies_cannot_change_the_paths(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "app.py").write_text("x = 2  # noqa\n", encoding="utf-8")
+        for number, (key, value) in enumerate([("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true")]):
+            monkeypatch.setenv(f"GIT_CONFIG_KEY_{number}", key)
+            monkeypatch.setenv(f"GIT_CONFIG_VALUE_{number}", value)
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+        assert findings_of(repo, base) == [("app.py", "noqa")]
+
+
+class TestUserConfigDoesNotShapeTheDiff:
+    def test_inter_hunk_context_in_the_users_gitconfig_does_not_shift_line_numbers(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / ".gitconfig").write_text("[diff]\n\tinterHunkContext = 3\n", encoding="utf-8")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.delenv("GIT_CONFIG_GLOBAL", raising=False)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        lines = [f"l{number} = {number}\n" for number in range(1, 9)]
+        repo = make_repo(tmp_path, {"feature.py": "".join(lines)})
+        base = git(repo, "rev-parse", "HEAD")
+        edited = list(lines)
+        edited[1] = "l2 = 20\n"
+        edited[4] = "l5 = 50  # noqa\n"
+        (repo / "feature.py").write_text("".join(edited), encoding="utf-8")
+        assert gates._git(repo, "config", "--get", "diff.interHunkContext") == "3"  # the user's value is in force
+        changes = gates.changed_files(repo, base)
+        assert [sorted(item.added) for item in changes] == [[2, 5]]
+        assert [(item["file"], item["line"]) for item in scan(repo, base)[0]] == [("feature.py", 5)]
+
+    def test_a_global_excludes_file_does_hide_a_file_from_the_snapshot(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shown, not pinned: a global ignore file acts like a .gitignore (documented in the limits)."""
+        excludes = tmp_path / "ignore"
+        excludes.write_text("secret_*.py\n", encoding="utf-8")
+        monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+        monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.excludesFile")
+        monkeypatch.setenv("GIT_CONFIG_VALUE_0", str(excludes))
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "secret_x.py").write_text("x = 1  # noqa\n", encoding="utf-8")
+        (repo / "plain.py").write_text("x = 1\n", encoding="utf-8")
+        assert [item.path for item in gates.changed_files(repo, base)] == ["plain.py"]
+
+
+class TestCastIsTypingCast:
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'df = df.withColumn("a", F.col("a").cast("int"))',
+            'query = "SELECT CAST(a AS INT) FROM t"',
+            "value = np.cast(x)",
+            "broadcast(x)",
+        ],
+    )
+    def test_other_casts_are_not_findings(self, tmp_path: Path, line: str) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "feature.py").write_text(f"a = 1\n{line}\n", encoding="utf-8")
+        assert scan(repo, base) == ([], [])
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "import typing\ny = typing.cast(int, x)\n",
+            "from typing import cast\ny = cast(int, x)\n",
+            "from typing import Any, cast\ny = cast(int, x)\n",
+            "from typing import (\n    Any,\n    cast,\n)\ny = cast(int, x)\n",
+            "from typing import cast as force\ny = force(int, x)\n",
+            "import typing as t\ny = t.cast(int, x)\n",
+            "from typing_extensions import cast\ny = cast(int, x)\n",
+        ],
+    )
+    def test_typing_cast_in_every_spelling_is_a_finding_on_the_call_line(self, tmp_path: Path, text: str) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "feature.py").write_text(text, encoding="utf-8")
+        findings, _ = scan(repo, base)
+        assert [item["detail"] for item in findings] == ["cast"], findings
+        assert findings[0]["line"] == len(text.splitlines())
+
+    def test_a_cast_function_of_the_file_itself_is_not_typing_cast(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "feature.py").write_text("def cast(x):\n    return x\n\n\ny = cast(1)\n", encoding="utf-8")
+        assert scan(repo, base) == ([], [])
+
+
+class TestPragmaOnGuards:
+    @pytest.mark.parametrize(
+        "line",
+        [
+            'if __name__ == "__main__":  # pragma: no cover',
+            "if __name__ == '__main__':  # pragma: no cover",
+            "if TYPE_CHECKING:  # pragma: no cover",
+            "if typing.TYPE_CHECKING:  # pragma: no cover",
+        ],
+    )
+    def test_a_pragma_on_a_main_or_type_checking_guard_is_information(self, tmp_path: Path, line: str) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "feature.py").write_text(f"a = 1\n{line}\n    pass\n", encoding="utf-8")
+        findings, info = scan(repo, base)
+        assert findings == []
+        assert [(item["code"], item["line"]) for item in info] == [("excluded-guard", 2)]
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "def f():  # pragma: no cover",
+            "if x:  # pragma: no cover",
+            "if __name__ == '__main__' and x:  # pragma: no cover",
+            "y = 1  # pragma: no cover",
+        ],
+    )
+    def test_a_pragma_anywhere_else_stays_a_finding(self, tmp_path: Path, line: str) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "feature.py").write_text(f"a = 1\n{line}\n    pass\n", encoding="utf-8")
+        assert [item["detail"] for item in scan(repo, base)[0]] == ["pragma: no cover"]
+
+
+class TestSubdirectoryCheck:
+    def test_a_path_that_differs_from_the_disk_only_in_case_is_the_same_directory(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        other_case = repo.parent / repo.name.upper()
+        if not other_case.exists():
+            pytest.skip("case-sensitive filesystem: the upper-case spelling is another path")
+        assert gates._toplevel_problem(other_case) == ""
+        assert gates.current_head(other_case) == git(repo, "rev-parse", "HEAD")
+
+    def test_a_symlink_to_the_root_and_a_trailing_slash_are_the_same_directory(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        link = tmp_path / "link"
+        link.symlink_to(repo)
+        assert gates._toplevel_problem(link) == ""
+        assert gates._toplevel_problem(Path(str(repo) + "/")) == ""
+
+    def test_when_the_directories_cannot_be_compared_the_resolved_paths_decide(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def unreadable(*_args: Any) -> bool:
+            raise OSError("cannot stat")
+
+        monkeypatch.setattr(gates.os.path, "samefile", unreadable)
+        repo = make_repo(tmp_path, GATE_FILES)
+        link = tmp_path / "link"
+        link.symlink_to(repo)
+        assert gates._toplevel_problem(link) == ""
+        assert "gates-subdirectory" in gates._toplevel_problem(repo / "tests")
+
+    def test_a_symlink_to_a_subdirectory_is_still_refused(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, GATE_FILES)
+        link = tmp_path / "link"
+        link.symlink_to(repo / "tests")
+        assert "gates-subdirectory" in gates._toplevel_problem(link)
+
+
+class TestForcedAddIsLiteralAndPrivate:
+    @pytest.mark.parametrize(("name", "decoy"), [("a[1].py", "a1.py"), ("*.py", "other.py"), ("q?.py", "qx.py")])
+    def test_a_name_with_glob_characters_adds_only_itself(self, tmp_path: Path, name: str, decoy: str) -> None:
+        repo = make_repo(tmp_path, {".gitignore": "gen/\n", "app.py": "x = 1\n"})
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "gen").mkdir()
+        (repo / "gen" / name).write_text("y = 1  # noqa\n", encoding="utf-8")
+        (repo / "gen" / decoy).write_text("z = 1  # noqa\n", encoding="utf-8")  # ignored and never added
+        git(repo, "add", "-f", "--", f":(literal)gen/{name}")
+        assert [item.path for item in gates.changed_files(repo, base)] == [f"gen/{name}"]
+
+    def test_the_real_index_and_object_store_are_unchanged_by_a_run_over_forced_and_untracked_files(
+        self, tmp_path: Path
+    ) -> None:
+        repo = make_repo(tmp_path, {".gitignore": "gen/\n", "app.py": "x = 1\n"})
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "gen").mkdir()
+        (repo / "gen" / "mod.py").write_text("y = 1\n", encoding="utf-8")
+        git(repo, "add", "-f", "gen/mod.py")
+        git(repo, "commit", "-q", "-m", "force")
+        (repo / "gen" / "mod.py").write_text("y = 2\n", encoding="utf-8")
+        (repo / "fresh.py").write_text("w = " + str(os.urandom(8).hex()) + "\n", encoding="utf-8")
+        before = (git(repo, "count-objects", "-v"), (repo / ".git" / "index").read_bytes())
+        assert [item.path for item in gates.changed_files(repo, base)] == ["fresh.py", "gen/mod.py"]
+        assert len(tree(repo, base)) == 64
+        after = (git(repo, "count-objects", "-v"), (repo / ".git" / "index").read_bytes())
+        assert after == before
+
+
+README = [{"root": "target", "path": "README.md", "required": True}]
+
+
+def patch_task(project: Path, **changes: Any) -> None:
+    update_project_data(project, {"tasks": [{"id": "T01", **changes}]}, expected_revision=revision_of(project))
+
+
+@pytest.fixture
+def stamped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> "tuple[Path, Path]":
+    """Like `gated`, in a project that stamps `started_at` on a first start (a project made after the gates)."""
+    repo = make_repo(tmp_path, GATE_FILES)
+    project = make_project(tmp_path, repo)
+    approve(project, FULL_SET)
+    monkeypatch.setattr(lib, "GATES_ENFORCED_FROM", "2020-01-01T00:00:00+00:00")  # after planning, as test_task_stamps
+    start(project)
+    assert "started_at" in raw_state(project)["tasks"][0]
+    return project, repo
+
+
+class TestOutputsLockFollowsTheFirstStart:
+    def test_a_task_sent_back_to_todo_keeps_the_lock(self, stamped: "tuple[Path, Path]") -> None:
+        project, _ = stamped
+        patch_task(project, status="TODO")
+        assert raw_state(project)["tasks"][0]["status"] == "TODO"
+        before = snapshot_files(project)
+        for change in ({"outputs": README}, {"effect": {"kind": "none", "description": None}}):
+            text = refused_text(lambda: patch_task(project, **change))  # noqa: B023
+            assert "task T01" in text and next(iter(change)) in text, text
+        assert snapshot_files(project) == before
+
+    def test_the_error_names_the_way_out(self, stamped: "tuple[Path, Path]") -> None:
+        project, _ = stamped
+        text = refused_text(lambda: patch_task(project, outputs=README))
+        assert "skip the task and add a new one" in text, text
+
+    def test_a_blocked_task_that_never_ran_may_be_replanned_and_one_that_did_may_not(
+        self, stamped: "tuple[Path, Path]"
+    ) -> None:
+        project, _ = stamped
+        update_project_data(
+            project,
+            {"tasks": [{"id": "T02", "status": "BLOCKED", "block_reason": "waiting"}]},
+            expected_revision=revision_of(project),
+        )
+        assert "started_at" not in raw_state(project)["tasks"][1]
+        update_project_data(
+            project,
+            {"tasks": [{"id": "T02", "outputs": [{"root": "target", "path": "other.py", "required": True}]}]},
+            expected_revision=revision_of(project),
+        )
+        patch_task(project, status="BLOCKED", block_reason="waiting")
+        assert "cannot change" in refused_text(lambda: patch_task(project, outputs=README))
+
+    def test_without_start_stamps_a_blocked_task_is_treated_as_started(self, gated: "tuple[Path, Path]") -> None:
+        project, _ = gated
+        assert "started_at" not in raw_state(project)["tasks"][0]
+        patch_task(project, status="BLOCKED", block_reason="waiting")
+        assert "cannot change" in refused_text(lambda: patch_task(project, outputs=README))
+
+    def test_a_skipped_code_task_is_not_refused_and_the_next_task_can_be_planned(
+        self, stamped: "tuple[Path, Path]"
+    ) -> None:
+        project, _ = stamped
+        patch_task(project, status="SKIPPED", skip_reason="replaced by a new task")
+        assert raw_state(project)["tasks"][0]["status"] == "SKIPPED"
+        update_project_data(
+            project, {"tasks": [{**task_plan("T03"), "status": "TODO"}]}, expected_revision=revision_of(project)
+        )
+        assert [item["id"] for item in raw_state(project)["tasks"]] == ["T01", "T02", "T03"]
+
+    def test_a_project_without_gates_is_not_locked(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        project = make_project(tmp_path)
+        assert "gates" not in raw_state(project)
+        monkeypatch.setattr(lib, "GATES_ENFORCED_FROM", "2020-01-01T00:00:00+00:00")
+        start(project)
+        assert "started_at" in raw_state(project)["tasks"][0]
+        patch_task(project, outputs=README)
+        assert raw_state(project)["tasks"][0]["outputs"] == README
+
+
+class TestGateRunRefusesATaskThatIsNotACodeTask:
+    def test_a_running_prose_task_is_refused_with_a_named_error_and_the_way_out(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, GATE_FILES)
+        project = make_project(tmp_path, repo)
+        approve(project, FULL_SET)
+        start(project, "T02")
+        before = snapshot_files(project)
+        text = refused_text(lambda: run_gates(project, "T02"))
+        assert text.startswith("gates-not-code-task: ") and "T02" in text, text
+        assert "skip the task and add a new one" in text, text
+        assert snapshot_files(project) == before
+
+    def test_a_code_task_is_still_run(self, gated: "tuple[Path, Path]") -> None:
+        project, repo = gated
+        work(repo)
+        assert run_gates(project)["passed"] is True
+
+
+class TestNoExecutableLinesIsNotClaimedWithoutAMeasurement:
+    def test_a_failed_tests_command_leaves_no_such_claim(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, GATE_FILES)
+        project = make_project(tmp_path, repo)
+        failing = {"id": "tests", "kind": "tests", "argv": [sys.executable, "-c", "raise SystemExit(3)", "pytest"]}
+        approve(project, [ok_command("lint", "lint"), ok_command("types", "types"), failing])
+        start(project)
+        (repo / "tools.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+        result = run_gates(project)
+        assert result["passed"] is False
+        assert "no-executable-lines" not in [item["code"] for item in result["scan"]["info"]]
+
+    def test_an_unreadable_coverage_report_leaves_no_such_claim(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path, GATE_FILES)
+        project = make_project(tmp_path, repo)
+        silent = {"id": "tests", "kind": "tests", "argv": [sys.executable, "-c", "pass", "pytest"]}
+        approve(project, [ok_command("lint", "lint"), ok_command("types", "types"), silent])
+        start(project)
+        (repo / "tools.sh").write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+        result = run_gates(project)
+        assert any("coverage-format" in item for item in result["failures"]), result["failures"]
+        assert "no-executable-lines" not in [item["code"] for item in result["scan"]["info"]]
