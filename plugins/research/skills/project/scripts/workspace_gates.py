@@ -77,7 +77,12 @@ PATH_CHUNK = 200
 # A changed file larger than this (either side) is never given to a text diff: a binary of any size would be read,
 # decoded and held in memory. A Python or config file over it is a finding, since it cannot be scanned.
 MAX_DIFF_BYTES = 8 * 1024 * 1024
-NULL_OID = "0" * 40
+GITLINK_MODE = "160000"
+
+
+def _null_oid(oid: str) -> str:
+    """The all-zero id of the same width as `oid`: 40 digits in a sha1 repository, 64 in a sha256 one."""
+    return "0" * len(oid)
 
 
 def _git_bytes(
@@ -794,6 +799,13 @@ class RawChange(NamedTuple):
     old_oid: str
     new_oid: str
     path: str
+    old_mode: str = ""
+    new_mode: str = ""
+
+    @property
+    def gitlink(self) -> bool:
+        """A submodule or a nested repository: its id is a commit of another repository, never an object here."""
+        return GITLINK_MODE in (self.old_mode, self.new_mode)
 
 
 def _raw_changes(repo: Path, base_commit: str, environment: dict[str, str]) -> list[RawChange]:
@@ -818,7 +830,9 @@ def _raw_changes(repo: Path, base_commit: str, environment: dict[str, str]) -> l
         fields = meta.decode("ascii").split()  # ":<old mode> <new mode> <old oid> <new oid> <status>"
         changes.append(
             RawChange(
-                names.get(fields[4][0], "modified"), fields[2], fields[3], raw_path.decode("utf-8", "surrogateescape")
+                names.get(fields[4][0], "modified"), fields[2], fields[3], raw_path.decode("utf-8", "surrogateescape"),
+                fields[0].lstrip(":"),
+                fields[1],
             )
         )
     return changes
@@ -826,7 +840,15 @@ def _raw_changes(repo: Path, base_commit: str, environment: dict[str, str]) -> l
 
 def _oversized(repo: Path, changes: list[RawChange], environment: dict[str, str]) -> list[RawChange]:
     """The changes with a side over `MAX_DIFF_BYTES`; sizes come from object headers, never from content."""
-    oids = sorted({oid for item in changes for oid in (item.old_oid, item.new_oid) if oid != NULL_OID})
+    oids = sorted(
+        {
+            oid
+            for item in changes
+            if not item.gitlink  # a gitlink names a commit of another repository: it is never read or sized
+            for oid in (item.old_oid, item.new_oid)
+            if oid != _null_oid(oid)
+        }
+    )
     if not oids:
         return []
     out = _git_bytes(
@@ -836,7 +858,9 @@ def _oversized(repo: Path, changes: list[RawChange], environment: dict[str, str]
         environment=environment,
         stdin="".join(f"{oid}\n" for oid in oids).encode(),
     )
-    size = dict(zip(oids, (int(line) for line in out.decode("ascii").split()), strict=True))
+    lines = out.decode("ascii").splitlines()
+    # "<size>" for a known object; "missing" (or a line this parse does not know) counts as 0
+    size = dict(zip(oids, (int(line) if line.isdigit() else 0 for line in lines), strict=True))
     return [item for item in changes if any(size.get(oid, 0) > MAX_DIFF_BYTES for oid in (item.old_oid, item.new_oid))]
 
 
@@ -845,9 +869,11 @@ def changed_files(repo: Path, base_commit: str) -> list[FileChange]:
 
     The text diff never covers a file with a side over `MAX_DIFF_BYTES` (an `exclude` pathspec names it); such a file
     is listed from the raw change as `skipped`, without its content.
+    A gitlink (a submodule or nested repository) is one changed path, listed the same way and never read.
     """
     with _snapshot(repo, base_commit) as environment:
-        large = _oversized(repo, _raw_changes(repo, base_commit, environment), environment)
+        raw = _raw_changes(repo, base_commit, environment)
+        large = _oversized(repo, raw, environment) + [item for item in raw if item.gitlink]
         excluded = [f":(literal,exclude){item.path}" for item in large]
         text = _git_bytes(
             repo,

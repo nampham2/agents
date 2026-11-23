@@ -2996,6 +2996,65 @@ class TestBinaryFilesAreNotDiffed:
         assert tree(repo, base) != changed_once
 
 
+class TestGitlinksAreNeverRead:
+    def test_a_nested_repository_next_to_a_changed_file_does_not_crash_and_loses_nothing(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        nested = repo / "vendor" / "lib"
+        nested.mkdir(parents=True)
+        git(nested, "init", "-q", "-b", "main")
+        (nested / "mod.py").write_text("y = 1\n", encoding="utf-8")
+        git(nested, "add", "-A")
+        git(nested, "commit", "-q", "-m", "inner")
+        (repo / "feature.py").write_text("a = 1  # noqa\n", encoding="utf-8")
+        changes = {item.path: item for item in gates.changed_files(repo, base)}
+        assert sorted(changes) == ["feature.py", "vendor/lib"]
+        assert changes["vendor/lib"].added == {} and not changes["vendor/lib"].binary
+        assert sorted(changes["feature.py"].added) == [1]
+        assert findings_of(repo, base) == [("feature.py", "noqa")]
+
+    def test_a_real_submodule_is_one_changed_path_and_other_files_are_scanned(self, tmp_path: Path) -> None:
+        source = make_repo(tmp_path / "source", {"lib.py": "z = 1\n"})
+        repo = make_repo(tmp_path / "target")
+        base = git(repo, "rev-parse", "HEAD")
+        git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source), "sub")
+        (repo / "feature.py").write_text("a = 1  # noqa\n", encoding="utf-8")
+        changes = {item.path: item for item in gates.changed_files(repo, base)}
+        assert sorted(changes) == [".gitmodules", "feature.py", "sub"]
+        assert findings_of(repo, base) == [("feature.py", "noqa")]
+
+    def test_a_gitlink_is_not_sized_even_when_its_commit_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked: list[bytes] = []
+
+        def fake(repo: Path, *arguments: str, **keywords: Any) -> bytes:
+            asked.append(keywords["stdin"])
+            return b"".join(f"{line} missing\n".encode() for line in keywords["stdin"].decode().split())
+
+        monkeypatch.setattr(gates, "_git_bytes", fake)
+        link = gates.RawChange("added", "0" * 40, "1" * 40, "sub", "000000", "160000")
+        assert gates._oversized(Path("."), [link], {}) == []
+        assert asked == []  # nothing was asked about the commit of a gitlink
+
+    def test_a_missing_size_counts_as_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(gates, "_git_bytes", lambda *a, **k: b"missing\n")
+        item = gates.RawChange("added", "0" * 40, "2" * 40, "odd", "000000", "100644")
+        assert gates._oversized(Path("."), [item], {}) == []
+
+    def test_the_null_object_id_follows_the_length_of_the_id(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert gates._null_oid("a" * 40) == "0" * 40
+        assert gates._null_oid("b" * 64) == "0" * 64
+        asked: list[bytes] = []
+
+        def fake(repo: Path, *arguments: str, **keywords: Any) -> bytes:
+            asked.append(keywords["stdin"])
+            return b"100\n"
+
+        monkeypatch.setattr(gates, "_git_bytes", fake)
+        item = gates.RawChange("added", "0" * 64, "c" * 64, "f.py", "000000", "100644")
+        assert gates._oversized(Path("."), [item], {}) == []
+        assert asked == [b"c" * 64 + b"\n"]  # the 64-zero id of a sha256 repository is not looked up
+
+
 class TestCallerGitVariables:
     def test_config_variables_of_the_caller_reach_git(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         repo = make_repo(tmp_path)

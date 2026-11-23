@@ -31,11 +31,11 @@ base is the repository head at the first approval; every run covers all changes 
 `task finish` is refused on every path that could mark the task DONE (`update`, `reconcile`,
 `correct`, backfill). The message names the cause: `gates-not-approved`,
 `gate-not-run`, `gate-failed`, `gates-stale`, `gates-source-changed`, `bypass-added`,
-`floor-lowered`, `coverage-missing`, `gates-subdirectory`, `gates-no-repository` or
-`gates-snapshot`. Any change to the tree after a run makes it stale. Floors: diff coverage 90%,
-complexity 10 per touched function.
+`floor-lowered`, `coverage-missing`, `gates-subdirectory`, `gates-no-repository`,
+`gates-snapshot` or `gates-not-code-task`. A change to the tree after a run makes it stale.
+Floors: diff coverage 90%, complexity 10 per touched function.
 
-`gate-run` refuses a task that is not a code task (`gates-not-code-task`). Once a task has
+`gate-run` refuses a task that is not a code task. Once a task has
 started, its outputs and effect are locked, even after it goes back to TODO. To change them, skip
 the task and add a new one.
 
@@ -56,23 +56,27 @@ finished before approval and a `no-repository` project are exempt.
 - A repository whose `addopts` has `--cov` needs an explicit `--cov=<dir>` in the approved
   command; otherwise the run adds `--cov=.`.
 - The diff scan reads string literals, so fixture lines holding `noqa` or `type: ignore` trip
-  `bypass-added`. A changed `.gitattributes` trips it too. `cast` means `typing.cast`.
+  `bypass-added`. A changed `.gitattributes` trips it too. Only `typing.cast` and `cast` imported
+  from `typing` or `typing_extensions` are caught. `cast (x, y)` and re-exports pass.
 - An approved `--no-cov`, `-p no:cov` or own `--cov-report=json` is refused.
 
 ## Limits
 
-- The gate guards against honest mistakes, not a worker who can write the project
-  folder.
+- The gate guards against honest mistakes, not a worker who can write the project folder.
 - The base is set at the first approval and nothing moves it. After a rebase or a merge of main,
   start a new project.
 - A finish takes more than one snapshot of the tree, under the project lock. Ignore large
   generated folders.
 - Paths ignored by `.gitignore` or a global ignore file and never staged are invisible to the
   scan and the hash.
-- Only Python is scanned. A finish judges the task's declared outputs; their lock reads
-  `started_at`, which only newer projects have.
+- Only Python is scanned. A finish judges the task's declared outputs.
+- The outputs lock reads `started_at` and falls back to the status where no stamp exists. A task
+  that reached RUNNING without a stamp and was then sent back is not locked.
+- `# pragma: no cover` on an `if __name__` or `TYPE_CHECKING` line is information, not a finding.
+  Logic under that guard escapes diff coverage.
 - A changed file over 8 MiB is not read; a Python or config one is a `bypass-added` finding.
 - New projects are gated unless `RESEARCH_NEW_PROJECT_GATES` is exactly `0`.
-- A `no-repository` waiver is not checked again once a repository is recorded.
+- A `no-repository` waiver is not rechecked once a repository is recorded.
 - The `tests` kind must be pytest; other runners can only be waived.
-- The target must be the repository root. A submodule is one changed path.
+- The target must be the repository root. A change that includes a gitlink (a submodule or nested
+  repository) is one changed path, never read.
