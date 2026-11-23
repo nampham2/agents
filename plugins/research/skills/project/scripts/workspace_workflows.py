@@ -75,6 +75,7 @@ from workspace_fields import (
     NESTED_INPUTS,
     NESTED_REQUIRED,
 )
+from workspace_gates import gates_change, gates_discover, gates_run
 from workspace_goldfish import (
     OPERATION_FIELDS,
     OPERATION_REQUIRED,
@@ -159,6 +160,7 @@ FIELDS = {
     },
     "retarget": {"delivery_target", "reason", "confirmation"},
     "settings": {"review_risk", "review_fallback", "options", "confirmation"},
+    "gates": {"operation", "commands", "confirmation", "reason", "kinds"},
     "correct": {"task", "replacement", "reason", "continuation"},
     "reconcile": {"patch", "decision", "continuation"},
     "worker-event": set(WORKER_EVENT_FIELDS),
@@ -197,6 +199,11 @@ CONFIRM_REQUIRED = frozenset({"kind", "review_id", "response", "scope", "source"
 WORKTREE_REQUIRED = frozenset({"confirmation", "operation", "path"})
 RETARGET_REQUIRED = frozenset({"confirmation", "delivery_target", "reason"})
 SETTINGS_REQUIRED = frozenset({"confirmation"})
+GATES_REQUIRED = frozenset({"confirmation", "operation"})
+GATES_REQUIRED_BY = {
+    "operation=approve": frozenset({"commands"}),
+    "operation=waive": frozenset({"kinds", "reason"}),
+}
 CONFIRM_REQUIRED_BY = {
     "kind=requirements": frozenset({"proposal_sha256"}),
     "kind=planning": frozenset({"proposal_sha256"}),
@@ -248,13 +255,14 @@ DECIDE_REQUIRED_BY = {
 WAIT_REQUIRED = frozenset({"task", "on"})
 ALWAYS_REQUIRED = {
     "confirm": CONFIRM_REQUIRED, "worktree": WORKTREE_REQUIRED, "goldfish": GOLDFISH_REQUIRED,
-    "retarget": RETARGET_REQUIRED, "settings": SETTINGS_REQUIRED,
+    "retarget": RETARGET_REQUIRED, "settings": SETTINGS_REQUIRED, "gates": GATES_REQUIRED,
     "worker-event": WORKER_EVENT_REQUIRED, "effect": EFFECT_REQUIRED, "wait": WAIT_REQUIRED,
     "decide": DECIDE_REQUIRED,
 }
 REQUIRED_BY = {
     "confirm": CONFIRM_REQUIRED_BY, "worktree": WORKTREE_REQUIRED_BY, "goldfish": GOLDFISH_REQUIRED_BY,
     "worker-event": WORKER_EVENT_REQUIRED_BY, "effect": EFFECT_REQUIRED_BY, "decide": DECIDE_REQUIRED_BY,
+    "gates": GATES_REQUIRED_BY,
 }
 # Workflow writes that name a task put it on their invocation line; a receipt there is crash-loop progress.
 TASK_NOTED_ACTIONS = ("effect", "wait", "receipt", "authorize", "worker-event")
@@ -1233,6 +1241,10 @@ def _build(
         patch, body, outcome = _settings(state, request)
         decision(body)
         result.update(outcome["settings"])
+    elif action == "gates":
+        patch, body, outcome = gates_change(project, state, request)
+        decision(body)
+        result.update(outcome)
     elif action == "correct":
         old = _task(state, string_input(request.get("task"), "task"))
         if old["status"] not in ("DONE", "SKIPPED"):
@@ -1570,6 +1582,9 @@ def _variant_required(project: Path, action: str, request: Any) -> frozenset[str
         if "architecture_sha256" in request and "planning_sha256" in wanted:
             wanted = (wanted - {"planning_sha256"}) | {"architecture_sha256"}
         return wanted
+    if action == "gates":
+        operation = request.get("operation") if isinstance(request, dict) else None
+        return GATES_REQUIRED | GATES_REQUIRED_BY.get(f"operation={operation}", frozenset())
     if action == "worker-event":
         return WORKER_EVENT_REQUIRED
     if action == "wait":
@@ -1656,6 +1671,11 @@ def _workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, 
         if "apply" in request and type(request["apply"]) is not bool:
             raise WorkspaceError("recover apply must be boolean")
         return recover_operation(project, request["id"], apply=request.get("apply", False))
+    if action == "gate-discover":
+        schema_input(request, action)
+        return gates_discover(project)
+    if action == "gate-run":
+        return gates_run(project, request)
     schema_input(request, action)
     if action == "freshness":
         return checkpoint_freshness(project)

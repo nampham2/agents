@@ -67,7 +67,7 @@ first record update.
 
 Review [lessons](references/memory-operations.md) before agreement; reassess after direction
 changes; resolve staged lessons at closure. Every project requires [grill](references/grill.md),
-then [planning review](references/planning-review.md); follow both before planning. Clear
+then [planning review](references/planning-review.md), before planning. Clear
 requirements need confirmation even with zero question rounds; the alignment confirmation also
 records the delivery target ([worktrees.md](references/worktrees.md)). Write these sections under
 `## Current specification`, in order:
@@ -84,7 +84,7 @@ records the delivery target ([worktrees.md](references/worktrees.md)). Write the
 
 Save spec sections, decisions, drafts and continuation with `workflow ... round`. Use `workflow ...
 confirm` for actual agreement, against the proposal token and after a current [Goldfish
-review](references/goldfish-review.md). Record explicit requirements/planning agreement and `Status:
+review](references/goldfish-review.md). Record requirements/planning agreement and `Status:
 agreed` before planning; reuse current agreement on resume; reopen affected choices on missing
 records or material changes.
 
@@ -118,6 +118,8 @@ Resolve worker ownership before takeover. If `execution_active` is true, read
 isolation outweighs startup cost ([task-workers.md](references/task-workers.md)). At policy 6 read
 [modes.md](references/modes.md) before the first task: coordinator mode is on by default, so a fresh
 worker runs each task and `task finish` needs its recorded attempt.
+
+Code task: read [coding-standard.md](references/coding-standard.md) before editing.
 
 Use `workflow ... verify` for batches; single checks may use:
 

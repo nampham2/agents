@@ -238,6 +238,7 @@ def test_guarded_writers_are_a_code_constant() -> None:
         "settings": {"review_risk", "review_fallback", "options", "mode_counters"},
         "decide": {"automated_decisions"},
         "maintenance": {"mode_counters"},
+        "gates": {"gates"},
     }
 
 

@@ -12,8 +12,14 @@ because every copy had to be found and repointed by hand.
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
+
+# New projects are gated by default (the gate profile). The variable is read when `workspace_lib` is first
+# imported, so it is set before any test module imports it; subprocesses inherit it. The tests of the gate
+# profile set both this and the constant back.
+os.environ["RESEARCH_NEW_PROJECT_GATES"] = "0"
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_SCRIPTS = REPO_ROOT / "plugins/research/skills/project/scripts"
@@ -51,6 +57,18 @@ def far_future_delivery_cutoff(monkeypatch: pytest.MonkeyPatch) -> None:
     import workspace_lib
 
     monkeypatch.setattr(workspace_lib, "DELIVERY_GATES_FROM", "2099-01-01T00:00:00+00:00", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def no_new_project_gates(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Start test projects without the gate profile: a gated project cannot finish a code task without a gate run.
+
+    Tests that create code tasks through `init` and finish them have no repository to run gates in. The tests of
+    the profile set `NEW_PROJECT_GATES` back to True themselves. raising=False for a baseline build without it.
+    """
+    import workspace_lib
+
+    monkeypatch.setattr(workspace_lib, "NEW_PROJECT_GATES", False, raising=False)
 
 
 @pytest.fixture(autouse=True)

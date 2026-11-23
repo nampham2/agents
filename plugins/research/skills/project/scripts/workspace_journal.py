@@ -148,6 +148,10 @@ READ_INPUTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "freshness": (frozenset(), frozenset()),
     "readiness": (frozenset({"required_checks"}), frozenset()),
     "memory-health": (frozenset(), frozenset()),
+    # The gate profile: `gate-discover` lists candidates and writes nothing; `gate-run` runs the approved gates for
+    # a task outside the project lock (workspace_gates.py).
+    "gate-discover": (frozenset(), frozenset()),
+    "gate-run": (frozenset({"task"}), frozenset({"task"})),
 }
 
 

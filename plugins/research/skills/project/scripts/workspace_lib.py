@@ -26,6 +26,10 @@ from urllib.parse import urlparse
 from workspace_fields import (
     DECISION_OUTCOMES,
     DECISION_RECORD_FIELDS,
+    GATE_KINDS,
+    GATE_WAIVER_KINDS,
+    GATES_FIELDS,
+    GATES_REQUIRED,
     MAX_EVIDENCE_ROUNDS,
     NESTED_INPUTS,
     WORKTREE_OPTIONAL_FIELDS,
@@ -115,14 +119,15 @@ SETTINGS_FIELDS = ("review_risk", "review_fallback", "options")
 # Policy 6: the records of `workflow decide` and the two counters `settings` and `maintenance` write.
 MODE_PROJECT_FIELDS = ("automated_decisions", "mode_counters")
 PROJECT_V4_FIELDS = PROJECT_FIELDS | {
-    "execution", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
+    "execution", "tags", "policy_version", "delivery_target", "gates", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
 }
 # Fields a valid project may omit: `predecessor` names the project this one continues (a maintenance
 # ancestor, or the finished source of a follow-up, whose briefing starts `Follow-up of: <id>`) and `worktrees` is
 # only present once a repository worktree, or its absence, has been recorded. `tags` is absent from
 # every project created before tags existed, so validation never requires it.
 OPTIONAL_PROJECT_FIELDS = {
-    "predecessor", "worktrees", "tags", "policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
+    "predecessor", "worktrees", "tags", "policy_version", "delivery_target", "gates", *SETTINGS_FIELDS,
+    *MODE_PROJECT_FIELDS,
 }
 
 # A project carries 1 to 5 tags. Creation and the `tag` command enforce the minimum; validation checks
@@ -533,6 +538,11 @@ def needs_merge(entry: object) -> bool:
 # and `automated` (policy 6). The test suite moves it to None because it also moves the date cutoffs, so its
 # projects would otherwise need a delivery target to leave ALIGNING.
 NEW_PROJECT_POLICY: "int | None" = 6
+# Whether a new project starts with the gate profile on: `allocate_project` writes `gates` as enabled, with no
+# approved commands, so a code task cannot finish until commands are approved or waived. Read from the environment
+# at import (any value but `0` is true) so a suite that creates projects through a subprocess can opt out as well
+# as one that monkeypatches the constant in process.
+NEW_PROJECT_GATES = os.environ.get("RESEARCH_NEW_PROJECT_GATES") != "0"
 DELIVERY_TARGETS = ("research", "local", "pr", "merged", "release")
 POLICY_VERSIONS = (0, 1, 2, 3, 4, 5, 6)
 DEFAULT_OPTIONS: "dict[str, bool]" = {
@@ -3055,6 +3065,96 @@ def _validate_tags(value: object, report: ValidationReport) -> None:
         report.errors.append(f"project: a project has at most {MAX_TAGS} tags, found {len(value)}")
 
 
+GATE_COMMAND_ID = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+GATE_BASE_COMMIT = re.compile(r"[0-9a-f]{40}")
+GATE_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+def _validate_gate_commands(value: object, report: ValidationReport) -> None:
+    if not isinstance(value, list):
+        report.errors.append("project: gates.commands must be a list")
+        return
+    seen: set[str] = set()
+    for index, command in enumerate(value):
+        label = f"gates.commands[{index}]"
+        if not isinstance(command, dict):
+            report.errors.append(f"project: {label} must be an object")
+            continue
+        _missing_fields(command, {"id", "kind", "argv"}, f"project: {label}", report)
+        _unexpected_fields(command, {"id", "kind", "argv"}, f"project: {label}", report)
+        identity = command.get("id")
+        if not isinstance(identity, str) or not GATE_COMMAND_ID.fullmatch(identity):
+            report.errors.append(f"project: {label}: id must be lowercase letters, digits and hyphens, at most 40")
+        elif identity in seen:
+            report.errors.append(f"project: {label}: duplicate command id {identity!r}")
+        else:
+            seen.add(identity)
+        if command.get("kind") not in GATE_KINDS:
+            report.errors.append(f"project: {label}: kind must be one of {', '.join(GATE_KINDS)}")
+        argv = command.get("argv")
+        if not isinstance(argv, list) or not argv or not all(_non_empty_string(item) for item in argv):
+            report.errors.append(f"project: {label}: argv must be a non-empty list of non-empty strings")
+
+
+def _validate_gate_records(gates: dict[str, Any], report: ValidationReport) -> None:
+    """The approval, the waiver, the base commit and the approved sources of a `gates` object."""
+    approval = gates.get("approval")
+    if approval is not None:
+        if not isinstance(approval, dict):
+            report.errors.append("project: gates.approval must be null or an object")
+        else:
+            keys = {"source", "response", "approved_at"}
+            _missing_fields(approval, keys, "project: gates.approval", report)
+            _unexpected_fields(approval, keys, "project: gates.approval", report)
+    waiver = gates.get("waiver")
+    if waiver is not None:
+        if not isinstance(waiver, dict):
+            report.errors.append("project: gates.waiver must be null or an object")
+        else:
+            keys = {"reason", "source", "response", "granted_at", "kinds"}
+            _missing_fields(waiver, keys, "project: gates.waiver", report)
+            _unexpected_fields(waiver, keys, "project: gates.waiver", report)
+            kinds = waiver.get("kinds")
+            if "kinds" in waiver and (not isinstance(kinds, list) or not kinds):
+                report.errors.append("project: gates.waiver: kinds must be a non-empty list")
+            elif isinstance(kinds, list) and not all(item in GATE_WAIVER_KINDS for item in kinds):
+                report.errors.append(f"project: gates.waiver: kinds must hold only {', '.join(GATE_WAIVER_KINDS)}")
+    # Once approved, the base the diffs are taken from and the files the commands came from are on record.
+    if (approval is not None and isinstance(approval, dict)) or "base_commit" in gates:
+        base = gates.get("base_commit")
+        if not isinstance(base, str) or not GATE_BASE_COMMIT.fullmatch(base):
+            report.errors.append("project: gates.base_commit must be 40 lowercase hex digits")
+    if approval is not None and "sources" not in gates:
+        report.errors.append("project: gates.sources is required once the commands are approved")
+    sources = gates.get("sources", [])
+    if not isinstance(sources, list):
+        report.errors.append("project: gates.sources must be a list")
+        return
+    for index, source in enumerate(sources):
+        label = f"project: gates.sources[{index}]"
+        if not isinstance(source, dict):
+            report.errors.append(f"{label} must be an object")
+            continue
+        _missing_fields(source, {"path", "sha256"}, label, report)
+        _unexpected_fields(source, {"path", "sha256"}, label, report)
+        if "sha256" in source and not (isinstance(source["sha256"], str) and GATE_SHA256.fullmatch(source["sha256"])):
+            report.errors.append(f"{label}: sha256 must be 64 lowercase hex digits")
+
+
+def _validate_gates(value: object, report: ValidationReport) -> None:
+    """The `gates` object: closed keys, well-formed commands, and the records an approval or waiver leaves."""
+    if not isinstance(value, dict):
+        report.errors.append("project: gates must be an object")
+        return
+    _missing_fields(value, GATES_REQUIRED, "project: gates", report)
+    _unexpected_fields(value, GATES_FIELDS, "project: gates", report)
+    if not isinstance(value.get("enabled", True), bool):
+        report.errors.append("project: gates.enabled must be a boolean")
+    if "commands" in value:
+        _validate_gate_commands(value["commands"], report)
+    _validate_gate_records(value, report)
+
+
 def validate_v4_state(
     state: dict[str, Any],
     project_dir: Path,
@@ -3071,6 +3171,8 @@ def validate_v4_state(
     if "tags" in state:
         _validate_tags(state["tags"], report)
     _validate_delivery_policy(state, report)
+    if "gates" in state:
+        _validate_gates(state["gates"], report)
 
     if state.get("schema_version") != 4:
         report.errors.append("schema_version must be 4")
@@ -4708,6 +4810,10 @@ def validate_project(
                 from workspace_packets import reference_errors  # function-local: that module imports this one
 
                 report.errors.extend(reference_errors(project_dir, state))
+            if not report.errors:  # a state with findings may hold a gates object the warning cannot read
+                from workspace_gates import record_warnings
+
+                report.warnings.extend(record_warnings(project_dir, state))
         else:
             report = ValidationReport(errors=[f"unsupported schema_version: {version} ({NEWER_PLUGIN_HINT})"])
     except WorkspaceError as error:
@@ -6343,7 +6449,7 @@ def _revision_conflicts(current: dict[str, Any], candidate: dict[str, Any], expe
 
 # Fields only a named journaled action may change. The exemption comes from the action name stored in
 # the journal record, never from request data, so preflight, commit and replay agree.
-GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS)
+GUARDED_PROJECT_FIELDS = ("policy_version", "delivery_target", "gates", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS)
 GUARDED_WRITERS: "dict[str, set[str]]" = {
     "settings": set(SETTINGS_FIELDS) | {"mode_counters"},
     "decide": {"automated_decisions"},
@@ -6351,6 +6457,7 @@ GUARDED_WRITERS: "dict[str, set[str]]" = {
     "confirm": {"delivery_target"},
     "retarget": {"delivery_target"},
     "migrate_policy": {"policy_version", "delivery_target"},
+    "gates": {"gates"},
 }
 
 
@@ -6411,7 +6518,39 @@ def transition_gate_errors(
 
     errors, warnings = mr_gate_errors(project_dir, previous, candidate)
     errors = design_gate_errors(project_dir, previous, candidate) + errors
-    return errors + mode_gate_errors(project_dir, previous, candidate, action), warnings
+    return errors + mode_gate_errors(project_dir, previous, candidate, action) + _gate_profile_errors(
+        project_dir, previous, candidate
+    ), warnings
+
+
+def _gate_profile_errors(project_dir: Path, previous: dict[str, Any], candidate: dict[str, Any]) -> list[str]:
+    """The gate profile's refusal of every code task that becomes DONE in `candidate`, whichever path commits it.
+
+    `task finish`, `update`, `reconcile`, `correct` and a backfill all reach this check, so none can skip the gate
+    runner. Only a project whose `gates.enabled` is true is judged, and only a task that was not DONE before.
+    """
+    gates = candidate.get("gates") if isinstance(candidate, dict) else None
+    tasks = candidate.get("tasks") if isinstance(candidate, dict) else None
+    if not isinstance(gates, dict) or gates.get("enabled") is not True or not isinstance(tasks, list):
+        return []
+    shape = ValidationReport()
+    _validate_gates(gates, shape)
+    if shape.errors:
+        return []  # a malformed object is reported by the validator, which runs after this check
+    from workspace_gates import gate_findings
+
+    stored = previous.get("tasks") if isinstance(previous, dict) else None
+    before = {
+        task["id"]: task for task in (stored if isinstance(stored, list) else [])
+        if isinstance(task, dict) and isinstance(task.get("id"), str)
+    }
+    errors: list[str] = []
+    for task in tasks:
+        if not isinstance(task, dict) or not isinstance(task.get("id"), str) or task.get("status") != "DONE":
+            continue
+        if before.get(task["id"], {}).get("status") != "DONE":
+            errors.extend(f"task {task['id']}: {finding}" for finding in gate_findings(project_dir, candidate, task))
+    return errors
 
 
 def check_state_candidate(
@@ -6722,6 +6861,8 @@ def allocate_project(
         }
         if NEW_PROJECT_POLICY is not None:
             state["policy_version"] = NEW_PROJECT_POLICY
+        if NEW_PROJECT_GATES:
+            state["gates"] = {"enabled": True, "commands": [], "approval": None, "waiver": None}
         if stored_tags is not None:
             state["tags"] = stored_tags
         if predecessor is not None:

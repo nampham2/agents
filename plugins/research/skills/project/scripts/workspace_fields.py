@@ -71,6 +71,16 @@ CONSEQUENTIAL_KINDS = ("task-change", "task-accept", "project-close")
 DECISION_THRESHOLD = 0.9
 MAX_EVIDENCE_ROUNDS = 3
 
+# The gate profile (`gates` field of project.json): the kinds an approved command may have, the kinds a waiver may
+# name (`no-repository` is a scope: a target that is not a repository cannot be gated), and the three kinds every
+# gated project needs a command or a waiver for.
+GATE_KINDS = ("lint", "types", "tests", "format")
+GATE_REQUIRED_KINDS = ("lint", "types", "tests")
+GATE_NO_REPOSITORY = "no-repository"
+GATE_WAIVER_KINDS = (*GATE_KINDS, GATE_NO_REPOSITORY)
+GATES_FIELDS = frozenset({"enabled", "commands", "approval", "waiver", "base_commit", "sources"})
+GATES_REQUIRED = frozenset({"enabled", "commands", "approval", "waiver"})
+
 # A shape name maps to (allowed, required).
 NESTED_INPUTS: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "confirmation": (frozenset({"source", "response"}), frozenset({"source", "response"})),
@@ -105,6 +115,7 @@ ACTION_NESTED: dict[str, tuple[tuple[str, str], ...]] = {
     "maintenance": (("continuation", "continuation"), ("confirmation", "confirmation")),
     "cancel": (("continuation", "continuation"), ("confirmation", "confirmation")),
     "decide": (("confirmation", "confirmation"),),
+    "gates": (("confirmation", "confirmation"),),
 }
 
 # Nested objects an action cannot do without: absent, they are refused as `key: expected a JSON object`.
@@ -112,6 +123,7 @@ NESTED_REQUIRED: dict[str, frozenset[str]] = {
     "worktree": frozenset({"confirmation"}),
     "retarget": frozenset({"confirmation"}),
     "settings": frozenset({"confirmation"}),
+    "gates": frozenset({"confirmation"}),
 }
 
 

@@ -790,7 +790,8 @@ UPDATE_FIELDS = {"title", "status", "review", "cancellation_reason", "predecesso
 # Fields only a verifying operation may patch: `update` must not be able to declare a worktree or
 # move the target root without the Git observations the `worktree` action insists on.
 INTERNAL_UPDATE_FIELDS = UPDATE_FIELDS | {
-    "worktrees", "working_directory", "policy_version", "delivery_target", *SETTINGS_FIELDS, *MODE_PROJECT_FIELDS,
+    "worktrees", "working_directory", "policy_version", "delivery_target", "gates", *SETTINGS_FIELDS,
+    *MODE_PROJECT_FIELDS,
 }
 
 

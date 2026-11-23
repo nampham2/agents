@@ -11,6 +11,7 @@ from typing import Any
 from workspace_documents import append_record, edit_document, follow_up_items
 from workspace_durability import mode_gate_errors, task_finish_findings
 from workspace_evidence import evidence_entries, evidence_findings, selected_evidence_references
+from workspace_gates import gate_findings
 from workspace_goldfish import residual_findings
 from workspace_journal import OperationError, snapshot
 from workspace_lib import (
@@ -234,11 +235,18 @@ def task_preconditions(
     successor: dict[str, Any] | None,
     record_ids: list[str],
     observation_ids: list[str],
+    project_dir: "Path | None" = None,
 ) -> list[str]:
-    """Every unmet precondition of `task start` or `task finish`, gathered so one message names them all."""
+    """Every unmet precondition of `task start` or `task finish`, gathered so one message names them all.
+
+    With a `project_dir`, a finish also lists the gate profile's findings (the early message; the shared commit
+    check in `transition_gate_errors` is the rule that counts).
+    """
     if action == "start":
         return _start_findings(state, task)
     findings = [*evidence_findings(record_ids, observation_ids), *receipt_findings(task)]
+    if project_dir is not None:
+        findings.extend(gate_findings(project_dir, state, {**task, "status": "DONE"}))
     if successor is not None:
         findings.extend(_start_findings(state, successor))
     return findings
@@ -330,7 +338,7 @@ def task_operation(
     durable = task_durable_enabled(state)
     before_by_id = {task["id"]: task for task in before_tasks}
     if action == "start":
-        _refuse_unmet(task_id, "start", task_preconditions(state, selected, "start", None, [], []))
+        _refuse_unmet(task_id, "start", task_preconditions(state, selected, "start", None, [], [], project_dir))
         selected.update(status="RUNNING", block_reason=None, skip_reason=None)
         if durable:
             selected.update(stamp_transitions(before_by_id[task_id], selected))
@@ -347,7 +355,7 @@ def task_operation(
             if start_next == task_id:
                 raise WorkspaceError("--start-next must name a different task")
             successor = _task(state, start_next)
-        findings = task_preconditions(state, selected, "finish", successor, record_ids, observation_ids)
+        findings = task_preconditions(state, selected, "finish", successor, record_ids, observation_ids, project_dir)
         if coordinator_enabled(state):
             if statement is not None:
                 selected["replan"] = statement
@@ -498,9 +506,10 @@ def _backfill_finish(
     selected = _task(state, task_id)
     successor = _task(state, start_next) if start_next is not None and start_next != task_id else None
     _refuse_unmet(task_id, "backfill", [
-        *task_preconditions(state, selected, "start", None, [], []),
+        *task_preconditions(state, selected, "start", None, [], [], project_dir),
         *task_preconditions(
-            state, selected, "finish", successor, evidence_record_ids or [], observation_record_ids or []
+            state, selected, "finish", successor, evidence_record_ids or [], observation_record_ids or [],
+            project_dir,
         ),
     ])
     # Refused before anything is written: a record that is missing, failing or another task's.
