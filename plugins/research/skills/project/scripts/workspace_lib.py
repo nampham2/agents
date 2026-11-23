@@ -6407,7 +6407,28 @@ def check_state_transition(previous: dict[str, Any], candidate: dict[str, Any]) 
                     errors.append(f"task {task_id}: {name} cannot decrease ({before_value} -> {after_value})")
         if isinstance(old_status, str) and old_status in TERMINAL_TASK_STATUSES and old_task != new_task:
             errors.append(f"task {task_id}: terminal task history is immutable; append a correction task instead")
+        else:
+            errors.extend(_gated_field_errors(task_id, old_task, new_task, candidate))
     return errors
+
+
+GATED_TASK_FIELDS = ("outputs", "effect")
+
+
+def _gated_field_errors(
+    task_id: str, old_task: dict[str, Any], new_task: dict[str, Any], candidate: dict[str, Any]
+) -> list[str]:
+    """In a gated project, a task that has left TODO keeps its outputs and effect."""
+    gates = candidate.get("gates")
+    status = old_task.get("status")
+    if status == "TODO" or not (isinstance(gates, dict) and gates.get("enabled") is True):
+        return []
+    return [
+        f"task {task_id}: {name} cannot change once the task has left TODO ({status}); the gates judge a "
+        "task by what it writes, so a change of outputs or effect would move it out of their reach"
+        for name in GATED_TASK_FIELDS
+        if old_task.get(name) != new_task.get(name)
+    ]
 
 
 def _done_task_ids(state: dict[str, Any]) -> set[str]:
@@ -6527,7 +6548,8 @@ def _gate_profile_errors(project_dir: Path, previous: dict[str, Any], candidate:
     """The gate profile's refusal of every code task that becomes DONE in `candidate`, whichever path commits it.
 
     `task finish`, `update`, `reconcile`, `correct` and a backfill all reach this check, so none can skip the gate
-    runner. Only a project whose `gates.enabled` is true is judged, and only a task that was not DONE before.
+    runner. Only a project whose `gates.enabled` is true is judged, and only a task that was not DONE before. A task
+    is judged when it was a code task before or is one in `candidate`.
     """
     gates = candidate.get("gates") if isinstance(candidate, dict) else None
     tasks = candidate.get("tasks") if isinstance(candidate, dict) else None
@@ -6548,8 +6570,11 @@ def _gate_profile_errors(project_dir: Path, previous: dict[str, Any], candidate:
     for task in tasks:
         if not isinstance(task, dict) or not isinstance(task.get("id"), str) or task.get("status") != "DONE":
             continue
-        if before.get(task["id"], {}).get("status") != "DONE":
-            errors.extend(f"task {task['id']}: {finding}" for finding in gate_findings(project_dir, candidate, task))
+        old = before.get(task["id"], {})
+        if old.get("status") != "DONE":
+            # A task that was a code task before is judged even when this patch rewrote its outputs or effect.
+            judged = task if is_code_task(task) or not is_code_task(old) else {**old, "status": "DONE"}
+            errors.extend(f"task {task['id']}: {finding}" for finding in gate_findings(project_dir, candidate, judged))
     return errors
 
 

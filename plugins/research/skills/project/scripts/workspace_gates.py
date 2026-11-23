@@ -48,6 +48,30 @@ from workspace_lib import (
 from workspace_session import _load_state
 
 GIT_TIMEOUT = 120
+# Config of every Git call: the same text whatever the user's config and attributes say. `diff.noprefix` and
+# `diff.mnemonicPrefix` change the header paths; an attributes file can mark a path `-diff`.
+GIT_CONFIG = (
+    "-c",
+    "core.quotepath=off",
+    "-c",
+    "diff.noprefix=false",
+    "-c",
+    "diff.mnemonicPrefix=false",
+    "-c",
+    f"core.attributesFile={os.devnull}",
+)
+# Options of every diff the gates parse. `--text` ignores attributes (also `.git/info/attributes`, which no config
+# can switch off), so `-diff` and `binary` cannot hide a file; the prefixes are fixed; `diff.relative` is overridden.
+DIFF_OPTIONS = (
+    "--text",
+    "--no-ext-diff",
+    "--no-textconv",
+    "--no-color",
+    "--no-relative",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+)
+PATH_CHUNK = 200
 
 
 def _git_bytes(
@@ -55,11 +79,16 @@ def _git_bytes(
     *arguments: str,
     environment: "dict[str, str] | None" = None,
 ) -> bytes:
-    """One Git query in `repo`; `environment` adds variables, as a snapshot's private index and object store do."""
-    full = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", **(environment or {})}
+    """One Git query in `repo`; `environment` adds variables, as a snapshot's private index and object store do.
+
+    Every `GIT_*` variable of the caller is dropped (a hook's `GIT_DIR` or a `GIT_WORK_TREE` would point Git at another
+    repository); only the two set here and the ones the caller passes reach Git.
+    """
+    inherited = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    full = {**inherited, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", **(environment or {})}
     try:
         done = subprocess.run(
-            ["git", "-c", "core.quotepath=off", "-C", str(repo), *arguments],
+            ["git", *GIT_CONFIG, "-C", str(repo), *arguments],
             capture_output=True,
             env=full,
             timeout=GIT_TIMEOUT,
@@ -89,9 +118,16 @@ def _snapshot(repo: Path, base_commit: str) -> Iterator[dict[str, str]]:
     temporary object directory that reads the real one as an alternate, so the real index, the real object store
     and the working tree are never written.
     """
-    with tempfile.TemporaryDirectory(prefix="gates-snapshot-") as scratch:
+    try:
+        scratch = tempfile.mkdtemp(prefix="gates-snapshot-")
+    except OSError as error:
+        raise WorkspaceError(f"gates-snapshot: the snapshot directory could not be created: {error}") from error
+    try:
         objects = Path(scratch) / "objects"
-        objects.mkdir()
+        try:
+            objects.mkdir()
+        except OSError as error:
+            raise WorkspaceError(f"gates-snapshot: the snapshot directory could not be written: {error}") from error
         common = Path(_git(repo, "rev-parse", "--path-format=absolute", "--git-common-dir"))
         environment = {
             "GIT_INDEX_FILE": str(Path(scratch) / "index"),
@@ -100,7 +136,29 @@ def _snapshot(repo: Path, base_commit: str) -> Iterator[dict[str, str]]:
         }
         _git_bytes(repo, "read-tree", base_commit, environment=environment)
         _git_bytes(repo, "add", "-A", "--", ".", environment=environment)
+        _add_forced(repo, base_commit, environment)
         yield environment
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _add_forced(repo: Path, base_commit: str, environment: dict[str, str]) -> None:
+    """Add what `add -A` skips because it is ignored: files committed or staged since the base (`add -f`).
+
+    The paths come from the real repository (base to HEAD, and base to its index). Nothing is written to the real
+    index or object store.
+    """
+    names: set[bytes] = set()
+    for arguments in (("HEAD",), ("--cached",)):
+        out = _git_bytes(repo, "diff", "--name-only", "-z", "--no-renames", *arguments, base_commit, "--")
+        names.update(item for item in out.split(b"\0") if item)
+    # A deletion is already in the snapshot (the base tree holds the path); only a file still on disk needs adding.
+    ordered = sorted(
+        name for name in (item.decode("utf-8", "surrogateescape") for item in names) if os.path.lexists(repo / name)
+    )
+    literal = {**environment, "GIT_LITERAL_PATHSPECS": "1"}
+    for start in range(0, len(ordered), PATH_CHUNK):
+        _git_bytes(repo, "add", "-A", "-f", "--", *ordered[start : start + PATH_CHUNK], environment=literal)
 
 
 def current_head(repo: Path) -> str:
@@ -109,12 +167,33 @@ def current_head(repo: Path) -> str:
         _git(repo, "rev-parse", "--git-dir")
     except WorkspaceError as error:
         raise WorkspaceError(f"gates-no-repository: {repo} is not a Git repository ({error})") from error
+    top = _toplevel_problem(repo)
+    if top:
+        raise WorkspaceError(top)
     try:
         return _git(repo, "rev-parse", "--verify", "HEAD^{commit}")
     except WorkspaceError as error:
         raise WorkspaceError(
             f"gates-no-commit: {repo} has no commit yet; make an initial commit first, then approve the gates"
         ) from error
+
+
+def _toplevel_problem(repo: Path) -> str:
+    """Why `repo` is not the root of its repository (a subdirectory), or an empty string.
+
+    Git reports paths from the repository root, and the snapshot would cover only part of the tree, so a target
+    inside a repository is refused: record the repository root as the target instead.
+    """
+    try:
+        top = Path(_git(repo, "rev-parse", "--show-toplevel"))
+    except WorkspaceError:
+        return ""  # not a repository, or a bare one: the other checks name that
+    if top.resolve() != repo.resolve():
+        return (
+            f"gates-subdirectory: the target {repo} is inside the repository {top}; the gates read the whole "
+            "repository, so record the repository root as the target"
+        )
+    return ""
 
 
 def head_tree(repo: Path, base_commit: str) -> str:
@@ -131,8 +210,7 @@ def head_tree(repo: Path, base_commit: str) -> str:
             "--cached",
             "--binary",
             "--full-index",
-            "--no-ext-diff",
-            "--no-color",
+            *(item for item in DIFF_OPTIONS if item != "--text"),
             base_commit,
             "--",
             environment=environment,
@@ -577,12 +655,80 @@ def language_of(path: str) -> str:
     return LANGUAGES.get(Path(path).suffix, "other")
 
 
+QUOTED_PATH = re.compile(r'"(?:[^"\\]|\\.)*"')
+C_ESCAPES = {"a": 7, "b": 8, "f": 12, "n": 10, "r": 13, "t": 9, "v": 11, "\\": 92, '"': 34}
+
+
+def unquote_path(text: str) -> str:
+    """A path as Git prints it: a name with a quote, tab, newline or backslash comes in C-style quotes."""
+    if not (len(text) >= 2 and text[0] == '"' and text[-1] == '"'):
+        return text
+    raw = bytearray()
+    body = text[1:-1]
+    index = 0
+    while index < len(body):
+        char = body[index]
+        if char != "\\" or index + 1 >= len(body):
+            raw.extend(char.encode("utf-8"))
+            index += 1
+            continue
+        following = body[index + 1]
+        octal = re.match(r"[0-7]{1,3}", body[index + 1 :])
+        if octal is not None:
+            raw.append(int(octal.group(0), 8) & 0xFF)
+            index += 1 + len(octal.group(0))
+        else:
+            raw.append(C_ESCAPES.get(following, ord(following) if ord(following) < 128 else 63))
+            index += 2
+    return raw.decode("utf-8", "replace")
+
+
 def _header_path(line: str) -> "str | None":
-    """The path of a `---` or `+++` header line, None for /dev/null."""
-    text = line[4:].split("\t")[0]
+    """The path of a `---` or `+++` header line, None for /dev/null. The prefixes are fixed to `a/` and `b/`."""
+    rest = line[4:]
+    quoted = QUOTED_PATH.match(rest)
+    text = unquote_path(quoted.group(0)) if quoted else rest.split("\t")[0]
     if text == "/dev/null":
         return None
     return text[2:] if text[:2] in ("a/", "b/") else text
+
+
+def _diff_line_path(header: str) -> str:
+    """The new path on a `diff --git a/<old> b/<new>` line, quoted or not."""
+    quoted = re.search(r' ("b/(?:[^"\\]|\\.)*")$', header)
+    text = unquote_path(quoted.group(1)) if quoted else (header.rsplit(" b/", 1)[-1] if " b/" in header else header)
+    return text[2:] if quoted else text
+
+
+def _apply_header_line(current: FileChange, line: str) -> None:
+    """One extended header line of a file's diff (mode, rename, binary, `---`, `+++`) applied to `current`."""
+    if line.startswith("new file mode"):
+        current.status = "added"
+    elif line.startswith("deleted file mode"):
+        current.status = "deleted"
+    elif line.startswith("rename from "):
+        current.old_path, current.status = unquote_path(line[len("rename from ") :]), "renamed"
+    elif line.startswith("rename to "):
+        current.path = unquote_path(line[len("rename to ") :])
+    elif line.startswith("Binary files ") or line.startswith("GIT binary patch"):
+        current.binary = True
+    elif line.startswith("--- ") and current.status == "deleted":
+        current.path = _header_path(line) or current.path
+    elif line.startswith("+++ ") and (target := _header_path(line)) is not None:
+        current.path = target
+
+
+def _body_line(current: FileChange, line: str, new_line: int, old_left: int, new_left: int) -> bool:
+    """Take `line` as a hunk body line of `current` when the hunk's counts say it is one."""
+    if line.startswith("+") and new_left > 0:
+        current.added[new_line] = line[1:]
+        if "\x00" in line:
+            current.binary = True  # `--text` shows every file as text; a NUL byte is what makes one binary
+        return True
+    if line.startswith("-") and old_left > 0:
+        current.removed += 1
+        return True
+    return False
 
 
 def parse_diff(text: str) -> list[FileChange]:
@@ -592,20 +738,15 @@ def parse_diff(text: str) -> list[FileChange]:
     old_left = new_left = 0
     new_line = 0
     for line in text.splitlines():
-        if old_left > 0 or new_left > 0:
-            if line.startswith("+") and new_left > 0 and current is not None:
-                current.added[new_line] = line[1:]
+        if current is not None and _body_line(current, line, new_line, old_left, new_left):
+            if line.startswith("+"):
                 new_line += 1
                 new_left -= 1
-                continue
-            if line.startswith("-") and old_left > 0 and current is not None:
-                current.removed += 1
+            else:
                 old_left -= 1
-                continue
-        if line.startswith("diff --git "):
+        elif line.startswith("diff --git "):
             old_left = new_left = 0
-            header = line[len("diff --git ") :]
-            current = FileChange(path=header.rsplit(" b/", 1)[-1] if " b/" in header else header)
+            current = FileChange(path=_diff_line_path(line[len("diff --git ") :]))
             changes.append(current)
         elif current is None:
             continue
@@ -615,20 +756,8 @@ def parse_diff(text: str) -> list[FileChange]:
             new_line = int(hunk.group("new"))
             if new_left == 0:
                 current.deletions.append(new_line)
-        elif line.startswith("new file mode"):
-            current.status = "added"
-        elif line.startswith("deleted file mode"):
-            current.status = "deleted"
-        elif line.startswith("rename from "):
-            current.old_path, current.status = line[len("rename from ") :], "renamed"
-        elif line.startswith("rename to "):
-            current.path = line[len("rename to ") :]
-        elif line.startswith("Binary files ") or line.startswith("GIT binary patch"):
-            current.binary = True
-        elif line.startswith("--- ") and current.status == "deleted":
-            current.path = _header_path(line) or current.path
-        elif line.startswith("+++ ") and (target := _header_path(line)) is not None:
-            current.path = target
+        else:
+            _apply_header_line(current, line)
     return changes
 
 
@@ -641,8 +770,7 @@ def changed_files(repo: Path, base_commit: str) -> list[FileChange]:
             "--cached",
             "-U0",
             "--find-renames",
-            "--no-ext-diff",
-            "--no-color",
+            *DIFF_OPTIONS,
             base_commit,
             "--",
             environment=environment,
@@ -658,15 +786,20 @@ BYPASS_PATTERNS = (
     ("pyright: ignore", re.compile(r"#\s*pyright:\s*ignore")),
     ("ty: ignore", re.compile(r"#\s*ty:\s*ignore")),
     ("cast", re.compile(r"\bcast\(")),
-    ("pytest.mark.skip", re.compile(r"pytest\.mark\.skip\b")),
+    ("pytest.mark.skip", re.compile(r"\bmark\.skip\b")),
     ("xfail", re.compile(r"\bxfail\b")),
     ("unittest.skip", re.compile(r"\bunittest\.skip\b")),
+    ("unittest.skip", re.compile(r"^\s*from\s+unittest\s+import\s+[^#]*\bskip\b")),
+    ("ruff: noqa", re.compile(r"#\s*ruff:\s*noqa")),
+    ("flake8: noqa", re.compile(r"#\s*flake8[:=]\s*noqa")),
+    ("mypy: ignore-errors", re.compile(r"#\s*mypy:\s*ignore-errors")),
+    ("pyright: basic", re.compile(r"#\s*pyright:\s*(?:basic|off)\b")),
     ("pragma: no cover", re.compile(r"#\s*pragma:\s*no\s*cover")),
 )
 CONDITIONAL_PATTERNS = (
-    ("pytest.mark.skipif", re.compile(r"pytest\.mark\.skipif\b")),
+    ("pytest.mark.skipif", re.compile(r"\bmark\.skipif\b")),
     ("pytest.skip", re.compile(r"\bpytest\.skip\(")),
-    ("unittest.skipif", re.compile(r"\bunittest\.skip(?:If|Unless)\b")),
+    ("unittest.skipif", re.compile(r"(?:\bunittest\.|(?<![\w.]))skip(?:If|Unless)\b")),
 )
 NO_COV = re.compile(r"--no-cov\b")
 GUARD = re.compile(r"\s*(?:if|elif|else|except)\b")
@@ -699,9 +832,72 @@ def _guarded(lines: list[str], number: int) -> bool:
     return False
 
 
+SKIP_CALL = re.compile(r"skip(?:if|If|Unless)\s*\(")
+CONSTANT_NODES = (
+    ast.Expression,
+    ast.Constant,
+    ast.UnaryOp,
+    ast.BoolOp,
+    ast.Compare,
+    ast.unaryop,
+    ast.boolop,
+    ast.cmpop,
+)
+IMPORT_AS = re.compile(r"^\s*import\s+(?P<module>pytest|unittest)\s+as\s+(?P<alias>\w+)", re.MULTILINE)
+MARK_AS = re.compile(r"^\s*from\s+pytest\s+import\s+mark\s+as\s+(?P<alias>\w+)", re.MULTILINE)
+
+
+def _first_argument(text: str) -> str:
+    """The text of a call's first argument, up to its top-level comma or the closing parenthesis."""
+    depth = 0
+    quote = ""
+    for position, char in enumerate(text):
+        if quote:
+            quote = "" if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        elif char in "([{":
+            depth += 1
+        elif char in ")]}" and depth:
+            depth -= 1
+        elif (char == "," and depth == 0) or char == ")":
+            return text[:position]
+    return text
+
+
+def _constant_condition(name: str, call: str) -> bool:
+    """Whether a skipif/skipIf/skipUnless condition is built from constants only and always skips."""
+    found = SKIP_CALL.search(call)
+    if found is None:
+        return False
+    argument = re.sub(r"^\s*condition\s*=\s*", "", _first_argument(call[found.end() :])).strip()
+    try:
+        tree = ast.parse(argument, mode="eval")
+        if not all(isinstance(node, CONSTANT_NODES) for node in ast.walk(tree)):
+            return False
+        value = eval(compile(tree, "<condition>", "eval"), {"__builtins__": {}})
+    except (SyntaxError, ValueError, TypeError):
+        return False
+    if isinstance(value, str) or value is None:
+        return False  # a string condition is evaluated by pytest; None never skips
+    return bool(value) is not call[found.start() :].startswith("skipUnless")
+
+
+def _normalized(text: str, lines: list[str]) -> str:
+    """`text` with this file's aliases of `pytest`, `unittest` and `pytest.mark` written out in full."""
+    source = "\n".join(lines)
+    aliases = [(item["alias"], item["module"]) for item in (m.groupdict() for m in IMPORT_AS.finditer(source))]
+    aliases += [(item["alias"], "pytest.mark") for item in (m.groupdict() for m in MARK_AS.finditer(source))]
+    for alias, target in aliases:
+        text = re.sub(rf"\b{re.escape(alias)}\.", f"{target}.", text)
+    return text
+
+
 def _conditional(name: str, lines: list[str], number: int) -> bool:
     """Whether a skip carries its condition and a reason, so it is information and not a bypass."""
     call = _call_text(lines, number)
+    if name in ("pytest.mark.skipif", "unittest.skipif") and _constant_condition(name, call):
+        return False
     if name == "pytest.skip":
         return _guarded(lines, number) and bool(REASON_KEYWORD.search(call) or FIRST_STRING.search(call))
     if name == "unittest.skipif":
@@ -709,20 +905,54 @@ def _conditional(name: str, lines: list[str], number: int) -> bool:
     return bool(REASON_KEYWORD.search(call))
 
 
+def _line_hits(path: str, lines: list[str], number: int, raw: str) -> list[tuple[str, bool]]:
+    """The bypasses on one added line: (name, whether it is a conditional skip that only informs)."""
+    text = _normalized(raw, lines)
+    hits: list[tuple[str, bool]] = []
+    if path.endswith(".py"):
+        hits.extend((name, False) for name, pattern in BYPASS_PATTERNS if pattern.search(text))
+        hits.extend(
+            (name, _conditional(name, lines or [text], number if lines else 1))
+            for name, pattern in CONDITIONAL_PATTERNS
+            if pattern.search(text)
+        )
+    if NO_COV.search(text):
+        hits.append(("--no-cov", False))
+    return hits
+
+
+def _file_notes(change: FileChange, kind: str) -> "tuple[list[dict[str, Any]], list[dict[str, Any]]]":
+    """Findings and information about a changed file as a whole, before its lines are read."""
+    findings: list[dict[str, Any]] = []
+    info: list[dict[str, Any]] = []
+    name = Path(change.path).name
+    if name == "conftest.py":
+        info.append({"code": "conftest-changed", "file": change.path, "line": 0, "detail": "fixtures and hooks"})
+    if change.status == "deleted" and kind == "test":
+        info.append({"code": "test-deleted", "file": change.path, "line": 0, "detail": "test file deleted"})
+    if name == ".gitattributes":
+        detail = ".gitattributes changed: attributes can change what a diff shows"
+        findings.append({"code": "bypass-added", "file": change.path, "line": 0, "detail": detail})
+    if change.binary and change.path.endswith(".py"):
+        detail = "python file with a NUL byte: it cannot be scanned"
+        findings.append({"code": "bypass-added", "file": change.path, "line": 0, "detail": detail})
+    return findings, info
+
+
 def scan_changes(repo: Path, changes: list[FileChange]) -> "tuple[list[dict[str, Any]], list[dict[str, Any]]]":
     """Bypasses on lines the change added (findings) and what a reviewer should look at (information).
 
     Only added lines count, so an ignore already in the base never fails. Python patterns apply to `.py` files,
-    `--no-cov` to every file that is not prose. A skip with a condition and a reason is information.
+    `--no-cov` to every file that is not prose. A skip with a condition and a reason is information. A changed
+    `.gitattributes` and a `.py` file with a NUL byte are findings: neither can be scanned reliably.
     """
     findings: list[dict[str, Any]] = []
     info: list[dict[str, Any]] = []
     for change in changes:
         kind = classify_file(change.path)
-        if Path(change.path).name == "conftest.py":
-            info.append({"code": "conftest-changed", "file": change.path, "line": 0, "detail": "fixtures and hooks"})
-        if change.status == "deleted" and kind == "test":
-            info.append({"code": "test-deleted", "file": change.path, "line": 0, "detail": "test file deleted"})
+        more_findings, more_info = _file_notes(change, kind)
+        findings.extend(more_findings)
+        info.extend(more_info)
         if change.binary or kind == "doc" or not change.added:
             continue
         lines: list[str] = []
@@ -731,18 +961,8 @@ def scan_changes(repo: Path, changes: list[FileChange]) -> "tuple[list[dict[str,
                 lines = (repo / change.path).read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 lines = []
-        for number, text in sorted(change.added.items()):
-            hits: list[tuple[str, bool]] = []
-            if change.path.endswith(".py"):
-                hits.extend((name, False) for name, pattern in BYPASS_PATTERNS if pattern.search(text))
-                hits.extend(
-                    (name, _conditional(name, lines or [text], number if lines else 1))
-                    for name, pattern in CONDITIONAL_PATTERNS
-                    if pattern.search(text)
-                )
-            if NO_COV.search(text):
-                hits.append(("--no-cov", False))
-            for name, conditional in hits:
+        for number, raw in sorted(change.added.items()):
+            for name, conditional in _line_hits(change.path, lines, number, raw):
                 entry = {"file": change.path, "line": number, "detail": name}
                 if conditional:
                     info.append({"code": "conditional-skip", **entry})
@@ -753,7 +973,7 @@ def scan_changes(repo: Path, changes: list[FileChange]) -> "tuple[list[dict[str,
 
 # --- the config thresholds ------------------------------------------------------------------------------------
 
-GATE_CONFIG_FILES = ("pyproject.toml", "setup.cfg", "ruff.toml", ".coveragerc")
+GATE_CONFIG_FILES = ("pyproject.toml", "setup.cfg", "ruff.toml", ".coveragerc", "pytest.ini", "tox.ini")
 KEY_ALIASES = {
     "fail-under": "fail_under",
     "max_complexity": "max-complexity",
@@ -766,7 +986,16 @@ KEY_ALIASES = {
 FLOOR_KEYS = ("fail_under",)
 CEILING_KEYS = ("max-complexity", "line-length")
 REQUIRED_KEYS = ("select", "testpaths")
-FORBID_KEYS = ("ignore", "extend-ignore", "omit", "exclude", "extend-exclude", "per-file-ignores")
+FORBID_KEYS = (
+    "ignore",
+    "extend-ignore",
+    "omit",
+    "exclude",
+    "extend-exclude",
+    "per-file-ignores",
+    "exclude_lines",
+    "exclude_also",
+)
 EXACT_KEYS = ("extend",)
 OPTION_KEYS = ("addopts",)
 WATCHED_KEYS = (*FLOOR_KEYS, *CEILING_KEYS, *REQUIRED_KEYS, *FORBID_KEYS, *EXACT_KEYS, *OPTION_KEYS)
@@ -781,6 +1010,10 @@ def _collect(data: dict[str, Any], found: dict[str, list[Any]]) -> None:
             found.setdefault(name, []).append(value)
         elif isinstance(value, dict):
             _collect(value, found)
+        elif isinstance(value, list):
+            for item in value:  # an array of tables, as in [[tool.mypy.overrides]]
+                if isinstance(item, dict):
+                    _collect(item, found)
 
 
 def _cfg_value(name: str, raw: str) -> Any:
@@ -1030,11 +1263,12 @@ def ruff_argv() -> list[str]:
 
 
 def _ruff_complexity(repo: Path, files: list[str]) -> "list[dict[str, Any]]":
-    """The C901 violations of `files` at the fixed limit, ignoring every config file (`--isolated`)."""
+    """The C901 violations of `files` at the fixed limit, ignoring every config file and every `# noqa`."""
     command = [
         *ruff_argv(),
         "check",
         "--isolated",
+        "--ignore-noqa",
         "--no-cache",
         "--select",
         "C901",
@@ -1166,6 +1400,9 @@ def _setup_problems(state: dict[str, Any], gates: dict[str, Any]) -> list[str]:
     repo = target_repository(state)
     if repo is None:
         return ["gates-no-repository: this project records no target repository to run the gates in"]
+    subdirectory = _toplevel_problem(repo)
+    if subdirectory:
+        return [subdirectory]
     for source in gates.get("sources", []):
         try:
             current = _file_sha256(repo / source["path"])
@@ -1194,15 +1431,20 @@ def _next_run_number(project: Path, task_id: str) -> int:
     return max(numbers) + 1
 
 
-def _junit(path: Path) -> "tuple[int, int] | None":
-    """(test cases, test files) of a junit report, or None when it is missing or unreadable."""
+def _junit(path: Path) -> "tuple[int, int, int] | None":
+    """(test cases run, test files, cases skipped) of a junit report, or None when it is missing or unreadable.
+
+    A skipped case (an xfail included) is not a case that ran: pytest counts it in `tests`.
+    """
     try:
         root = ElementTree.parse(path).getroot()
     except (OSError, ElementTree.ParseError):
         return None
-    cases = sum(int(suite.get("tests", "0")) for suite in root.iter("testsuite") if suite.get("tests", "0").isdigit())
+    suites = list(root.iter("testsuite"))
+    total = sum(int(suite.get("tests", "0")) for suite in suites if suite.get("tests", "0").isdigit())
+    skipped = sum(int(suite.get("skipped", "0")) for suite in suites if suite.get("skipped", "0").isdigit())
     files = {case.get("file") or str(case.get("classname", "")).rsplit(".", 1)[0] for case in root.iter("testcase")}
-    return cases, len(files)
+    return max(total - skipped, 0), len(files), skipped
 
 
 def _gate_outcome(command: dict[str, Any], attempt: "dict[str, Any] | None") -> "tuple[bool, str]":
@@ -1252,7 +1494,8 @@ def _measure_tests(
             cases += counts[0]
             files += counts[1]
             if counts[0] == 0:
-                failures.append(f"gate-failed: tests {command['id']} ran 0 test cases")
+                skipped = f" ({counts[2]} skipped)" if counts[2] else ""
+                failures.append(f"gate-failed: tests {command['id']} ran 0 test cases{skipped}")
         if position:
             continue
         try:
@@ -1311,6 +1554,15 @@ def _run_locked(
         tests, covered, total, note, test_failures = _measure_tests(repo, commands, outcomes, scratch, changes)
         findings, info = scan_changes(repo, changes)
         findings += scan_config(repo, gates["base_commit"], changes)
+        if total == 0 and note is None:
+            info.append(
+                {
+                    "code": "no-executable-lines",
+                    "file": "",
+                    "line": 0,
+                    "detail": "no changed executable Python lines, so diff coverage measured nothing",
+                }
+            )
         complexity = touched_complexity(repo, changes)
         failures += test_failures + _record_failures(findings) + complexity.pop("failures")
         failures += [
