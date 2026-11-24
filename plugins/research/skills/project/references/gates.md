@@ -71,12 +71,14 @@ finished before approval and a `no-repository` project are exempt.
   scan and the hash.
 - Only Python is scanned. A finish judges the task's declared outputs.
 - The outputs lock reads `started_at` and falls back to the status where no stamp exists. A task
-  that reached RUNNING without a stamp and was then sent back is not locked.
+  that reached RUNNING without a stamp and was then sent back to TODO is not locked.
 - `# pragma: no cover` on an `if __name__` or `TYPE_CHECKING` line is information, not a finding.
   Logic under that guard escapes diff coverage.
 - A changed file over 8 MiB is not read; a Python or config one is a `bypass-added` finding.
 - New projects are gated unless `RESEARCH_NEW_PROJECT_GATES` is exactly `0`.
 - A `no-repository` waiver is not rechecked once a repository is recorded.
 - The `tests` kind must be pytest; other runners can only be waived.
-- The target must be the repository root. A change that includes a gitlink (a submodule or nested
-  repository) is one changed path, never read.
+- The target must be the repository root.
+- A gitlink (a submodule or nested repository) is one changed path, never read. A new commit in it
+  changes the hash. Uncommitted edits inside it are invisible. A nested repository with no commit
+  stops the run with `git add failed ... adding files failed`; commit in it or move it out.

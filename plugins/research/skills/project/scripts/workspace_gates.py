@@ -62,7 +62,8 @@ GIT_CONFIG = (
 )
 # Options of every diff the gates parse. `--text` ignores attributes (also `.git/info/attributes`, which no config
 # can switch off), so `-diff` and `binary` cannot hide a file; the prefixes are fixed; `diff.relative` is overridden;
-# `--inter-hunk-context=0` keeps a user's `diff.interHunkContext` from fusing `-U0` hunks and adding context lines.
+# `--inter-hunk-context=0` keeps a user's `diff.interHunkContext` from fusing `-U0` hunks and adding context lines;
+# `--ignore-submodules=none` keeps `diff.ignoreSubmodules` and `submodule.<name>.ignore` from hiding a changed commit.
 DIFF_OPTIONS = (
     "--text",
     "--no-ext-diff",
@@ -72,6 +73,7 @@ DIFF_OPTIONS = (
     "--src-prefix=a/",
     "--dst-prefix=b/",
     "--inter-hunk-context=0",
+    "--ignore-submodules=none",
 )
 PATH_CHUNK = 200
 # A changed file larger than this (either side) is never given to a text diff: a binary of any size would be read,
@@ -151,11 +153,60 @@ def _snapshot(repo: Path, base_commit: str) -> Iterator[dict[str, str]]:
             "GIT_ALTERNATE_OBJECT_DIRECTORIES": str(common / "objects"),
         }
         _git_bytes(repo, "read-tree", base_commit, environment=environment)
+        _reconcile_gitlinks(repo, environment)
         _git_bytes(repo, "add", "-A", "--", ".", environment=environment)
         _add_forced(repo, base_commit, environment)
         yield environment
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _index_gitlinks(listing: bytes) -> list[bytes]:
+    """The paths of the mode 160000 entries of a `git ls-files -s -z` listing."""
+    found = []
+    for entry in listing.split(b"\0"):
+        meta, _, raw_path = entry.partition(b"\t")
+        if meta.startswith(GITLINK_MODE.encode()):
+            found.append(raw_path)
+    return found
+
+
+def _drop_from_snapshot(repo: Path, environment: dict[str, str], paths: list[bytes]) -> None:
+    if paths:
+        _git_bytes(
+            repo,
+            "update-index",
+            "--force-remove",
+            "-z",
+            "--stdin",
+            environment=environment,
+            stdin=b"\0".join(paths) + b"\0",
+        )
+
+
+def _reconcile_gitlinks(repo: Path, environment: dict[str, str]) -> None:
+    """Make `add -A` see a gitlink where the working tree has one, and files where it has files.
+
+    `add -A` follows the snapshot index (the base tree). A base gitlink whose path is now a plain directory holding
+    files would swallow those files, so it is removed. A nested repository (the real index holds its gitlink) over
+    base files would be read file by file, so those files are removed and `add -A` records the gitlink. A missing
+    path is left to `add -A`, and an empty directory stays a gitlink (a submodule that is not checked out).
+    """
+    snapshot = _git_bytes(repo, "ls-files", "-s", "-z", environment=environment)
+    inlined = []
+    for raw_path in _index_gitlinks(snapshot):
+        path = repo / raw_path.decode("utf-8", "surrogateescape")
+        if path.is_dir() and not os.path.lexists(path / ".git") and any(path.iterdir()):
+            inlined.append(raw_path)
+    _drop_from_snapshot(repo, environment, inlined)
+    nested = [
+        raw_path
+        for raw_path in _index_gitlinks(_git_bytes(repo, "ls-files", "-s", "-z"))
+        if os.path.lexists(repo / raw_path.decode("utf-8", "surrogateescape") / ".git")
+    ]
+    names = [entry.partition(b"\t")[2] for entry in snapshot.split(b"\0") if entry]
+    under = [name for name in names if any(name.startswith(item + b"/") for item in nested)]
+    _drop_from_snapshot(repo, environment, under)
 
 
 def _add_forced(repo: Path, base_commit: str, environment: dict[str, str]) -> None:
@@ -650,6 +701,7 @@ class FileChange:
     """One file's change against the base: added lines by new line number, a removal count, binary or not.
 
     `skipped` is a file over `MAX_DIFF_BYTES`: it was listed and not read, so it has no added lines.
+    `gitlink` is a submodule or nested repository (mode 160000): one changed path, never read, never a finding.
     """
 
     path: str
@@ -657,6 +709,7 @@ class FileChange:
     status: str = "modified"
     binary: bool = False
     skipped: bool = False
+    gitlink: bool = False
     added: dict[int, str] = field(default_factory=dict)
     removed: int = 0
     deletions: list[int] = field(default_factory=list)
@@ -731,8 +784,13 @@ def _diff_line_path(header: str) -> str:
     return text[2:] if quoted else text
 
 
+GITLINK_HEADER = re.compile(rf"(?:(?:new|deleted) file mode {GITLINK_MODE}|index \S+ {GITLINK_MODE})$")
+
+
 def _apply_header_line(current: FileChange, line: str) -> None:
     """One extended header line of a file's diff (mode, rename, binary, `---`, `+++`) applied to `current`."""
+    if GITLINK_HEADER.match(line):
+        current.gitlink = True
     if line.startswith("new file mode"):
         current.status = "added"
     elif line.startswith("deleted file mode"):
@@ -789,6 +847,11 @@ def parse_diff(text: str) -> list[FileChange]:
                 current.deletions.append(new_line)
         else:
             _apply_header_line(current, line)
+    for change in changes:
+        if change.gitlink:  # the only body is `Subproject commit <id>`: an id, not a line of code
+            change.added.clear()
+            change.deletions.clear()
+            change.removed = 0
     return changes
 
 
@@ -869,11 +932,12 @@ def changed_files(repo: Path, base_commit: str) -> list[FileChange]:
 
     The text diff never covers a file with a side over `MAX_DIFF_BYTES` (an `exclude` pathspec names it); such a file
     is listed from the raw change as `skipped`, without its content.
-    A gitlink (a submodule or nested repository) is one changed path, listed the same way and never read.
+    A gitlink (a submodule or nested repository) is one changed path with `gitlink` set, never read: its text diff
+    is one `Subproject commit` line. It is not excluded, since an exclude pathspec also covers every path under it.
     """
     with _snapshot(repo, base_commit) as environment:
         raw = _raw_changes(repo, base_commit, environment)
-        large = _oversized(repo, raw, environment) + [item for item in raw if item.gitlink]
+        large = _oversized(repo, raw, environment)
         excluded = [f":(literal,exclude){item.path}" for item in large]
         text = _git_bytes(
             repo,
@@ -1076,6 +1140,8 @@ def _file_notes(change: FileChange, kind: str) -> "tuple[list[dict[str, Any]], l
     """Findings and information about a changed file as a whole, before its lines are read."""
     findings: list[dict[str, Any]] = []
     info: list[dict[str, Any]] = []
+    if change.gitlink:
+        return findings, info
     name = Path(change.path).name
     if name == "conftest.py":
         info.append({"code": "conftest-changed", "file": change.path, "line": 0, "detail": "fixtures and hooks"})
@@ -1264,7 +1330,7 @@ def scan_config(repo: Path, base_commit: str, changes: list[FileChange]) -> list
     findings: list[dict[str, Any]] = []
     for change in changes:
         name = Path(change.path).name
-        if name not in GATE_CONFIG_FILES or change.binary:
+        if name not in GATE_CONFIG_FILES or change.binary or change.gitlink:
             continue
 
         def finding(detail: str, path: str = change.path) -> None:
@@ -1349,7 +1415,7 @@ def diff_coverage(repo: Path, changes: list[FileChange], report: object) -> dict
     covered = total = 0
     unmeasured: list[str] = []
     for change in changes:
-        if change.status == "deleted" or change.binary or not change.path.endswith(".py"):
+        if change.status == "deleted" or change.binary or change.gitlink or not change.path.endswith(".py"):
             continue
         if classify_file(change.path) != "source":
             continue
@@ -1462,7 +1528,7 @@ def touched_complexity(repo: Path, changes: list[FileChange]) -> dict[str, Any]:
     extents: dict[str, list[Extent]] = {}
     touched = 0
     for change in changes:
-        if change.status == "deleted" or change.binary or not change.path.endswith(".py"):
+        if change.status == "deleted" or change.binary or change.gitlink or not change.path.endswith(".py"):
             continue
         try:
             source = (repo / change.path).read_text(encoding="utf-8")

@@ -3407,3 +3407,142 @@ class TestNoExecutableLinesIsNotClaimedWithoutAMeasurement:
         result = run_gates(project)
         assert any("coverage-format" in item for item in result["failures"]), result["failures"]
         assert "no-executable-lines" not in [item["code"] for item in result["scan"]["info"]]
+
+
+def make_source(root: Path) -> Path:
+    return make_repo(root / "source", {"lib.py": "z = 1\n"})
+
+
+def add_submodule(repo: Path, source: Path, name: str) -> None:
+    git(repo, "-c", "protocol.file.allow=always", "submodule", "add", "-q", str(source), name)
+
+
+def gitlink_checks(repo: Path, base: str) -> "dict[str, Any]":
+    """Every reader of the changed files, run over one change set; a gitlink must give none of them a finding."""
+    changes = gates.changed_files(repo, base)
+    return {
+        "scan": gates.scan_changes(repo, changes)[0],
+        "config": gates.scan_config(repo, base, changes),
+        "coverage": gates.diff_coverage(repo, changes, coverage_json({}))["failures"],
+        "complexity": gates.touched_complexity(repo, changes)["failures"],
+    }
+
+
+class TestFilesUnderAGitlinkPath:
+    def test_a_submodule_replaced_by_real_files_is_scanned(self, tmp_path: Path) -> None:
+        source = make_source(tmp_path)
+        repo = make_repo(tmp_path / "target")
+        add_submodule(repo, source, "sub")
+        base = commit_all(repo, "submodule")
+        git(repo, "rm", "-q", "-f", "sub")
+        (repo / "sub").mkdir(exist_ok=True)
+        (repo / "sub" / "a.py").write_text("a = 1  # noqa\n", encoding="utf-8")
+        changes = {item.path: item for item in gates.changed_files(repo, base)}
+        assert sorted(changes) == [".gitmodules", "sub", "sub/a.py"]
+        assert changes["sub"].gitlink and changes["sub"].status == "deleted"
+        assert not changes["sub/a.py"].gitlink and sorted(changes["sub/a.py"].added) == [1]
+        assert findings_of(repo, base) == [("sub/a.py", "noqa")]
+
+    def test_a_directory_replaced_by_a_submodule_shows_its_deleted_files(self, tmp_path: Path) -> None:
+        source = make_source(tmp_path)
+        repo = make_repo(tmp_path / "target", {"sub/a.py": "a = 1\n", "sub/test_x.py": "def test_x():\n    pass\n"})
+        base = git(repo, "rev-parse", "HEAD")
+        git(repo, "rm", "-q", "-r", "-f", "sub")
+        add_submodule(repo, source, "sub")
+        changes = {item.path: item for item in gates.changed_files(repo, base)}
+        assert sorted(changes) == [".gitmodules", "sub", "sub/a.py", "sub/test_x.py"]
+        assert changes["sub"].gitlink and changes["sub"].status == "added"
+        assert changes["sub/a.py"].status == "deleted" and changes["sub/test_x.py"].status == "deleted"
+        assert ("test-deleted", "sub/test_x.py") in [(i["code"], i["file"]) for i in scan(repo, base)[1]]
+
+
+class TestAGitlinkIsNeverRead:
+    @pytest.mark.parametrize("name", ["x.py", "pyproject.toml", "conftest.py", "ruff.toml"])
+    def test_a_gitlink_at_a_scanned_name_gives_no_finding(self, tmp_path: Path, name: str) -> None:
+        source = make_source(tmp_path)
+        repo = make_repo(tmp_path / "target")
+        base = git(repo, "rev-parse", "HEAD")
+        add_submodule(repo, source, name)
+        changes = {item.path: item for item in gates.changed_files(repo, base)}
+        assert changes[name].added == {}  # the `Subproject commit` line is not code
+        assert gitlink_checks(repo, base) == {"scan": [], "config": [], "coverage": [], "complexity": []}
+        assert scan(repo, base)[1] == []  # not even the `conftest-changed` note: a gitlink is no fixture file
+
+    @pytest.mark.parametrize("name", ["x.py", "pyproject.toml"])
+    def test_a_deleted_gitlink_at_a_scanned_name_gives_no_finding(self, tmp_path: Path, name: str) -> None:
+        source = make_source(tmp_path)
+        repo = make_repo(tmp_path / "target")
+        add_submodule(repo, source, name)
+        base = commit_all(repo, "submodule")
+        git(repo, "rm", "-q", "-f", name)
+        changes = {item.path: item for item in gates.changed_files(repo, base)}
+        assert changes[name].status == "deleted"
+        assert gitlink_checks(repo, base) == {"scan": [], "config": [], "coverage": [], "complexity": []}
+
+    def test_a_file_turned_into_a_gitlink_and_back_keeps_each_side_right(self, tmp_path: Path) -> None:
+        source = make_source(tmp_path)
+        repo = make_repo(tmp_path / "target")
+        base = git(repo, "rev-parse", "HEAD")
+        git(repo, "rm", "-q", "-f", "app.py")
+        add_submodule(repo, source, "app.py")
+        assert gitlink_checks(repo, base) == {"scan": [], "config": [], "coverage": [], "complexity": []}
+        back = commit_all(repo, "gitlink")
+        git(repo, "rm", "-q", "-f", "app.py")
+        (repo / "app.py").write_text("y = 1  # noqa\n", encoding="utf-8")
+        assert findings_of(repo, back) == [("app.py", "noqa")]  # a real file at a gitlink path is scanned
+        assert gitlink_checks(repo, back)["coverage"] == [
+            "coverage-missing: the run did not measure changed source file(s): app.py"
+        ]
+
+    def test_a_finish_with_only_a_gitlink_change_has_nothing_to_report(self, tmp_path: Path) -> None:
+        source = make_source(tmp_path)
+        repo = make_repo(tmp_path / "target")
+        base = git(repo, "rev-parse", "HEAD")
+        add_submodule(repo, source, "vendor")
+        changes = gates.changed_files(repo, base)
+        assert [item.path for item in changes] == [".gitmodules", "vendor"]
+        assert scan(repo, base)[0] == []
+        assert gates.touched_complexity(repo, changes)["touched"] == 0
+
+
+class TestASubmoduleThatIsNotCheckedOut:
+    def test_an_empty_directory_at_a_gitlink_is_no_change(self, tmp_path: Path) -> None:
+        source = make_source(tmp_path)
+        repo = make_repo(tmp_path / "target")
+        add_submodule(repo, source, "sub")
+        base = commit_all(repo, "submodule")
+        git(repo, "submodule", "deinit", "-q", "-f", "sub")
+        assert (repo / "sub").is_dir() and not any((repo / "sub").iterdir())  # the fixture is what it claims
+        assert gates.changed_files(repo, base) == []
+
+
+class TestSubmoduleCommitsReachTheEvidenceHash:
+    @pytest.mark.parametrize("ignore", [None, "all"])
+    def test_a_changed_submodule_commit_changes_the_hash(self, tmp_path: Path, ignore: "str | None") -> None:
+        source = make_source(tmp_path)
+        repo = make_repo(tmp_path / "target")
+        base = git(repo, "rev-parse", "HEAD")
+        add_submodule(repo, source, "sub")
+        if ignore:
+            git(repo, "config", "diff.ignoreSubmodules", ignore)
+            git(repo, "config", "submodule.sub.ignore", ignore)
+            git(repo, "config", "-f", ".gitmodules", "submodule.sub.ignore", ignore)
+        before = tree(repo, base)
+        inner = repo / "sub"
+        (inner / "more.py").write_text("m = 1\n", encoding="utf-8")
+        git(inner, "add", "-A")
+        git(inner, "commit", "-q", "-m", "inner")
+        assert tree(repo, base) != before
+
+    def test_the_diff_options_pin_ignore_submodules(self) -> None:
+        assert "--ignore-submodules=none" in gates.DIFF_OPTIONS
+
+
+class TestAnEmptyNestedRepository:
+    def test_it_stops_the_gate_with_a_workspace_error_and_never_crashes(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        (repo / "empty").mkdir()
+        git(repo / "empty", "init", "-q", "-b", "main")
+        with pytest.raises(WorkspaceError, match=r"^git add failed in .*: fatal: adding files failed$"):
+            gates.changed_files(repo, base)
