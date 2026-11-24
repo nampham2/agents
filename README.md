@@ -75,6 +75,36 @@ Removing a Claude marketplace also removes plugins installed from it.
 
 ## Releases
 
+### 0.43.0 quality gates, coding standard and observability
+
+- **Quality gates.** A new project starts with a `gates` object. A gated project cannot mark a
+  code task DONE until its approved lint, types and tests commands pass, the changed lines and
+  branches are covered at 90% or more, each touched function has complexity 10 or less, and the
+  diff adds no ignore, skip or lowered threshold. The rule holds on every commit path: `task
+  finish`, backfill, `update`, `reconcile` and `correct`. The actions are `gate-discover`,
+  `gate-run` and `gates` (approve or waive); see `references/gates.md`. Older projects have no
+  `gates` field and see no change. `RESEARCH_NEW_PROJECT_GATES=0` turns the default off for new
+  projects.
+- **Limits of the gates.** They protect against honest mistakes, not against a worker who can
+  write the project folder: the evidence is hashes stored beside the data. The base commit is set
+  at the first approval and never moves. Only Python is scanned. `gates.md` lists the rest.
+- **Coding standard.** `references/coding-standard.md` is read before the first code edit of a
+  code task, delegated or not; `SKILL.md` has one pointer line. It asks for a failing-first test,
+  whole-repository gates, and mutation testing on the touched functions when a tool is available.
+  `worker-personas.md` points to it.
+- **Observability.** Each gate run writes `observability/<task>.json`: changed files, test cases,
+  diff coverage and complexity. `validate` and `research-validate` warn when a done code task of a
+  gated project has no valid record, and once when a record lists no Python file.
+- **Measured effect.** On six small Python fixtures, three runs per arm and one judge script
+  (outside this repository), the standard raised the touched-function mutation score from 72.94 to
+  86.04. Three of the six tasks account for most of the gain, and the improved workers were asked
+  to run the measured quantity. It does not show a wider rise in code quality.
+- **Wording trims.** To fit the word budget of `SKILL.md`, "follow both" and "explicit" were
+  dropped from two sentences, with article trims in `automation.md` and `automation-context.md`.
+  No rule text was removed.
+- A launcher older than 0.43.0 refuses a project created by this release (`project: unexpected
+  fields: gates`), so update both hosts before opening one.
+
 ### 0.42.1 refusals test and docs cleanup
 
 - `refusals.md` is now checked against the script strings by a test: labelled Code column,
