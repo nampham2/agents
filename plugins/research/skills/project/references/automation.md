@@ -1,6 +1,6 @@
 # Lifecycle automation
 
-Use the launchers beside the loaded skill (Pi) or on PATH (Claude). Examples use
+Use launchers beside the loaded skill (Pi) or on PATH (Claude). Examples use
 `research-project`; substitute the resolved executable, never a Python module.
 
 ```sh
@@ -18,6 +18,7 @@ Other references:
 - [Execution and memory](automation-execution.md): native `worker-event` observations,
   durable `verify` check batches, retry-safe `triage`.
 - [Durability](durability.md): `effect`, `wait`, crash loops, `unlock`.
+- [Gates](gates.md): `gates`, `gate-discover`, `gate-run`.
 
 `workflow <project-dir> <action> --schema` prints allowed, required, nested and variant keys. Writes
 return tokens, revisions and partial outcomes. A new ID is for new work, not bypassing a
@@ -41,16 +42,16 @@ changed input with the same ID conflicts.
 
 | Action | Additional input and behavior |
 | --- | --- |
-| `checkpoint` | `continuation`; derives phase, revision, tokens and Git observations; returns tokens and a resume prompt. |
+| `checkpoint` | `continuation`; derives phase, revision, tokens and Git observations; returns tokens and resume prompt. |
 | `round` | Saves optional `sections` (spec heading to body), `decisions` (`{id,body}`), `planning`, `continuation`; existing planning/handoff need tokens; `architecture` writes the design. |
 | `confirm` | `kind` (`requirements`, `planning` or `alignment`; old name `architecture`), exact `proposal_sha256` (`alignment`: `requirements_sha256` and `planning_sha256`), `review_id`, actual `response`, `source`, `scope`; optional `continuation`; a policy-2 `alignment` also `delivery_target`. Appends a marked confirmation; planning also updates its status and spec link. |
-| `retarget` | `delivery_target`, `reason`, `confirmation` (`source`, `response`); policy 2+. Records the change and the obligations gained and dropped; refuses when a record would be dropped. |
+| `retarget` | `delivery_target`, `reason`, `confirmation` (`source`, `response`); policy 2+. Records the change and obligations gained and dropped; refuses when a record would be dropped. |
 | `settings` | Policy 3: `review_risk`, `review_fallback`, `options`, `confirmation` (`source`, `response`); the one writer of those fields; see [review-risk.md](review-risk.md). |
 | `correct` | Terminal `task`, `reason`, `replacement` (new task fields except ID/status/evidence/authorization/receipts); optional `continuation`. Allocates a new ID without copying consent or acceptance. |
 | `reconcile` | Explicit `patch`, `decision`, `continuation`; saves dispositions, rewiring and pointers through commit guards. |
 | `authorize` | `task`, full `authorization`: `required`, `status`, `scope`, `source`, `authorized_at`. |
 | `receipt` | `task`, `receipt` (`kind`, `value`, `destination`, `timestamp`); `value` is an HTTP(S) URL or an id prefixed `receipt:`, `deployment:`, `message:`, `purchase:`, `publish:` or `commit:`; exact duplicates are skipped. |
-| `review` | `reviewer`, `version`, `scope`, `findings`, actual `status`; optional `evidence`, `required`. Allocates the next cycle/file, preserving history. `pending` reopens acceptance. |
+| `review` | `reviewer`, `version`, `scope`, `findings`, actual `status`; optional `evidence`, `required`. Allocates next cycle/file, preserving history. `pending` reopens acceptance. |
 | `goldfish` | `operation` `open` (`target`, `stages`; diff adds `worktree`, optional `commit`) returns `round`, `token`, `reviewed`; `close` (`round`; `tokens` `{"reviews/goldfish_NN": token}`; `reports` `[{stage, summary}]`; `findings` `[{id, reviewer, severity, scope, summary, triage, evidence, resolution, artifact}]`; optional `confirmation` `{source, response}`) computes the outcome; `amend` (`target`, `kind`, `reason`; `confirmation` when required; see review-risk.md); `waive` (`target`, `reason`, `confirmation`; diff adds `worktree`, optional `commit`). A changed target needs a `FIX` finding; a Blocker or Major `FIX` on an unchanged target names an existing `artifact` file; one `reports` entry per opened stage; `commit` is full hex. Writes only `reviews/goldfish_NN.md`; see [goldfish-review.md](goldfish-review.md). |
 | `finalize` | `reflection` (200+ characters, a heading, `## Retro`: what got in the way with pointers, unused references, one plugin change or `none`; required after the cutoff), `continuation`; `tokens` include `memory-staging`; commits DONE, saves the handoff; returns `reflected_lessons` (`staged`, `skipped`), retro and control warnings. |
 | `maintenance` | `reason`, optional `tasks`, `continuation`, `confirmation` (required while `automated` is on); reopens DONE as PLANNING. |
@@ -58,7 +59,7 @@ changed input with the same ID conflicts.
 | `decide` | Needs `automated` on. `by` `agent`: `kind`, `subject`, `choice`, `evidence`, `confidence`, `proposer`, `assessor` for a consequential kind, `options` for a free kind. `by` `user`: `kind`, `subject`, `choice`, `confirmation`, `spec` token. See [modes.md](modes.md). |
 | `assess` | `topic`, `disposition` (`apply`, `reject`, `defer`), `reason`, `application`; saves the lesson assessment with its topic token. |
 | `worktree` | `operation` `record` (`path`, `branch`, optional `repository`, `kind`, `role`) or `close` (`path`, `decision` `keep`/`accept_dirty`/`remove`), or a delivery record (`path` each): `pull_request`, `alpha`, `release`, `merge` (also `merged_head`); plus `confirmation`; Git-verified; see [worktrees.md](worktrees.md). |
-| `report` | Optional report `sections` and boolean `graph`; generates the Markdown scaffold/accounting and checks citations. |
+| `report` | Optional `sections` and boolean `graph`; generates the Markdown scaffold/accounting and checks citations. |
 
 Continuation fields are strings: `next` (required on first checkpoint), `questions`, `pointers`,
 `partial`, `ownership`, `effects`, `lessons`, `do_not`, `session`. Only supplied fields change;

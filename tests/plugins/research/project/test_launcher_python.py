@@ -8,6 +8,7 @@ on the expression the launcher sends and not on a canned answer.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -16,8 +17,18 @@ import sys
 from pathlib import Path
 
 import pytest
+from workspace_operations import task_operation
 
-from tests.conftest import REPO_ROOT
+from tests.conftest import REPO_ROOT, backdate_project
+from tests.plugins.research.project.test_lifecycle_commands import request
+from tests.plugins.research.project.test_workspace_gates import (
+    GATE_FILES,
+    PYTEST,
+    USER,
+    make_project,
+    make_repo,
+    raw_state,
+)
 
 BIN = REPO_ROOT / "plugins/research/bin"
 SKILL_SCRIPTS = (REPO_ROOT / "plugins/research/skills/project/scripts").resolve()
@@ -225,3 +236,138 @@ def test_the_launchers_are_executable_and_the_selector_is_only_sourced() -> None
         assert os.access(SKILL_SCRIPTS / name, os.X_OK)
     assert SELECTOR.is_file()
     assert not os.access(SELECTOR, os.X_OK)
+
+
+# --- the gate actions through the launchers, as a real process on the machine's own PATH -------------------------
+#
+# The tests above fake the interpreters. These run the real launcher, because what they prove is that the actions
+# are reachable on both host surfaces: Claude Code runs the top-level wrapper, Pi runs the launcher beside the skill.
+
+GATE_ACTIONS = ("gates", "gate-discover", "gate-run")
+
+
+def _launch(surface: Path, *arguments: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [str(surface / "research-project"), *arguments], input=stdin, capture_output=True, text=True, check=False
+    )
+
+
+@pytest.mark.parametrize("surface", [BIN, SKILL_SCRIPTS], ids=["claude-wrapper", "pi-skill-launcher"])
+@pytest.mark.parametrize("action", GATE_ACTIONS)
+def test_the_gate_actions_print_their_schema_through_both_launchers(surface: Path, action: str, tmp_path: Path) -> None:
+    result = _launch(surface, "workflow", str(tmp_path), action, "--schema")
+    assert result.returncode == 0, result.stderr
+    schema = json.loads(result.stdout)
+    assert schema["action"] == action
+    if action == "gates":
+        variants = schema["required_by"]
+        assert {"commands", "confirmation"} <= set(variants["operation=approve"])
+        assert {"kinds", "reason", "confirmation"} <= set(variants["operation=waive"])
+        assert "commands" not in variants["operation=waive"]
+        assert {"operation", "id", "expected_revision", "confirmation"} <= set(schema["required"])
+    elif action == "gate-run":
+        assert schema["required"] == ["task"]
+    else:
+        assert schema["allowed"] == []
+
+
+@pytest.mark.parametrize("surface", [BIN, SKILL_SCRIPTS], ids=["claude-wrapper", "pi-skill-launcher"])
+def test_an_unknown_gate_action_is_refused_by_both_launchers(surface: Path, tmp_path: Path) -> None:
+    # The control: the same call with a name that is not an action must fail, so the test above can fail.
+    result = _launch(surface, "workflow", str(tmp_path), "gate-bogus", "--schema")
+    assert result.returncode == 2
+    assert "invalid choice: 'gate-bogus'" in result.stderr
+    assert result.stdout == ""
+
+
+def test_both_launchers_print_the_same_gate_schemas(tmp_path: Path) -> None:
+    for action in GATE_ACTIONS:
+        wrapper = _launch(BIN, "workflow", str(tmp_path), action, "--schema")
+        local = _launch(SKILL_SCRIPTS, "workflow", str(tmp_path), action, "--schema")
+        assert wrapper.stdout == local.stdout != ""
+
+
+# --- a code task cannot finish while a mandatory gate fails: the whole path through the launcher ---------------------
+
+LINT_PROBE = [
+    sys.executable,
+    "-c",
+    "import pathlib, sys; sys.exit(1 if 'FIXME' in pathlib.Path('app.py').read_text() else 0)",
+]
+TYPES_PROBE = [sys.executable, "-c", "pass"]
+WORK = "\n\ndef g(x):\n    return x + 1  # FIXME\n"
+WORK_TEST = (
+    "from app import f, g\n\n\ndef test_f():\n    assert f(1) == 1\n    assert f(0) == 2\n\n\n"
+    "def test_g():\n    assert g(1) == 2\n"
+)
+
+
+def _workflow(
+    surface: Path, project: Path, action: str, identity: str, **fields: object
+) -> subprocess.CompletedProcess[str]:
+    body = json.dumps(request(project, identity, **fields)) if action == "gates" else json.dumps(fields)
+    return _launch(surface, "workflow", str(project), action, "-", stdin=body)
+
+
+@pytest.mark.parametrize("surface", [BIN, SKILL_SCRIPTS], ids=["claude-wrapper", "pi-skill-launcher"])
+def test_a_failing_gate_blocks_task_finish_through_the_launcher_until_it_is_fixed(
+    surface: Path, tmp_path: Path
+) -> None:
+    repo = make_repo(tmp_path, GATE_FILES)
+    project = make_project(tmp_path, repo)
+    # The launcher is a process, beyond the suite's cutoff patches: an old `created` keeps the date gates off.
+    backdate_project(project)
+    commands = [
+        {"id": "lint", "kind": "lint", "argv": LINT_PROBE},
+        {"id": "types", "kind": "types", "argv": TYPES_PROBE},
+        {"id": "tests", "kind": "tests", "argv": PYTEST},
+    ]
+    approved = _workflow(
+        surface, project, "gates", "approve-1", operation="approve", commands=commands, confirmation=USER
+    )
+    assert approved.returncode == 0, approved.stderr
+
+    # Start in process: a launcher reads the real clock, which switches the Goldfish design gate on for the first
+    # code task to run, and that gate is not what this test is about. Every later step is a launcher process.
+    task_operation(project, "start", "T01", expected_revision=raw_state(project)["revision"])
+    assert raw_state(project)["tasks"][0]["status"] == "RUNNING"
+
+    # The worker's change: a covered new function, and a marker the lint probe rejects.
+    (repo / "app.py").write_text((repo / "app.py").read_text(encoding="utf-8") + WORK, encoding="utf-8")
+    (repo / "tests/test_app.py").write_text(WORK_TEST, encoding="utf-8")
+    evidence = _launch(
+        surface, "record-evidence", str(project), "--task", "T01", "--json", "--", sys.executable, "-c", "pass"
+    )
+    assert evidence.returncode == 0, evidence.stderr
+    record = json.loads(evidence.stdout)["record_id"]
+
+    failed = _workflow(surface, project, "gate-run", "unused", task="T01")
+    assert failed.returncode == 1, failed.stdout + failed.stderr
+    assert json.loads(failed.stdout)["passed"] is False
+
+    def finish() -> subprocess.CompletedProcess[str]:
+        revision = str(raw_state(project)["revision"])
+        return _launch(
+            surface, "task", str(project), "finish", "T01", "--expected-revision", revision, "--evidence", record
+        )
+
+    refused = finish()
+    assert refused.returncode != 0, refused.stdout
+    assert "task T01 cannot finish" in refused.stderr
+    assert "gate-failed: lint" in refused.stderr
+    assert raw_state(project)["tasks"][0]["status"] == "RUNNING"
+
+    # Fix the cause, run the gates again, and the same finish call goes through.
+    (repo / "app.py").write_text(
+        (repo / "app.py").read_text(encoding="utf-8").replace("  # FIXME", ""), encoding="utf-8"
+    )
+    # Fixing the file is not enough: the failed run still stands until the gates run again.
+    not_rerun = finish()
+    assert not_rerun.returncode != 0 and "gate-failed: lint" in not_rerun.stderr
+    assert raw_state(project)["tasks"][0]["status"] == "RUNNING"
+    passed = _workflow(surface, project, "gate-run", "unused", task="T01")
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+    assert json.loads(passed.stdout)["passed"] is True
+    done = finish()
+    assert done.returncode == 0, done.stderr
+    assert raw_state(project)["tasks"][0]["status"] == "DONE"

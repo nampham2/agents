@@ -224,9 +224,11 @@ ORIGINAL_ALIGNMENT_WORDS = BASELINE["alignment-repository"]
 CONDITIONAL = {
     "automation-context": "only for context reads such as resume, packet and readiness",
     "automation-execution": "only for worker events, verify batches and lesson triage",
+    "coding-standard": "only on a code task, before its first code edit, delegated or not",
     "design-document": "only when writing or updating the design task's artifacts/architecture.md",
     "durability": "only for intents, crash loops, waits, silent workers, busy locks or waivers",
     "execution-changes": "only when execution invalidates assignments, inputs or agreement",
+    "gates": "only for the gate actions, a code task's finish refusal or a validation warning about records",
     "goldfish-personas": "only for reviewer subagents; the coordinator hands the file to them",
     "goldfish-review": "only at a gate: a confirmation, the first code task, a release or a merge",
     "grill": "only when a change reopens requirements",

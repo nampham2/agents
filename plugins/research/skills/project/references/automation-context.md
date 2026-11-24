@@ -18,13 +18,15 @@ Prefer `init ... --json` for path, revision, roots, tokens and warnings. `update
 | `memory-health` | `{}`; `absent`, `no_matches`, `available` or `failed`, with diagnostics/candidates. |
 | `recover` | `id`, optional boolean `apply`; inspect a journal, or resume metadata/index persistence only. |
 
-Documents are `spec`, `planning`, `architecture` (the design), `handoff`, `reflection`,
+`gate-discover`, `gate-run`: [gates.md](gates.md).
+
+Documents are `spec`, `planning`, `architecture` (design), `handoff`, `reflection`,
 `memory-staging`, `evidence`, `tasks/T01`, `reviews/review_01`, or `artifacts/report`. Exact `entry`
 selects a decision, finding or evidence record ID; `section` selects an exact heading, including
 planning sections. Reads default to 2,000 characters, maximum 20,000, with `next_offset` and
 truncation metadata. `next_offset: null` ends pagination; `truncated` also marks pages omitting
 earlier content. `if_sha256` suppresses unchanged content only if the caller still holds it; after
-context loss, reread. Handoff reads omit the generated metadata block.
+context loss, reread. Handoff reads omit generated metadata block.
 
 ```json
 {"task":"T01","max_chars":12000,"selections":[
@@ -35,7 +37,7 @@ context loss, reread. Handoff reads omit the generated metadata block.
 ]}
 ```
 
-The bundle caps source bodies at 12,000 characters by default (maximum 40,000); it lists omitted
+Bundle caps source bodies at 12,000 characters by default (maximum 40,000); it lists omitted
 selections; follow their pagination. Fingerprints read at most 50 selected files totaling 16 MiB.
 Matching hashes do not establish undeclared/remote freshness, authority, acceptance or stopped
 processes. Impact reports candidates, never automatic invalidation.

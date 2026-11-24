@@ -2,7 +2,10 @@
 
 Read only by a worker on a code task; the packet names this file by absolute path. It adds coding
 practice to the worker instructions of [task-workers.md](task-workers.md). The worker instructions
-still apply. Where the target repository's rules differ from this file, the repository's rules win.
+still apply. Read [coding-standard.md](coding-standard.md) first: its rules apply in full and this
+file adds the packet and report rules on top of it, without repeating them. Where the target
+repository's rules are stricter than this file or that one, the repository's rules win; they never
+loosen a floor.
 
 ## Before you edit
 
@@ -60,6 +63,8 @@ still apply. Where the target repository's rules differ from this file, the repo
 - Report your new files to the coordinator, who adds them: the hooks see only tracked files. Do
   not run `git add`. When the change has a local entry point without side effects, run it once on
   realistic input and read the result.
+- When a mutation testing tool is available, run it on the functions you touched and act on the
+  survivors, as the coding standard says.
 - Re-run the affected gates after your last edit, a formatter run included. Do not retry a
   failure that cannot change: read the error first.
 
@@ -72,7 +77,7 @@ coordinator can check it line by line; it re-runs the gates and does not accept 
 2. Changed, new and deleted paths; `git status --short --branch`; that nothing was committed;
    files you created outside the repository.
 3. The failing-first run: command, exit code, the failure in one line; or the exception you used.
-4. Each gate: command, directory, exit code, failures included.
+4. Each gate: command, directory, exit code, failures included; and the mutation result.
 5. Not verified: checks not run and why, code paths no test exercised, facts inferred.
 6. Deviations from the brief or design, changes outside your paths, decisions you made.
 7. Text your change makes false outside your paths; one line for the next worker, if any.
