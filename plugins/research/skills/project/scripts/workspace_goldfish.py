@@ -28,10 +28,10 @@ from workspace_lib import (
     WorkspaceError,
     at_or_after,
     document_sha256,
-    is_code_task,
     planning_path,
     proposal_digest,
     read_text,
+    writes_target_code,
 )
 from workspace_occupancy import _query
 
@@ -185,7 +185,7 @@ def _objects(value: object) -> "list[dict[str, Any]]":
 
 def has_code_task(state: "dict[str, Any]") -> bool:
     """Whether the project has a code task that is not skipped."""
-    return any(is_code_task(task) and task.get("status") != "SKIPPED" for task in _objects(state.get("tasks")))
+    return any(writes_target_code(task) and task.get("status") != "SKIPPED" for task in _objects(state.get("tasks")))
 
 
 def worktree_entry(state: "dict[str, Any]", path: object) -> "dict[str, Any]":
@@ -326,11 +326,59 @@ def _flat(text: object) -> str:
     return " ".join(str(text).split())
 
 
+def _report_paths(number: int, stages: "tuple[str, ...]") -> "dict[str, str]":
+    """One reviews/ path per stage for the agent to write; no tool reads or checks the file."""
+    return {stage: f"{round_name(number)}_{stage}.md" for stage in stages}
+
+
+def head_advisory(entry: "dict[str, Any]", commit: str) -> "list[str]":
+    """Advise when a pinned round's worktree is detached or off its recorded branch; never refuses.
+
+    A directory that is missing, or a Git that cannot answer, gives no advice.
+    """
+    observation = worktree_observation(Path(entry["path"]))
+    if not (observation["exists"] and observation["available"] and observation["is_repository"]):
+        return []
+    branch = observation["branch"]
+    if not branch:
+        return [f"worktree {entry['path']} is detached"]
+    if branch != entry["branch"]:
+        return [
+            f"worktree {entry['path']} is on branch {branch}, but records {entry['branch']}; "
+            f"the reviewed commit is {commit[:12]}, so check that no reviewer moved HEAD"
+        ]
+    return []
+
+
+ROUND_ADVICE_LIMITS = {"spec": 5, "planning": 5, "design": 5, "diff": 8}
+
+
+def round_count_advisory(rounds: "list[Round]", target: str, worktree: "str | None") -> "list[str]":
+    """Advise from the fifth round on a document target and the eighth on a diff; never refuses."""
+    number = 1 + len([item for item in rounds if item.key == (target, worktree)])
+    limit = ROUND_ADVICE_LIMITS[target]
+    if number < limit:
+        return []
+    where = f", worktree {worktree}" if worktree else ""
+    return [f"round {number} on {target}{where}: from round {limit} ask the user whether to stop at accepted-residual"]
+
+
+def _pinned_advisory(state: "dict[str, Any]", current: Round) -> "list[str]":
+    if not current.pinned:
+        return []
+    try:
+        entry = worktree_entry(state, current.worktree)
+    except WorkspaceError:
+        return []  # the worktree left the record since the open; there is nothing to observe
+    return head_advisory(entry, current.reviewed)
+
+
 def open_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
     target, worktree, commit = _target_fields(state, request)
     stages = _stages(request.get("stages"))
     reviewed = version_for(project, state, target, worktree, commit)
     rounds = round_documents(project)
+    advice = round_count_advisory(rounds, target, worktree)
     closed = [item for item in rounds if item.key == (target, worktree) and item.outcome != "open"]
     reaudit_of = delta_of = None
     if closed and closed[-1].outcome == "reaudit-required":
@@ -343,6 +391,7 @@ def open_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]"
     number = max(_round_numbers(project), default=0) + 1
     round_ = Round(number, target, worktree, commit is not None, reviewed, None, "open", stages, reaudit_of, delta_of)
     documents = _write(number, round_, f"# Goldfish round {number:02d}: {target}\n\nOpen. No report yet.")
+    head = head_advisory(worktree_entry(state, worktree), reviewed) if commit is not None else []
     result = {
         "round": number,
         "document": round_name(number),
@@ -350,6 +399,8 @@ def open_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]"
         "reviewed": reviewed,
         "reaudit_of": reaudit_of,
         "delta_of": delta_of,
+        "report_paths": _report_paths(number, stages),
+        "warnings": head + advice,
     }
     return documents, result
 
@@ -369,10 +420,15 @@ def _artifact_exists(project: Path, artifact: str) -> bool:
     return candidate.is_relative_to(project.resolve()) and candidate.is_file()
 
 
+def _minor_as_nit(finding: "dict[str, Any]") -> "dict[str, Any]":
+    """A reviewer may write Minor; the stored finding says Nit, so later readers see one word."""
+    return {**finding, "severity": "Nit"} if finding.get("severity") == "Minor" else finding
+
+
 def _findings(value: object, project: Path) -> "list[dict[str, Any]]":
     findings: "list[dict[str, Any]]" = []
     for item in list_input(value, 200, "findings"):
-        finding = object_input(item, FINDING_FIELDS, FINDING_REQUIRED, where="finding")
+        finding = _minor_as_nit(object_input(item, FINDING_FIELDS, FINDING_REQUIRED, where="finding"))
         for field in ("id", "reviewer", "scope", "summary"):
             string_input(finding[field], f"finding {field}")
         label = f"finding {finding['id']}"
@@ -409,7 +465,7 @@ def _confirmation_lines(confirmation: "dict[str, str]") -> "list[str]":
     return ["## Confirmation", "", f"Source: {source}", f"Response: {response}"]
 
 
-def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
+def _round_to_close(project: Path, request: "dict[str, Any]") -> Round:
     number = request.get("round")
     if type(number) is not int or number < 1:
         raise WorkspaceError("round must be a round number")
@@ -422,6 +478,12 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
     series = [item for item in round_documents(project) if item.key == current.key]
     if series[-1].number != number:
         raise WorkspaceError(f"round {number:02d} is not the latest round for its target; open a new round")
+    return current
+
+
+def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
+    current = _round_to_close(project, request)
+    number = current.number
     reports = _reports(request.get("reports"), current.stages)
     findings = _findings(request.get("findings"), project)
     confirmation = _confirmation(request["confirmation"]) if "confirmation" in request else None
@@ -429,8 +491,31 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
         resolved = current.reviewed
     else:
         resolved = version_for(project, state, current.target, current.worktree)
-    changed = resolved != current.reviewed
-    risk = _risk_of(state)  # None below policy 3; the risk now, not the risk at `open`, decides the outcome
+    outcome = _close_outcome(current, findings, confirmation, resolved != current.reviewed, _risk_of(state))
+    lines = [f"# Goldfish round {number:02d}: {current.target}", "", f"Outcome: {outcome}", "", "## Reports", ""]
+    lines += [f"- **{report['stage']}**: {_flat(report['summary'])}" for report in reports]
+    lines += ["", "## Findings", ""]
+    lines += [_finding_line(item) for item in findings] or ["None."]
+    if confirmation is not None:
+        lines += ["", *_confirmation_lines(confirmation)]
+    closed = Round(
+        number, current.target, current.worktree, current.pinned, current.reviewed, resolved, outcome,
+        current.stages, current.reaudit_of, current.delta_of,
+    )
+    result = {
+        "round": number, "outcome": outcome, "resolved": resolved, "warnings": _pinned_advisory(state, current),
+    }
+    return _write(number, closed, "\n".join(lines)), result
+
+
+def _close_outcome(
+    current: Round,
+    findings: "list[dict[str, Any]]",
+    confirmation: "dict[str, str] | None",
+    changed: bool,
+    risk: "str | None",
+) -> str:
+    """The outcome of a close; `risk` is the risk now (None below policy 3), not the risk at `open`."""
     if risk == "high" and current.target not in LIGHT_TARGETS and set(current.stages) != set(LADDER):
         raise WorkspaceError(
             f"the review risk is now high, so a {current.target} round lists the stages {', '.join(LADDER)}; "
@@ -463,17 +548,7 @@ def close_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]
         outcome = "reaudit-required"
     else:
         outcome = "accepted"
-    lines = [f"# Goldfish round {number:02d}: {current.target}", "", f"Outcome: {outcome}", "", "## Reports", ""]
-    lines += [f"- **{report['stage']}**: {_flat(report['summary'])}" for report in reports]
-    lines += ["", "## Findings", ""]
-    lines += [_finding_line(item) for item in findings] or ["None."]
-    if confirmation is not None:
-        lines += ["", *_confirmation_lines(confirmation)]
-    closed = Round(
-        number, current.target, current.worktree, current.pinned, current.reviewed, resolved, outcome,
-        current.stages, current.reaudit_of, current.delta_of,
-    )
-    return _write(number, closed, "\n".join(lines)), {"round": number, "outcome": outcome, "resolved": resolved}
+    return outcome
 
 
 def waive_round(project: Path, state: "dict[str, Any]", request: "dict[str, Any]") -> Written:
@@ -700,6 +775,30 @@ def round_errors(project: Path, target: str, worktree: "str | None", version: st
     return []
 
 
+def _latest_passing(rounds: "list[Round]", target: str) -> "Round | None":
+    """The latest closed round of a document target when it passed; an open round is not closed."""
+    closed = [item for item in rounds if item.key == (target, None) and item.outcome != "open"]
+    return closed[-1] if closed and closed[-1].outcome in PASSING else None
+
+
+def stale_round_warnings(project: Path, before: "dict[str, str]", after: "dict[str, str]") -> "list[str]":
+    """Warnings for each closed passing spec or planning round that a write moves from covering to not covering.
+
+    `before` and `after` map `spec` and `planning` to the text on each side of the write; a target missing from
+    either side is not checked. A round already stale before the write, or not passing, gives no warning.
+    """
+    rounds = round_documents(project)
+    found = []
+    for target, kind in (("spec", "requirements"), ("planning", "planning")):
+        latest = _latest_passing(rounds, target) if target in before and target in after else None
+        if latest and proposal_digest(kind, before[target]) == latest.resolved != proposal_digest(kind, after[target]):
+            found.append(
+                f"goldfish round {latest.number:02d} ({latest.outcome}) no longer covers {SUBJECT[target]} after "
+                "this write; the next confirmation needs a delta round. Edit before closing a round."
+            )
+    return found
+
+
 def confirm_gate_errors(
     project: Path, state: "dict[str, Any]", kinds: "tuple[str, ...]", spec_text: str, planning_text: str
 ) -> "list[str]":
@@ -718,7 +817,7 @@ def _code_started(state: "dict[str, Any]") -> bool:
     # A task that ran leaves a status, a start stamp or evidence. An in-flight project from before the
     # stamps may show none of them for a blocked task, and then its resume asks for a design round once.
     return any(
-        is_code_task(task)
+        writes_target_code(task)
         and (task.get("status") in ("RUNNING", "DONE") or task.get("started_at") or task.get("evidence"))
         for task in _objects(state.get("tasks"))
     )
@@ -733,7 +832,8 @@ def design_gate_errors(project: Path, previous: "dict[str, Any]", candidate: "di
     if not workspace_lib.is_goldfish_gated(candidate) or _code_started(previous):
         return []
     running = any(
-        is_code_task(task) and task.get("status") in ("RUNNING", "DONE") for task in _objects(candidate.get("tasks"))
+        writes_target_code(task) and task.get("status") in ("RUNNING", "DONE")
+        for task in _objects(candidate.get("tasks"))
     )
     if not running:
         return []
@@ -761,6 +861,146 @@ def _descends(repository: Path, ancestor: str, commit: str) -> bool:
     return _query(repository, "merge-base", "--is-ancestor", ancestor, commit) is not None
 
 
+NO_BRANCH_OR_PATH = f"{DIFF_GATE}: the worktree record has no branch or path"
+FIX_HINT = "If later commits only fix its findings, list them in fix_commits."
+FIX_ROUNDS = ("accepted", "accepted-residual")
+
+
+def _owes_round(entry: "dict[str, Any]", event: str, rules: "workspace_lib.DeliveryRules") -> bool:
+    """Whether `event` owes a diff round for `entry` under `rules.diff_events`."""
+    events = rules.diff_events
+    if event != "closure":
+        return event in events
+    # `closure` (a reviewable PR) covers every entry; `closure_exempt` only an entry with a pr_exemption.
+    if "closure" not in events and not ("closure_exempt" in events and "pr_exemption" in entry):
+        return False
+    # The PR is merged, or its work abandoned: the round exists to hand over an open PR.
+    return not ("closure" in events and _object(entry.get("merge")).get("state") in ("merged", "declined"))
+
+
+def _gone_branch_errors(project: Path, entry: "dict[str, Any]", repository: Path) -> "list[str]":
+    if _query(repository, "rev-parse", "--git-dir") is None:
+        return [f"{DIFF_GATE}: {repository} is not a readable Git repository"]
+    # The branch is gone (merged locally and deleted): the last round the worktree passed stands.
+    latest = [item for item in round_documents(project) if item.key == ("diff", entry["path"])]
+    if latest and latest[-1].outcome in PASSING:
+        return []
+    shown = "no round exists"
+    if latest:
+        shown = f"its latest round ({latest[-1].number:02d}, {latest[-1].outcome}) is not accepted"
+    return [f"{DIFF_GATE}: branch {entry['branch']} no longer exists in {repository} and {shown}"]
+
+
+def _closure_gate_errors(
+    project: Path, entry: "dict[str, Any]", rules: "workspace_lib.DeliveryRules", repository: Path, ref: str
+) -> "list[str]":
+    if _object(entry.get("merge")).get("state") == "declined":
+        return []  # a declined local merge abandons the work: no round is owed for code that is not delivered
+    closed_at = _object(entry.get("closure")).get("observed_at")
+    if entry.get("status") == "kept" and not _at_or_after_instant(closed_at, rules.policy):
+        return []  # kept before the instant: that closure counts as passed
+    head = _query(repository, "rev-parse", ref)
+    if head is None:
+        return _gone_branch_errors(project, entry, repository)
+    return round_errors(project, "diff", entry["path"], head)
+
+
+def _fix_hint(project: Path, entry: "dict[str, Any]", merged: str, errors: "list[str]") -> "list[str]":
+    """The stale-round errors, with the `fix_commits` hint when the latest passing round is an ancestor of `merged`."""
+    series = [item for item in round_documents(project) if item.key == ("diff", entry["path"])]
+    if not errors or not series or series[-1].outcome not in FIX_ROUNDS:
+        return errors
+    if not _descends(Path(entry["repository"]), str(series[-1].resolved), merged):
+        return errors
+    return [*errors[:-1], f"{errors[-1]}. {FIX_HINT}"]
+
+
+def _listed_errors(repository: Path, reviewed: str, merged: str, listed: "list[Any]", number: int) -> "list[str]":
+    """Check 4: each listed commit exists, builds on the reviewed head (and is not it), and is in `merged`."""
+    errors: "list[str]" = []
+    for item in listed:
+        try:
+            commit = checked_commit(str(repository), item)
+        except WorkspaceError as error:
+            errors.append(f"{DIFF_GATE}: {error}")
+            continue
+        if commit == reviewed or not _descends(repository, reviewed, commit):
+            errors.append(
+                f"{DIFF_GATE}: commit {commit[:12]} is not a descendant of the reviewed head {reviewed[:12]} "
+                f"of round {number:02d}"
+            )
+        elif not _descends(repository, commit, merged):
+            errors.append(f"{DIFF_GATE}: commit {commit[:12]} is not an ancestor of merged_head {merged[:12]}")
+    return errors
+
+
+def _unlisted_errors(repository: Path, reviewed: str, merged: str, listed: "list[Any]") -> "list[str]":
+    """Check 5: no commit of `reviewed..merged` is missing from `listed`; the oldest one is named."""
+    between = _query(repository, "rev-list", "--reverse", f"{reviewed}..{merged}")
+    if between is None:
+        return [f"{DIFF_GATE}: git could not list the commits between {reviewed[:12]} and merged_head {merged[:12]}"]
+    missing = [commit for commit in between.split() if commit not in listed]
+    if not missing:
+        return []
+    return [
+        f"{DIFF_GATE}: commit {missing[0][:12]} lies between {reviewed[:12]} and merged_head {merged[:12]} "
+        f"and is not listed in fix_commits ({len(missing)} unlisted)"
+    ]
+
+
+def fix_commit_errors(
+    project: Path, entry: "dict[str, Any]", repository: Path, merged: str, listed: object
+) -> "list[str]":
+    """The merge gate for a merged head ahead of the reviewed head, with the commits between listed.
+
+    The latest diff round of the worktree is the base. Five checks run in order and the first to fail answers.
+    The agent attests that each listed commit fixes a finding of that round; the tool checks ancestry only.
+    """
+    series = [item for item in round_documents(project) if item.key == ("diff", entry["path"])]
+    if not series:
+        return round_errors(project, "diff", entry["path"], merged)
+    latest = series[-1]
+    reviewed = str(latest.resolved)
+    if latest.outcome not in FIX_ROUNDS:  # a waiver has no findings to fix
+        return [
+            f"{DIFF_GATE}: fix_commits needs the latest round ({latest.number:02d}) to be accepted or "
+            f"accepted-residual, not {latest.outcome}"
+        ]
+    if reviewed == merged:
+        return [f"{DIFF_GATE}: fix_commits needs a merged_head ahead of the reviewed head {reviewed[:12]}"]
+    if not _descends(repository, reviewed, merged):
+        return [
+            f"{DIFF_GATE}: merged_head {merged[:12]} does not descend from the reviewed head {reviewed[:12]} "
+            f"of round {latest.number:02d}"
+        ]
+    if not isinstance(listed, list) or not listed:
+        return [f"{DIFF_GATE}: fix_commits is empty; list the commits made after the reviewed head or merge without it"]
+    return _listed_errors(repository, reviewed, merged, listed, latest.number) or _unlisted_errors(
+        repository, reviewed, merged, listed
+    )
+
+
+def _merge_gate_errors(
+    project: Path, entry: "dict[str, Any]", request: "dict[str, Any]", repository: Path, ref: str
+) -> "list[str]":
+    if request.get("merged_head") is None:
+        return [f"{DIFF_GATE}: a merged record needs merged_head, the head that was merged"]
+    try:
+        merged = checked_commit(entry["repository"], request["merged_head"])
+    except WorkspaceError as error:
+        return [f"{DIFF_GATE}: {error}"]
+    branch_head = _query(repository, "rev-parse", ref)
+    # The merged head may be ahead of the local branch (a suggestion committed on the host), so a
+    # descendant of the branch head is accepted; it still needs a round of its own below.
+    if branch_head is not None and branch_head != merged and not _descends(repository, branch_head, merged):
+        return [
+            f"{DIFF_GATE}: merged_head {merged[:12]} is not the head of branch {entry['branch']} ({branch_head[:12]})"
+        ]
+    if request.get("fix_commits") is not None:
+        return fix_commit_errors(project, entry, repository, merged, request["fix_commits"])
+    return _fix_hint(project, entry, merged, round_errors(project, "diff", entry["path"], merged))
+
+
 def delivery_gate_errors(
     project: Path, state: "dict[str, Any]", entry: "dict[str, Any]", event: str, request: "dict[str, Any]"
 ) -> "list[str]":
@@ -768,67 +1008,29 @@ def delivery_gate_errors(
 
     A project with no delivery target (policy 0 and 1, or policy 2 before one is set) keeps the 0.37 order:
     the record check runs first, whatever the event. With a target, an event that owes nothing returns first.
+    A merge request may list `fix_commits`: the commits after the reviewed head, checked by ancestry.
     """
     if not workspace_lib.is_goldfish_gated(state) or not has_code_task(state) or not entry.get("repository"):
         return []
     rules = workspace_lib.delivery_rules(state)
-    events = rules.diff_events
     incomplete = not entry.get("branch") or not entry.get("path")
     if incomplete and rules.target is None:
-        return [f"{DIFF_GATE}: the worktree record has no branch or path"]
-    if event == "closure":
-        # `closure` (a reviewable PR) covers every entry; `closure_exempt` only an entry with a pr_exemption.
-        if "closure" not in events and not ("closure_exempt" in events and "pr_exemption" in entry):
-            return []
-        if "closure" in events and _object(entry.get("merge")).get("state") in ("merged", "declined"):
-            return []  # the PR is merged, or its work abandoned: the round exists to hand over an open PR
-    elif event not in events:
+        return [NO_BRANCH_OR_PATH]
+    if not _owes_round(entry, event, rules):
         return []
     if incomplete:
-        return [f"{DIFF_GATE}: the worktree record has no branch or path"]
-    worktree = entry["path"]
+        return [NO_BRANCH_OR_PATH]
     repository, ref = Path(entry["repository"]), f"refs/heads/{entry['branch']}"
     if event == "closure":
-        if _object(entry.get("merge")).get("state") == "declined":
-            return []  # a declined local merge abandons the work: no round is owed for code that is not delivered
-        closed_at = _object(entry.get("closure")).get("observed_at")
-        if entry.get("status") == "kept" and not _at_or_after_instant(closed_at, rules.policy):
-            return []  # kept before the instant: that closure counts as passed
-        head = _query(repository, "rev-parse", ref)
-        if head is None:
-            if _query(repository, "rev-parse", "--git-dir") is None:
-                return [f"{DIFF_GATE}: {repository} is not a readable Git repository"]
-            # The branch is gone (merged locally and deleted): the last round the worktree passed stands.
-            latest = [item for item in round_documents(project) if item.key == ("diff", worktree)]
-            if latest and latest[-1].outcome in PASSING:
-                return []
-            shown = "no round exists"
-            if latest:
-                shown = f"its latest round ({latest[-1].number:02d}, {latest[-1].outcome}) is not accepted"
-            return [f"{DIFF_GATE}: branch {entry['branch']} no longer exists in {repository} and {shown}"]
-        return round_errors(project, "diff", worktree, head)
+        return _closure_gate_errors(project, entry, rules, repository, ref)
     if event == "merge":
-        if request.get("merged_head") is None:
-            return [f"{DIFF_GATE}: a merged record needs merged_head, the head that was merged"]
-        try:
-            merged = checked_commit(entry["repository"], request["merged_head"])
-        except WorkspaceError as error:
-            return [f"{DIFF_GATE}: {error}"]
-        branch_head = _query(repository, "rev-parse", ref)
-        # The merged head may be ahead of the local branch (a suggestion committed on the host), so a
-        # descendant of the branch head is accepted; it still needs a round of its own below.
-        if branch_head is not None and branch_head != merged and not _descends(repository, branch_head, merged):
-            return [
-                f"{DIFF_GATE}: merged_head {merged[:12]} is not the head of branch {entry['branch']} "
-                f"({branch_head[:12]})"
-            ]
-        return round_errors(project, "diff", worktree, merged)
+        return _merge_gate_errors(project, entry, request, repository, ref)
     try:
         head = diff_version(entry)
     except WorkspaceError as error:
         return [f"{DIFF_GATE}: {error}"]
     errors = upstream_errors(entry, head) if "pull_request" in entry else []
-    return errors + round_errors(project, "diff", worktree, head)
+    return errors + round_errors(project, "diff", entry["path"], head)
 
 
 # --- reporting -----------------------------------------------------------------------------------
@@ -1010,7 +1212,7 @@ def goldfish_event_warnings(project: Path, state: "dict[str, Any]") -> "list[str
     if has_code_task(state):
         designed = any(item[0] == "design" for item in passed)
         for task in _objects(state.get("tasks")):
-            if is_code_task(task) and _at_or_after_instant(task.get("started_at"), policy) and not designed:
+            if writes_target_code(task) and _at_or_after_instant(task.get("started_at"), policy) and not designed:
                 found.append(f"code task {task.get('id')} started at {task['started_at']} with no design round")
         rules = workspace_lib.delivery_rules(state)
         for entry in _objects(state.get("worktrees")):

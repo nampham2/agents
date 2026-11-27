@@ -1,11 +1,10 @@
 # Review risk, fallback, amendments and options
 
-Policy 3+ projects only. Policies 0 to 2 keep the effort rules in
-[goldfish-review.md](goldfish-review.md). `workflow <project-dir> settings` is the one writer of
-`review_risk`, `review_fallback` and `options`. It needs the user's `confirmation` (`source`,
-`response` quoting their words) and records one dated decision line. `null` unsets a field;
-`options` merge per key. Change a value only on the user's words, in any status but `DONE` and
-`CANCELLED`.
+Policy 3+ projects only, except the stage rules for policies 0 to 2 below. `workflow <project-dir>
+settings` is the one writer of `review_risk`, `review_fallback` and `options`. It needs the user's
+`confirmation` (`source`, `response` quoting their words) and records one dated decision line.
+`null` unsets a field; `options` merge per key. Change a value only on the user's words, in any
+status but `DONE` and `CANCELLED`.
 
 ## Review risk
 
@@ -26,6 +25,12 @@ at `close` decides the outcome, and a design or diff round opened below `high` c
 the risk is `high`: open a new round. At `low`, a Major in a design or diff round neither forces a
 re-audit nor needs an `artifact` for a `FIX` on an unchanged target; it closes as `accepted` with
 no confirmation, unless it is contested or escalated.
+
+## Stages at policy 0 to 2
+
+At policy 0 to 2: spec and planning `combined`; design and diff by effort: low `combined`;
+medium `comprehension`, `design-critic`, `zoom-out`, `readiness`; high the same, two agents per
+critic, merged report; a delta adds `comprehension`.
 
 ## Standing fallback
 

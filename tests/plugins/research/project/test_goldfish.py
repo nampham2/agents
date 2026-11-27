@@ -186,6 +186,16 @@ def test_the_design_digest_keeps_a_later_section_at_the_same_level() -> None:
         ([CODE_TASK], True),
         ([{**CODE_TASK, "status": "SKIPPED"}], False),
         ([{**CODE_TASK, "outputs": [{"root": "target", "path": "notes.md", "required": True}]}], False),
+        ([{**CODE_TASK, "effect": {"kind": "external", "description": "push"}}], True),
+        ([{**CODE_TASK, "effect": {"kind": "destructive", "description": "reset"}}], True),
+        (
+            [{
+                **CODE_TASK, "effect": {"kind": "external", "description": "push"},
+                "outputs": [{"root": "target", "path": "run.log", "required": False}],
+            }],
+            False,
+        ),
+        ([{**CODE_TASK, "effect": {"kind": "external", "description": "push"}, "status": "SKIPPED"}], False),
         ([], False),
     ],
 )
