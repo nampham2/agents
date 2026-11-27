@@ -2,6 +2,8 @@
 
 A gated project cannot mark a code task DONE until its approved checks pass. A code task is a
 `local_write` task with a non-prose file in a `target` output.
+The design and diff gates also count an `external` or `destructive` task with a required non-prose
+`target` output.
 
 ## Actions
 

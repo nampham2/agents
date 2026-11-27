@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -3812,6 +3813,27 @@ class TestTaskWorktree:
         with pytest.raises(WorkspaceError, match=r"gates-ambiguous-worktree: .*" + str(repo) + ".*" + str(clone)):
             gates.task_worktree(state, task_plan("T01"), base)
 
+    def test_a_missing_target_directory_beside_another_candidate_is_a_refusal_naming_it(
+        self, tmp_path: Path
+    ) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        touch(clone)
+        shutil.rmtree(repo)
+        pattern = "gates-missing-worktree: the recorded target worktree " + re.escape(str(repo)) + " is missing"
+        with pytest.raises(WorkspaceError, match=pattern):
+            gates.task_worktree(state, task_plan("T01"), base)
+
+    def test_a_present_target_or_a_lone_additional_is_unchanged_by_the_missing_target_check(
+        self, tmp_path: Path
+    ) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        assert gates.task_worktree(state, task_plan("T01"), base) == repo
+        del state["worktrees"][0]  # only an additional entry is recorded
+        assert gates.task_worktree(state, task_plan("T01"), base) == clone
+        state["worktrees"].insert(0, worktree_entry(repo, status="removed"))
+        shutil.rmtree(repo)  # a removed target is not missing
+        assert gates.task_worktree(state, task_plan("T01"), base) == clone
+
     def test_a_git_failure_reading_the_changes_is_gates_stale(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3892,6 +3914,16 @@ class TestGatesFollowTheWorktree:
             run_gates(project)
         found = gates.gate_findings(project, raw_state(project), {**raw_state(project)["tasks"][0], "status": "DONE"})
         assert any("gates-ambiguous-worktree" in item and str(clone) in item for item in found), found
+
+    def test_a_missing_target_directory_refuses_the_run_and_the_finish(self, gated: "tuple[Path, Path]") -> None:
+        project, repo = gated
+        clone = add_clone(project, repo)
+        work(clone)
+        shutil.rmtree(repo)
+        with pytest.raises(WorkspaceError, match="gates-missing-worktree"):
+            run_gates(project)
+        found = gates.gate_findings(project, raw_state(project), {**raw_state(project)["tasks"][0], "status": "DONE"})
+        assert any("gates-missing-worktree" in item and str(repo) in item for item in found), found
 
     def test_a_task_that_pushes_is_still_not_judged_by_gate_run(self, gated: "tuple[Path, Path]") -> None:
         project, _ = gated

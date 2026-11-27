@@ -328,6 +328,23 @@ def _worktree_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _missing_target(state: dict[str, Any]) -> "str | None":
+    """The path of a recorded repository `target` worktree that is not removed and whose directory is gone."""
+    entries = state.get("worktrees")
+    for entry in entries if isinstance(entries, list) else []:
+        if (
+            isinstance(entry, dict)
+            and entry.get("role") == "target"
+            and entry.get("repository")
+            and entry.get("kind") != "none"
+            and entry.get("status") != "removed"
+            and isinstance(entry.get("path"), str)
+            and not Path(entry["path"]).is_dir()
+        ):
+            return entry["path"]
+    return None
+
+
 def _has_commit(repository: str, commit: str) -> bool:
     try:
         _git(Path(repository), "cat-file", "-e", f"{commit}^{{commit}}")
@@ -376,9 +393,16 @@ def task_worktree(state: dict[str, Any], task: dict[str, Any], base_commit: str)
 
     One candidate is used whatever its role. Several: drop those whose repository lacks the approved base, keep those
     whose changes touch the task's outputs, and settle what remains on the role `target`. No target entry among them
-    is a refusal, raised as a `WorkspaceError` that carries the problem text.
+    is a refusal, raised as a `WorkspaceError` that carries the problem text. So is a recorded target whose directory
+    is missing while another candidate exists: the remaining one is never gated in silently.
     """
     found = _worktree_candidates(state)
+    missing = _missing_target(state) if found else None
+    if missing:
+        raise WorkspaceError(
+            f"gates-missing-worktree: the recorded target worktree {missing} is missing on disk; "
+            "restore it or record another target"
+        )
     if len(found) < 2:
         return Path(found[0]["path"]) if found else None
     kept = [entry for entry in found if _has_commit(entry["repository"], base_commit)]

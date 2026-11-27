@@ -275,6 +275,21 @@ def test_the_design_gate_covers_an_external_task_that_writes_required_target_cod
         assert errors[0].startswith("goldfish gate 'design': no round covers artifacts/architecture.md")
 
 
+@pytest.mark.parametrize("kind", ["external", "destructive"])
+def test_an_in_flight_project_with_a_started_external_task_is_not_newly_refused(
+    gated: None, project: Path, kind: str
+) -> None:
+    """`_code_started` excuses a project whose earlier external or destructive task already ran."""
+    for started in (external(kind=kind, status="RUNNING"), external(kind=kind, status="DONE")):
+        previous = state_of(started, external("T02", kind=kind))
+        candidate = state_of(started, external("T02", "RUNNING", kind=kind))
+        assert design_gate_errors(project, previous, candidate) == [], started["status"]
+    fresh = state_of(external(kind=kind), external("T02", kind=kind))
+    started = state_of(external(kind=kind, status="RUNNING"), external("T02", kind=kind))
+    errors = design_gate_errors(project, fresh, started)
+    assert errors and errors[0].startswith("goldfish gate 'design': no round covers artifacts/architecture.md")
+
+
 def test_the_design_gate_passes_with_a_current_round(gated: None, project: Path) -> None:
     previous, candidate = state_of(code()), state_of(code(status="RUNNING"))
     assert design_gate_errors(project, previous, candidate)

@@ -692,7 +692,12 @@ def test_the_base_is_the_merge_base_else_head_else_none() -> None:
 
 
 def test_the_trimmed_documents_delete_no_rule_row_against_the_base() -> None:
-    """Local runs compare with the fork point; in CI there is no origin/main, so nothing is deleted."""
+    """No rule row of a shipped document may be deleted against the base.
+
+    The base is the merge-base with origin/main. The check is a no-op when origin/main is absent (the
+    default CI checkout compares HEAD with itself) and after the merge, so it runs as a local pre-merge
+    guard, not as a CI gate.
+    """
     base = base_snapshot()
     new = {name: document(name).read_text(encoding="utf-8") for name in shipped_names()}
     assert_no_deleted_rows(base, new)
