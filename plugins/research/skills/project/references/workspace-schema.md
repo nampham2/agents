@@ -307,8 +307,12 @@ and `base_commit` are null). `role` is `target` for the one entry that owns `wor
 `close` operation whose `closure` object stores `decision` (`keep`, `accept_dirty`, `remove`), the
 `dirty` status lines observed at that moment, `observed_at`, and the user's quoted `source` and
 `response`. A `keep` decision requires an empty snapshot. While a `target` worktree stands,
-`working_directory` equals its `path`; once removed it equals `repository`. `finalize` refuses an
+`working_directory` equals its `path` or a subdirectory of it; once removed it falls back to
+`repository`. `finalize` refuses an
 `active` repository worktree or a kept-clean one that is dirty again; a missing directory warns.
+A `working_directory` below the repository records as the same subdirectory of `path`, which must
+exist there. Removal restores it under `repository` when present. Gates pick the worktree by
+changes, then role.
 
 Delivery records are optional fields of an entry, written only by the `pull_request`, `alpha`,
 `release` and `merge` operations of `workflow <project-dir> worktree`:
@@ -345,11 +349,16 @@ Delivery records are optional fields of an entry, written only by the `pull_requ
   over a day ago. An `origin` with no default branch ref refuses, because main cannot be read.
 - `merge`: `state` (`merged` or `declined`), `method` (`squash`, `merge`, `rebase`; null if
   declined), `evidence`, `source`, `response`, `recorded_at`, and an optional `merged_head` (a full
-  lowercase hex commit, 40 or 64 digits, only on a merged record). A `pull_request` or a
+  lowercase hex commit, 40 or 64 digits, only on a merged record). An optional `fix_commits`
+  lists the commits after the reviewed head (non-empty, full hex, needs `merged_head`); a gated
+  merge checks them by ancestry, other targets store them unchecked. A `pull_request` or a
   `local_only` `pr_exemption` can hold a merge record under any target. `merged` needs the release
   when a `version_line` exists. A merged record is final. `close` with `remove` needs a merged
   record when a `pull_request` exists, and a merged or declined record when a `local_only` exemption
   exists.
+- `readiness` result key `merge_requirements`: one object per active repository worktree that
+  awaits a merge, with `worktree` (the path), `release` (`required`, `recorded`), `merged_head`
+  (`format`, `branch_head`) and `diff_round` (`owed`, `errors` from the merge gate).
 
 The delivery gates follow `delivery_rules`. At policy 1 (created at or after `DELIVERY_GATES_FROM`)
 and for targets `pr`, `merged` and `release`, `task start` refuses a task with `target` outputs
