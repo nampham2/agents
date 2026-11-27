@@ -87,6 +87,52 @@ from workspace_similar import find_similar, suggest_tags
 from workspace_workflows import FIELDS, READ_ACTIONS, input_schema, migrate_policy, preview, workflow
 
 
+def split_id_list(values: list[str], flag: str) -> list[str]:
+    """Flatten id-list arguments: a JSON array of strings, a comma list, or one id each.
+
+    Raises ValueError with the message to show; an argument with whitespace outside a JSON array is
+    refused because an unquoted zsh `$var` is not word-split.
+    """
+    ids: list[str] = []
+    for value in values:
+        if value.lstrip().startswith("["):
+            ids.extend(_json_id_array(value, flag))
+        elif any(character.isspace() for character in value):
+            raise ValueError(
+                f"{flag} got one argument with spaces ({value}); zsh does not word-split $var; "
+                'pass a JSON array, a comma list, or "${ids[@]}"'
+            )
+        else:
+            ids.extend(item for item in value.split(",") if item)
+    return ids
+
+
+def _json_id_array(value: str, flag: str) -> list[str]:
+    message = f"{flag} expects a JSON array of non-empty strings, got {value}"
+    try:
+        parsed = json.loads(value)
+    except ValueError:
+        raise ValueError(message) from None
+    if not all(isinstance(item, str) and item for item in parsed):
+        raise ValueError(message)
+    return parsed
+
+
+class _IdListAction(argparse.Action):
+    """Extend the destination with the ids of each value, refusing a malformed list at parse time."""
+
+    def __call__(
+        self, parser: argparse.ArgumentParser, namespace: argparse.Namespace,
+        values: Any, option_string: str | None = None,
+    ) -> None:
+        raw = [values] if isinstance(values, str) else list(values)
+        try:
+            ids = split_id_list(raw, option_string or self.dest)
+        except ValueError as error:
+            parser.error(str(error))
+        setattr(namespace, self.dest, [*getattr(namespace, self.dest), *ids])
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="research-project", description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -266,10 +312,13 @@ def _build_parser() -> argparse.ArgumentParser:
     task.add_argument("task_id")
     task.add_argument("--expected-revision", type=int, required=True)
     task.add_argument("--reason")
-    task.add_argument("--evidence", nargs="+", action="extend", default=[], dest="evidence_records")
+    task.add_argument(
+        "--evidence", nargs="+", action=_IdListAction, default=[], dest="evidence_records",
+        help="evidence record ids: a JSON array, a comma list, or several ids",
+    )
     task.add_argument(
         "--observation",
-        action="append",
+        action=_IdListAction,
         default=[],
         dest="observation_records",
         help="finish on an agent-attested observation record (never accepted by --evidence)",

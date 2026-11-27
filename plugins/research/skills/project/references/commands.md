@@ -87,7 +87,7 @@ and guards. Reopen invalidated review acceptance as `pending`. Finish after judg
 criteria:
 
 ```sh
-research-project task <project-dir> finish T01 --evidence <id> <id> \
+research-project task <project-dir> finish T01 --evidence <id>,<id> \
   --start-next T02 --expected-revision N
 ```
 
