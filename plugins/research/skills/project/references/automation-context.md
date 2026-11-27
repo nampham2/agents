@@ -14,7 +14,7 @@ Prefer `init ... --json` for path, revision, roots, tokens and warnings. `update
 | `preview` | `patch`, `expected_revision`; equivalent to update dry-run. |
 | `impact` | `tasks` (initial IDs), optional rooted `paths`; transitive dependents, evidence, review, path overlaps. |
 | `fingerprint` | `references`: `{root,path,sha256?}` array; local file hashes and comparisons. |
-| `readiness` | Optional `required_checks`; closure findings grouped by task, output, receipt, review, reflection, memory and index, plus `worktrees` (`path`, `exists`, `missing`) and `checks` (`missing`, `unreportable`). |
+| `readiness` | Optional `required_checks`; closure findings grouped by task, output, receipt, review, reflection, memory and index, plus `worktrees` (`path`, `exists`, `missing`) and `checks` (`missing`, `unreportable`), merge_requirements. |
 | `memory-health` | `{}`; `absent`, `no_matches`, `available` or `failed`, with diagnostics/candidates. |
 | `recover` | `id`, optional boolean `apply`; inspect a journal, or resume metadata/index persistence only. |
 

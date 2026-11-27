@@ -16,20 +16,22 @@ request or a GitLab merge request.
 ## Release and merge
 
 Target `merged` or `release` (and policy 1) closes with this order: release, merge on the host,
-record the merge, then close/remove. Target `pr` stops at the MR: it records no merge or release,
-and its diff round runs at closure. Targets `local` and `research` skip this section.
+record the merge, then close/remove. Other targets follow the table in worktrees.md.
 
 1. Sweep the threads.
 2. Commit the plain release version `X.Y.Z` into each version file and push, then run the diff
    Goldfish round ([goldfish-review.md](goldfish-review.md)). Record `"operation":"release"`
    with `version` ([versioning.md](versioning.md)). If main
    released past the base, ask the user, then add `"base_moved":true` and a `reason`.
-3. Run `readiness` with `required_checks` (host-required); fix each `checks.missing` name. Ask
+3. Run `readiness` with `required_checks` (host-required); fix each `checks.missing` name;
+   merge_requirements lists what the merge checks. Ask
    the user to merge each MR by `squash`, `merge` or `rebase`.
 4. After a yes, merge on the host; a legacy `local_only` worktree merges in the main checkout, with
    the commit main then points to as `evidence`. Record `"operation":"merge"` with
    `"merge_state":"merged"`, `method`, `evidence` (merge commit or URL), `merged_head` (the
-   merged reviewed head, full hex) and the user's words.
+   merged reviewed head, full hex) and the user's words. A PR merged without a diff round: open
+   one at the PR head (`commit`) first. Fix commits after the reviewed round go in `fix_commits`:
+   full hex, each fixing a finding of that round, none left out.
 5. After a no, record `"merge_state":"declined"` with the user's words; the worktree stays.
 
 An alpha version never merges to main.
@@ -39,10 +41,9 @@ An alpha version never merges to main.
 1. Ask only after the merge is recorded.
 2. Run `workflow ... readiness`; record each worktree's `missing` delivery records. Show
    `git status --short --branch`; ask whether to commit (only when asked), keep or remove.
-3. The diff Goldfish round before the first closure and every remove depends on the target: `pr`
-   needs one for every recorded worktree (a merged record excuses it); `merged` and `release` (and
-   policy 0 and 1) for a `no_remote` or `local_only` worktree; `local` and `research` none. A
-   declined local merge needs none, and with its branch gone the latest passed round stands. Record
+3. The diff Goldfish round before the first closure and every remove follows the target table in
+   worktrees.md. A declined local merge needs none, and with its branch gone the latest passed
+   round stands. Record
    the answer:
 
    ```json
@@ -53,8 +54,9 @@ An alpha version never merges to main.
 
    `keep` requires a clean tree. `accept_dirty` covers only the dirty paths stored with the
    user's acceptance. `remove` is destructive: with the user's authorization run `git worktree
-   remove <path>` first (`git branch -d <branch>` only if asked). A kept entry can be decided
-   again with the `spec` token; removal is final.
+   remove <path>` first (`git branch -d <branch>` only if asked). Order: delivery records, the
+   user's words, git worktree remove, this record; a missing directory is tolerated. A kept entry
+   can be decided again with the `spec` token; removal is final.
 4. `finalize` refuses an undecided or dirty worktree. Without Git, mark the worktree `UNVERIFIED`.
 5. If a project is cancelled with an open MR, ask whether to close it.
 

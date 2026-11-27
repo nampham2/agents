@@ -25,10 +25,12 @@ from workspace_context import (
     worktree_registered,
 )
 from workspace_delivery import (
+    COMMIT_PATTERN,
     CONFIRM_HINTS,
     DELIVERY_OPERATIONS,
     KEY_HINTS,
     PATH_HINT,
+    REMOVAL_ORDER,
     RETARGET_HINTS,
     abandoned_note,
     delivery_operation,
@@ -86,6 +88,7 @@ from workspace_goldfish import (
     goldfish_findings,
     goldfish_operation,
     residual_findings,
+    stale_round_warnings,
 )
 from workspace_invocations import note
 from workspace_journal import (
@@ -121,6 +124,7 @@ from workspace_lib import (
     load_json,
     memory_staging_warnings,
     modes_enabled,
+    needs_merge,
     now_iso,
     options_errors,
     planning_path,
@@ -136,6 +140,7 @@ from workspace_lib import (
     task_packets_enabled,
     validate_project,
 )
+from workspace_occupancy import _query
 from workspace_operations import _task, migration_plan, research_task_conflicts, rules_diff, target_conflicts
 from workspace_session import (
     EXHAUSTED_DETAIL,
@@ -179,7 +184,7 @@ FIELDS = {
     "worktree": {
         "operation", "kind", "role", "repository", "path", "branch", "confirmation", "decision", "continuation",
         "host", "url", "number", "exempt", "files", "base", "base_moved", "alpha", "reason", "version", "merge_state",
-        "method", "evidence", "merged_head", "replaces_exemption",
+        "method", "evidence", "merged_head", "fix_commits", "replaces_exemption",
     },
 }
 # Derived, not listed twice: an action is a read action exactly when it has an input table.
@@ -216,6 +221,7 @@ WORKTREE_REQUIRED_BY = {
     "operation=pull_request": frozenset({"host", "number", "url"}),
     "operation=pull_request,exempt=no_remote": frozenset({"exempt"}),
     "operation=pull_request,exempt=local_only": frozenset({"exempt"}),
+    "operation=pull_request,replaces_exemption=true": frozenset({"host", "number", "replaces_exemption", "url"}),
     "operation=alpha": frozenset({"alpha", "base", "files", "reason"}),
     "operation=alpha,exempt=true": frozenset({"exempt", "reason"}),
     "operation=release": frozenset({"version"}),
@@ -402,6 +408,62 @@ def readiness_worktrees(state: dict[str, Any], *, rules: DeliveryRules) -> list[
     return listed
 
 
+MERGED_HEAD_FORMAT = "40 or 64 lowercase hex"
+
+
+def _branch_head(entry: dict[str, Any]) -> str | None:
+    """The full hex head of the recorded branch, or None when Git cannot read it."""
+    head = _query(Path(entry["repository"]), "rev-parse", f"refs/heads/{entry['branch']}")
+    return head if head is not None and COMMIT_PATTERN.match(head) else None
+
+
+def _diff_round_errors(
+    project: Path, state: dict[str, Any], entry: dict[str, Any], rules: DeliveryRules, head: str | None
+) -> list[str]:
+    """What the diff gate would say at the merge. A branch with no readable head gets its own text, not the gate's
+    `needs merged_head`, which would hide the cause."""
+    if head is None:
+        if "merge" not in rules.diff_events:
+            return []
+        return [f"branch {entry['branch']} has no readable head in {entry['repository']}"]
+    return delivery_gate_errors(project, state, entry, "merge", {"merged_head": head})
+
+
+def _merge_requirement(
+    project: Path, state: dict[str, Any], entry: dict[str, Any], rules: DeliveryRules
+) -> dict[str, Any]:
+    """The release record, the full-hash gate and the Goldfish diff gate that the merge of `entry` will check."""
+    line = entry.get("version_line")
+    head: str | None = None
+    errors: list[str] = []
+    try:
+        head = _branch_head(entry)
+        errors = _diff_round_errors(project, state, entry, rules, head)
+    except (WorkspaceError, OSError) as error:  # readiness reports on damaged state; it never raises
+        errors = [f"the diff round could not be checked: {error}"]
+    return {
+        "worktree": entry["path"],
+        "release": {
+            "required": rules.release_demanded and "version_exemption" not in entry,
+            "recorded": isinstance(line, dict) and line.get("release") is not None,
+        },
+        "merged_head": {"format": MERGED_HEAD_FORMAT, "branch_head": head},
+        "diff_round": {"owed": "merge" in rules.diff_events, "errors": errors},
+    }
+
+
+def merge_requirements(project: Path, state: dict[str, Any]) -> list[dict[str, Any]]:
+    """One entry per active repository worktree with a merge basis, listing what its merge will check."""
+    items = state.get("worktrees")
+    rules = delivery_rules(state)
+    return [
+        _merge_requirement(project, state, item, rules)
+        for item in (items if isinstance(items, list) else [])
+        if isinstance(item, dict) and item.get("status") == "active" and item.get("kind") not in (None, "none")
+        and all(isinstance(item.get(key), str) for key in ("path", "repository", "branch")) and needs_merge(item)
+    ]
+
+
 def readiness_checks(state: dict[str, Any], required: Any) -> dict[str, Any]:
     """Required check names against the CI jobs of the active target worktree's recorded path."""
     if required is not None and not (isinstance(required, list) and all(isinstance(n, str) and n for n in required)):
@@ -449,6 +511,7 @@ def readiness(project: Path, request: dict[str, Any] | None = None) -> dict[str,
         "valid": report.valid,
         "groups": groups,
         "worktrees": readiness_worktrees(state, rules=delivery_rules(state)),
+        "merge_requirements": merge_requirements(project, state),
         "checks": readiness_checks(state, (request or {}).get("required_checks")),
     }
 
@@ -562,105 +625,164 @@ REMOVE_REFUSED = (
 )
 
 
-def _worktree(
-    state: dict[str, Any], request: dict[str, Any], workspace_root: Path
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Record or close a repository worktree from what Git reports, never from what was claimed.
+def _below(base: str, directory: str) -> "Path | None":
+    """`directory` relative to `base` when it is `base` or lies below it (by path parts, not by prefix)."""
+    try:
+        return Path(directory).relative_to(base)
+    except ValueError:
+        return None
 
-    `record` stores a worktree the agent created after the user confirmed it (or the linked
-    worktree the target already was, or the fact that the target is no repository) and repoints
-    the target root at it. `close` stores the user's keep/remove/accept-dirty decision beside the
-    dirty snapshot observed at that moment. Neither runs a Git write: creation and removal are the
-    agent's, under the user's authorization, and this only refuses to record what Git contradicts.
+
+def _target_root(path: str, repository: str, kind: str, working_directory: str) -> str:
+    """The target root a recorded target worktree gets: the worktree path, or a directory below it.
+
+    The project may sit at the worktree itself or at a directory below it (an `existing` worktree), or at the
+    repository or a directory below it (a `created` one). The subdirectory carries over, so output paths keep
+    their meaning; the directory must exist in the worktree, which a created one may lack (untracked, ignored).
     """
-    worktrees = copy.deepcopy(state.get("worktrees", []))
+    for base in (path,) if kind == "existing" else (path, repository):
+        relative = _below(base, working_directory)
+        if relative is None:
+            continue
+        target = Path(path) / relative
+        if not target.is_dir():
+            raise WorkspaceError(f"working directory does not exist in the worktree: {target}")
+        return str(target)
+    raise WorkspaceError(
+        f"a target worktree must be recorded from its repository {repository} or from itself; "
+        f"working_directory is {working_directory}"
+    )
+
+
+def _removed_root(entry: dict[str, Any], working_directory: str) -> str:
+    """The target root after the target worktree is removed: the same subdirectory of the repository if it is there."""
+    relative = _below(entry["path"], working_directory)
+    if relative is not None and (Path(entry["repository"]) / relative).is_dir():
+        return str(Path(entry["repository"]) / relative)
+    return str(entry["repository"])
+
+
+def _worktree_path_input(request: dict[str, Any]) -> str:
     raw_path = request.get("path")
     if not isinstance(raw_path, str) or not raw_path.strip():
         raise WorkspaceError(PATH_HINT)
     path = string_input(raw_path, "path")
     if not Path(path).is_absolute():
         raise WorkspaceError("worktree path must be absolute")
-    path = str(Path(path).resolve())
-    working_directory = state["working_directory"]
-    operation = request.get("operation")
-    confirmation = _confirmation(request.get("confirmation"))
-    if operation == "record":
-        kind = request.get("kind", "created")
-        role = request.get("role", "target")
-        if kind not in ("created", "existing", "none") or role not in ("target", "additional"):
-            raise WorkspaceError("worktree kind must be created, existing or none; role target or additional")
-        if any(item["path"] == path for item in worktrees):
-            raise WorkspaceError(
-                f"worktree already recorded: {path}; a path stays recorded as history even after the worktree is "
-                "removed, so a new worktree needs a new path"
-            )
-        seen = worktree_observation(Path(path))
-        if not seen["available"]:
-            raise WorkspaceError("Git could not be consulted for the worktree path; retry when it is available")
-        if kind == "none":
-            if role != "target" or path != working_directory or seen["is_repository"]:
-                raise WorkspaceError(
-                    "kind none records that the target itself is not a repository; "
-                    f"observed is_repository={seen['is_repository']} for {path}, target {working_directory}"
-                )
-            entry = {"repository": None, "branch": None, "base_commit": None}
-        else:
-            branch = string_input(request.get("branch"), "branch")
-            if not seen["exists"] or not seen["is_repository"] or seen["toplevel"] != path:
-                raise WorkspaceError(f"path is not the root of a Git working tree: {path}")
-            if not seen["is_worktree"]:
-                raise WorkspaceError(f"path is a main checkout, not a linked worktree: {path}")
-            if seen["branch"] != branch:
-                raise WorkspaceError(f"branch mismatch: requested {branch!r}, observed {seen['branch']!r}")
-            repository = (
-                str(Path(string_input(request["repository"], "repository")).resolve())
-                if "repository" in request
-                else None
-            )
-            if repository is not None and repository != seen["repository"]:
-                raise WorkspaceError(
-                    f"repository mismatch: requested {repository}, observed {seen['repository']}; "
-                    f"send repository {seen['repository']}"
-                )
-            repository = seen["repository"]
-            if not seen["head"]:
-                raise WorkspaceError("the worktree has no commit to record as its base")
-            allowed = {path} if kind == "existing" else {path, repository}
-            if role == "target" and working_directory not in allowed:
-                raise WorkspaceError(
-                    f"a target worktree must be recorded from its repository {repository} or from itself; "
-                    f"working_directory is {working_directory}"
-                )
-            if role == "additional" and path == working_directory:
-                raise WorkspaceError("an additional worktree cannot be the target root")
-            entry = {"repository": repository, "branch": branch, "base_commit": seen["head"]}
-        entry.update(
-            path=path, kind=kind, role=role, status="active", recorded_at=now_iso(),
-            confirmation=confirmation, closure=None,
-        )
-        worktrees.append(entry)
-        patch: dict[str, Any] = {"worktrees": worktrees}
-        if role == "target" and kind != "none":
-            patch["working_directory"] = path
-        return patch, {"worktree": entry, "observed": seen}
-    def gate(event: str, item: dict[str, Any]) -> None:
-        errors = delivery_gate_errors(workspace_root / state["project"], state, item, event, request)
-        if errors:
-            raise WorkspaceError(" | ".join(errors))
+    return str(Path(path).resolve())
 
-    if operation in DELIVERY_OPERATIONS:
-        entry, notes = delivery_operation(
-            worktrees, path, operation, request, confirmation, workspace_root=workspace_root, project=state["project"],
-            gate=gate, rules=delivery_rules(state),
+
+def _none_worktree_entry(role: str, path: str, working_directory: str, seen: dict[str, Any]) -> dict[str, Any]:
+    if role != "target" or path != working_directory or seen["is_repository"]:
+        raise WorkspaceError(
+            "kind none records that the target itself is not a repository; "
+            f"observed is_repository={seen['is_repository']} for {path}, target {working_directory}"
         )
-        return {"worktrees": worktrees}, {"worktree": entry, **({"notes": notes} if notes else {})}
-    if operation != "close":
-        raise WorkspaceError("worktree operation must be record, close, pull_request, alpha, release or merge")
-    decision = request.get("decision")
-    if decision not in ("keep", "accept_dirty", "remove"):
-        raise WorkspaceError("worktree decision must be keep, accept_dirty or remove")
-    if decision == "remove" and automated_enabled(state):
-        raise WorkspaceError(REMOVE_REFUSED)
+    return {"repository": None, "branch": None, "base_commit": None}
+
+
+def _checked_repository(request: dict[str, Any], path: str, branch: str, seen: dict[str, Any]) -> str:
+    """The repository Git reports for `path`, after the refusals for what Git contradicts."""
+    if not seen["exists"] or not seen["is_repository"] or seen["toplevel"] != path:
+        raise WorkspaceError(f"path is not the root of a Git working tree: {path}")
+    if not seen["is_worktree"]:
+        raise WorkspaceError(f"path is a main checkout, not a linked worktree: {path}")
+    if seen["branch"] != branch:
+        raise WorkspaceError(f"branch mismatch: requested {branch!r}, observed {seen['branch']!r}")
+    requested = (
+        str(Path(string_input(request["repository"], "repository")).resolve()) if "repository" in request else None
+    )
+    if requested is not None and requested != seen["repository"]:
+        raise WorkspaceError(
+            f"repository mismatch: requested {requested}, observed {seen['repository']}; "
+            f"send repository {seen['repository']}"
+        )
+    if not seen["head"]:
+        raise WorkspaceError("the worktree has no commit to record as its base")
+    return str(seen["repository"])
+
+
+def _record_worktree(
+    state: dict[str, Any],
+    worktrees: list[dict[str, Any]],
+    request: dict[str, Any],
+    path: str,
+    confirmation: dict[str, str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    working_directory = state["working_directory"]
+    kind = request.get("kind", "created")
+    role = request.get("role", "target")
+    if kind not in ("created", "existing", "none") or role not in ("target", "additional"):
+        raise WorkspaceError("worktree kind must be created, existing or none; role target or additional")
+    if any(item["path"] == path for item in worktrees):
+        raise WorkspaceError(
+            f"worktree already recorded: {path}; a path stays recorded as history even after the worktree is "
+            "removed, so a new worktree needs a new path"
+        )
+    seen = worktree_observation(Path(path))
+    if not seen["available"]:
+        raise WorkspaceError("Git could not be consulted for the worktree path; retry when it is available")
+    target_root = path
+    if kind == "none":
+        entry = _none_worktree_entry(role, path, working_directory, seen)
+    else:
+        branch = string_input(request.get("branch"), "branch")
+        repository = _checked_repository(request, path, branch, seen)
+        if role == "target":
+            target_root = _target_root(path, repository, kind, working_directory)
+        if role == "additional" and path == working_directory:
+            raise WorkspaceError("an additional worktree cannot be the target root")
+        entry = {"repository": repository, "branch": branch, "base_commit": seen["head"]}
+    entry.update(
+        path=path, kind=kind, role=role, status="active", recorded_at=now_iso(),
+        confirmation=confirmation, closure=None,
+    )
+    worktrees.append(entry)
+    patch: dict[str, Any] = {"worktrees": worktrees}
+    if role == "target" and kind != "none":
+        patch["working_directory"] = target_root
+    return patch, {"worktree": entry, "observed": seen}
+
+
+def _removal_notes(entry: dict[str, Any], seen: dict[str, Any]) -> list[str]:
+    """The notes of a recorded removal, after the refusal for a directory that still stands.
+
+    A directory that is gone is accepted whether Git still lists it or not; only a directory that
+    exists, or a registration Git cannot answer for, refuses. A stale registration adds a prune note.
+    """
+    registered = worktree_registered(Path(entry["repository"]), Path(entry["path"]))
+    if seen["exists"] or registered is None:
+        raise WorkspaceError(
+            "the worktree is still present or registered; the user-authorized "
+            f"`git worktree remove` must run before recording removal. {REMOVAL_ORDER}"
+        )
+    if not registered:
+        return []
+    return [
+        "the directory is gone but Git still lists the worktree; run `git worktree prune` in "
+        f"{entry['repository']} to drop the stale registration"
+    ]
+
+
+def _closure_dirty(entry: dict[str, Any], decision: str, seen: dict[str, Any]) -> list[str]:
+    """The dirty snapshot a keep closure stores, after the refusals for what Git contradicts."""
+    if not seen["exists"] or not seen["is_repository"]:
+        raise WorkspaceError(
+            f"the worktree is missing; restore it or record its removal: {entry['path']} {REMOVAL_ORDER}"
+        )
+    dirty = list(seen["dirty"])
+    if decision == "keep" and dirty:
+        raise WorkspaceError(
+            "the worktree has uncommitted changes; commit them (only when the user asks) or record "
+            "accept_dirty with the user's explicit acceptance:\n" + "\n".join(dirty[:50])
+        )
+    return dirty
+
+
+def _closing_entry(
+    state: dict[str, Any], worktrees: list[dict[str, Any]], path: str, decision: str, gate: Any
+) -> dict[str, Any]:
+    """The recorded worktree a closure may decide, after the closure gate and the removal findings."""
     entry = next((item for item in worktrees if item["path"] == path), None)
     # A kept worktree stays decidable: the user may change their mind, work may resume after
     # maintenance reopens the project, and removal can happen outside the tool. Replacing a closure
@@ -676,42 +798,80 @@ def _worktree(
             raise WorkspaceError(
                 "the worktree cannot be removed before its delivery records are complete:\n- "
                 + "\n- ".join(missing)
+                + f"\n{REMOVAL_ORDER}"
             )
+    return entry
+
+
+def _close_worktree(
+    state: dict[str, Any],
+    worktrees: list[dict[str, Any]],
+    request: dict[str, Any],
+    path: str,
+    confirmation: dict[str, str],
+    gate: Any,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    decision = request.get("decision")
+    if decision not in ("keep", "accept_dirty", "remove"):
+        raise WorkspaceError("worktree decision must be keep, accept_dirty or remove")
+    if decision == "remove" and automated_enabled(state):
+        raise WorkspaceError(REMOVE_REFUSED)
+    entry = _closing_entry(state, worktrees, path, decision, gate)
     superseded = copy.deepcopy(entry["closure"]) if entry["status"] == "kept" else None
     seen = worktree_observation(Path(path))
     if not seen["available"]:
         raise WorkspaceError("Git could not be consulted for the worktree; retry when it is available")
-    if decision == "remove":
-        registered = worktree_registered(Path(entry["repository"]), Path(path))
-        if seen["exists"] or registered is not False:
-            raise WorkspaceError(
-                "the worktree is still present or registered; the user-authorized "
-                "`git worktree remove` must run before recording removal"
-            )
-        dirty: list[str] = []
-    else:
-        if not seen["exists"] or not seen["is_repository"]:
-            raise WorkspaceError(f"the worktree is missing; restore it or record its removal: {path}")
-        dirty = list(seen["dirty"])
-        if decision == "keep" and dirty:
-            raise WorkspaceError(
-                "the worktree has uncommitted changes; commit them (only when the user asks) or record "
-                "accept_dirty with the user's explicit acceptance:\n" + "\n".join(dirty[:50])
-            )
+    removing = decision == "remove"
+    pruning = _removal_notes(entry, seen) if removing else []
+    dirty = [] if removing else _closure_dirty(entry, decision, seen)
     entry.update(
         status="removed" if decision == "remove" else "kept",
         closure={"decision": decision, "dirty": dirty, "observed_at": now_iso(), **confirmation},
     )
-    patch = {"worktrees": worktrees}
+    patch: dict[str, Any] = {"worktrees": worktrees}
     if entry["role"] == "target" and decision == "remove":
-        patch["working_directory"] = entry["repository"]
+        patch["working_directory"] = _removed_root(entry, state["working_directory"])
     outcome: dict[str, Any] = {"worktree": entry, "observed": seen}
     if superseded is not None:
         outcome["superseded"] = superseded
-    note = abandoned_note(entry) if decision == "remove" else None
-    if note is not None:
-        outcome["notes"] = [note]
+    notes = [item for item in (abandoned_note(entry) if removing else None, *pruning) if item]
+    if notes:
+        outcome["notes"] = notes
     return patch, outcome
+
+
+def _worktree(
+    state: dict[str, Any], request: dict[str, Any], workspace_root: Path
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Record or close a repository worktree from what Git reports, never from what was claimed.
+
+    `record` stores a worktree the agent created after the user confirmed it (or the linked
+    worktree the target already was, or the fact that the target is no repository) and repoints
+    the target root at it. `close` stores the user's keep/remove/accept-dirty decision beside the
+    dirty snapshot observed at that moment. Neither runs a Git write: creation and removal are the
+    agent's, under the user's authorization, and this only refuses to record what Git contradicts.
+    """
+    worktrees = copy.deepcopy(state.get("worktrees", []))
+    path = _worktree_path_input(request)
+    operation = request.get("operation")
+    confirmation = _confirmation(request.get("confirmation"))
+    if operation == "record":
+        return _record_worktree(state, worktrees, request, path, confirmation)
+
+    def gate(event: str, item: dict[str, Any]) -> None:
+        errors = delivery_gate_errors(workspace_root / state["project"], state, item, event, request)
+        if errors:
+            raise WorkspaceError(" | ".join(errors))
+
+    if operation in DELIVERY_OPERATIONS:
+        entry, notes = delivery_operation(
+            worktrees, path, operation, request, confirmation, workspace_root=workspace_root, project=state["project"],
+            gate=gate, rules=delivery_rules(state),
+        )
+        return {"worktrees": worktrees}, {"worktree": entry, **({"notes": notes} if notes else {})}
+    if operation != "close":
+        raise WorkspaceError("worktree operation must be record, close, pull_request, alpha, release or merge")
+    return _close_worktree(state, worktrees, request, path, confirmation, gate)
 
 
 def _effect(project: Path, state: dict[str, Any], request: dict[str, Any]) -> tuple[str, str]:
@@ -1103,6 +1263,17 @@ def _decide(
             rounds=MAX_EVIDENCE_ROUNDS, items=f"{kind} for {subject}: {listed}"
         )
     return documents, patch, result
+
+
+def _round_texts(project: Path) -> dict[str, str]:
+    """The spec and planning text on disk now."""
+    return {name: snapshot(document_path(project, name))[0] for name in ("spec", "planning")}
+
+
+def _round_warning(project: Path, before: dict[str, str]) -> dict[str, list[str]]:
+    """The `warnings` key for a `round` write that made a closed passing spec or planning round stale."""
+    warnings = stale_round_warnings(project, before, _round_texts(project))
+    return {"warnings": warnings} if warnings else {}
 
 
 def _build(
@@ -1565,7 +1736,10 @@ def _migrate_policy(
 def workflow(project: Path, action: str, request: dict[str, Any]) -> dict[str, Any]:
     """Dispatch a closed vocabulary of operations; never evaluate workspace instructions."""
     try:
-        return _workflow(project, action, request)
+        before = _round_texts(project) if action == "round" else {}
+        result = _workflow(project, action, request)
+        # Computed at first application only: a journal replay returns the stored result without it.
+        return {**result, **_round_warning(project, before)} if before else result
     except OSError as error:
         raise WorkspaceError(f"workflow filesystem failure: {error}") from error
 

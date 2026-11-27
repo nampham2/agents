@@ -27,7 +27,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, NamedTuple
 
 import workspace_observe as observe
@@ -311,6 +311,101 @@ def target_repository(state: dict[str, Any]) -> "Path | None":
                 return None
             return Path(entry["path"])
     return None
+
+
+def _worktree_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """The recorded repository worktrees that could be gated: not removed, not `none`, with a directory on disk."""
+    entries = state.get("worktrees")
+    return [
+        entry
+        for entry in (entries if isinstance(entries, list) else [])
+        if isinstance(entry, dict)
+        and entry.get("repository")
+        and entry.get("kind") != "none"
+        and entry.get("status") != "removed"
+        and isinstance(entry.get("path"), str)
+        and Path(entry["path"]).is_dir()
+    ]
+
+
+def _has_commit(repository: str, commit: str) -> bool:
+    try:
+        _git(Path(repository), "cat-file", "-e", f"{commit}^{{commit}}")
+    except WorkspaceError:
+        return False
+    return True
+
+
+def _working_prefix(state: dict[str, Any], found: list[dict[str, Any]]) -> "PurePosixPath | None":
+    """The working directory relative to the recorded worktree it lies in; None when it lies in none of them."""
+    for entry in found:
+        try:
+            return PurePosixPath(Path(state["working_directory"]).relative_to(entry["path"]).as_posix())
+        except (KeyError, TypeError, ValueError):
+            continue
+    return None
+
+
+def _holds_outputs(
+    entry: dict[str, Any], prefix: "PurePosixPath | None", task: dict[str, Any], base_commit: str
+) -> bool:
+    """Whether the changes in the worktree touch a required `target` output of `task`.
+
+    Outputs resolve under `working_directory` while `changed_files` paths are relative to the worktree root, so each
+    output is prefixed with the working directory relative to its worktree; a working directory outside every
+    recorded worktree matches nothing. A path below a directory output matches that output.
+    """
+    if prefix is None:
+        return False
+    wanted = [
+        (prefix / item["path"].rstrip("/")).as_posix()
+        for item in task.get("outputs", [])
+        if isinstance(item, dict)
+        and item.get("root") == "target"
+        and item.get("required") is True
+        and isinstance(item.get("path"), str)
+    ]
+    if not wanted:
+        return False
+    changed = changed_files(Path(entry["path"]), base_commit)
+    return any(item.path == path or item.path.startswith(f"{path}/") for item in changed for path in wanted)
+
+
+def task_worktree(state: dict[str, Any], task: dict[str, Any], base_commit: str) -> "Path | None":
+    """The recorded worktree `task` is gated in; None when no repository worktree is recorded.
+
+    One candidate is used whatever its role. Several: drop those whose repository lacks the approved base, keep those
+    whose changes touch the task's outputs, and settle what remains on the role `target`. No target entry among them
+    is a refusal, raised as a `WorkspaceError` that carries the problem text.
+    """
+    found = _worktree_candidates(state)
+    if len(found) < 2:
+        return Path(found[0]["path"]) if found else None
+    kept = [entry for entry in found if _has_commit(entry["repository"], base_commit)]
+    names = ", ".join(entry["path"] for entry in found)
+    if not kept:
+        raise WorkspaceError(
+            f"gates-no-base: none of the recorded worktrees ({names}) holds the approved base commit {base_commit}; "
+            "approve the gates again in the worktree that holds the work"
+        )
+    if len(kept) == 1:
+        return Path(kept[0]["path"])
+    prefix = _working_prefix(state, found)
+    try:
+        holders = [entry for entry in kept if _holds_outputs(entry, prefix, task, base_commit)]
+    except WorkspaceError as error:
+        raise WorkspaceError(f"gates-stale: the tree cannot be read ({error}); {REMEDY}") from error
+    if len(holders) == 1:
+        return Path(holders[0]["path"])
+    pool = holders or kept
+    targets = [entry for entry in pool if entry.get("role") == "target"]
+    if targets:
+        return Path(targets[0]["path"])
+    paths = ", ".join(entry["path"] for entry in pool)
+    raise WorkspaceError(
+        f"gates-ambiguous-worktree: task {task.get('id')} could be gated in any of {paths} "
+        "and none has role target; record the worktree that holds the work as the target"
+    )
 
 
 def _need_repository(state: dict[str, Any]) -> Path:
@@ -1605,36 +1700,46 @@ def tests_argv(argv: list[str], scratch: Path) -> list[str]:
     return [*argv[:separator], *extra, *argv[separator:]]
 
 
-def _setup_problems(state: dict[str, Any], gates: dict[str, Any]) -> list[str]:
-    """Why the recorded approval cannot be run or trusted: nothing approved, a kind missing, a source changed."""
+def _setup_problems(
+    state: dict[str, Any], gates: dict[str, Any], task: dict[str, Any]
+) -> "tuple[list[str], Path | None]":
+    """Why the recorded approval cannot be run or trusted, and the worktree to run in when nothing stops it.
+
+    The approval checks come first because `task_worktree` needs the approved base commit. The source hashes were
+    recorded in the target repository, so they are checked there when one is recorded.
+    """
     if not gates.get("base_commit"):
         return [
             "gates-not-approved: no approved gate commands; record them with `workflow <project-dir> gates` "
             "(operation approve, or waive) and the user's words"
-        ]
+        ], None
     missing = missing_kinds(gates["commands"], gates["waiver"])
     if missing:
         return [
             f"gates-not-approved: no approved command or waiver for kind(s) {', '.join(missing)}; approve a "
             "command of each kind, or waive the kind with the user's words"
-        ]
-    repo = target_repository(state)
+        ], None
+    try:
+        repo = task_worktree(state, task, gates["base_commit"])
+    except WorkspaceError as error:
+        return [str(error)], None
     if repo is None:
-        return ["gates-no-repository: this project records no target repository to run the gates in"]
+        return ["gates-no-repository: this project records no target repository to run the gates in"], None
     subdirectory = _toplevel_problem(repo)
     if subdirectory:
-        return [subdirectory]
+        return [subdirectory], None
+    hashed_in = target_repository(state) or repo
     for source in gates.get("sources", []):
         try:
-            current = _file_sha256(repo / source["path"])
+            current = _file_sha256(hashed_in / source["path"])
         except OSError:
             current = "missing"
         if current != source["sha256"]:
             return [
                 f"gates-source-changed: {source['path']} changed since the commands were approved; "
                 "discover the commands again and re-approve them"
-            ]
-    return []
+            ], None
+    return [], repo
 
 
 def _next_run_number(project: Path, task_id: str) -> int:
@@ -1893,12 +1998,13 @@ def gates_run(project_dir: Path, request: dict[str, Any], *, lock_timeout: float
             "failures": [],
             "skipped": f"{GATE_NO_REPOSITORY} waiver: nothing to run",
         }
-    problems = _setup_problems(state, gates)
+    problems, repo = _setup_problems(state, gates, task)
     if problems:
         raise WorkspaceError("; ".join(problems))
+    assert repo is not None  # no problem means a worktree was chosen
     (project / ".operations").mkdir(exist_ok=True)
     with DirectoryLock(project / ".operations" / f"gates-{task_id.lower()}.lock", timeout=lock_timeout):
-        return _run_locked(project, state, gates, task_id, _need_repository(state))
+        return _run_locked(project, state, gates, task_id, repo)
 
 
 # --- the finish check -------------------------------------------------------------------------------------------
@@ -2001,11 +2107,10 @@ def gate_findings(project_dir: Path, state: dict[str, Any], task: dict[str, Any]
         return []
     if _no_repository_waived(gates):
         return []
-    problems = _setup_problems(state, gates)
+    problems, repo = _setup_problems(state, gates, task)
     if problems:
         return problems
-    repo = target_repository(state)
-    assert repo is not None  # _setup_problems refused a project without one
+    assert repo is not None  # no problem means a worktree was chosen
     try:
         return _run_problems(project_dir.resolve(), task["id"], gates, repo)
     except WorkspaceError as error:
