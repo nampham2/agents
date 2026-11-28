@@ -9,6 +9,8 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +28,22 @@ from workspace_workflows import workflow
 from tests.conftest import SKILL_SCRIPTS
 from tests.plugins.research.project.test_lifecycle_commands import request
 from tests.plugins.research.project.test_workflow_automation import fill_spec
+from tests.plugins.research.project.test_worktrees import (
+    add_worktree,
+    make_repository,
+)
+from tests.plugins.research.project.test_worktrees import (
+    close as close_worktree,
+)
+from tests.plugins.research.project.test_worktrees import (
+    make_project as worktree_project,
+)
+from tests.plugins.research.project.test_worktrees import (
+    record as record_worktree,
+)
+from tests.plugins.research.project.test_worktrees import (
+    refused as worktree_refused,
+)
 
 GIT_ENV = {
     **os.environ,
@@ -3546,3 +3564,379 @@ class TestAnEmptyNestedRepository:
         git(repo / "empty", "init", "-q", "-b", "main")
         with pytest.raises(WorkspaceError, match=r"^git add failed in .*: fatal: adding files failed$"):
             gates.changed_files(repo, base)
+
+
+# --- c11: a target worktree recorded from a repository subdirectory ---------------------------------------------
+
+
+def committed_subdirectory(tmp_path: Path) -> "tuple[Path, Path]":
+    """A repository with a committed `services/api` directory, and a linked worktree of it."""
+    repository = make_repository(tmp_path)
+    (repository / "services" / "api").mkdir(parents=True)
+    (repository / "services" / "api" / "app.py").write_text("x = 1\n", encoding="utf-8")
+    git(repository, "add", "-A")
+    git(repository, "commit", "-q", "-m", "services")
+    return repository, add_worktree(repository)
+
+
+class TestRecordFromASubdirectory:
+    def test_a_created_worktree_is_recorded_from_a_repository_subdirectory(self, tmp_path: Path) -> None:
+        repository, linked = committed_subdirectory(tmp_path)
+        project = worktree_project(tmp_path, repository / "services" / "api")
+        record_worktree(project, linked)
+        state = raw_state(project)
+        assert state["working_directory"] == str(linked.resolve() / "services" / "api")
+        assert state["worktrees"][0]["path"] == str(linked.resolve())
+        assert validate_v4_state(state, project, check_files=True).errors == []
+
+    def test_an_existing_worktree_is_recorded_from_a_directory_below_itself(self, tmp_path: Path) -> None:
+        _, linked = committed_subdirectory(tmp_path)
+        project = worktree_project(tmp_path, linked / "services")
+        record_worktree(project, linked, kind="existing")
+        assert raw_state(project)["working_directory"] == str(linked.resolve() / "services")
+
+    def test_the_worktree_root_itself_still_records_the_root(self, tmp_path: Path) -> None:
+        repository, linked = committed_subdirectory(tmp_path)
+        project = worktree_project(tmp_path, repository)
+        record_worktree(project, linked)
+        assert raw_state(project)["working_directory"] == str(linked.resolve())
+
+    def test_a_stray_directory_is_still_refused(self, tmp_path: Path) -> None:
+        repository, linked = committed_subdirectory(tmp_path)
+        stray = tmp_path / "elsewhere"
+        stray.mkdir()
+        for target in (stray, tmp_path / "repo-other"):
+            target.mkdir(exist_ok=True)
+            project = worktree_project(tmp_path / target.name, target)
+            worktree_refused(project, "must be recorded from its repository", record_worktree, linked)
+        project = worktree_project(tmp_path / "existing", repository / "services")
+        worktree_refused(project, "must be recorded from its repository", record_worktree, linked, kind="existing")
+
+    def test_a_subdirectory_that_the_worktree_lacks_is_refused_by_name(self, tmp_path: Path) -> None:
+        repository, linked = committed_subdirectory(tmp_path)
+        (repository / "scratch" / "deep").mkdir(parents=True)
+        project = worktree_project(tmp_path, repository / "scratch" / "deep")
+        worktree_refused(
+            project, rf"working directory does not exist in the worktree: {linked.resolve()}/scratch/deep",
+            record_worktree, linked,
+        )
+        assert raw_state(project).get("worktrees", []) == []
+
+    def test_a_sibling_whose_name_starts_with_the_root_is_not_below_it(self, tmp_path: Path) -> None:
+        repository, linked = committed_subdirectory(tmp_path)
+        sibling = Path(f"{repository}-extra")
+        sibling.mkdir()
+        project = worktree_project(tmp_path / "p", sibling)
+        worktree_refused(project, "must be recorded from its repository", record_worktree, linked)
+
+    def test_removing_the_worktree_returns_to_the_same_subdirectory_of_the_repository(self, tmp_path: Path) -> None:
+        repository, linked = committed_subdirectory(tmp_path)
+        project = worktree_project(tmp_path, repository / "services" / "api")
+        record_worktree(project, linked)
+        git(repository, "worktree", "remove", "--force", str(linked))
+        close_worktree(project, linked, "remove")
+        state = raw_state(project)
+        assert state["working_directory"] == str(repository / "services" / "api")
+        assert validate_v4_state(state, project, check_files=True).errors == []
+
+    def test_removal_falls_back_to_the_repository_when_the_subdirectory_is_not_in_the_main_checkout(
+        self, tmp_path: Path
+    ) -> None:
+        repository, linked = committed_subdirectory(tmp_path)
+        project = worktree_project(tmp_path, repository / "services" / "api")
+        record_worktree(project, linked)
+        git(repository, "worktree", "remove", "--force", str(linked))
+        shutil.rmtree(repository / "services")
+        close_worktree(project, linked, "remove")
+        assert raw_state(project)["working_directory"] == str(repository)
+
+    def test_removal_of_a_root_recorded_target_still_returns_the_repository(self, tmp_path: Path) -> None:
+        repository, linked = committed_subdirectory(tmp_path)
+        project = worktree_project(tmp_path, repository)
+        record_worktree(project, linked)
+        git(repository, "worktree", "remove", "--force", str(linked))
+        close_worktree(project, linked, "remove")
+        assert raw_state(project)["working_directory"] == str(repository)
+
+
+class TestValidationAcceptsADirectoryBelowTheTarget:
+    @staticmethod
+    def errors(project: Path, working_directory: str, **changes: Any) -> "list[str]":
+        state = raw_state(project)
+        state["worktrees"] = [worktree_entry(Path("/wt/a"), repository="/main", **changes)]
+        state["working_directory"] = working_directory
+        return validate_v4_state(state, project, check_files=False).errors
+
+    def test_the_path_and_a_directory_below_it_are_accepted_while_it_stands(self, tmp_path: Path) -> None:
+        project = make_project(tmp_path)
+        assert self.errors(project, "/wt/a") == []
+        assert self.errors(project, "/wt/a/services/api") == []
+
+    def test_a_sibling_prefix_and_a_parent_are_refused(self, tmp_path: Path) -> None:
+        project = make_project(tmp_path)
+        for wrong in ("/wt/ab", "/wt", "/main/services"):
+            errors = self.errors(project, wrong)
+            assert any("requires working_directory /wt/a" in item for item in errors), (wrong, errors)
+
+    def test_the_repository_and_a_directory_below_it_are_accepted_once_removed(self, tmp_path: Path) -> None:
+        project = make_project(tmp_path)
+        closure = {"decision": "remove", "dirty": [], "observed_at": "2026-01-02T10:00:00+00:00", **USER}
+        removed = {"status": "removed", "closure": closure}
+        assert self.errors(project, "/main", **removed) == []
+        assert self.errors(project, "/main/services/api", **removed) == []
+        errors = self.errors(project, "/wt/a/services", **removed)
+        assert any("requires working_directory /main" in item for item in errors), errors
+
+
+# --- c11: gates follow the recorded worktree that holds the task outputs ----------------------------------------
+
+
+def clone_of(repo: Path, name: str = "second") -> Path:
+    clone = repo.parent / name
+    subprocess.run(["git", "clone", "-q", str(repo), str(clone)], check=True, capture_output=True, env=GIT_ENV)
+    return clone
+
+
+def two_worktrees(tmp_path: Path, **second: Any) -> "tuple[dict[str, Any], Path, Path, str]":
+    """State with a target worktree and an additional clone that shares the base commit."""
+    repo = make_repo(tmp_path, GATE_FILES)
+    clone = clone_of(repo)
+    state = {
+        "working_directory": str(repo),
+        "worktrees": [worktree_entry(repo), worktree_entry(clone, role="additional", **second)],
+    }
+    return state, repo, clone, git(repo, "rev-parse", "HEAD")
+
+
+def touch(root: Path, relative: str = "app.py") -> None:
+    (root / relative).parent.mkdir(parents=True, exist_ok=True)
+    (root / relative).write_text("changed = True\n", encoding="utf-8")
+
+
+class TestTaskWorktree:
+    def test_no_candidate_gives_none(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        base = git(repo, "rev-parse", "HEAD")
+        task = task_plan("T01")
+        gone = worktree_entry(repo, path=str(tmp_path / "gone"))
+        removed = worktree_entry(repo, status="removed")
+        plain = worktree_entry(repo, kind="none", repository=None)
+        for entries in ([], [gone], [removed], [plain], ["x"], [worktree_entry(repo, path=3)]):
+            state = {"working_directory": str(repo), "worktrees": entries}
+            assert gates.task_worktree(state, task, base) is None, entries
+        assert gates.task_worktree({"working_directory": str(repo)}, task, base) is None
+
+    def test_one_candidate_is_used_whatever_its_role(self, tmp_path: Path) -> None:
+        repo = make_repo(tmp_path)
+        state = {"working_directory": str(repo), "worktrees": [worktree_entry(repo, role="additional")]}
+        assert gates.task_worktree(state, task_plan("T01"), git(repo, "rev-parse", "HEAD")) == repo
+
+    def test_a_candidate_without_the_base_commit_is_dropped(self, tmp_path: Path) -> None:
+        state, _, clone, base = two_worktrees(tmp_path)
+        other = make_repo(tmp_path / "unrelated", {"z.py": "z = 1\n"})
+        state["worktrees"].insert(0, worktree_entry(other, path=str(other), repository=str(other), role="target"))
+        touch(clone)
+        assert gates.task_worktree(state, task_plan("T01"), base) == clone
+
+    def test_the_one_candidate_that_holds_the_base_is_used_without_reading_a_diff(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        repo = make_repo(tmp_path, GATE_FILES)
+        other = make_repo(tmp_path / "unrelated", {"z.py": "z = 1\n"})
+        state = {
+            "working_directory": str(repo),
+            "worktrees": [
+                worktree_entry(other, path=str(other), repository=str(other), role="target"),
+                worktree_entry(repo, role="additional"),
+            ],
+        }
+
+        def unread(*_args: Any) -> list[Any]:
+            raise AssertionError("a lone survivor needs no diff")
+
+        monkeypatch.setattr(gates, "changed_files", unread)
+        assert gates.task_worktree(state, task_plan("T01"), git(repo, "rev-parse", "HEAD")) == repo
+
+    def test_all_candidates_without_the_base_are_a_problem_naming_them_and_the_base(self, tmp_path: Path) -> None:
+        state, repo, clone, _ = two_worktrees(tmp_path)
+        with pytest.raises(WorkspaceError, match=r"gates-no-base: .*" + str(repo) + ".*" + str(clone) + ".*" + BASE):
+            gates.task_worktree(state, task_plan("T01"), BASE)
+
+    def test_the_worktree_that_holds_the_output_wins_over_the_target_role(self, tmp_path: Path) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        touch(clone)
+        assert gates.task_worktree(state, task_plan("T01"), base) == clone
+        touch(repo, "unrelated.py")
+        assert gates.task_worktree(state, task_plan("T01"), base) == clone
+
+    def test_a_directory_output_matches_a_path_below_it(self, tmp_path: Path) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        task = task_plan("T01", [{"root": "target", "path": "src/", "required": True}])
+        touch(clone, "src/deep/new.py")
+        assert gates.task_worktree(state, task, base) == clone
+        near = task_plan("T01", [{"root": "target", "path": "sr", "required": True}])
+        assert gates.task_worktree(state, near, base) == repo
+
+    def test_changes_in_both_or_neither_fall_back_to_the_target_role(self, tmp_path: Path) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        assert gates.task_worktree(state, task_plan("T01"), base) == repo
+        touch(repo)
+        touch(clone)
+        assert gates.task_worktree(state, task_plan("T01"), base) == repo
+
+    def test_only_required_target_outputs_decide(self, tmp_path: Path) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        touch(clone)
+        for output in (
+            {"root": "target", "path": "app.py", "required": False},
+            {"root": "workspace", "path": "app.py", "required": True},
+        ):
+            assert gates.task_worktree(state, task_plan("T01", [output]), base) == repo, output
+
+    def test_outputs_resolve_under_the_working_directory(self, tmp_path: Path) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        state["working_directory"] = str(clone / "pkg")
+        touch(clone, "app.py")  # the output is `pkg/app.py`, not `app.py` at the root
+        assert gates.task_worktree(state, task_plan("T01"), base) == repo
+        touch(clone, "pkg/app.py")
+        assert gates.task_worktree(state, task_plan("T01"), base) == clone
+
+    def test_a_working_directory_outside_the_candidate_matches_nothing(self, tmp_path: Path) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        state["working_directory"] = str(tmp_path / "elsewhere")
+        touch(clone)
+        assert gates.task_worktree(state, task_plan("T01"), base) == repo
+
+    def test_no_target_entry_and_no_decision_is_ambiguous_and_names_the_candidates(self, tmp_path: Path) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        state["worktrees"][0]["role"] = "additional"
+        with pytest.raises(WorkspaceError, match=r"gates-ambiguous-worktree: .*" + str(repo) + ".*" + str(clone)):
+            gates.task_worktree(state, task_plan("T01"), base)
+
+    def test_a_missing_target_directory_beside_another_candidate_is_a_refusal_naming_it(
+        self, tmp_path: Path
+    ) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        touch(clone)
+        shutil.rmtree(repo)
+        pattern = "gates-missing-worktree: the recorded target worktree " + re.escape(str(repo)) + " is missing"
+        with pytest.raises(WorkspaceError, match=pattern):
+            gates.task_worktree(state, task_plan("T01"), base)
+
+    def test_a_present_target_or_a_lone_additional_is_unchanged_by_the_missing_target_check(
+        self, tmp_path: Path
+    ) -> None:
+        state, repo, clone, base = two_worktrees(tmp_path)
+        assert gates.task_worktree(state, task_plan("T01"), base) == repo
+        del state["worktrees"][0]  # only an additional entry is recorded
+        assert gates.task_worktree(state, task_plan("T01"), base) == clone
+        state["worktrees"].insert(0, worktree_entry(repo, status="removed"))
+        shutil.rmtree(repo)  # a removed target is not missing
+        assert gates.task_worktree(state, task_plan("T01"), base) == clone
+
+    def test_a_git_failure_reading_the_changes_is_gates_stale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        state, _, _, base = two_worktrees(tmp_path)
+
+        def broken(*_args: Any) -> list[Any]:
+            raise WorkspaceError("git add failed")
+
+        monkeypatch.setattr(gates, "changed_files", broken)
+        with pytest.raises(WorkspaceError, match=r"gates-stale: the tree cannot be read \(git add failed\)"):
+            gates.task_worktree(state, task_plan("T01"), base)
+
+
+def add_clone(project: Path, repo: Path, *, role: str = "additional") -> Path:
+    clone = clone_of(repo)
+    state = raw_state(project)
+    state["worktrees"].append(worktree_entry(clone, role=role))
+    write_state(project, state)
+    return clone
+
+
+class TestGatesFollowTheWorktree:
+    def test_a_lone_additional_worktree_is_gated(self, gated: "tuple[Path, Path]") -> None:
+        project, repo = gated
+        state = raw_state(project)
+        state["worktrees"][0]["role"] = "additional"
+        write_state(project, state)
+        work(repo)
+        result = run_gates(project)
+        assert result["passed"] is True, result["failures"]
+
+    def test_the_gate_runs_in_the_worktree_that_holds_the_changes(self, gated: "tuple[Path, Path]") -> None:
+        project, repo = gated
+        clone = add_clone(project, repo)
+        work(clone)
+        result = run_gates(project)
+        assert result["passed"] is True, result["failures"]
+        base = raw_state(project)["gates"]["base_commit"]
+        assert result["head_tree"] == tree(clone, base) != tree(repo, base)
+        finish(project, record=result["evidence"][0])
+        assert raw_state(project)["tasks"][0]["status"] == "DONE"
+
+    def test_sources_are_hashed_in_the_approval_repository_not_the_chosen_worktree(
+        self, gated: "tuple[Path, Path]"
+    ) -> None:
+        project, repo = gated
+        clone = add_clone(project, repo)
+        (clone / "AGENTS.md").write_text("# Agents\n\nother branch\n", encoding="utf-8")
+        work(clone)
+        assert run_gates(project)["passed"] is True
+        (repo / "AGENTS.md").write_text("# Agents\n\nchanged\n", encoding="utf-8")
+        with pytest.raises(WorkspaceError, match=r"gates-source-changed: AGENTS\.md"):
+            run_gates(project)
+
+    def test_the_changes_moving_to_another_worktree_after_the_run_is_stale_at_finish(
+        self, gated: "tuple[Path, Path]"
+    ) -> None:
+        project, repo = gated
+        clone = add_clone(project, repo)
+        work(repo)
+        result = run_gates(project)
+        assert result["passed"] is True
+        git(repo, "checkout", "-q", "--", ".")
+        git(repo, "clean", "-fdq")
+        work(clone, covered=False)  # other content: the same bytes would give the same tree
+        text = refused_text(lambda: finish(project, record=result["evidence"][0]))
+        assert "gates-stale" in text and "gate-run" in text
+
+    def test_two_candidates_with_no_decision_and_no_target_refuse_the_run_and_the_finish(
+        self, gated: "tuple[Path, Path]"
+    ) -> None:
+        project, repo = gated
+        clone = add_clone(project, repo)
+        state = raw_state(project)
+        state["worktrees"][0]["role"] = "additional"
+        write_state(project, state)
+        with pytest.raises(WorkspaceError, match="gates-ambiguous-worktree"):
+            run_gates(project)
+        found = gates.gate_findings(project, raw_state(project), {**raw_state(project)["tasks"][0], "status": "DONE"})
+        assert any("gates-ambiguous-worktree" in item and str(clone) in item for item in found), found
+
+    def test_a_missing_target_directory_refuses_the_run_and_the_finish(self, gated: "tuple[Path, Path]") -> None:
+        project, repo = gated
+        clone = add_clone(project, repo)
+        work(clone)
+        shutil.rmtree(repo)
+        with pytest.raises(WorkspaceError, match="gates-missing-worktree"):
+            run_gates(project)
+        found = gates.gate_findings(project, raw_state(project), {**raw_state(project)["tasks"][0], "status": "DONE"})
+        assert any("gates-missing-worktree" in item and str(repo) in item for item in found), found
+
+    def test_a_task_that_pushes_is_still_not_judged_by_gate_run(self, gated: "tuple[Path, Path]") -> None:
+        project, _ = gated
+        state = raw_state(project)
+        task = state["tasks"][0]
+        task["effect"] = {"kind": "external", "description": "push"}
+        task["authorization"] = {
+            "required": True,
+            "status": "explicit",
+            "scope": "push",
+            "source": "user reply",
+            "authorized_at": APPROVAL["approved_at"],
+        }
+        write_state(project, state)
+        with pytest.raises(WorkspaceError, match="gates-not-code-task"):
+            run_gates(project)

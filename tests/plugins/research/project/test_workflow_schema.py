@@ -36,6 +36,7 @@ WORKTREE_VARIANTS = {
     "operation=pull_request": {"host", "number", "url"},
     "operation=pull_request,exempt=no_remote": {"exempt"},
     "operation=pull_request,exempt=local_only": {"exempt"},
+    "operation=pull_request,replaces_exemption=true": {"host", "number", "replaces_exemption", "url"},
     "operation=alpha": {"alpha", "base", "files", "reason"},
     "operation=alpha,exempt=true": {"exempt", "reason"},
     "operation=release": {"version"},

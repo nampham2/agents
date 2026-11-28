@@ -5,8 +5,7 @@ effort are one agreement loop inside `ALIGNING`; task planning starts only when 
 agree on the current proposal. Do not create implementation tasks for open decisions.
 
 `planning.md` is the agreement: what is built, why, how much and in what order. The technical
-design is `artifacts/architecture.md`, written after agreement by the first task and
-Goldfish-reviewed before code starts ([design-document.md](design-document.md)). A project begun
+design is `artifacts/architecture.md` ([design-document.md](design-document.md)). A project begun
 before the split keeps its agreement in a root `architecture.md`, read as `planning.md`.
 
 ## Prepare a concrete proposal
@@ -31,7 +30,7 @@ Medium and high effort keep full coverage and separate confirmations.
 ## Make effort reviewable
 
 Rate effort per workstream and overall as low, medium or high before creating tasks.
-Project convention. Never estimate in hours, days or other time units. Name external waits as
+Never estimate in hours, days or other time units. Name external waits as
 dependencies. At policy 3+, propose the review risk with its reasons
 ([review-risk.md](review-risk.md)).
 
@@ -68,8 +67,7 @@ approach.
 If the user changes a material decision after confirmation, reopen the affected review and obtain
 agreement on the revision before affected work. Editorial corrections need no new approval.
 
-For changes during execution follow [execution-changes.md](execution-changes.md): revised agreement
-does not itself update assignments or make old evidence applicable.
+Revised agreement does not update assignments or make old evidence applicable.
 
 ## Produce the planning document
 
@@ -91,6 +89,7 @@ unrelated changes. It must stand without the chat transcript, with these section
    target needs what the delivery target demands first ([worktrees.md](worktrees.md)): for `pr`,
    `merged` and `release` the draft MR or a recorded exemption, or an earlier external task that
    opens it; for `local` nothing; `research` writes none.
+   Plan merges and production deploys as user steps; the agent hands the command.
 5. Effort per workstream and overall: implementer, reuse, confidence, exclusions, uncertainty.
 6. Edge cases and recovery: case, expected behavior, owner and verification.
 7. Verification plan: each success criterion mapped to a check; a new code check or regression
@@ -111,6 +110,7 @@ Preserve the seven specification sections: link the planning revision and summar
 constraints under `Constraints and important assumptions`; list `planning.md` as a `workspace`
 deliverable under `Deliverables and roots`; keep `Success and verification criteria` aligned with
 the plan's scenarios. Do not copy the whole plan into the spec.
+Before round 1, fix each conflict between the spec and planning.md.
 
 ## Persist agreement and resume
 

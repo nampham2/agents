@@ -2,6 +2,8 @@
 
 A gated project cannot mark a code task DONE until its approved checks pass. A code task is a
 `local_write` task with a non-prose file in a `target` output.
+The design and diff gates also count an `external` or `destructive` task with a required non-prose
+`target` output.
 
 ## Actions
 
@@ -25,6 +27,10 @@ Send each with `research-project workflow <project-dir> <action> -`. Add `--sche
 
 Approval needs a `lint`, a `types` and a `tests` command, or a waiver for each missing kind. The
 base is the repository head at the first approval; every run covers all changes since it.
+
+Gates run in the recorded worktree that holds the task's changes, else the `target` entry. With
+neither, the run refuses with `gates-ambiguous-worktree`, naming the candidates. A `target`
+worktree may be recorded from a repository subdirectory.
 
 ## Refusal
 

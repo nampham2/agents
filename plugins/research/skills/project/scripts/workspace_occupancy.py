@@ -149,10 +149,18 @@ def _workspace(workspace_root: Path, project: str, repository: Path) -> list[dic
     return holdings
 
 
+def _holds_project(text: str, project: str) -> bool:
+    """Whether `text` holds the project id as a token: `2026-11-26-001` does not match inside `2026-11-26-0011`."""
+    return re.search(r"(?<![0-9])" + re.escape(project) + r"(?![0-9])", text) is not None
+
+
 def _branches(
-    root: Path, files: list[dict[str, str]], own_branch: str, default: str | None
+    root: Path, files: list[dict[str, str]], own_branch: str, default: str | None, project: str
 ) -> list[dict[str, str]]:
-    """Versions on other origin branches, then on other local branches that no origin branch repeats."""
+    """Versions on other origin branches, then on other local branches that no origin branch repeats.
+
+    A branch whose name holds the project id belongs to this project (`<prefix>/<project-id>-<slug>`) and is skipped.
+    """
     holdings: list[dict[str, str]] = []
     seen: set[str] = set()
     default_name = default.split("/", 1)[1] if default else None
@@ -161,7 +169,7 @@ def _branches(
         for line in listing.splitlines():
             sha, full = line.split(" ", 1)
             name = full[len(prefix) + 1:]
-            if name in ("HEAD", own_branch, default_name) or sha in seen:
+            if name in ("HEAD", own_branch, default_name) or _holds_project(name, project) or sha in seen:
                 continue
             seen.add(sha)
             ref = f"origin/{name}" if source == "remote" else name
@@ -169,14 +177,28 @@ def _branches(
     return holdings
 
 
-def _worktrees(root: Path, files: list[dict[str, str]], own: Path) -> list[dict[str, str]]:
-    holdings: list[dict[str, str]] = []
+def _listed_worktrees(root: Path) -> list[tuple[Path, str]]:
+    """Each worktree Git lists with its branch name ("" when detached), parsed one porcelain block at a time."""
     listing = _query(root, "worktree", "list", "--porcelain") or ""
-    for line in listing.splitlines():
-        if not line.startswith("worktree "):
-            continue
-        path = Path(line[len("worktree "):])
-        if path.resolve() == own.resolve():
+    listed: list[tuple[Path, str]] = []
+    for block in listing.split("\n\n"):
+        path: Path | None = None
+        branch = ""
+        for line in block.splitlines():
+            if line.startswith("worktree "):
+                path = Path(line[len("worktree "):])
+            elif line.startswith("branch refs/heads/"):
+                branch = line[len("branch refs/heads/"):]
+        if path is not None:
+            listed.append((path, branch))
+    return listed
+
+
+def _worktrees(root: Path, files: list[dict[str, str]], own: Path, project: str) -> list[dict[str, str]]:
+    """Versions in other worktrees; one whose branch or directory name holds this project's id is its own, skipped."""
+    holdings: list[dict[str, str]] = []
+    for path, branch in _listed_worktrees(root):
+        if path.resolve() == own.resolve() or _holds_project(branch, project) or _holds_project(path.name, project):
             continue
         for item in files:
             try:
@@ -226,8 +248,8 @@ def check_base(
         notes.append("no origin remote: the origin/main and remote-branch sources were skipped")
     released, default = _main(root, files, has_origin)
     others = _workspace(workspace_root, project, Path(entry["repository"]))
-    others += _branches(root, files, entry["branch"], default)
-    others += _worktrees(root, files, Path(entry["path"]))
+    others += _branches(root, files, entry["branch"], default, project)
+    others += _worktrees(root, files, Path(entry["path"]), project)
     newest = max((_tuple(item["version"]) for item in released), default=None)
     occupiers: list[str] = []
     if newest is not None and _tuple(base) <= newest:

@@ -1940,7 +1940,8 @@ def planning_warnings(project_dir: Path, status: object, state: "dict[str, Any] 
 # writes code and kept current by every code task after it. A Goldfish round gates the first code task;
 # the checks on its shape are warnings for a project created on or after `PLANNING_SPLIT_FROM` and nothing else: a docs-only plan, a
 # closed project and an older project are quiet. A code task is a `local_write` task with a `target`
-# output that is not prose; the test is a heuristic that only drives warnings.
+# output that is not prose; the test is a heuristic that only drives warnings. `writes_target_code` is that
+# test widened for the design and diff gates: an `external` or `destructive` task counts with a required one.
 PROSE_SUFFIXES = (".md", ".rst", ".txt")
 # Sections every design carries; a profile named on its `Profiles:` line adds the others.
 DESIGN_CORE_SECTIONS = (
@@ -1957,6 +1958,16 @@ DESIGN_PROFILES_LINE = re.compile(r"^\W*profiles?\W*:(?P<names>.*)$", re.IGNOREC
 DESIGN_HEADING = re.compile(r"^(?P<marks>#{1,6})[ \t]+(?P<title>.*?)[ \t]*#*[ \t]*$", re.MULTILINE)
 
 
+def _target_code_output(item: object) -> bool:
+    """Whether an output is a `target` file that is not prose."""
+    return (
+        isinstance(item, dict)
+        and item.get("root") == "target"
+        and isinstance(item.get("path"), str)
+        and not item["path"].lower().endswith(PROSE_SUFFIXES)
+    )
+
+
 def is_code_task(task: object) -> bool:
     """Whether `task` writes files that are not prose into the target (arbitrary JSON is never one)."""
     if not isinstance(task, dict):
@@ -1965,12 +1976,25 @@ def is_code_task(task: object) -> bool:
     outputs = task.get("outputs")
     if not isinstance(effect, dict) or effect.get("kind") != "local_write" or not isinstance(outputs, list):
         return False
-    return any(
-        isinstance(item, dict)
-        and item.get("root") == "target"
-        and isinstance(item.get("path"), str)
-        and not item["path"].lower().endswith(PROSE_SUFFIXES)
-        for item in outputs
+    return any(_target_code_output(item) for item in outputs)
+
+
+def writes_target_code(task: object) -> bool:
+    """`is_code_task`, or an `external` or `destructive` task with a required non-prose `target` output.
+
+    The design and diff gates use this one, so a task that writes target code and also pushes owes them. An
+    optional output (a log, a data file) never counts. The gates, personas and checks keep `is_code_task`.
+    """
+    if is_code_task(task):
+        return True
+    if not isinstance(task, dict):
+        return False
+    effect = task.get("effect")
+    outputs = task.get("outputs")
+    if not isinstance(effect, dict) or effect.get("kind") not in ("external", "destructive"):
+        return False
+    return isinstance(outputs, list) and any(
+        _target_code_output(item) and item.get("required") is True for item in outputs
     )
 
 
@@ -1998,7 +2022,11 @@ def design_document_warnings(project_dir: Path, status: object, state: "dict[str
     if not _created_on_or_after(state, PLANNING_SPLIT_FROM):
         return []
     tasks = state.get("tasks")
-    code_tasks = [task for task in tasks if is_code_task(task) and task.get("status") != "SKIPPED"] if isinstance(tasks, list) else []
+    code_tasks = (
+        [task for task in tasks if writes_target_code(task) and task.get("status") != "SKIPPED"]
+        if isinstance(tasks, list)
+        else []
+    )
     if not code_tasks:
         return []
     path = project_dir / DESIGN_DOCUMENT
@@ -2507,72 +2535,121 @@ def _validate_worktrees(
         if not isinstance(entry, dict):
             report.errors.append(f"{label}: must be an object")
             continue
-        _missing_fields(entry, WORKTREE_FIELDS, label, report)
-        _unexpected_fields(entry, WORKTREE_FIELDS | WORKTREE_OPTIONAL_FIELDS, label, report)
-        from workspace_delivery import delivery_errors
+        target = _validate_worktree_entry(entry, label, seen_paths, report, check_files=check_files)
+        if target is not None:
+            target_entries.append(target)
+    _check_target_entries(target_entries, working_directory, report)
 
-        report.errors.extend(delivery_errors(entry, label))
-        kind, role, status = entry.get("kind"), entry.get("role"), entry.get("status")
-        if not _enum_string(kind, WORKTREE_KINDS):
-            report.errors.append(f"{label}: kind must be one of {', '.join(sorted(WORKTREE_KINDS))}")
-        if not _enum_string(role, WORKTREE_ROLES):
-            report.errors.append(f"{label}: role must be one of {', '.join(sorted(WORKTREE_ROLES))}")
-        if not _enum_string(status, WORKTREE_STATUSES):
-            report.errors.append(f"{label}: status must be one of {', '.join(sorted(WORKTREE_STATUSES))}")
-        path_value = entry.get("path")
-        if not _non_empty_string(path_value) or not Path(path_value).is_absolute():
-            report.errors.append(f"{label}: path must be an absolute path")
-            path_value = None
-        elif path_value in seen_paths:
-            report.errors.append(f"{label}: duplicate worktree path {path_value}")
-        else:
-            seen_paths.add(path_value)
-        if kind == "none":
-            for field_name in ("repository", "branch", "base_commit"):
-                if entry.get(field_name) is not None:
-                    report.errors.append(f"{label}: {field_name} must be null when kind is none")
-            if status != "active" or entry.get("closure") is not None:
-                report.errors.append(f"{label}: a non-repository record stays active with no closure")
-        elif _enum_string(kind, WORKTREE_KINDS):
-            repository = entry.get("repository")
-            if not _non_empty_string(repository) or not Path(repository).is_absolute():
-                report.errors.append(f"{label}: repository must be an absolute path")
-            for field_name in ("branch", "base_commit"):
-                if not _non_empty_string(entry.get(field_name)):
-                    report.errors.append(f"{label}: {field_name} must be a non-empty string")
-            _validate_worktree_closure(entry.get("closure"), label, status, report)
-            if role == "target" and path_value is not None and _non_empty_string(repository):
-                target_entries.append((label, status, path_value, repository))
-            if check_files and status != "removed" and path_value is not None and not Path(path_value).is_dir():
-                report.warnings.append(f"{label}: recorded worktree is missing on disk: {path_value}")
-        if not _is_timestamp(entry.get("recorded_at")):
-            report.errors.append(f"{label}: recorded_at must be timezone-aware ISO-8601")
-        confirmation = entry.get("confirmation")
-        if not isinstance(confirmation, dict):
-            report.errors.append(f"{label}: confirmation must be an object with source and response")
-        else:
-            _missing_fields(confirmation, NESTED_INPUTS["confirmation"][1], f"{label}.confirmation", report)
-            _unexpected_fields(confirmation, NESTED_INPUTS["confirmation"][0], f"{label}.confirmation", report)
-            for field_name in ("source", "response"):
-                if not _non_empty_string(confirmation.get(field_name)):
-                    report.errors.append(f"{label}.confirmation: {field_name} must be a non-empty string")
-    # Only the latest target constrains the target root. An earlier one is history once it is removed,
-    # which is what lets a reopened project record a new worktree: the first maintenance reopen after
-    # a worktree was removed otherwise had no legal way to record the next one.
-    if target_entries:
-        *earlier, (label, status, path_value, repository) = target_entries
-        for earlier_label, earlier_status, _, _ in earlier:
-            if earlier_status != "removed":
-                report.errors.append(
-                    f"project: at most one worktree may have role target; {earlier_label} must be removed "
-                    "before another target is recorded"
-                )
-        expected = repository if status == "removed" else path_value
-        if str(working_directory) != expected:
+
+def _validate_worktree_entry(
+    entry: dict[str, Any], label: str, seen_paths: set[str], report: ValidationReport, *, check_files: bool
+) -> "tuple[str, object, str, str] | None":
+    """Validate one worktree record; a `target` record that is well enough formed is returned for the root check."""
+    _missing_fields(entry, WORKTREE_FIELDS, label, report)
+    _unexpected_fields(entry, WORKTREE_FIELDS | WORKTREE_OPTIONAL_FIELDS, label, report)
+    from workspace_delivery import delivery_errors
+
+    report.errors.extend(delivery_errors(entry, label))
+    kind, role, status = entry.get("kind"), entry.get("role"), entry.get("status")
+    for name, value, allowed in (
+        ("kind", kind, WORKTREE_KINDS),
+        ("role", role, WORKTREE_ROLES),
+        ("status", status, WORKTREE_STATUSES),
+    ):
+        if not _enum_string(value, allowed):
+            report.errors.append(f"{label}: {name} must be one of {', '.join(sorted(allowed))}")
+    path_value = _worktree_path(entry, label, seen_paths, report)
+    target = None
+    if kind == "none":
+        _validate_non_repository_worktree(entry, label, status, report)
+    elif _enum_string(kind, WORKTREE_KINDS):
+        target = _validate_repository_worktree(entry, label, role, status, path_value, report, check_files=check_files)
+    if not _is_timestamp(entry.get("recorded_at")):
+        report.errors.append(f"{label}: recorded_at must be timezone-aware ISO-8601")
+    _validate_worktree_confirmation(entry.get("confirmation"), label, report)
+    return target
+
+
+def _worktree_path(entry: dict[str, Any], label: str, seen_paths: set[str], report: ValidationReport) -> "str | None":
+    path_value = entry.get("path")
+    if not _non_empty_string(path_value) or not Path(path_value).is_absolute():
+        report.errors.append(f"{label}: path must be an absolute path")
+        return None
+    if path_value in seen_paths:
+        report.errors.append(f"{label}: duplicate worktree path {path_value}")
+    else:
+        seen_paths.add(path_value)
+    return str(path_value)
+
+
+def _validate_non_repository_worktree(
+    entry: dict[str, Any], label: str, status: object, report: ValidationReport
+) -> None:
+    for field_name in ("repository", "branch", "base_commit"):
+        if entry.get(field_name) is not None:
+            report.errors.append(f"{label}: {field_name} must be null when kind is none")
+    if status != "active" or entry.get("closure") is not None:
+        report.errors.append(f"{label}: a non-repository record stays active with no closure")
+
+
+def _validate_repository_worktree(
+    entry: dict[str, Any],
+    label: str,
+    role: object,
+    status: object,
+    path_value: "str | None",
+    report: ValidationReport,
+    *,
+    check_files: bool,
+) -> "tuple[str, object, str, str] | None":
+    repository = entry.get("repository")
+    if not _non_empty_string(repository) or not Path(repository).is_absolute():
+        report.errors.append(f"{label}: repository must be an absolute path")
+    for field_name in ("branch", "base_commit"):
+        if not _non_empty_string(entry.get(field_name)):
+            report.errors.append(f"{label}: {field_name} must be a non-empty string")
+    _validate_worktree_closure(entry.get("closure"), label, status, report)
+    target = None
+    if role == "target" and path_value is not None and _non_empty_string(repository):
+        target = (label, status, path_value, repository)
+    if check_files and status != "removed" and path_value is not None and not Path(path_value).is_dir():
+        report.warnings.append(f"{label}: recorded worktree is missing on disk: {path_value}")
+    return target
+
+
+def _validate_worktree_confirmation(confirmation: object, label: str, report: ValidationReport) -> None:
+    if not isinstance(confirmation, dict):
+        report.errors.append(f"{label}: confirmation must be an object with source and response")
+        return
+    _missing_fields(confirmation, NESTED_INPUTS["confirmation"][1], f"{label}.confirmation", report)
+    _unexpected_fields(confirmation, NESTED_INPUTS["confirmation"][0], f"{label}.confirmation", report)
+    for field_name in ("source", "response"):
+        if not _non_empty_string(confirmation.get(field_name)):
+            report.errors.append(f"{label}.confirmation: {field_name} must be a non-empty string")
+
+
+def _check_target_entries(
+    target_entries: list[tuple[str, object, str, str]], working_directory: Path, report: ValidationReport
+) -> None:
+    """Only the latest target constrains the target root; an earlier one is history once it is removed.
+
+    That is what lets a reopened project record a new worktree: the first maintenance reopen after a worktree was
+    removed otherwise had no legal way to record the next one.
+    """
+    if not target_entries:
+        return
+    *earlier, (label, status, path_value, repository) = target_entries
+    for earlier_label, earlier_status, _, _ in earlier:
+        if earlier_status != "removed":
             report.errors.append(
-                f"{label}: target worktree {status} requires working_directory {expected}, "
-                f"found {working_directory}"
+                f"project: at most one worktree may have role target; {earlier_label} must be removed "
+                "before another target is recorded"
             )
+    expected = repository if status == "removed" else path_value
+    if not Path(working_directory).is_relative_to(expected):
+        report.errors.append(
+            f"{label}: target worktree {status} requires working_directory {expected}, found {working_directory}"
+        )
 
 
 def _add_worktree_closure_findings(state: dict[str, Any], report: ValidationReport) -> None:

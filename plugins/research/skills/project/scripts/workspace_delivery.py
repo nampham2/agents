@@ -43,6 +43,8 @@ PR_EXEMPTION_REASONS = {"no_remote", "local_only"}
 # The full commit name the merge gate accepts: 40 hex digits, or 64 for a SHA-256 repository.
 COMMIT_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 MAXIMUM_FILES = 10
+# What a refused worktree removal tells the agent to do, and in which order (c10).
+REMOVAL_ORDER = "Order: delivery records, the user's words, git worktree remove, the close record."
 
 
 def spelling(base: str, alpha: int, style: str) -> str:
@@ -112,35 +114,29 @@ def _remote_hostname(root: Path) -> str:
     return hostname.lower()
 
 
-def _pull_request(
-    entry: dict[str, Any],
-    request: dict[str, Any],
-    root: Path,
-    confirmation: dict[str, str],
-    rules: DeliveryRules,
-) -> None:
-    if "pull_request" in entry or "pr_exemption" in entry:
-        raise WorkspaceError("the worktree already has a pull_request or a pr_exemption")
-    if "exempt" in request:
-        exempt = request["exempt"]
-        if exempt == "local_only":
-            if not rules.accepts_new_local_only:
-                raise WorkspaceError(
-                    "a local_only exemption is no longer recorded at policy 2; a local implementation target "
-                    "needs no merge request, so change the target with 'workflow retarget' instead"
-                )
-            # The user's words are the guard: the tool does not test that the branch is never pushed.
-            entry["pr_exemption"] = {"reason": "local_only", **confirmation}
-            return
-        if exempt != "no_remote":
-            raise WorkspaceError("exempt must be no_remote or local_only")
-        remotes = _git(root, "remote")
-        if remotes is None:
-            raise WorkspaceError("Git could not be consulted for the worktree; retry when it is available")
-        if remotes.strip():
-            raise WorkspaceError(f"the worktree has a remote ({remotes.split()[0]}); open a MR instead")
-        entry["pr_exemption"] = {"reason": "no_remote", **confirmation}
+def _exemption_record(entry: dict[str, Any], request: dict[str, Any], root: Path, confirmation: dict[str, str],
+                      rules: DeliveryRules) -> None:
+    exempt = request["exempt"]
+    if exempt == "local_only":
+        if not rules.accepts_new_local_only:
+            raise WorkspaceError(
+                "a local_only exemption is no longer recorded at policy 2; a local implementation target "
+                "needs no merge request, so change the target with 'workflow retarget' instead"
+            )
+        # The user's words are the guard: the tool does not test that the branch is never pushed.
+        entry["pr_exemption"] = {"reason": "local_only", **confirmation}
         return
+    if exempt != "no_remote":
+        raise WorkspaceError("exempt must be no_remote or local_only")
+    remotes = _git(root, "remote")
+    if remotes is None:
+        raise WorkspaceError("Git could not be consulted for the worktree; retry when it is available")
+    if remotes.strip():
+        raise WorkspaceError(f"the worktree has a remote ({remotes.split()[0]}); open a MR instead")
+    entry["pr_exemption"] = {"reason": "no_remote", **confirmation}
+
+
+def _pull_request_record(entry: dict[str, Any], request: dict[str, Any], root: Path) -> None:
     host = string_input(request.get("host"), "host")
     if host not in HOSTS:
         raise WorkspaceError("host must be github or gitlab")
@@ -153,6 +149,58 @@ def _pull_request(
     if not re.search(re.escape(path) + str(number) + r"/?$", parsed.path):
         raise WorkspaceError(f"url must end with {path}{number} for host {host}: {url}")
     entry["pull_request"] = {"host": host, "url": url, "number": number, "recorded_at": now_iso()}
+
+
+def _replaces_local_only(entry: dict[str, Any], request: dict[str, Any], rules: DeliveryRules) -> bool:
+    """Whether the request replaces a local_only exemption; raises when it asks and cannot. Policy 2 ignores it."""
+    if not rules.accepts_new_local_only or "replaces_exemption" not in request:
+        return False
+    replaces = request["replaces_exemption"]
+    if not isinstance(replaces, bool):
+        raise WorkspaceError("replaces_exemption must be true or false")
+    if not replaces:
+        return False
+    if "exempt" in request:
+        raise WorkspaceError("replaces_exemption applies to a pull_request record, not to an exemption")
+    held = entry.get("pr_exemption")
+    reason = held.get("reason") if isinstance(held, dict) else None
+    if reason != "local_only":
+        found = reason if reason == "no_remote" else "none"
+        raise WorkspaceError(
+            f"replaces_exemption needs a local_only pr_exemption to replace; the worktree has {found}"
+        )
+    return True
+
+
+def _keep_pr_exemption(entry: dict[str, Any], confirmation: dict[str, str], stamp: str) -> None:
+    """Move the local_only exemption into `pr_exemption_replaced`, beside the pull request confirmation."""
+    old = entry.pop("pr_exemption")
+    entry["pr_exemption_replaced"] = {
+        "reason": old["reason"],
+        "source": old["source"],
+        "response": old["response"],
+        "replaced_at": stamp,
+        "replaced_source": confirmation["source"],
+        "replaced_response": confirmation["response"],
+    }
+
+
+def _pull_request(
+    entry: dict[str, Any],
+    request: dict[str, Any],
+    root: Path,
+    confirmation: dict[str, str],
+    rules: DeliveryRules,
+) -> None:
+    replaces = _replaces_local_only(entry, request, rules)
+    if not replaces and ("pull_request" in entry or "pr_exemption" in entry):
+        raise WorkspaceError("the worktree already has a pull_request or a pr_exemption")
+    if "exempt" in request:
+        _exemption_record(entry, request, root, confirmation, rules)
+        return
+    _pull_request_record(entry, request, root)
+    if replaces:
+        _keep_pr_exemption(entry, confirmation, entry["pull_request"]["recorded_at"])
 
 
 def _files(request: dict[str, Any], line: dict[str, Any] | None) -> list[dict[str, str]]:
@@ -310,6 +358,7 @@ def _merge(
     if isinstance(recorded, dict) and recorded.get("state") == "merged":
         raise WorkspaceError("the merge is already recorded; a merge is final")
     merged_head = _merged_head(request, state)
+    fix_commits = _fix_commits(request, state, merged_head)
     method = evidence = None
     if state == "merged":
         method = request.get("method")
@@ -323,9 +372,8 @@ def _merge(
             gate("merge", entry)
     entry["merge"] = {
         "state": state, "method": method, "evidence": evidence, **confirmation, "recorded_at": now_iso(),
+        **{key: value for key, value in (("merged_head", merged_head), ("fix_commits", fix_commits)) if value},
     }
-    if merged_head is not None:
-        entry["merge"]["merged_head"] = merged_head
 
 
 def _merged_head(request: dict[str, Any], state: str) -> str | None:
@@ -337,6 +385,30 @@ def _merged_head(request: dict[str, Any], state: str) -> str | None:
         raise WorkspaceError("merged_head belongs to a merged record, not a declined one")
     if not isinstance(value, str) or not COMMIT_PATTERN.match(value):
         raise WorkspaceError("merged_head must be a full lowercase hex commit (40 or 64 digits)")
+    return value
+
+
+def is_fix_commit_list(value: object) -> bool:
+    """A non-empty list of full lowercase hex commits. `fullmatch`: the pattern ends in `$`, which `match` lets
+    a trailing newline pass."""
+    return (
+        isinstance(value, list) and bool(value)
+        and all(isinstance(item, str) and COMMIT_PATTERN.fullmatch(item) for item in value)
+    )
+
+
+def _fix_commits(request: dict[str, Any], state: str, merged_head: str | None) -> list[str] | None:
+    """The commits after the reviewed head that a merged record lists, or None. The gate checks them by ancestry
+    where it is on; elsewhere the record states what the agent attested."""
+    value = request.get("fix_commits")
+    if value is None:
+        return None
+    if state != "merged":
+        raise WorkspaceError("fix_commits belongs to a merged record, not a declined one")
+    if merged_head is None:
+        raise WorkspaceError("fix_commits needs merged_head, the head that was merged")
+    if not is_fix_commit_list(value):
+        raise WorkspaceError("fix_commits must be a non-empty list of full lowercase hex commits (40 or 64 digits)")
     return value
 
 
@@ -586,17 +658,19 @@ def _move_errors(moves: object, base: object, label: str) -> list[str]:
     return []
 
 
-def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
-    """Shape errors of the optional delivery fields of one worktree entry."""
+def _pull_request_errors(entry: dict[str, Any], label: str) -> list[str]:
+    request = entry["pull_request"]
+    problems = _object_errors(request, f"{label}.pull_request", {"host", "url", "number", "recorded_at"})
+    if isinstance(request, dict) and not problems:
+        number = request["number"]
+        if request["host"] not in HOSTS or not _non_empty_string(request["url"]) or isinstance(number, bool) \
+                or not isinstance(number, int) or number < 1 or not _is_timestamp(request["recorded_at"]):
+            problems.append(f"{label}.pull_request: needs host github or gitlab, a URL, a number and a timestamp")
+    return problems
+
+
+def _exemption_errors(entry: dict[str, Any], label: str) -> list[str]:
     problems: list[str] = []
-    request = entry.get("pull_request")
-    if "pull_request" in entry:
-        problems += _object_errors(request, f"{label}.pull_request", {"host", "url", "number", "recorded_at"})
-        if isinstance(request, dict) and not problems:
-            number = request["number"]
-            if request["host"] not in HOSTS or not _non_empty_string(request["url"]) or isinstance(number, bool) \
-                    or not isinstance(number, int) or number < 1 or not _is_timestamp(request["recorded_at"]):
-                problems.append(f"{label}.pull_request: needs host github or gitlab, a URL, a number and a timestamp")
     for name, reason in (("pr_exemption", True), ("version_exemption", False)):
         if name in entry:
             fields = {"reason", *CONFIRMATION} if reason else set(CONFIRMATION)
@@ -609,46 +683,73 @@ def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
                 problems.append(f"{label}.{name}: needs the user's quoted source and response")
     if "pull_request" in entry and "pr_exemption" in entry:
         problems.append(f"{label}: pull_request and pr_exemption exclude each other")
-    if "version_exemption_replaced" in entry:
-        replaced = entry["version_exemption_replaced"]
-        label_replaced = f"{label}.version_exemption_replaced"
-        found = _object_errors(replaced, label_replaced, set(EXEMPTION_REPLACED_FIELDS))
-        problems += found
-        if not found and (not _is_timestamp(replaced["replaced_at"])
-                          or not all(_non_empty_string(replaced[key]) for key in EXEMPTION_REPLACED_FIELDS
-                                     if key != "replaced_at")):
-            problems.append(
-                f"{label_replaced}: needs the exemption's reason, source and response, the release time and the "
-                "release confirmation"
-            )
+    return problems
+
+
+def _replaced_errors(entry: dict[str, Any], label: str, name: str, needs: str) -> list[str]:
+    """Shape errors of a replaced-exemption record (`name`); `needs` ends the message for a broken value."""
+    if name not in entry:
+        return []
+    replaced = entry[name]
+    label_replaced = f"{label}.{name}"
+    found = _object_errors(replaced, label_replaced, set(EXEMPTION_REPLACED_FIELDS))
+    if not found and (not _is_timestamp(replaced["replaced_at"])
+                      or not all(_non_empty_string(replaced[key]) for key in EXEMPTION_REPLACED_FIELDS
+                                 if key != "replaced_at")):
+        found = [f"{label_replaced}: needs {needs}"]
+    return found
+
+
+def _merge_errors(entry: dict[str, Any], label: str) -> list[str]:
+    fields = {"state", "method", "evidence", "source", "response", "recorded_at"}
+    problems = _object_errors(entry["merge"], f"{label}.merge", fields, frozenset({"merged_head", "fix_commits"}))
+    if problems:
+        return problems
+    merge = entry["merge"]
+    if merge["state"] not in MERGE_STATES or not _is_timestamp(merge["recorded_at"]) \
+            or not _non_empty_string(merge["source"]) or not _non_empty_string(merge["response"]):
+        problems.append(f"{label}.merge: needs state merged or declined, a timestamp and the user's words")
+    if not needs_merge(entry):
+        problems.append(f"{label}.merge: needs a pull_request or a local_only exemption")
+    head = merge.get("merged_head")
+    if "merged_head" in merge and (
+        merge["state"] != "merged" or not isinstance(head, str) or not COMMIT_PATTERN.match(head)
+    ):
+        problems.append(f"{label}.merge: merged_head belongs to a merged record and is a full lowercase hex commit")
+    if "fix_commits" in merge and not (
+        merge["state"] == "merged" and "merged_head" in merge and is_fix_commit_list(merge["fix_commits"])
+    ):
+        problems.append(
+            f"{label}.merge: fix_commits is a non-empty list of full lowercase hex commits "
+            "and needs a merged record with merged_head"
+        )
+    if merge["state"] == "merged":
+        line = entry.get("version_line")
+        if merge["method"] not in METHODS or not _non_empty_string(merge["evidence"]):
+            problems.append(f"{label}.merge: a merged record needs a method and evidence")
+        if isinstance(line, dict) and line.get("release") is None:
+            problems.append(f"{label}.merge: a merged record with a version_line needs a release")
+    return problems
+
+
+def delivery_errors(entry: dict[str, Any], label: str) -> list[str]:
+    """Shape errors of the optional delivery fields of one worktree entry."""
+    problems: list[str] = _pull_request_errors(entry, label) if "pull_request" in entry else []
+    problems += _exemption_errors(entry, label)
+    problems += _replaced_errors(
+        entry, label, "version_exemption_replaced",
+        "the exemption's reason, source and response, the release time and the release confirmation",
+    )
+    problems += _replaced_errors(
+        entry, label, "pr_exemption_replaced",
+        "the exemption's reason, source and response, the pull request time and the pull request confirmation",
+    )
     if "version_line" in entry:
         problems += _line_errors(entry["version_line"], f"{label}.version_line")
         if "version_exemption" in entry:
             problems.append(f"{label}: version_line and version_exemption exclude each other")
     if "merge" in entry:
-        fields = {"state", "method", "evidence", "source", "response", "recorded_at"}
-        found = _object_errors(entry["merge"], f"{label}.merge", fields, frozenset({"merged_head"}))
-        problems += found
-        if not found:
-            merge = entry["merge"]
-            if merge["state"] not in MERGE_STATES or not _is_timestamp(merge["recorded_at"]) \
-                    or not _non_empty_string(merge["source"]) or not _non_empty_string(merge["response"]):
-                problems.append(f"{label}.merge: needs state merged or declined, a timestamp and the user's words")
-            if not needs_merge(entry):
-                problems.append(f"{label}.merge: needs a pull_request or a local_only exemption")
-            head = merge.get("merged_head")
-            if "merged_head" in merge and (
-                merge["state"] != "merged" or not isinstance(head, str) or not COMMIT_PATTERN.match(head)
-            ):
-                problems.append(
-                    f"{label}.merge: merged_head belongs to a merged record and is a full lowercase hex commit"
-                )
-            if merge["state"] == "merged":
-                line = entry.get("version_line")
-                if merge["method"] not in METHODS or not _non_empty_string(merge["evidence"]):
-                    problems.append(f"{label}.merge: a merged record needs a method and evidence")
-                if isinstance(line, dict) and line.get("release") is None:
-                    problems.append(f"{label}.merge: a merged record with a version_line needs a release")
+        problems += _merge_errors(entry, label)
     return problems
 
 

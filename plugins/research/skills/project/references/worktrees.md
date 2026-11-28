@@ -55,7 +55,8 @@ migrate-policy <project-dir> --to 2 --target <target>` previews the move and wri
 6. Record the MR with `"operation":"pull_request"`, `host` (`github` or `gitlab`), `url` and
    `number`. A repository with no remote records `"exempt":"no_remote"` instead. A project never
    pushed uses target `local`, which needs no MR; only policy 0 and 1 projects still record
-   `"exempt":"local_only"` (with the user's words), and a legacy `local_only` entry stays valid.
+   `"exempt":"local_only"` (with the user's words), and a legacy `local_only` entry stays valid;
+   replaces_exemption replaces it.
    A non-repository target needs neither.
 7. Record an alpha line only for a test or experiment build, and the version decision before
    closing ([versioning.md](versioning.md)).

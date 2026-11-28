@@ -188,6 +188,62 @@ def _replace_sections(text: str, sections: dict[str, str]) -> str:
     return result
 
 
+def _check_edit_request(document: str, body: str | None, sections: dict[str, str] | None) -> None:
+    if (body is None) == (sections is None):
+        raise WorkspaceError("provide exactly one of body or sections")
+    if document == "spec" and sections is None:
+        raise WorkspaceError("spec edits require a sections mapping")
+    if document in WHOLE_DOCUMENTS and body is None:
+        raise WorkspaceError(f"{document} edits require a body")
+    if document not in ("spec", *WHOLE_DOCUMENTS):
+        raise WorkspaceError("editable document must be spec, reflection, planning, architecture, or handoff")
+
+
+def _replacement(document: str, current: str, body: str | None, sections: dict[str, str] | None) -> str:
+    if document not in WHOLE_DOCUMENTS:
+        return _replace_sections(current, sections or {})
+    replacement = (body or "").strip()
+    if not replacement:
+        raise WorkspaceError(f"{document} body must not be empty")
+    return replacement + "\n"
+
+
+def _dangling_warnings(project_dir: Path, state: dict[str, Any]) -> list[str]:
+    from workspace_packets import reference_errors  # function-local: that module imports this one
+
+    try:  # advisory only: the edit is already written, so a failed check never fails it
+        dangling = reference_errors(project_dir, state, dangling_only=True)
+    except (WorkspaceError, OSError, ValueError) as error:
+        dangling = [f"the references could not be checked: {error}"]
+    return [f"a spec edit left references that no longer resolve: {error}" for error in dangling]
+
+
+def _add_edit_advice(
+    result: dict[str, Any], project_dir: Path, state: dict[str, Any], document: str, texts: tuple[str, str]
+) -> None:
+    """Add the advisory keys to an edit result; the edit is already written, so none of them refuses."""
+    current, replacement = texts
+    warnings: list[str] = []
+    if document in ("spec", "planning"):
+        spec_path, planning_file = project_dir / "spec.md", planning_path(project_dir)
+        spec_text = replacement if document == "spec" else (read_text(spec_path) if spec_path.is_file() else "")
+        planning_text = (
+            replacement
+            if document == "planning"
+            else (read_text(planning_file) if planning_file.is_file() else "")
+        )
+        stale = stale_confirmations(spec_text, planning_text)
+        if stale:
+            result["stale_confirmations"] = stale
+        from workspace_goldfish import stale_round_warnings  # function-local: that module imports this one
+
+        warnings += stale_round_warnings(project_dir, {document: current}, {document: replacement})
+    if document == "spec" and task_packets_enabled(state):
+        warnings += _dangling_warnings(project_dir, state)
+    if warnings:
+        result["warnings"] = warnings
+
+
 def edit_document(
     project_dir: Path,
     document: str,
@@ -202,14 +258,7 @@ def edit_document(
     Every write is guarded by the whole-document content token, so a stale draft cannot overwrite
     an edit made by another session.
     """
-    if (body is None) == (sections is None):
-        raise WorkspaceError("provide exactly one of body or sections")
-    if document == "spec" and sections is None:
-        raise WorkspaceError("spec edits require a sections mapping")
-    if document in WHOLE_DOCUMENTS and body is None:
-        raise WorkspaceError(f"{document} edits require a body")
-    if document not in ("spec", *WHOLE_DOCUMENTS):
-        raise WorkspaceError("editable document must be spec, reflection, planning, architecture, or handoff")
+    _check_edit_request(document, body, sections)
     project_dir = project_dir.resolve()
     if document == "architecture" and is_legacy_planning_layout(project_dir):
         raise WorkspaceError(LEGACY_PLANNING_HINT)
@@ -226,13 +275,7 @@ def edit_document(
                 raise WorkspaceConflict(
                     document_conflict_message(document, expected_sha256, actual, project_dir, use="--expected-sha256")
                 )
-            if document in WHOLE_DOCUMENTS:
-                replacement = (body or "").strip()
-                if not replacement:
-                    raise WorkspaceError(f"{document} body must not be empty")
-                replacement += "\n"
-            else:
-                replacement = _replace_sections(current, sections or {})
+            replacement = _replacement(document, current, body, sections)
             atomic_write_text(path, replacement)
     except OSError as error:
         raise WorkspaceError(f"cannot write {path}: {error}") from error
@@ -240,26 +283,7 @@ def edit_document(
         "operation": "document.edit", "document": document, "path": str(path), "revision": state["revision"],
         "previous_sha256": actual, "document_sha256": document_sha256(replacement),
     }
-    if document in ("spec", "planning"):
-        spec_path, planning_file = project_dir / "spec.md", planning_path(project_dir)
-        spec_text = replacement if document == "spec" else (read_text(spec_path) if spec_path.is_file() else "")
-        planning_text = (
-            replacement
-            if document == "planning"
-            else (read_text(planning_file) if planning_file.is_file() else "")
-        )
-        stale = stale_confirmations(spec_text, planning_text)
-        if stale:
-            result["stale_confirmations"] = stale
-    if document == "spec" and task_packets_enabled(state):
-        from workspace_packets import reference_errors  # function-local: that module imports this one
-
-        try:  # advisory only: the edit is already written, so a failed check never fails it
-            dangling = reference_errors(project_dir, state, dangling_only=True)
-        except (WorkspaceError, OSError, ValueError) as error:
-            dangling = [f"the references could not be checked: {error}"]
-        if dangling:
-            result["warnings"] = [f"a spec edit left references that no longer resolve: {error}" for error in dangling]
+    _add_edit_advice(result, project_dir, state, document, (current, replacement))
     return result
 
 

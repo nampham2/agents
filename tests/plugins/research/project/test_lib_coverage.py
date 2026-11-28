@@ -37,6 +37,7 @@ from workspace_lib import (
     validate_project,
     validate_v2_state,
     validate_v3_state,
+    writes_target_code,
 )
 
 from tests.conftest import REPO_ROOT
@@ -1960,6 +1961,50 @@ class ApplyMigrationTests(unittest.TestCase):
         with self.assertRaises(WorkspaceError) as ctx:
             apply_migration(self.project_dir)
         self.assertIn("migration candidate is not valid", str(ctx.exception))
+
+
+class WritesTargetCodeTests(unittest.TestCase):
+    """c11: an external or destructive task owes the design and diff gates when it writes required target code."""
+
+    @staticmethod
+    def _task(kind: str, *outputs: object) -> dict:
+        return {"id": "T01", "effect": {"kind": kind, "description": "x"}, "outputs": list(outputs)}
+
+    @staticmethod
+    def _out(path: str, required: object = True, root: str = "target") -> dict:
+        return {"root": root, "path": path, "required": required}
+
+    def test_a_local_write_task_follows_is_code_task(self) -> None:
+        self.assertTrue(writes_target_code(self._task("local_write", self._out("a.py"))))
+        self.assertFalse(writes_target_code(self._task("local_write", self._out("a.md"))))
+        self.assertFalse(writes_target_code(self._task("none", self._out("a.py"))))
+
+    def test_an_external_or_destructive_task_counts_with_a_required_code_output(self) -> None:
+        for kind in ("external", "destructive"):
+            with self.subTest(kind=kind):
+                self.assertTrue(writes_target_code(self._task(kind, self._out("a.py"))))
+                self.assertTrue(writes_target_code(self._task(kind, self._out("n.md"), self._out("a.py"))))
+
+    def test_an_optional_prose_or_other_root_output_does_not_count(self) -> None:
+        for kind in ("external", "destructive"):
+            with self.subTest(kind=kind):
+                for output in (
+                    self._out("run.log", False),
+                    self._out("data.json", False),
+                    self._out("rows.csv", False),
+                    self._out("a.py", "yes"),
+                    self._out("a.py", None),
+                    self._out("n.md"),
+                    self._out("a.py", True, "workspace"),
+                    {"root": "target", "path": 3, "required": True},
+                    "a.py",
+                ):
+                    self.assertFalse(writes_target_code(self._task(kind, output)), output)
+
+    def test_a_task_that_is_not_well_formed_never_counts(self) -> None:
+        malformed = ({"effect": "external", "outputs": []}, {"effect": {"kind": "external"}, "outputs": "a"})
+        for task in ("x", None, *malformed):
+            self.assertFalse(writes_target_code(task), task)
 
 
 if __name__ == "__main__":

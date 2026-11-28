@@ -41,6 +41,7 @@ _AUTHORIZATION = frozenset({"required", "status", "scope", "source", "authorized
 # The optional delivery records of a worktree entry.
 WORKTREE_OPTIONAL_FIELDS = frozenset({
     "pull_request", "pr_exemption", "version_line", "version_exemption", "merge", "version_exemption_replaced",
+    "pr_exemption_replaced",
 })
 # The keys of the record a release leaves when it replaces a version exemption: the old exemption, then the release.
 EXEMPTION_REPLACED_FIELDS = frozenset({

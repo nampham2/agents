@@ -234,6 +234,62 @@ def test_the_design_gate_fires_on_the_first_code_task_to_run(
         assert errors[0].startswith("goldfish gate 'design': no round covers artifacts/architecture.md")
 
 
+def external(
+    task_id: str = "T01",
+    status: str = "TODO",
+    kind: str = "external",
+    path: str = "src/app.py",
+    required: bool = True,
+    **fields: Any,
+) -> dict[str, Any]:
+    """A task that writes target code and also pushes: its effect is not `local_write`."""
+    outputs = [{"root": "target", "path": path, "required": required}]
+    effect = {"kind": kind, "description": "push"}
+    authorization = {"required": True, "status": "pending", "scope": None, "source": None, "authorized_at": None}
+    return {
+        **CODE_TASK, "id": task_id, "status": status, "effect": effect, "outputs": outputs,
+        "authorization": authorization, **fields,
+    }
+
+
+@pytest.mark.parametrize(
+    ("previous", "candidate", "fires"),
+    [
+        (state_of(external()), state_of(external(status="RUNNING")), True),
+        (state_of(external(kind="destructive")), state_of(external(kind="destructive", status="DONE")), True),
+        (
+            state_of(external(path="run.log", required=False)),
+            state_of(external(path="run.log", required=False, status="RUNNING")),
+            False,
+        ),
+        (state_of(external(path="notes.md")), state_of(external(path="notes.md", status="RUNNING")), False),
+        (state_of(external(status="RUNNING")), state_of(external(status="RUNNING"), external("T02", "RUNNING")), False),
+    ],
+)
+def test_the_design_gate_covers_an_external_task_that_writes_required_target_code(
+    gated: None, project: Path, previous: dict[str, Any], candidate: dict[str, Any], fires: bool
+) -> None:
+    errors = design_gate_errors(project, previous, candidate)
+    assert bool(errors) is fires, errors
+    if fires:
+        assert errors[0].startswith("goldfish gate 'design': no round covers artifacts/architecture.md")
+
+
+@pytest.mark.parametrize("kind", ["external", "destructive"])
+def test_an_in_flight_project_with_a_started_external_task_is_not_newly_refused(
+    gated: None, project: Path, kind: str
+) -> None:
+    """`_code_started` excuses a project whose earlier external or destructive task already ran."""
+    for started in (external(kind=kind, status="RUNNING"), external(kind=kind, status="DONE")):
+        previous = state_of(started, external("T02", kind=kind))
+        candidate = state_of(started, external("T02", "RUNNING", kind=kind))
+        assert design_gate_errors(project, previous, candidate) == [], started["status"]
+    fresh = state_of(external(kind=kind), external("T02", kind=kind))
+    started = state_of(external(kind=kind, status="RUNNING"), external("T02", kind=kind))
+    errors = design_gate_errors(project, fresh, started)
+    assert errors and errors[0].startswith("goldfish gate 'design': no round covers artifacts/architecture.md")
+
+
 def test_the_design_gate_passes_with_a_current_round(gated: None, project: Path) -> None:
     previous, candidate = state_of(code()), state_of(code(status="RUNNING"))
     assert design_gate_errors(project, previous, candidate)
@@ -426,6 +482,27 @@ def test_a_project_without_a_code_task_has_no_diff_gate(gated: None, delivered: 
     project, linked, _ = delivered
     prose_task = {"id": "T01", "outputs": [{"root": "target", "path": "notes.md", "required": True}]}
     update_project_data(project, {"tasks": [prose_task]}, expected_revision=load_state(project)["revision"])
+    prepare_release(project, linked)
+    op(project, linked, "release", version="0.24.0", files=FILES)
+
+
+def test_an_external_task_with_a_required_code_output_has_the_diff_gate(
+    gated: None, delivered: tuple[Path, Path, Path]
+) -> None:
+    project, linked, _ = delivered
+    update_project_data(project, {"tasks": [external()]}, expected_revision=load_state(project)["revision"])
+    prepare_release(project, linked)
+    refuse_release(project, linked, "goldfish gate 'diff': no round covers the diff version")
+    diff_round(project, linked)
+    op(project, linked, "release", version="0.24.0", files=FILES)
+
+
+def test_an_external_task_with_only_an_optional_log_has_no_diff_gate(
+    gated: None, delivered: tuple[Path, Path, Path]
+) -> None:
+    project, linked, _ = delivered
+    task = external(path="run.log", required=False)
+    update_project_data(project, {"tasks": [task]}, expected_revision=load_state(project)["revision"])
     prepare_release(project, linked)
     op(project, linked, "release", version="0.24.0", files=FILES)
 
@@ -657,6 +734,14 @@ def test_a_code_task_started_after_the_instant_with_no_design_round_is_reported(
     ]
     accept(project, "design")
     assert goldfish_event_warnings(project, state) == []
+
+
+def test_an_external_code_task_started_with_no_design_round_is_reported(gated: None, project: Path) -> None:
+    pushed = external("T01", "RUNNING", started_at="2026-11-01T10:00:00+00:00")
+    logged = external("T02", "RUNNING", path="run.log", required=False, started_at="2026-11-01T10:00:00+00:00")
+    assert goldfish_event_warnings(project, {"tasks": [pushed, logged]}) == [
+        "code task T01 started at 2026-11-01T10:00:00+00:00 with no design round"
+    ]
 
 
 def test_release_merge_and_closure_events_with_no_round_are_reported(gated: None, project: Path) -> None:

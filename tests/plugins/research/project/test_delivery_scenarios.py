@@ -394,9 +394,10 @@ def test_needs_merge_is_read_only_where_a_merge_basis_is_the_question() -> None:
         ("workspace_lib", "merge_warned"),
         ("workspace_lib", "removal_merge"),
         ("workspace_delivery", "_merge"),
-        ("workspace_delivery", "delivery_errors"),
+        ("workspace_delivery", "_merge_errors"),
         ("workspace_delivery", "abandoned_note"),
         ("workspace_dashboard", "_local_label"),
+        ("workspace_workflows", "merge_requirements"),
     }
     forbidden = {"closure_findings", "removal_findings", "start_findings", "mr_gate_errors", "delivery_gate_errors"}
     assert not {function for _, function in _callers("needs_merge")} & forbidden

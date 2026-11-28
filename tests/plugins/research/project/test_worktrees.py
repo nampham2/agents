@@ -951,7 +951,7 @@ class TestReadinessListsDeliveryRecords:
 
         expected = removal_findings(state["worktrees"][0], rules=delivery_rules(state))
         assert result["worktrees"] == [{"path": str(linked), "exists": True, "missing": expected}]
-        assert set(result) == {"valid", "groups", "worktrees", "checks"}
+        assert set(result) == {"valid", "groups", "worktrees", "merge_requirements", "checks"}
 
     def test_a_directory_that_is_gone_reports_exists_false(
         self, tmp_path: Path, repository: Path, linked: Path
